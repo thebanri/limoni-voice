@@ -1,0 +1,8 @@
+# Binaries
+limoni-voice
+*.exe
+*.test
+
+# OS Files
+.DS_Store
+Thumbs.db

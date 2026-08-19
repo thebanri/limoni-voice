@@ -1,0 +1,368 @@
+package main
+
+import (
+	"fmt"
+	"math"
+
+	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/buffer"
+	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni/widgets"
+)
+
+// DrawVerticalLevelMeter renders a sleek multi-column equalizer VU bar
+// that rises and falls with live voice volume level without using any emojis or icons.
+func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isSpeaking bool, isMuted bool, label string) {
+	if area.Width < 2 || area.Height < 2 {
+		return
+	}
+
+	// 1. Top Header / Percentage Bar
+	pct := int(math.Min(rms*300.0, 100.0))
+	if isMuted || !isSpeaking || pct < 1 {
+		pct = 0
+	}
+
+	topStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+	if isSpeaking && !isMuted {
+		topStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			Modifier: cell.ModifierBold,
+		}
+	}
+
+	headerText := fmt.Sprintf("%s: [ %2d%% ]", label, pct)
+	if isMuted {
+		headerText = fmt.Sprintf("%s: [ SESSIZ ]", label)
+	}
+
+	buf.SetString(area.X, area.Y, headerText, topStyle)
+	headerLen := uint16(len([]rune(headerText)))
+	for x := area.X + headerLen; x < area.X+area.Width; x++ {
+		buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+	}
+
+	// 2. Vertical Multi-Column Equalizer Bars
+	barRows := int(area.Height) - 1
+	if barRows <= 0 {
+		return
+	}
+
+	numCols := int(area.Width)
+	colWidth := 1
+
+	colLevelRatio := math.Min(rms*3.0, 1.0)
+	if isMuted || !isSpeaking {
+		colLevelRatio = 0
+	}
+
+	for r := 0; r < barRows; r++ {
+		rowThreshold := float64(barRows-1-r) / float64(barRows)
+		rowY := area.Y + 1 + uint16(r)
+
+		var activeStyle cell.Style
+		if rowThreshold < 0.50 {
+			activeStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+				Modifier: cell.ModifierBold,
+			}
+		} else if rowThreshold < 0.80 {
+			activeStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+				Modifier: cell.ModifierBold,
+			}
+		} else {
+			activeStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0xFF, 0x55, 0x77),
+				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+				Modifier: cell.ModifierBold,
+			}
+		}
+
+		dimStyle := cell.Style{
+			Fg: cell.NewColorRGB(0x2D, 0x37, 0x48),
+			Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A),
+		}
+
+		for c := 0; c < numCols; c++ {
+			colX := area.X + uint16(c*colWidth)
+			variance := math.Sin(float64(c)*0.45) * 0.08
+			effLevel := math.Max(0.0, math.Min(1.0, colLevelRatio+variance))
+
+			isLit := effLevel >= rowThreshold && isSpeaking && !isMuted && colLevelRatio > 0.005
+			var rChar rune = '█'
+			var st cell.Style = activeStyle
+
+			if !isLit {
+				rChar = '░'
+				st = dimStyle
+			}
+
+			if colX < area.X+area.Width {
+				buf.SetCell(colX, rowY, cell.Cell{
+					Content: rChar,
+					Style:   st,
+				})
+			}
+		}
+	}
+}
+
+// DrawTestModal renders the interactive Microphone & Sound Test Dialog without any icons or emojis.
+func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onClose func()) {
+	modalW, modalH := uint16(60), uint16(14)
+	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
+	widgets.DrawShadow(frame.Buffer, modalArea, 2, 1)
+
+	frame.RegisterModal("sound_test_modal", modalArea, onClose)
+
+	mainBlock := widgets.Block{
+		Title:          " MIKROFON VE SES TEST PANELI ",
+		TitleAlignment: widgets.AlignCenter,
+		Borders:        widgets.BorderAll,
+		BorderSymbols:  widgets.SymbolsRounded,
+		BorderStyle:    cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4)},
+		Style:          cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)},
+	}
+	frame.RenderWidget(mainBlock, modalArea)
+
+	inner := mainBlock.Inner(modalArea)
+	buf := frame.Buffer
+
+	for y := inner.Y; y < inner.Y+inner.Height; y++ {
+		for x := inner.X; x < inner.X+inner.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}})
+		}
+	}
+
+	// 1. Status Indicator
+	statusText := "[BEKLENIYOR (SESSIZ)]"
+	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
+	if audio.Muted {
+		statusText = "[MIKROFON KAPALI (MUTED)]"
+		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
+	} else if audio.IsSpeaking {
+		statusText = "[KONUSUYOR (SES AKTIF...)]"
+		statusStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
+	}
+
+	buf.SetString(inner.X+1, inner.Y, "Durum: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
+
+	// 2. Vertical VU Level Meter
+	meterRect := cell.Rect{
+		X:      inner.X + 1,
+		Y:      inner.Y + 1,
+		Width:  inner.Width - 2,
+		Height: 3,
+	}
+	DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "MIKROFON GIRIS SEVIYESI")
+
+	// 3. Loopback / Echo test toggle
+	loopbackY := inner.Y + 5
+	loopBox := "[ ] Kendi Sesimi Duy (Loopback Testi) [Bosluk]"
+	loopStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
+	if audio.Loopback {
+		loopBox = "[X] Kendi Sesimi Duy (Loopback AKTIF) [Bosluk]"
+		loopStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		}
+	}
+	buf.SetString(inner.X+1, loopbackY, loopBox, loopStyle)
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, loopbackY, uint16(len([]rune(loopBox))), 1), func(_ backend.MouseEvent) {
+		audio.ToggleLoopback()
+	})
+
+	// 4. Suppression Mode Toggle Buttons [N]
+	noiseY := inner.Y + 7
+	buf.SetString(inner.X+1, noiseY, "Gurultu Engelleme [N]:", cell.Style{
+		Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4),
+		Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+	})
+
+	optOff := " [ KAPALI ] "
+	optStd := " [ ACIK (Standart) ] "
+	optHi := " [ YUKSEK ] "
+
+	curMode := audio.SuppressionMode
+	styleOff := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	styleStd := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	styleHi := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+
+	activeStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+		Modifier: cell.ModifierBold,
+	}
+
+	if curMode == 0 {
+		styleOff = activeStyle
+	} else if curMode == 1 {
+		styleStd = activeStyle
+	} else {
+		styleHi = activeStyle
+	}
+
+	optOffX := inner.X + 24
+	buf.SetString(optOffX, noiseY, optOff, styleOff)
+	frame.RegisterClickHandler(cell.NewRect(optOffX, noiseY, uint16(len([]rune(optOff))), 1), func(_ backend.MouseEvent) {
+		audio.SetSuppressionMode(0)
+	})
+
+	optStdX := optOffX + uint16(len([]rune(optOff))) + 1
+	buf.SetString(optStdX, noiseY, optStd, styleStd)
+	frame.RegisterClickHandler(cell.NewRect(optStdX, noiseY, uint16(len([]rune(optStd))), 1), func(_ backend.MouseEvent) {
+		audio.SetSuppressionMode(1)
+	})
+
+	optHiX := optStdX + uint16(len([]rune(optStd))) + 1
+	if optHiX+uint16(len([]rune(optHi))) <= inner.X+inner.Width {
+		buf.SetString(optHiX, noiseY, optHi, styleHi)
+		frame.RegisterClickHandler(cell.NewRect(optHiX, noiseY, uint16(len([]rune(optHi))), 1), func(_ backend.MouseEvent) {
+			audio.SetSuppressionMode(2)
+		})
+	}
+
+	// 5. Volume Controls
+	gainY := inner.Y + 9
+	gainStr := fmt.Sprintf("Mikrofon Sesi: %.0f%%  [ 1 / 2 tuslari ]", audio.Gain*100)
+	buf.SetString(inner.X+1, gainY, gainStr, cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold})
+
+	// 6. Action Buttons (Mute, Close)
+	btnY := inner.Y + 11
+	muteBtn := "[M] Mikrofon Kapat"
+	muteBtnStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
+		Modifier: cell.ModifierBold,
+	}
+	if audio.Muted {
+		muteBtn = "[M] Mikrofon AC"
+		muteBtnStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+			Modifier: cell.ModifierBold,
+		}
+	}
+	buf.SetString(inner.X+1, btnY, "  "+muteBtn+"  ", muteBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, btnY, uint16(len([]rune(muteBtn)))+4, 1), func(_ backend.MouseEvent) {
+		isMuted := audio.ToggleMute()
+		if node != nil {
+			node.SendMuteState(isMuted)
+		}
+	})
+
+	closeBtn := "[ Kapat (Esc) ]"
+	closeBtnStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
+		Bg:       cell.NewColorRGB(0x6C, 0x5C, 0xE7),
+		Modifier: cell.ModifierBold,
+	}
+	closeX := inner.X + inner.Width - uint16(len([]rune(closeBtn))) - 2
+	buf.SetString(closeX, btnY, " "+closeBtn+" ", closeBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(closeX, btnY, uint16(len([]rune(closeBtn)))+2, 1), func(_ backend.MouseEvent) {
+		if onClose != nil {
+			onClose()
+		}
+	})
+}
+
+// DrawLeaveModal renders the official Limoni widgets.Dialog confirmation dialog for leaving the room with opening/closing scale animation.
+func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, onConfirm func(), onCancel func()) {
+	if progress <= 0.001 {
+		return
+	}
+
+	modalW, modalH := uint16(48), uint16(9)
+	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
+	animatedArea := terminal.ScaleRect(modalArea, progress)
+
+	if animatedArea.Width < 4 || animatedArea.Height < 3 {
+		return
+	}
+
+	frame.RegisterModal("leave_room_dialog", animatedArea, onCancel)
+
+	leaveDialog := widgets.Dialog{
+		ID:          "leave_room_dialog",
+		Title:       " ODADAN AYRIL ",
+		Message:     "Mevcut ses odasindan ayrilmak istiyor musunuz?",
+		SubMessage:  "Diger katilimcilarla olan ses baglantiniz kesilecektir.",
+		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
+		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: cell.NewColorRGB(235, 94, 40)},
+		BorderStyle: cell.Style{Fg: cell.NewColorRGB(235, 94, 40)},
+		ButtonStyle: cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(45, 45, 45)},
+		ButtonFocusedStyle: cell.Style{
+			Fg:       cell.NewColorRGB(255, 255, 255),
+			Bg:       cell.NewColorRGB(235, 94, 40),
+			Modifier: cell.ModifierBold,
+		},
+		Shadow: true,
+		Buttons: []widgets.DialogButton{
+			{
+				Text:    "Evet, Ayril",
+				Handler: onConfirm,
+			},
+			{
+				Text:    "Hayir, Kal",
+				Handler: onCancel,
+			},
+		},
+	}
+
+	frame.BeginFocusScope("leave_room_dialog")
+	frame.RenderWidget(leaveDialog, animatedArea)
+}
+
+// DrawExitModal renders the official Limoni widgets.Dialog confirmation dialog for exiting the application with opening/closing scale animation.
+func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, onConfirm func(), onCancel func()) {
+	if progress <= 0.001 {
+		return
+	}
+
+	modalW, modalH := uint16(48), uint16(9)
+	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
+	animatedArea := terminal.ScaleRect(modalArea, progress)
+
+	if animatedArea.Width < 4 || animatedArea.Height < 3 {
+		return
+	}
+
+	frame.RegisterModal("exit_app_dialog", animatedArea, onCancel)
+
+	exitDialog := widgets.Dialog{
+		ID:          "exit_app_dialog",
+		Title:       " SISTEMDEN CIKIS ",
+		Message:     "Limoni Voice uygulamasindan cikmak istiyor musunuz?",
+		SubMessage:  "Mevcut oturum ve ses baglantisi sonlandirilacaktir.",
+		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
+		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: cell.NewColorRGB(220, 60, 60)},
+		BorderStyle: cell.Style{Fg: cell.NewColorRGB(220, 60, 60)},
+		ButtonStyle: cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(45, 45, 45)},
+		ButtonFocusedStyle: cell.Style{
+			Fg:       cell.NewColorRGB(255, 255, 255),
+			Bg:       cell.NewColorRGB(220, 60, 60),
+			Modifier: cell.ModifierBold,
+		},
+		Shadow: true,
+		Buttons: []widgets.DialogButton{
+			{
+				Text:    "Evet, Cik",
+				Handler: onConfirm,
+			},
+			{
+				Text:    "Hayir, Devam",
+				Handler: onCancel,
+			},
+		},
+	}
+
+	frame.BeginFocusScope("exit_app_dialog")
+	frame.RenderWidget(exitDialog, animatedArea)
+}
