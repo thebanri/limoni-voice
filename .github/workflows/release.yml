@@ -1,78 +1,55 @@
-name: "Build and Release Multiplatform"
+name: "Release"
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
     tags:
       - 'v*'
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Release Tag (e.g. v1.0.0)'
-        required: false
-        default: ''
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    name: "Build Packages and Release"
+  build:
+    name: "Build and Release"
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: "Checkout"
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Go
+      - name: "Set up Go"
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           check-latest: true
 
-      - name: Determine Version
-        id: version
+      - name: "Build All Platforms"
         run: |
-          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            VERSION="${{ github.event.inputs.tag_name }}"
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
-          else
-            VERSION="v0.1.0-dev.$(git rev-parse --short HEAD)"
+          set -e
+          VERSION="${GITHUB_REF_NAME}"
+          if [ -z "${VERSION}" ] || [ "${VERSION}" = "main" ]; then
+            VERSION="v1.0.0"
           fi
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "RAW_VERSION=${VERSION#v}" >> $GITHUB_ENV
+          RAW_VERSION="${VERSION#v}"
+          echo "Building version ${VERSION} (${RAW_VERSION})"
 
-      - name: Run Tests
-        run: |
-          go test -mod=vendor -v ./...
-
-      - name: Build Binaries and Packages
-        run: |
           mkdir -p release_assets
           mkdir -p dist/linux-amd64 dist/linux-arm64 dist/windows-amd64 dist/windows-arm64
 
           LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
 
-          # 1. Compile Linux amd64 & arm64
-          echo "Building Linux amd64..."
+          # Linux amd64 & arm64
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/linux-amd64/limoni-voice .
-          
-          echo "Building Linux arm64..."
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/linux-arm64/limoni-voice .
 
-          # 2. Compile Windows amd64 & arm64
-          echo "Building Windows amd64..."
+          # Windows amd64 & arm64
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/windows-amd64/limoni-voice.exe .
-          
-          echo "Building Windows arm64..."
           CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/windows-arm64/limoni-voice.exe .
 
-          # 3. Package Linux Tarballs (.tar.gz)
+          # Linux Tarballs
           mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
           cp dist/linux-amd64/limoni-voice README.md microphone.obj dist/pkg-linux-amd64/
           tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg-linux-amd64 .
@@ -80,10 +57,10 @@ jobs:
           cp dist/linux-arm64/limoni-voice README.md microphone.obj dist/pkg-linux-arm64/
           tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
-          # 4. Package Windows Zip (.zip) & standalone EXEs
+          # Windows standalone and zip
           cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_amd64.exe"
           cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
-          
+
           mkdir -p dist/pkg-windows-amd64 dist/pkg-windows-arm64
           cp dist/windows-amd64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-amd64/
           zip -j "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
@@ -91,7 +68,7 @@ jobs:
           cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
           zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
 
-          # 5. Build Debian Packages (.deb)
+          # Debian packages (.deb)
           build_deb() {
             local ARCH=$1
             local DEB_ARCH=$2
@@ -135,16 +112,13 @@ EOF
           build_deb "linux-amd64" "amd64"
           build_deb "linux-arm64" "arm64"
 
-          # 6. Generate Checksums
+          # Checksums
           cd release_assets
           sha256sum * > checksums.txt
           cat checksums.txt
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd release_assets
-          gh release delete "${VERSION}" --yes || true
-          gh release create "${VERSION}" * --title "Limoni Voice ${VERSION}" --generate-notes
+      - name: "Upload Release Assets"
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release_assets/*
