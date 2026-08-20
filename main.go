@@ -106,20 +106,45 @@ func main() {
 			nick = "User_" + lobby.CurrentCode[:4]
 		}
 		node.Nickname = nick
-		node.JoinRoom(lobby.CurrentCode)
+		node.HostRoom(lobby.CurrentCode)
 		room = NewRoomView()
 		currentScreen = ScreenRoom
 	}
 
 	joinRoom := func(code string) {
+		cleanCode := NormalizeCode(code)
+		if cleanCode == "" {
+			lobby.SetToast("Lutfen gecerli bir oda anahtari girin")
+			return
+		}
 		nick := strings.TrimSpace(lobby.NickState.Value())
 		if nick == "" {
 			nick = "User_" + lobby.CurrentCode[:4]
 		}
 		node.Nickname = nick
-		node.JoinRoom(code)
-		room = NewRoomView()
-		currentScreen = ScreenRoom
+		lobby.IsConnecting = true
+		lobby.ConnectingTarget = cleanCode
+		lobby.SetToast(fmt.Sprintf("'%s' odasi araniyor ve host dogrulaniyor...", cleanCode))
+
+		node.RequestJoinRoom(cleanCode, 3500*time.Millisecond,
+			func(hostNick string) {
+				lobby.IsConnecting = false
+				room = NewRoomView()
+				currentScreen = ScreenRoom
+				room.AddLog(fmt.Sprintf("[+] %s odasina basariyla katildiniz! (Host: %s)", cleanCode, hostNick))
+				room.SetToast(fmt.Sprintf("Odaya Katilindi! Host: %s", hostNick))
+			},
+			func(reason string) {
+				lobby.IsConnecting = false
+				lobby.SetToast(fmt.Sprintf("❌ %s", reason))
+			},
+		)
+	}
+
+	cancelJoin := func() {
+		node.CancelJoin()
+		lobby.IsConnecting = false
+		lobby.SetToast("Oda arama iptal edildi.")
 	}
 
 	leaveRoom := func() {
@@ -132,6 +157,7 @@ func main() {
 	// Wire up lobby action callbacks
 	lobby.OnStartHost = startHost
 	lobby.OnJoinRoom = joinRoom
+	lobby.OnCancelJoin = cancelJoin
 	lobby.OnCopyCode = func(code string) {
 		CopyToClipboard(code)
 		lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", code))
@@ -320,6 +346,12 @@ func main() {
 						} else {
 							lobby.SetToast("Pano bos veya okunamadi")
 						}
+						continue
+					}
+
+					// Cancel connecting on Esc
+					if lobby.IsConnecting && e.Type == backend.KeyEsc {
+						cancelJoin()
 						continue
 					}
 

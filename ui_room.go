@@ -98,7 +98,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	})
 
 	codeBadge := fmt.Sprintf(" Oda: %s ", node.RoomCode)
-	codeX := inner.X + 24
+	codeX := inner.X + 22
 	buf.SetString(codeX, inner.Y, codeBadge, cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 		Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
@@ -109,16 +109,44 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		r.SetToast(fmt.Sprintf("Oda kodu kopyalandi: %s", node.RoomCode))
 	})
 
+	var roleBadge string
+	var roleStyle cell.Style
+	if node.IsHost {
+		roleBadge = " 👑 HOST (SEN) "
+		roleStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+			Modifier: cell.ModifierBold,
+		}
+	} else {
+		hostName := node.HostNick
+		if hostName == "" {
+			hostName = "Host"
+		}
+		roleBadge = fmt.Sprintf(" 👤 UYE (Host: %s) ", hostName)
+		roleStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Modifier: cell.ModifierBold,
+		}
+	}
+
+	roleX := codeX + uint16(len([]rune(codeBadge))) + 2
+	buf.SetString(roleX, inner.Y, roleBadge, roleStyle)
+
 	countStr := fmt.Sprintf("Katilimci: %d/4", totalCount)
-	buf.SetString(inner.X+52, inner.Y, countStr, cell.Style{
-		Fg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
-		Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
-		Modifier: cell.ModifierBold,
-	})
+	countX := roleX + uint16(len([]rune(roleBadge))) + 2
+	if countX+14 <= inner.X+inner.Width {
+		buf.SetString(countX, inner.Y, countStr, cell.Style{
+			Fg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
+			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+			Modifier: cell.ModifierBold,
+		})
+	}
 
 	e2eeBadge := " [E2EE: AES-256] "
-	if inner.Width > 90 {
-		buf.SetString(inner.X+70, inner.Y, e2eeBadge, cell.Style{
+	if inner.Width > countX+30 {
+		buf.SetString(countX+16, inner.Y, e2eeBadge, cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Bg:       cell.NewColorRGB(0x13, 0x27, 0x22),
 			Modifier: cell.ModifierBold,

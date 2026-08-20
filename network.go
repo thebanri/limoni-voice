@@ -32,6 +32,8 @@ const (
 	PacketAudio
 	PacketMuteState
 	PacketLeave
+	PacketJoinRequest // Client probes network to request joining an open host's room
+	PacketRoomFull    // Host rejects join request because room reached 4-peer capacity
 )
 
 type P2PPacket struct {
@@ -70,22 +72,30 @@ type PeerInfo struct {
 }
 
 type P2PNode struct {
-	mu            sync.RWMutex
-	LocalID       string
-	Nickname      string
-	RoomCode      string
-	RoomKey       []byte
-	aead          cipher.AEAD
-	Conn          *net.UDPConn
-	BroadcastConn *net.UDPConn
-	Port          int
-	Peers         map[string]*PeerInfo
-	IsConnected   bool
-	audio         *AudioEngine
-	seqCounter    uint32
-	OnLog         func(msg string)
-	OnPeerEvent   func(event string, peer *PeerInfo)
-	stopChan      chan struct{}
+	mu                sync.RWMutex
+	LocalID           string
+	Nickname          string
+	RoomCode          string
+	RoomKey           []byte
+	aead              cipher.AEAD
+	Conn              *net.UDPConn
+	BroadcastConn     *net.UDPConn
+	Port              int
+	Peers             map[string]*PeerInfo
+	IsConnected       bool
+	IsHost            bool
+	HostID            string
+	HostNick          string
+	Connecting        bool
+	ConnectTargetRoom string
+	connectCancel     chan struct{}
+	OnJoinSuccess     func(hostNick string)
+	OnJoinFailed      func(reason string)
+	audio             *AudioEngine
+	seqCounter        uint32
+	OnLog             func(msg string)
+	OnPeerEvent       func(event string, peer *PeerInfo)
+	stopChan          chan struct{}
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
@@ -157,9 +167,17 @@ func (n *P2PNode) Start() error {
 	return nil
 }
 
-// JoinRoom sets the active room code, initializes AES-256-GCM cipher, announces presence and connects
-func (n *P2PNode) JoinRoom(roomCode string) {
+// HostRoom opens a new room as the authoritative Host
+func (n *P2PNode) HostRoom(roomCode string) {
 	n.mu.Lock()
+	if n.connectCancel != nil {
+		close(n.connectCancel)
+		n.connectCancel = nil
+	}
+	n.Connecting = false
+	n.IsHost = true
+	n.HostID = n.LocalID
+	n.HostNick = n.Nickname
 	n.RoomCode = NormalizeCode(roomCode)
 	n.RoomKey = deriveRoomKey(n.RoomCode)
 
@@ -172,19 +190,134 @@ func (n *P2PNode) JoinRoom(roomCode string) {
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
 
-	n.log(fmt.Sprintf("Odaya baglanildi: %s (Port: %d | E2EE Aktif)", n.RoomCode, n.Port))
+	n.log(fmt.Sprintf("[👑] Oda acildi (HOST): %s (Port: %d | E2EE Guvenli)", n.RoomCode, n.Port))
 	n.broadcastHello()
+}
+
+// RequestJoinRoom searches for an active host and requests admission. Fails if no open room exists.
+func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSuccess func(hostNick string), onFailed func(reason string)) {
+	cleanCode := NormalizeCode(roomCode)
+	if cleanCode == "" {
+		if onFailed != nil {
+			onFailed("Gecersiz oda anahtari")
+		}
+		return
+	}
+
+	n.mu.Lock()
+	if n.connectCancel != nil {
+		close(n.connectCancel)
+		n.connectCancel = nil
+	}
+
+	cancelChan := make(chan struct{})
+	n.connectCancel = cancelChan
+	n.Connecting = true
+	n.IsConnected = false
+	n.IsHost = false
+	n.HostID = ""
+	n.HostNick = ""
+	n.ConnectTargetRoom = cleanCode
+	n.RoomCode = cleanCode
+	n.RoomKey = deriveRoomKey(cleanCode)
+
+	block, err := aes.NewCipher(n.RoomKey)
+	if err == nil {
+		n.aead, _ = cipher.NewGCM(block)
+	}
+
+	n.Peers = make(map[string]*PeerInfo)
+	n.OnJoinSuccess = onSuccess
+	n.OnJoinFailed = onFailed
+	n.mu.Unlock()
+
+	n.log(fmt.Sprintf("[⏳] '%s' odasi araniyor ve host dogrulaniyor...", cleanCode))
+
+	// Background probe and timeout handler
+	go func() {
+		probeTicker := time.NewTicker(250 * time.Millisecond)
+		defer probeTicker.Stop()
+
+		timeoutTimer := time.NewTimer(timeout)
+		defer timeoutTimer.Stop()
+
+		// Initial probe
+		n.broadcastJoinRequest()
+
+		for {
+			select {
+			case <-cancelChan:
+				return
+
+			case <-probeTicker.C:
+				n.mu.RLock()
+				isConn := n.IsConnected
+				isConnecting := n.Connecting
+				n.mu.RUnlock()
+
+				if !isConnecting || isConn {
+					return
+				}
+				n.broadcastJoinRequest()
+
+			case <-timeoutTimer.C:
+				n.mu.Lock()
+				if n.Connecting && !n.IsConnected {
+					n.Connecting = false
+					n.aead = nil
+					n.RoomCode = ""
+					failedCb := n.OnJoinFailed
+					n.mu.Unlock()
+
+					n.log(fmt.Sprintf("❌ '%s' odasi bulunamadi (Host cevrimdisi veya oda acilmamis).", cleanCode))
+					if failedCb != nil {
+						failedCb("Bu oda su anda acik degil! Arkadasinizin [2] ODA OLUSTUR butonuna basarak odayi actigindan emin olun.")
+					}
+				} else {
+					n.mu.Unlock()
+				}
+				return
+			}
+		}
+	}()
+}
+
+// CancelJoin cancels any pending join discovery
+func (n *P2PNode) CancelJoin() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.connectCancel != nil {
+		close(n.connectCancel)
+		n.connectCancel = nil
+	}
+	if n.Connecting {
+		n.Connecting = false
+		n.aead = nil
+		n.RoomCode = ""
+		n.log("Odaya baglanti istegi iptal edildi.")
+	}
+}
+
+// JoinRoom is kept for direct connection (e.g. tests or compatibility)
+func (n *P2PNode) JoinRoom(roomCode string) {
+	n.HostRoom(roomCode)
 }
 
 // LeaveRoom sends leave message and clears peer state
 func (n *P2PNode) LeaveRoom() {
+	n.CancelJoin()
+
 	n.mu.Lock()
 	if !n.IsConnected {
 		n.mu.Unlock()
 		return
 	}
 	room := n.RoomCode
+	wasHost := n.IsHost
 	n.IsConnected = false
+	n.IsHost = false
+	n.HostID = ""
+	n.HostNick = ""
 	n.RoomCode = ""
 	n.RoomKey = nil
 	n.aead = nil
@@ -205,7 +338,11 @@ func (n *P2PNode) LeaveRoom() {
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
 
-	n.log("Odadan ayrildiniz.")
+	if wasHost {
+		n.log("Odayi kapattiniz (Host ayrildi).")
+	} else {
+		n.log("Odadan ayrildiniz.")
+	}
 }
 
 func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
@@ -276,6 +413,79 @@ func (n *P2PNode) SendDeafenState(isDeafened bool) {
 		Timestamp:  time.Now().UnixMilli(),
 	}
 	n.broadcastToPeers(&pkt)
+}
+
+func (n *P2PNode) broadcastJoinRequest() {
+	n.mu.RLock()
+	room := n.ConnectTargetRoom
+	isConnecting := n.Connecting
+	n.mu.RUnlock()
+
+	if !isConnecting || room == "" {
+		return
+	}
+
+	pkt := P2PPacket{
+		Type:       PacketJoinRequest,
+		RoomCode:   room,
+		SenderID:   n.LocalID,
+		Nickname:   n.Nickname,
+		IsMuted:    n.audio.Muted,
+		IsDeafened: n.audio.Deafened,
+		Timestamp:  time.Now().UnixMilli(),
+	}
+
+	// 1. Send via local port range 50000-50050 on loopback (instant multi-instance discovery)
+	for p := 50000; p <= 50050; p++ {
+		if p != n.Port {
+			raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", p))
+			if err == nil {
+				n.sendPacketTo(raddr, &pkt)
+			}
+		}
+	}
+
+	// 2. Send via LAN broadcast 255.255.255.255 to common ports
+	for p := 50000; p <= 50010; p++ {
+		n.sendBroadcastPacket(&pkt, p)
+	}
+	n.sendBroadcastPacket(&pkt, 45454)
+
+	// 3. Send to specific subnet broadcast addresses of active interfaces
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				ipnet, ok := addr.(*net.IPNet)
+				if !ok || ipnet.IP.To4() == nil {
+					continue
+				}
+				ip := ipnet.IP.To4()
+				mask := ipnet.Mask
+				if len(mask) == 4 {
+					bcast := net.IPv4(
+						ip[0]|^mask[0],
+						ip[1]|^mask[1],
+						ip[2]|^mask[2],
+						ip[3]|^mask[3],
+					)
+					for p := 50000; p <= 50005; p++ {
+						baddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", bcast.String(), p))
+						if err == nil {
+							n.sendPacketTo(baddr, &pkt)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (n *P2PNode) broadcastHello() {
@@ -424,10 +634,10 @@ func (n *P2PNode) listenLoop() {
 
 		n.mu.RLock()
 		aead := n.aead
-		isConnected := n.IsConnected
+		active := n.IsConnected || n.Connecting
 		n.mu.RUnlock()
 
-		if !isConnected || aead == nil {
+		if !active || aead == nil {
 			continue
 		}
 
@@ -454,10 +664,10 @@ func (n *P2PNode) listenBroadcastLoop() {
 
 		n.mu.RLock()
 		aead := n.aead
-		isConnected := n.IsConnected
+		active := n.IsConnected || n.Connecting
 		n.mu.RUnlock()
 
-		if !isConnected || aead == nil {
+		if !active || aead == nil {
 			continue
 		}
 
@@ -480,8 +690,13 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	targetRoom := n.RoomCode
+	if targetRoom == "" && n.Connecting {
+		targetRoom = n.ConnectTargetRoom
+	}
+
 	// Only process if matching room
-	if NormalizeCode(pkt.RoomCode) != n.RoomCode || !n.IsConnected {
+	if NormalizeCode(pkt.RoomCode) != targetRoom || (!n.IsConnected && !n.Connecting) {
 		return
 	}
 
@@ -492,7 +707,79 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	}
 
 	switch pkt.Type {
+	case PacketJoinRequest:
+		// Only an active Host of this exact room code can admit joiners
+		if !n.IsConnected || !n.IsHost {
+			return
+		}
+
+		// Check peer limit (Max 4 people: Host + 3 peers)
+		if len(n.Peers) >= MaxPeers-1 && n.Peers[pkt.SenderID] == nil {
+			fullPkt := P2PPacket{
+				Type:      PacketRoomFull,
+				RoomCode:  n.RoomCode,
+				SenderID:  n.LocalID,
+				Nickname:  n.Nickname,
+				Timestamp: time.Now().UnixMilli(),
+			}
+			go n.sendPacketTo(raddr, &fullPkt)
+			return
+		}
+
+		peer, exists := n.Peers[pkt.SenderID]
+		if !exists {
+			peer = &PeerInfo{
+				ID:         pkt.SenderID,
+				Nickname:   pkt.Nickname,
+				Addr:       raddr,
+				LastSeen:   time.Now(),
+				IsMuted:    pkt.IsMuted,
+				IsDeafened: pkt.IsDeafened,
+			}
+			n.Peers[pkt.SenderID] = peer
+			n.log(fmt.Sprintf("[+] %s odaya katildi! (E2EE Guvenli)", pkt.Nickname))
+			if n.OnPeerEvent != nil {
+				go n.OnPeerEvent("join", peer)
+			}
+		} else {
+			peer.Addr = raddr
+			peer.LastSeen = time.Now()
+			peer.Nickname = pkt.Nickname
+			peer.IsMuted = pkt.IsMuted
+			peer.IsDeafened = pkt.IsDeafened
+		}
+
+		// Reply with Welcome containing current peers
+		summaries := make([]PeerSummary, 0, len(n.Peers))
+		for _, p := range n.Peers {
+			if p.ID != pkt.SenderID {
+				summaries = append(summaries, PeerSummary{
+					ID:         p.ID,
+					Nickname:   p.Nickname,
+					AddrStr:    p.Addr.String(),
+					IsMuted:    p.IsMuted,
+					IsDeafened: p.IsDeafened,
+				})
+			}
+		}
+
+		welcomePkt := P2PPacket{
+			Type:       PacketWelcome,
+			RoomCode:   n.RoomCode,
+			SenderID:   n.LocalID,
+			Nickname:   n.Nickname,
+			IsMuted:    n.audio.Muted,
+			IsDeafened: n.audio.Deafened,
+			Peers:      summaries,
+			Timestamp:  time.Now().UnixMilli(),
+		}
+		go n.sendPacketTo(raddr, &welcomePkt)
+
 	case PacketHello:
+		if !n.IsConnected {
+			return
+		}
+
 		// Check peer limit
 		if len(n.Peers) >= MaxPeers-1 && n.Peers[pkt.SenderID] == nil {
 			n.log(fmt.Sprintf("Oda dolu! (%s katilamadi)", pkt.Nickname))
@@ -549,6 +836,68 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		go n.sendPacketTo(raddr, &welcomePkt)
 
 	case PacketWelcome:
+		// If client was waiting to connect to an open room:
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.IsConnected = true
+			n.IsHost = false
+			n.HostID = pkt.SenderID
+			n.HostNick = pkt.Nickname
+			n.RoomCode = n.ConnectTargetRoom
+
+			hostPeer := &PeerInfo{
+				ID:         pkt.SenderID,
+				Nickname:   pkt.Nickname,
+				Addr:       raddr,
+				LastSeen:   time.Now(),
+				IsMuted:    pkt.IsMuted,
+				IsDeafened: pkt.IsDeafened,
+			}
+			n.Peers[pkt.SenderID] = hostPeer
+			n.log(fmt.Sprintf("[+] %s odasina baglanildi (Host: %s | E2EE Guvenli)", n.RoomCode, pkt.Nickname))
+
+			// Connect to other peers reported in Welcome packet (mesh topology)
+			for _, pSum := range pkt.Peers {
+				if pSum.ID != n.LocalID && n.Peers[pSum.ID] == nil && len(n.Peers) < MaxPeers-1 {
+					pAddr, err := net.ResolveUDPAddr("udp4", pSum.AddrStr)
+					if err == nil {
+						newPeer := &PeerInfo{
+							ID:         pSum.ID,
+							Nickname:   pSum.Nickname,
+							Addr:       pAddr,
+							LastSeen:   time.Now(),
+							IsMuted:    pSum.IsMuted,
+							IsDeafened: pSum.IsDeafened,
+						}
+						n.Peers[pSum.ID] = newPeer
+						helloPkt := P2PPacket{
+							Type:       PacketHello,
+							RoomCode:   n.RoomCode,
+							SenderID:   n.LocalID,
+							Nickname:   n.Nickname,
+							IsMuted:    n.audio.Muted,
+							IsDeafened: n.audio.Deafened,
+							Timestamp:  time.Now().UnixMilli(),
+						}
+						go n.sendPacketTo(pAddr, &helloPkt)
+					}
+				}
+			}
+
+			successCb := n.OnJoinSuccess
+			if successCb != nil {
+				go successCb(pkt.Nickname)
+			}
+			if n.OnPeerEvent != nil {
+				go n.OnPeerEvent("join", hostPeer)
+			}
+			return
+		}
+
 		peer, exists := n.Peers[pkt.SenderID]
 		if !exists {
 			if len(n.Peers) < MaxPeers-1 {
@@ -599,6 +948,22 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					}
 					go n.sendPacketTo(pAddr, &helloPkt)
 				}
+			}
+		}
+
+	case PacketRoomFull:
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.aead = nil
+			n.RoomCode = ""
+			failedCb := n.OnJoinFailed
+			n.log("❌ Odaya katilim reddedildi: Oda dolu (Maks 4 kisi).")
+			if failedCb != nil {
+				go failedCb("Bu oda dolu! (Maksimum 4 kisi)")
 			}
 		}
 

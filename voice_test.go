@@ -198,14 +198,27 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	}()
 
 	room := "4819-azure-tiger"
-	node1.JoinRoom(room)
-	node2.JoinRoom(room)
+	// Alice opens room as Host
+	node1.HostRoom(room)
+	if !node1.IsHost || !node1.IsConnected {
+		t.Fatalf("Expected Node1 to be Host and Connected")
+	}
 
-	// Wait up to 1 second for instant discovery and mutual mesh handshake
+	// Bob requests to join Alice's open room
+	joinedSuccess := false
+	var joinedHost string
+	node2.RequestJoinRoom(room, 2*time.Second, func(hostNick string) {
+		joinedSuccess = true
+		joinedHost = hostNick
+	}, func(reason string) {
+		t.Errorf("Unexpected join failure: %s", reason)
+	})
+
+	// Wait up to 1 second for discovery and handshake
 	deadline := time.Now().Add(1 * time.Second)
 	connected := false
 	for time.Now().Before(deadline) {
-		if len(node1.GetPeersList()) > 0 && len(node2.GetPeersList()) > 0 {
+		if len(node1.GetPeersList()) > 0 && len(node2.GetPeersList()) > 0 && joinedSuccess {
 			connected = true
 			break
 		}
@@ -213,8 +226,52 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	}
 
 	if !connected {
-		t.Fatalf("Nodes failed to discover each other! node1 peers: %d, node2 peers: %d",
-			len(node1.GetPeersList()), len(node2.GetPeersList()))
+		t.Fatalf("Nodes failed to discover each other! node1 peers: %d, node2 peers: %d, joinedSuccess: %v",
+			len(node1.GetPeersList()), len(node2.GetPeersList()), joinedSuccess)
+	}
+
+	if node2.IsHost {
+		t.Fatalf("Expected Node2 (Joiner) to NOT be host")
+	}
+	if joinedHost != "Alice" {
+		t.Fatalf("Expected joined host to be Alice, got %s", joinedHost)
+	}
+}
+
+func TestJoinClosedRoomFails(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("lonely_node", "Charlie", audio)
+	if err := node.Start(); err != nil {
+		t.Fatalf("Node start failed: %v", err)
+	}
+	defer func() {
+		if node.Conn != nil {
+			node.Conn.Close()
+		}
+	}()
+
+	room := "9999-ghost-falcon"
+	failed := false
+	var failReason string
+
+	// Attempt to join non-existent room with 500ms timeout
+	node.RequestJoinRoom(room, 500*time.Millisecond, func(hostNick string) {
+		t.Fatalf("Expected join to FAIL on unopened room, but succeeded with host %s", hostNick)
+	}, func(reason string) {
+		failed = true
+		failReason = reason
+	})
+
+	time.Sleep(750 * time.Millisecond)
+
+	if !failed {
+		t.Fatalf("Expected join request to timeout and fail for unopened room")
+	}
+	if node.IsConnected {
+		t.Fatalf("Node should NOT be connected after failing to find a room")
+	}
+	if failReason == "" {
+		t.Fatalf("Expected non-empty failure reason message")
 	}
 }
 

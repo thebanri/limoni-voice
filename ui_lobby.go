@@ -30,16 +30,19 @@ type LobbyView struct {
 	LastDragY  int
 
 	// Room & Inputs
-	CurrentCode string
-	NickState   *widgets.TextInputState
-	CodeState   *widgets.TextInputState
-	ToastMsg    string
-	ToastTimer  int
-	ActiveInput int // 0: Nickname, 1: RoomCode to Join, 2: Host / General
+	CurrentCode      string
+	NickState        *widgets.TextInputState
+	CodeState        *widgets.TextInputState
+	ToastMsg         string
+	ToastTimer       int
+	ActiveInput      int // 0: Nickname, 1: RoomCode to Join, 2: Host / General
+	IsConnecting     bool
+	ConnectingTarget string
 
 	// Action Callbacks
 	OnStartHost     func()
 	OnJoinRoom      func(code string)
+	OnCancelJoin    func()
 	OnCopyCode      func(code string)
 	OnNewCode       func()
 	OnOpenTestModal func()
@@ -494,7 +497,19 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		Bg: joinBgStyle.Bg,
 	}
 
-	if isJoinFocused {
+	if l.IsConnecting {
+		joinTitle = fmt.Sprintf(" ► [3] ODAYA BAGLANILIYOR (Host Dogrulaniyor: %s) ◄ ", l.ConnectingTarget)
+		joinBorderStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+			Modifier: cell.ModifierBold,
+		}
+		joinBgStyle = cell.Style{Bg: cell.NewColorRGB(0x22, 0x1A, 0x14)}
+		joinBtnStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Bg:       joinBgStyle.Bg,
+			Modifier: cell.ModifierBold,
+		}
+	} else if isJoinFocused {
 		joinTitle = " ► [3] MEVCUT ODAYA KATIL (ODAKLI - Yapistirmak icin Ctrl+V) ◄ "
 		joinBorderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
@@ -525,8 +540,11 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	joinLabel := "Arkadasinin Gonderdigi Anahtari Yapistir (Ctrl+V):"
+	if l.IsConnecting {
+		joinLabel = "Oda dogrulaniyor, host aranıyor ve E2EE baglantisi kuruluyor..."
+	}
 	joinLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: joinBgStyle.Bg}
-	if isJoinFocused {
+	if isJoinFocused || l.IsConnecting {
 		joinLabelStyle = cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: joinBgStyle.Bg}
 	}
 	buf.SetString(joinInner.X, joinInner.Y, joinLabel, joinLabelStyle)
@@ -546,10 +564,19 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	frame.RenderWidget(codeInput, joinInputRect)
 
 	joinBtns := "[Enter] Girilen Odaya Baglan (Maks: 4 Kisi)"
+	if l.IsConnecting {
+		joinBtns = "⏳ [Bekleyin] Host ile baglanti kuruluyor...   •   [Esc] Iptal Et"
+	}
 	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
 
 	frame.RegisterClickHandler(cell.NewRect(joinInner.X, joinInner.Y+3, uint16(len([]rune(joinBtns))), 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 1
+		if l.IsConnecting {
+			if l.OnCancelJoin != nil {
+				l.OnCancelJoin()
+			}
+			return
+		}
 		cleanCode := NormalizeCode(l.CodeState.Value())
 		if cleanCode != "" {
 			if l.OnJoinRoom != nil {
