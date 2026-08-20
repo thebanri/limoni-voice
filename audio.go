@@ -7,34 +7,63 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/thebanri/limoni/widgets"
 )
 
 const (
 	AudioSampleRate = 16000
 	AudioChannels   = 1
 	AudioChunkSize  = 640 // 320 samples @ 16-bit (20ms)
-	FFTBins         = 80  // 80 frequency bins (0 to 8000 Hz, 100 Hz resolution per bin)
 )
 
-var (
-	// Precomputed Cosine and Sine lookup tables for zero-allocation ultra-fast DFT/IDFT
-	cosTable [FFTBins][320]float64
-	sinTable [FFTBins][320]float64
-	hannWin  [320]float64
-)
+// biquad is a persistent-state 2nd-order IIR filter (RBJ Audio EQ Cookbook,
+// Direct Form I). Because its state carries over sample-by-sample across
+// chunk boundaries, it introduces no block-edge clicking the way a
+// window-and-reconstruct (STFT) approach would if used on 20ms frames
+// without overlap-add.
+type biquad struct {
+	b0, b1, b2, a1, a2 float64
+	x1, x2, y1, y2     float64
+}
 
-func init() {
-	for k := 0; k < FFTBins; k++ {
-		for n := 0; n < 320; n++ {
-			angle := 2.0 * math.Pi * float64(k*n) / 320.0
-			cosTable[k][n] = math.Cos(angle)
-			sinTable[k][n] = math.Sin(angle)
-		}
-	}
-	for n := 0; n < 320; n++ {
-		hannWin[n] = 0.5 * (1.0 - math.Cos(2.0*math.Pi*float64(n)/319.0))
+func newLowpass(fs, f0, q float64) biquad {
+	w0 := 2 * math.Pi * f0 / fs
+	alpha := math.Sin(w0) / (2 * q)
+	cosw0 := math.Cos(w0)
+	a0 := 1 + alpha
+	return biquad{
+		b0: ((1 - cosw0) / 2) / a0,
+		b1: (1 - cosw0) / a0,
+		b2: ((1 - cosw0) / 2) / a0,
+		a1: (-2 * cosw0) / a0,
+		a2: (1 - alpha) / a0,
 	}
 }
+
+func newHighpass(fs, f0, q float64) biquad {
+	w0 := 2 * math.Pi * f0 / fs
+	alpha := math.Sin(w0) / (2 * q)
+	cosw0 := math.Cos(w0)
+	a0 := 1 + alpha
+	return biquad{
+		b0: ((1 + cosw0) / 2) / a0,
+		b1: (-(1 + cosw0)) / a0,
+		b2: ((1 + cosw0) / 2) / a0,
+		a1: (-2 * cosw0) / a0,
+		a2: (1 - alpha) / a0,
+	}
+}
+
+func (f *biquad) process(x float64) float64 {
+	y := f.b0*x + f.b1*f.x1 + f.b2*f.x2 - f.a1*f.y1 - f.a2*f.y2
+	f.x2, f.x1 = f.x1, x
+	f.y2, f.y1 = f.y1, y
+	return y
+}
+
+// butterworthQ is the standard maximally-flat Q for a single-stage 2nd order filter.
+const butterworthQ = 0.70710678
 
 type AudioEngine struct {
 	mu           sync.RWMutex
@@ -48,22 +77,36 @@ type AudioEngine struct {
 	// Suppression mode: 0 = KAPALI, 1 = ACIK (Standart), 2 = YUKSEK
 	SuppressionMode int
 	Gain            float64 // 0.0 to 2.0 (1.0 = 100%)
+	GainSliderState *widgets.SliderState
+	VADSliderState  *widgets.SliderState
 	IsSpeaking      bool
 	LocalRMS        float64
 	LocalWave       []float64 // Last 40 samples for visualizer
 	PeerWaves       map[string][]float64
 	VADThreshold    float64
 
-	// Frequency-Domain Noise Floor Spectrum Estimator (80 bins)
-	noiseSpectrum [FFTBins]float64
-	binGains      [FFTBins]float64
+	// 3-band splitter: low (<150Hz rumble/hum), mid (150-3400Hz voice),
+	// high (>3400Hz hiss/sibilance). Each has independent adaptive noise
+	// floor tracking and gate gain, so a constant hum or fan hiss can be
+	// suppressed continuously -- including while you're actively speaking --
+	// instead of only during silence.
+	lpLow  biquad // low band extractor: LPF @150Hz
+	hpMid  biquad // mid band extractor: HPF @150Hz (stage 1)
+	lpMid  biquad // mid band extractor: LPF @3400Hz (stage 2)
+	hpHigh biquad // high band extractor: HPF @3400Hz
+
+	noiseFloorLow  float64
+	noiseFloorMid  float64
+	noiseFloorHigh float64
+
+	gateGainLow  float64
+	gateGainMid  float64
+	gateGainHigh float64
 
 	// DSP filter & VAD state
 	hpPrevIn       float64
 	hpPrevOut      float64
-	gateGain       float64
-	speechHangover int // Hangover counter (chunks) to preserve word endings
-	consecSpeech   int
+	speechHangover int // Hangover counter (chunks) to preserve word endings and pauses
 
 	// Live audio capture & playback processes
 	captureCmd   *exec.Cmd
@@ -86,18 +129,23 @@ func NewAudioEngine() *AudioEngine {
 		InTestMode:      false,
 		SuppressionMode: 1, // Default: ACIK (Standart)
 		Gain:            1.0,
+		GainSliderState: widgets.NewSliderState(100),
+		VADSliderState:  widgets.NewSliderState(2),
 		VADThreshold:    0.002, // Ultra-sensitive: relaxed conversational voice is detected without shouting
-		gateGain:        0.0,
 		LocalWave:       make([]float64, 40),
 		PeerWaves:       make(map[string][]float64),
 		peerBuffers:     make(map[string][]byte),
 		mixChan:         make(chan []byte, 64),
 		stopChan:        make(chan struct{}),
-	}
 
-	for k := 0; k < FFTBins; k++ {
-		engine.noiseSpectrum[k] = 50.0 // Initial baseline noise floor estimate
-		engine.binGains[k] = 1.0
+		lpLow:  newLowpass(AudioSampleRate, 150.0, butterworthQ),
+		hpMid:  newHighpass(AudioSampleRate, 150.0, butterworthQ),
+		lpMid:  newLowpass(AudioSampleRate, 3400.0, butterworthQ),
+		hpHigh: newHighpass(AudioSampleRate, 3400.0, butterworthQ),
+
+		noiseFloorLow:  0.001,
+		noiseFloorMid:  0.001,
+		noiseFloorHigh: 0.001,
 	}
 
 	return engine
@@ -293,83 +341,116 @@ func (a *AudioEngine) readCaptureLoop(r io.Reader, onFrame func(rms float64, spe
 	}
 }
 
-// processNoiseCancellation performs crystal-clear studio-grade voice noise cancellation:
-// 1. Butterworth High-Pass Filter (85 Hz) to eliminate desk thumps & low hums
-// 2. High-Frequency Transient Impulse Suppressor (mechanical keyboard clicks & claps)
-// 3. Adaptive Minimum-Statistics Noise Floor Energy Tracker
-// 4. Voice Activity Energy Discriminator with Syllable Hangover
-// 5. Downward Expander / Noise Gate with smooth envelope ramping
-// 6. Soft-Knee Vocal Limiter (0% distortion, 100% full-bandwidth 16kHz clarity)
+// processNoiseCancellation performs 3-band spectral gating designed to eliminate
+// ambient hum, desk vibrations, fan hiss, and isolated sharp keystrokes without
+// cutting off the user's voice or muffling natural vocal harmonics:
+// 1. High-Pass Filter (85 Hz) to eliminate desk thumps & DC offset
+// 2. 3-band splitting: low (<150Hz voice depth/hum), mid (150-3400Hz vocal fundamentals),
+//    high (>3400Hz sibilance & consonants) via persistent-state IIR biquads
+// 3. Transient click protection that preserves voice attacks without muting speech onset
+// 4. Per-band noise floor tracking that protects against speech pollution
+// 5. Intelligent VAD with generous hangover and zero attack delay so the start of words is never cut off
+// 6. Natural band gain balancing and soft-knee peak limiting
 func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, float64, []byte) {
 	sampleCount := len(pcm) / 2
 	if sampleCount != 320 {
 		return false, 0, pcm
 	}
 
-	// 1. High-Pass Filter (85 Hz)
-	// Prevents rumble and DC offset
-	filteredSamples := make([]float64, 320)
+	// 1. High-Pass Filter (85 Hz) - removes sub-audible DC offset / desk rumble
+	filtered := make([]float64, 320)
 	const hpAlpha = 0.967
 	var frameEnergy float64
 	var highFreqEnergy float64
+	var maxPeak float64
 
 	for i := 0; i < 320; i++ {
 		s := float64(int16(binary.LittleEndian.Uint16(pcm[i*2 : i*2+2])))
 		hpOut := hpAlpha * (a.hpPrevOut + s - a.hpPrevIn)
 		a.hpPrevIn = s
 		a.hpPrevOut = hpOut
-		filteredSamples[i] = hpOut
+		filtered[i] = hpOut
+
+		absVal := math.Abs(hpOut)
+		if absVal > maxPeak {
+			maxPeak = absVal
+		}
 
 		frameEnergy += hpOut * hpOut
 		if i > 0 {
-			diff := hpOut - filteredSamples[i-1]
+			diff := hpOut - filtered[i-1]
 			highFreqEnergy += diff * diff
 		}
 	}
+	frameRMS := math.Sqrt(frameEnergy/320.0) / 32768.0
 
-	frameRMS := math.Sqrt(frameEnergy / 320.0) / 32768.0
+	// 2. 3-Band Splitter via persistent-state RBJ biquads
+	lowBand := make([]float64, 320)
+	midBand := make([]float64, 320)
+	highBand := make([]float64, 320)
 
-	// 2. Keyboard / Clap Click Transient Detection
-	// Sharp spikes have very high high-frequency differential energy relative to total energy
-	isClick := false
-	if frameEnergy > 1000.0 {
-		hRatio := highFreqEnergy / (frameEnergy + 1.0)
-		if hRatio > 1.6 && frameRMS < 0.08 {
-			isClick = true
+	var lowEnergy, midEnergy, highEnergy float64
+	for i := 0; i < 320; i++ {
+		x := filtered[i]
+
+		lo := a.lpLow.process(x)
+		hpStage := a.hpMid.process(x)
+		mid := a.lpMid.process(hpStage)
+		hi := a.hpHigh.process(x)
+
+		lowBand[i] = lo
+		midBand[i] = mid
+		highBand[i] = hi
+
+		lowEnergy += lo * lo
+		midEnergy += mid * mid
+		highEnergy += hi * hi
+	}
+
+	lowRMS := math.Sqrt(lowEnergy/320.0) / 32768.0
+	midRMS := math.Sqrt(midEnergy/320.0) / 32768.0
+	highRMS := math.Sqrt(highEnergy/320.0) / 32768.0
+
+	// 3. Transient Click Isolation (sharp mechanical clicks with no vocal energy)
+	hRatio := highFreqEnergy / (frameEnergy + 1.0)
+	peakToRMS := maxPeak / ((frameRMS * 32768.0) + 1.0)
+	isTransientClick := (hRatio > 2.5 && peakToRMS > 6.0 && midRMS < a.VADThreshold*1.5)
+
+	// 4. Adaptive Per-Band Noise Floor Tracking
+	// Crucial rule: do NOT allow active human speech to raise the noise floor.
+	if !a.IsSpeaking {
+		a.noiseFloorLow = adaptNoiseFloor(a.noiseFloorLow, lowRMS)
+		a.noiseFloorMid = adaptNoiseFloor(a.noiseFloorMid, midRMS)
+		a.noiseFloorHigh = adaptNoiseFloor(a.noiseFloorHigh, highRMS)
+	} else {
+		if lowRMS < a.noiseFloorLow {
+			a.noiseFloorLow = lowRMS
+		}
+		if midRMS < a.noiseFloorMid {
+			a.noiseFloorMid = midRMS
+		}
+		if highRMS < a.noiseFloorHigh {
+			a.noiseFloorHigh = highRMS
 		}
 	}
 
-	// 3. Adaptive Noise Floor Tracking
-	if a.noiseSpectrum[0] <= 0 {
-		a.noiseSpectrum[0] = 0.003
-	}
-	if frameRMS < a.noiseSpectrum[0]*1.5 || frameRMS < 0.004 {
-		a.noiseSpectrum[0] = a.noiseSpectrum[0]*0.92 + frameRMS*0.08 // Quick adaptation to quiet room
-	} else {
-		a.noiseSpectrum[0] = a.noiseSpectrum[0]*0.998 + frameRMS*0.002 // Slow during speech
-	}
-
-	noiseFloor := a.noiseSpectrum[0]
-	snr := frameRMS / (noiseFloor + 0.0001)
-
-	// 4. Speech Discrimination
+	// 5. Voice Activity Detection (VAD)
 	threshold := a.VADThreshold
-	if mode == 2 {
-		threshold *= 1.5
+	snrFloor := math.Max(a.noiseFloorMid, 0.0005)
+	midSNR := midRMS / snrFloor
+
+	var isSpeech bool
+	if mode == 2 { // YUKSEK (Aggressive mode for noisy rooms)
+		isSpeech = (midRMS > threshold*1.3 && midSNR > 1.25 && !isTransientClick)
+	} else { // ACIK (Standart mode - natural, warm, highly responsive)
+		isSpeech = (midRMS > threshold && midSNR > 1.10 && !isTransientClick) || (frameRMS > threshold*2.0 && !isTransientClick)
 	}
-	isSpeech := (frameRMS > threshold && snr > 1.35) && !isClick
 
 	speaking := false
 	if isSpeech {
-		a.consecSpeech++
-		if a.consecSpeech >= 1 {
-			a.speechHangover = 12 // ~240ms hangover to retain word endings
-			speaking = true
-		}
+		a.speechHangover = 18 // ~360ms hangover to retain word endings and breathing pauses
+		speaking = true
 	} else {
-		if isClick {
-			a.consecSpeech = 0
-		}
 		if a.speechHangover > 0 {
 			a.speechHangover--
 			speaking = true
@@ -378,40 +459,43 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 		}
 	}
 
-	// 5. Downward Expander Gain Calculation
-	gateFloor := 0.0
-	if mode == 1 {
-		gateFloor = 0.04 // ACIK: Clean attenuated floor (downward expander)
-	} else {
-		gateFloor = 0.00 // YUKSEK: Complete absolute silence
-	}
-
-	targetGain := gateFloor
+	// 6. Target Gains Per Band
+	var targetLow, targetMid, targetHigh float64
 	if speaking {
-		targetGain = 1.0
-	} else if isClick {
-		targetGain = 0.0
+		// When speaking: pass vocal warmth (low), core voice (mid), and crisp consonants (high)
+		targetLow = 0.90
+		targetMid = 1.0
+		targetHigh = 0.90
+	} else {
+		// When silent: suppress room hum, ambient noise, and fan hiss
+		if mode == 1 { // ACIK (Standart): gentle attenuation
+			targetLow = 0.04
+			targetMid = 0.05
+			targetHigh = 0.04
+		} else { // YUKSEK: near-total gate cutoff
+			targetLow = 0.0
+			targetMid = 0.01
+			targetHigh = 0.0
+		}
 	}
 
-	// Smooth exponential attack / release envelope to avoid clicking or pumping
-	alpha := 0.45
-	if targetGain < a.gateGain {
-		alpha = 0.25 // Smooth release
-	}
-	a.gateGain += (targetGain - a.gateGain) * alpha
+	// Smooth gain envelope ramping
+	a.gateGainLow = smoothGain(a.gateGainLow, targetLow)
+	a.gateGainMid = smoothGain(a.gateGainMid, targetMid)
+	a.gateGainHigh = smoothGain(a.gateGainHigh, targetHigh)
 
-	// 6. Apply gain and Soft-Knee Peak Limiter
+	// 7. Recombine Bands & Soft-Knee Peak Vocal Limiter
 	outBytes := make([]byte, AudioChunkSize)
 	var sumSquares float64
 
 	for i := 0; i < 320; i++ {
-		sample := filteredSamples[i] * a.gateGain
+		sample := lowBand[i]*a.gateGainLow + midBand[i]*a.gateGainMid + highBand[i]*a.gateGainHigh
 
 		// Soft compressor curve to keep voice full-bodied and prevent digital clipping
 		if sample > 28000.0 {
-			sample = 28000.0 + (sample-28000.0)*0.3
+			sample = 28000.0 + (sample-28000.0)*0.35
 		} else if sample < -28000.0 {
-			sample = -28000.0 + (sample+28000.0)*0.3
+			sample = -28000.0 + (sample+28000.0)*0.35
 		}
 
 		norm := sample / 32768.0
@@ -427,35 +511,33 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	}
 
 	finalRMS := math.Sqrt(sumSquares / 320.0)
-	if !speaking && a.gateGain < 0.1 {
+	if !speaking && a.gateGainMid < 0.06 {
 		finalRMS = 0
 	}
 
 	return speaking, finalRMS, outBytes
 }
 
-func quickMedian5(w [5]float64) float64 {
-	if w[0] > w[1] {
-		w[0], w[1] = w[1], w[0]
+// adaptNoiseFloor tracks a slowly-adapting noise floor estimate: fast-tracks
+// downward in quiet stretches, creeps upward slowly during non-speech ambient noise.
+func adaptNoiseFloor(floor, rms float64) float64 {
+	if floor <= 0 || math.IsNaN(floor) {
+		floor = 0.001
 	}
-	if w[3] > w[4] {
-		w[3], w[4] = w[4], w[3]
+	if rms < floor {
+		return floor*0.85 + rms*0.15
 	}
-	if w[0] > w[3] {
-		w[0], w[3] = w[3], w[0]
-		w[1], w[4] = w[4], w[1]
+	return floor*0.98 + rms*0.02
+}
+
+// smoothGain applies an exponential attack/release envelope to avoid
+// clicking or pumping when a band's gate opens or closes.
+func smoothGain(current, target float64) float64 {
+	alpha := 0.60 // Fast attack (~10-20ms) so speech is immediately audible
+	if target < current {
+		alpha = 0.15 // Smooth release (~150-200ms) to avoid clicking or unnatural pumping
 	}
-	if w[1] > w[2] {
-		w[1], w[2] = w[2], w[1]
-	}
-	if w[2] > w[3] {
-		w[2], w[3] = w[3], w[2]
-		w[1], w[2] = w[2], w[1]
-	}
-	if w[1] > w[2] {
-		w[1], w[2] = w[2], w[1]
-	}
-	return w[2]
+	return current + (target-current)*alpha
 }
 
 func (a *AudioEngine) fallbackSimulatedLoop(onFrame func(rms float64, speaking bool, pcm []byte)) {
@@ -547,7 +629,7 @@ func (a *AudioEngine) playbackMixerLoop() {
 
 			var streams [][]byte
 			for id, buf := range a.peerBuffers {
-				if id == "local_loopback" {
+				if id == "local_loopback" && !a.Loopback {
 					continue
 				}
 				if len(buf) >= AudioChunkSize {
@@ -658,6 +740,9 @@ func (a *AudioEngine) AdjustGain(delta float64) float64 {
 	if a.Gain > 2.0 {
 		a.Gain = 2.0
 	}
+	if a.GainSliderState != nil {
+		a.GainSliderState.Set(int(math.Round(a.Gain*100)), 0, 200)
+	}
 	return a.Gain
 }
 
@@ -668,8 +753,11 @@ func (a *AudioEngine) AdjustThreshold(delta float64) float64 {
 	if a.VADThreshold < 0.001 {
 		a.VADThreshold = 0.001
 	}
-	if a.VADThreshold > 0.20 {
-		a.VADThreshold = 0.20
+	if a.VADThreshold > 0.050 {
+		a.VADThreshold = 0.050
+	}
+	if a.VADSliderState != nil {
+		a.VADSliderState.Set(int(math.Round(a.VADThreshold*1000)), 1, 50)
 	}
 	return a.VADThreshold
 }

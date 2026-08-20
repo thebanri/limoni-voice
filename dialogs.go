@@ -114,7 +114,7 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 
 // DrawTestModal renders the interactive Microphone & Sound Test Dialog without any icons or emojis.
 func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onClose func()) {
-	modalW, modalH := uint16(60), uint16(14)
+	modalW, modalH := uint16(64), uint16(17)
 	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
 	widgets.DrawShadow(frame.Buffer, modalArea, 2, 1)
 
@@ -229,13 +229,118 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		})
 	}
 
-	// 5. Volume Controls
+	// 5. Volume Slider (Limoni widgets.Slider)
 	gainY := inner.Y + 9
-	gainStr := fmt.Sprintf("Mikrofon Sesi: %.0f%%  [ 1 / 2 tuslari ]", audio.Gain*100)
-	buf.SetString(inner.X+1, gainY, gainStr, cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold})
+	gainPct := int(math.Round(audio.Gain * 100))
+	gainLabel := fmt.Sprintf("Mikrofon Sesi: [ %3d%% ]", gainPct)
+	buf.SetString(inner.X+1, gainY, gainLabel, cell.Style{
+		Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Modifier: cell.ModifierBold,
+	})
 
-	// 6. Action Buttons (Mute, Close)
-	btnY := inner.Y + 11
+	if audio.GainSliderState == nil {
+		audio.GainSliderState = widgets.NewSliderState(gainPct)
+	} else {
+		audio.GainSliderState.Set(gainPct, 0, 200)
+	}
+
+	sliderWidth := uint16(26)
+	if inner.Width > 32 {
+		sliderWidth = inner.Width - 30
+	}
+	gainSliderArea := cell.Rect{
+		X:      inner.X + 28,
+		Y:      gainY,
+		Width:  sliderWidth,
+		Height: 1,
+	}
+	gainSlider := widgets.Slider{
+		ID:    "mic_gain_slider",
+		State: audio.GainSliderState,
+		Min:   0,
+		Max:   200,
+		TrackStyle: cell.Style{
+			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
+			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+		},
+		FilledStyle: cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		},
+		ThumbStyle: cell.Style{
+			Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		},
+		FocusedStyle: cell.Style{
+			Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4),
+			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+		},
+		OnChange: func(value int) {
+			audio.mu.Lock()
+			audio.Gain = float64(value) / 100.0
+			audio.mu.Unlock()
+		},
+	}
+	frame.RenderWidget(gainSlider, gainSliderArea)
+
+	// 6. Sensitivity / VAD Threshold Slider (Limoni widgets.Slider)
+	vadY := inner.Y + 11
+	vadVal := int(math.Round(audio.VADThreshold * 1000))
+	vadLabel := fmt.Sprintf("Hassasiyet:    [ %3d ]", vadVal)
+	buf.SetString(inner.X+1, vadY, vadLabel, cell.Style{
+		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Modifier: cell.ModifierBold,
+	})
+
+	if audio.VADSliderState == nil {
+		audio.VADSliderState = widgets.NewSliderState(vadVal)
+	} else {
+		audio.VADSliderState.Set(vadVal, 1, 50)
+	}
+
+	vadSliderArea := cell.Rect{
+		X:      inner.X + 28,
+		Y:      vadY,
+		Width:  sliderWidth,
+		Height: 1,
+	}
+	vadSlider := widgets.Slider{
+		ID:    "mic_vad_slider",
+		State: audio.VADSliderState,
+		Min:   1,
+		Max:   50,
+		TrackStyle: cell.Style{
+			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
+			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+		},
+		FilledStyle: cell.Style{
+			Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		},
+		ThumbStyle: cell.Style{
+			Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		},
+		FocusedStyle: cell.Style{
+			Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3),
+			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+		},
+		OnChange: func(value int) {
+			audio.mu.Lock()
+			audio.VADThreshold = float64(value) / 1000.0
+			audio.mu.Unlock()
+		},
+	}
+	frame.RenderWidget(vadSlider, vadSliderArea)
+
+	// 7. Action Buttons (Mute, Close)
+	btnY := inner.Y + 13
 	muteBtn := "[M] Mikrofon Kapat"
 	muteBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),

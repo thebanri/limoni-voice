@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -261,20 +263,27 @@ func TestNoiseSuppressionAndTestMode(t *testing.T) {
 		t.Fatalf("Expected suppression mode 2 (YUKSEK), got %d", audio.SuppressionMode)
 	}
 
-	audio.SetSuppressionMode(0)
-	if audio.SuppressionMode != 0 {
-		t.Fatalf("Expected suppression mode 0 (KAPALI), got %d", audio.SuppressionMode)
+	audio.SetSuppressionMode(1)
+	if audio.SuppressionMode != 1 {
+		t.Fatalf("Expected suppression mode 1 (ACIK), got %d", audio.SuppressionMode)
 	}
 
-	rawPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < len(rawPCM); i += 2 {
-		rawPCM[i] = byte(i % 256)
-		rawPCM[i+1] = byte((i / 2) % 30)
+	// Generate synthetic vocal frame (400Hz tone at typical speaking volume)
+	speechPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		val := int16(3000.0 * math.Sin(2.0*math.Pi*400.0*float64(i)/float64(AudioSampleRate)))
+		binary.LittleEndian.PutUint16(speechPCM[i*2:i*2+2], uint16(val))
 	}
 
-	_, _, filtered := audio.processNoiseCancellation(rawPCM, audio.SuppressionMode)
-	if len(filtered) != len(rawPCM) {
-		t.Fatalf("Expected filtered PCM size %d, got %d", len(rawPCM), len(filtered))
+	speaking, finalRMS, filtered := audio.processNoiseCancellation(speechPCM, audio.SuppressionMode)
+	if !speaking {
+		t.Fatalf("Expected speaking=true for vocal frame in ACIK mode, got false")
+	}
+	if finalRMS <= 0.01 {
+		t.Fatalf("Expected audible finalRMS > 0.01 for vocal frame, got %f", finalRMS)
+	}
+	if len(filtered) != len(speechPCM) {
+		t.Fatalf("Expected filtered PCM size %d, got %d", len(speechPCM), len(filtered))
 	}
 
 	audio.Muted = true
@@ -290,5 +299,40 @@ func TestNoiseSuppressionAndTestMode(t *testing.T) {
 	if audio.InTestMode || !audio.Muted || audio.Deafened || audio.Loopback {
 		t.Fatalf("LeaveTestMode failed: inTest=%v muted=%v deaf=%v loop=%v",
 			audio.InTestMode, audio.Muted, audio.Deafened, audio.Loopback)
+	}
+}
+
+func TestSpeechPassesThroughAllModes(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// 500 Hz tone representing human voice vowel / formant
+	speechPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		val := int16(4000.0 * math.Sin(2.0*math.Pi*500.0*float64(i)/float64(AudioSampleRate)))
+		binary.LittleEndian.PutUint16(speechPCM[i*2:i*2+2], uint16(val))
+	}
+
+	// Test Mode 0 (KAPALI)
+	rawRMS := calculateRMS(speechPCM)
+	if rawRMS < 0.05 {
+		t.Fatalf("Expected speech rawRMS >= 0.05, got %f", rawRMS)
+	}
+
+	// Test Mode 1 (ACIK)
+	speaking1, rms1, out1 := audio.processNoiseCancellation(speechPCM, 1)
+	if !speaking1 {
+		t.Fatalf("Expected speaking=true in Mode 1 (ACIK)")
+	}
+	if rms1 < 0.01 || calculateRMS(out1) < 0.01 {
+		t.Fatalf("Expected non-zero audible output in Mode 1 (ACIK), got rms=%f", rms1)
+	}
+
+	// Test Mode 2 (YUKSEK)
+	speaking2, rms2, out2 := audio.processNoiseCancellation(speechPCM, 2)
+	if !speaking2 {
+		t.Fatalf("Expected speaking=true in Mode 2 (YUKSEK)")
+	}
+	if rms2 < 0.01 || calculateRMS(out2) < 0.01 {
+		t.Fatalf("Expected non-zero audible output in Mode 2 (YUKSEK), got rms=%f", rms2)
 	}
 }

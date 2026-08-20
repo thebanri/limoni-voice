@@ -348,24 +348,36 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	hostArea := vSplits[1]
 	joinArea := vSplits[2]
 
+	unfocusedBorder := cell.Style{Fg: cell.NewColorRGB(0x4A, 0x55, 0x68)}
+	unfocusedBg := cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+
 	// 1. Nickname Block
+	isNickFocused := (l.ActiveInput == 0)
 	nickTitle := " [1] KULLANICI ADINIZ "
-	if l.ActiveInput == 0 {
-		nickTitle = " [1] KULLANICI ADINIZ (Odakli) "
+	nickBorderStyle := unfocusedBorder
+	nickBgStyle := unfocusedBg
+	if isNickFocused {
+		nickTitle = " ► [1] KULLANICI ADINIZ (ODAKLI) ◄ "
+		nickBorderStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Modifier: cell.ModifierBold,
+		}
+		nickBgStyle = cell.Style{Bg: cell.NewColorRGB(0x13, 0x1E, 0x28)}
 	}
+
 	nickBlock := widgets.Block{
 		Title:         nickTitle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)},
+		BorderStyle:   nickBorderStyle,
+		Style:         nickBgStyle,
 	}
 	frame.RenderWidget(nickBlock, nickArea)
 	nickInner := nickBlock.Inner(nickArea)
 
 	for y := nickInner.Y; y < nickInner.Y+nickInner.Height; y++ {
 		for x := nickInner.X; x < nickInner.X+nickInner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: nickBgStyle})
 		}
 	}
 
@@ -381,35 +393,62 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	})
 
 	// 2. Host Room Block
+	isHostFocused := (l.ActiveInput == 2)
 	hostTitle := " [2] ODA OLUSTUR (SEN HOST OL) "
-	if l.ActiveInput == 2 {
-		hostTitle = " [2] ODA OLUSTUR (Secili) "
+	hostBorderStyle := unfocusedBorder
+	hostBgStyle := unfocusedBg
+	keyStyle := cell.Style{
+		Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
+		Bg: cell.NewColorRGB(0x22, 0x28, 0x34),
 	}
+	hostBtnStyle := cell.Style{
+		Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+		Bg: nickBgStyle.Bg,
+	}
+
+	if isHostFocused {
+		hostTitle = " ► [2] ODA OLUSTUR (SEN HOST OL) [SECILI] ◄ "
+		hostBorderStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Modifier: cell.ModifierBold,
+		}
+		hostBgStyle = cell.Style{Bg: cell.NewColorRGB(0x1A, 0x1D, 0x26)}
+		keyStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Modifier: cell.ModifierBold,
+		}
+		hostBtnStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Bg:       hostBgStyle.Bg,
+			Modifier: cell.ModifierBold,
+		}
+	}
+
 	hostBlock := widgets.Block{
 		Title:         hostTitle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)},
+		BorderStyle:   hostBorderStyle,
+		Style:         hostBgStyle,
 	}
 	frame.RenderWidget(hostBlock, hostArea)
 	hostInner := hostBlock.Inner(hostArea)
 
 	for y := hostInner.Y; y < hostInner.Y+hostInner.Height; y++ {
 		for x := hostInner.X; x < hostInner.X+hostInner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: hostBgStyle})
 		}
 	}
 
 	codeLabel := "Oda Anahtariniz (Arkadasina Gonder):"
-	buf.SetString(hostInner.X, hostInner.Y, codeLabel, cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+	codeLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: hostBgStyle.Bg}
+	if isHostFocused {
+		codeLabelStyle = cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: hostBgStyle.Bg}
+	}
+	buf.SetString(hostInner.X, hostInner.Y, codeLabel, codeLabelStyle)
 
 	keyBoxStr := fmt.Sprintf("  [ %s ]  ", l.CurrentCode)
-	keyStyle := cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
-		Modifier: cell.ModifierBold,
-	}
 	buf.SetString(hostInner.X+2, hostInner.Y+1, keyBoxStr, keyStyle)
 
 	frame.RegisterClickHandler(cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(len([]rune(keyBoxStr))), 1), func(_ backend.MouseEvent) {
@@ -420,7 +459,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	})
 
 	hostBtns := "[Enter] Bu Odayi Ac   •   [F2] Kodu Kopyala   •   [F3] Yeni Kod"
-	buf.SetString(hostInner.X, hostInner.Y+3, hostBtns, cell.Style{Fg: cell.NewColorRGB(0x74, 0xB9, 0xFF), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+	buf.SetString(hostInner.X, hostInner.Y+3, hostBtns, hostBtnStyle)
 
 	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, 19, 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 2
@@ -446,28 +485,51 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	})
 
 	// 3. Join Room Block
+	isJoinFocused := (l.ActiveInput == 1)
 	joinTitle := " [3] MEVCUT ODAYA KATIL "
-	if l.ActiveInput == 1 {
-		joinTitle = " [3] MEVCUT ODAYA KATIL (Odakli - Yapistirmak icin Ctrl+V) "
+	joinBorderStyle := unfocusedBorder
+	joinBgStyle := unfocusedBg
+	joinBtnStyle := cell.Style{
+		Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+		Bg: joinBgStyle.Bg,
 	}
+
+	if isJoinFocused {
+		joinTitle = " ► [3] MEVCUT ODAYA KATIL (ODAKLI - Yapistirmak icin Ctrl+V) ◄ "
+		joinBorderStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Modifier: cell.ModifierBold,
+		}
+		joinBgStyle = cell.Style{Bg: cell.NewColorRGB(0x11, 0x20, 0x24)}
+		joinBtnStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Bg:       joinBgStyle.Bg,
+			Modifier: cell.ModifierBold,
+		}
+	}
+
 	joinBlock := widgets.Block{
 		Title:         joinTitle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)},
+		BorderStyle:   joinBorderStyle,
+		Style:         joinBgStyle,
 	}
 	frame.RenderWidget(joinBlock, joinArea)
 	joinInner := joinBlock.Inner(joinArea)
 
 	for y := joinInner.Y; y < joinInner.Y+joinInner.Height; y++ {
 		for x := joinInner.X; x < joinInner.X+joinInner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: joinBgStyle})
 		}
 	}
 
 	joinLabel := "Arkadasinin Gonderdigi Anahtari Yapistir (Ctrl+V):"
-	buf.SetString(joinInner.X, joinInner.Y, joinLabel, cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+	joinLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: joinBgStyle.Bg}
+	if isJoinFocused {
+		joinLabelStyle = cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: joinBgStyle.Bg}
+	}
+	buf.SetString(joinInner.X, joinInner.Y, joinLabel, joinLabelStyle)
 
 	joinInputRect := cell.Rect{
 		X:      joinInner.X + 1,
@@ -484,7 +546,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	frame.RenderWidget(codeInput, joinInputRect)
 
 	joinBtns := "[Enter] Girilen Odaya Baglan (Maks: 4 Kisi)"
-	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
 
 	frame.RegisterClickHandler(cell.NewRect(joinInner.X, joinInner.Y+3, uint16(len([]rune(joinBtns))), 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 1
@@ -508,8 +570,8 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		Title:         " BILGI VE KISAYOLLAR ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)},
+		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x3B, 0x42, 0x52)},
+		Style:         cell.Style{Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A)},
 	}
 	frame.RenderWidget(botBlock, bottomArea)
 	botInner := botBlock.Inner(bottomArea)

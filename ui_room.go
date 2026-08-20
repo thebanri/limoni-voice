@@ -356,8 +356,8 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 
 func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
 	fl := layout.NewFlexLayout(layout.Horizontal, 0,
-		layout.Percentage(55), // controls
-		layout.Percentage(45), // mini logs
+		layout.Percentage(60), // controls
+		layout.Percentage(40), // mini logs
 	)
 	cols := fl.Split(area)
 	if len(cols) < 2 {
@@ -385,6 +385,13 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 	}
 
+	row1Y := ctrlInner.Y
+	row2Y := ctrlInner.Y + 2
+	if ctrlInner.Height < 3 {
+		row2Y = ctrlInner.Y + 1
+	}
+
+	// --- ROW 1: Audio Toggles & Noise Filter ---
 	// Mute Button
 	muteLabel := "[M] Mikrofon Kapat"
 	muteStyle := cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
@@ -396,8 +403,10 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			Modifier: cell.ModifierBold,
 		}
 	}
-	buf.SetString(ctrlInner.X+1, ctrlInner.Y, muteLabel, muteStyle)
-	frame.RegisterClickHandler(cell.NewRect(ctrlInner.X+1, ctrlInner.Y, 20, 1), func(_ backend.MouseEvent) {
+	muteX := ctrlInner.X + 1
+	muteLen := uint16(len([]rune(muteLabel)))
+	buf.SetString(muteX, row1Y, muteLabel, muteStyle)
+	frame.RegisterClickHandler(cell.NewRect(muteX, row1Y, muteLen, 1), func(_ backend.MouseEvent) {
 		isMuted := audio.ToggleMute()
 		node.SendMuteState(isMuted)
 		if isMuted {
@@ -418,17 +427,21 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			Modifier: cell.ModifierBold,
 		}
 	}
-	buf.SetString(ctrlInner.X+22, ctrlInner.Y, deafenLabel, deafenStyle)
-	frame.RegisterClickHandler(cell.NewRect(ctrlInner.X+22, ctrlInner.Y, 20, 1), func(_ backend.MouseEvent) {
-		isDeaf := audio.ToggleDeafen()
-		node.SendDeafenState(isDeaf)
-		node.SendMuteState(audio.Muted)
-		if isDeaf {
-			r.SetToast("Kulaklik Kapatildi (Sagir)")
-		} else {
-			r.SetToast("Kulaklik Acildi")
-		}
-	})
+	deafenX := muteX + muteLen + 2
+	deafenLen := uint16(len([]rune(deafenLabel)))
+	if deafenX+deafenLen <= ctrlInner.X+ctrlInner.Width {
+		buf.SetString(deafenX, row1Y, deafenLabel, deafenStyle)
+		frame.RegisterClickHandler(cell.NewRect(deafenX, row1Y, deafenLen, 1), func(_ backend.MouseEvent) {
+			isDeaf := audio.ToggleDeafen()
+			node.SendDeafenState(isDeaf)
+			node.SendMuteState(audio.Muted)
+			if isDeaf {
+				r.SetToast("Kulaklik Kapatildi (Sagir)")
+			} else {
+				r.SetToast("Kulaklik Acildi")
+			}
+		})
+	}
 
 	// Noise Suppression Button [N]
 	noiseStr := audio.SuppressionModeString()
@@ -441,54 +454,76 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			Modifier: cell.ModifierBold,
 		}
 	}
-	buf.SetString(ctrlInner.X+43, ctrlInner.Y, noiseLabel, noiseStyle)
-	frame.RegisterClickHandler(cell.NewRect(ctrlInner.X+43, ctrlInner.Y, 22, 1), func(_ backend.MouseEvent) {
-		audio.CycleSuppressionMode()
-		r.SetToast(fmt.Sprintf("Gurultu Filtresi: %s", audio.SuppressionModeString()))
-	})
-
-	// Sound Test Panel Button [T]
-	testLabel := "[T] Ses Testi"
-	testStyle := cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-		Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
-		Modifier: cell.ModifierBold,
+	noiseX := deafenX + deafenLen + 2
+	noiseLen := uint16(len([]rune(noiseLabel)))
+	if noiseX+noiseLen <= ctrlInner.X+ctrlInner.Width {
+		buf.SetString(noiseX, row1Y, noiseLabel, noiseStyle)
+		frame.RegisterClickHandler(cell.NewRect(noiseX, row1Y, noiseLen, 1), func(_ backend.MouseEvent) {
+			audio.CycleSuppressionMode()
+			r.SetToast(fmt.Sprintf("Gurultu Filtresi: %s", audio.SuppressionModeString()))
+		})
 	}
-	buf.SetString(ctrlInner.X+67, ctrlInner.Y, testLabel, testStyle)
-	frame.RegisterClickHandler(cell.NewRect(ctrlInner.X+67, ctrlInner.Y, 16, 1), func(_ backend.MouseEvent) {
-		if r.OnOpenTestModal != nil {
-			r.OnOpenTestModal()
+
+	// --- ROW 2: Tools & Room Actions ---
+	if ctrlInner.Height >= 2 {
+		// Sound Test Panel Button [T]
+		testLabel := "[T] Ses Testi"
+		testStyle := cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+			Modifier: cell.ModifierBold,
 		}
-	})
-
-	// Volume Controls
-	gainText := fmt.Sprintf("[+/-] Mikrofon Sesi: %.0f%%", audio.Gain*100)
-	buf.SetString(ctrlInner.X+85, ctrlInner.Y, gainText, cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
-	frame.RegisterClickHandler(cell.NewRect(ctrlInner.X+85, ctrlInner.Y, 24, 1), func(_ backend.MouseEvent) {
-		gain := audio.AdjustGain(0.1)
-		if gain > 2.0 {
-			audio.Gain = 0.5
-		}
-		r.SetToast(fmt.Sprintf("Mikrofon Sesi: %.0f%%", audio.Gain*100))
-	})
-
-	// Copy Code & Leave
-	copyText := "[C] Kodu Kopyala"
-	buf.SetString(ctrlInner.X+112, ctrlInner.Y, copyText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
-	frame.RegisterClickHandler(cell.NewRect(ctrlInner.X+112, ctrlInner.Y, 18, 1), func(_ backend.MouseEvent) {
-		CopyToClipboard(node.RoomCode)
-		r.SetToast(fmt.Sprintf("Oda Kodu Kopyalandi: %s", node.RoomCode))
-	})
-
-	leaveText := "[Esc] Odadan Ayril"
-	if ctrlInner.Width > uint16(len([]rune(leaveText)))+1 {
-		leaveX := ctrlInner.X + ctrlInner.Width - uint16(len([]rune(leaveText))) - 1
-		buf.SetString(leaveX, ctrlInner.Y, leaveText, cell.Style{Fg: cell.NewColorRGB(0xD6, 0x30, 0x31), Bg: cell.NewColorRGB(0x10, 0x14, 0x20), Modifier: cell.ModifierBold})
-		frame.RegisterClickHandler(cell.NewRect(leaveX, ctrlInner.Y, uint16(len([]rune(leaveText))), 1), func(_ backend.MouseEvent) {
-			if r.OnLeave != nil {
-				r.OnLeave()
+		testX := ctrlInner.X + 1
+		testLen := uint16(len([]rune(testLabel)))
+		buf.SetString(testX, row2Y, testLabel, testStyle)
+		frame.RegisterClickHandler(cell.NewRect(testX, row2Y, testLen, 1), func(_ backend.MouseEvent) {
+			if r.OnOpenTestModal != nil {
+				r.OnOpenTestModal()
 			}
 		})
+
+		// Volume Controls [+/-]
+		gainText := fmt.Sprintf("[+/-] Ses: %.0f%%", audio.Gain*100)
+		gainX := testX + testLen + 2
+		gainLen := uint16(len([]rune(gainText)))
+		if gainX+gainLen <= ctrlInner.X+ctrlInner.Width {
+			buf.SetString(gainX, row2Y, gainText, cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, gainLen, 1), func(_ backend.MouseEvent) {
+				gain := audio.AdjustGain(0.1)
+				if gain > 2.0 {
+					audio.AdjustGain(-1.5)
+				}
+				r.SetToast(fmt.Sprintf("Mikrofon Sesi: %.0f%%", audio.Gain*100))
+			})
+		}
+
+		// Copy Code [C]
+		copyText := "[C] Kodu Kopyala"
+		copyX := gainX + gainLen + 2
+		copyLen := uint16(len([]rune(copyText)))
+		if copyX+copyLen <= ctrlInner.X+ctrlInner.Width {
+			buf.SetString(copyX, row2Y, copyText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+			frame.RegisterClickHandler(cell.NewRect(copyX, row2Y, copyLen, 1), func(_ backend.MouseEvent) {
+				CopyToClipboard(node.RoomCode)
+				r.SetToast(fmt.Sprintf("Oda Kodu Kopyalandi: %s", node.RoomCode))
+			})
+		}
+
+		// Leave Room [Esc]
+		leaveText := "[Esc] Odadan Ayril"
+		leaveLen := uint16(len([]rune(leaveText)))
+		leaveX := copyX + copyLen + 2
+		if ctrlInner.Width >= leaveX-ctrlInner.X+leaveLen {
+			if ctrlInner.X+ctrlInner.Width-leaveLen-1 > leaveX {
+				leaveX = ctrlInner.X + ctrlInner.Width - leaveLen - 1
+			}
+			buf.SetString(leaveX, row2Y, leaveText, cell.Style{Fg: cell.NewColorRGB(0xD6, 0x30, 0x31), Bg: cell.NewColorRGB(0x10, 0x14, 0x20), Modifier: cell.ModifierBold})
+			frame.RegisterClickHandler(cell.NewRect(leaveX, row2Y, leaveLen, 1), func(_ backend.MouseEvent) {
+				if r.OnLeave != nil {
+					r.OnLeave()
+				}
+			})
+		}
 	}
 
 	// 2. Logs & Toast Area
