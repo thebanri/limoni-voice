@@ -257,10 +257,14 @@ func (a *AudioEngine) startCapture(onFrame func(rms float64, speaking bool, pcm 
 	var cmd *exec.Cmd
 	if p, err := exec.LookPath("parec"); err == nil {
 		cmd = exec.Command(p, "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
-	} else if p, err := exec.LookPath("arecord"); err == nil {
-		cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
 	} else if p, err := exec.LookPath("pw-record"); err == nil {
 		cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+	} else if p, err := exec.LookPath("rec"); err == nil {
+		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
+	} else if p, err := exec.LookPath("sox"); err == nil {
+		cmd = exec.Command(p, "-q", "-d", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
+	} else if p, err := exec.LookPath("arecord"); err == nil {
+		cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
 	}
 
 	if cmd != nil {
@@ -569,6 +573,12 @@ func (a *AudioEngine) startPlayback() {
 	var cmd *exec.Cmd
 	if p, err := exec.LookPath("pacat"); err == nil {
 		cmd = exec.Command(p, "--playback", "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
+	} else if p, err := exec.LookPath("pw-play"); err == nil {
+		cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+	} else if p, err := exec.LookPath("play"); err == nil {
+		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
+	} else if p, err := exec.LookPath("sox"); err == nil {
+		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-", "-d")
 	} else if p, err := exec.LookPath("aplay"); err == nil {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
 	}

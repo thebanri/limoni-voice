@@ -12,7 +12,9 @@ echo " Building Limoni Voice ${VERSION} (${RAW_VERSION})"
 echo "=========================================="
 
 mkdir -p release_assets
-mkdir -p dist/linux-amd64 dist/linux-arm64 dist/windows-amd64 dist/windows-arm64
+mkdir -p dist/linux-amd64 dist/linux-arm64
+mkdir -p dist/windows-amd64 dist/windows-arm64
+mkdir -p dist/darwin-arm64 dist/darwin-amd64
 
 LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
 
@@ -34,7 +36,14 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS
 echo "==> Building Windows ARM64 (.exe)..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/windows-arm64/limoni-voice.exe .
 
-# 4. Package Linux Tarballs (.tar.gz)
+# 4. Compile macOS (Darwin) Apple Silicon (ARM64) & Intel (AMD64)
+echo "==> Building macOS Apple Silicon (ARM64)..."
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/darwin-arm64/limoni-voice .
+
+echo "==> Building macOS Intel (AMD64)..."
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/darwin-amd64/limoni-voice .
+
+# 5. Package Linux Tarballs (.tar.gz)
 echo "==> Packaging Linux Tarballs..."
 mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
 cp dist/linux-amd64/limoni-voice README.md microphone.obj dist/pkg-linux-amd64/
@@ -43,7 +52,21 @@ tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg
 cp dist/linux-arm64/limoni-voice README.md microphone.obj dist/pkg-linux-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
-# 5. Package Windows Standalone EXEs & Zips
+# 6. Package macOS Tarballs & Zips (.tar.gz & .zip)
+echo "==> Packaging macOS Tarballs..."
+mkdir -p dist/pkg-darwin-arm64 dist/pkg-darwin-amd64
+cp dist/darwin-arm64/limoni-voice README.md microphone.obj dist/pkg-darwin-arm64/
+tar -czf "release_assets/limoni-voice_${VERSION}_darwin_arm64.tar.gz" -C dist/pkg-darwin-arm64 .
+
+cp dist/darwin-amd64/limoni-voice README.md microphone.obj dist/pkg-darwin-amd64/
+tar -czf "release_assets/limoni-voice_${VERSION}_darwin_amd64.tar.gz" -C dist/pkg-darwin-amd64 .
+
+if command -v zip >/dev/null 2>&1; then
+  zip -j "release_assets/limoni-voice_${VERSION}_darwin_arm64.zip" dist/pkg-darwin-arm64/*
+  zip -j "release_assets/limoni-voice_${VERSION}_darwin_amd64.zip" dist/pkg-darwin-amd64/*
+fi
+
+# 7. Package Windows Standalone EXEs & Zips
 echo "==> Packaging Windows Binaries..."
 cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_amd64.exe"
 cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
@@ -56,7 +79,7 @@ if command -v zip >/dev/null 2>&1; then
   zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
 fi
 
-# 6. Build Debian Packages (.deb)
+# 8. Build Debian Packages (.deb)
 build_deb() {
   local ARCH=$1
   local DEB_ARCH=$2
@@ -104,7 +127,7 @@ CONTROL_EOF
 build_deb "linux-amd64" "amd64"
 build_deb "linux-arm64" "arm64"
 
-# 7. Generate Checksums
+# 9. Generate Checksums
 echo "==> Generating Checksums..."
 cd release_assets
 sha256sum * > checksums.txt || true
