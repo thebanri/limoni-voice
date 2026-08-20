@@ -96,15 +96,20 @@ type P2PNode struct {
 	OnLog             func(msg string)
 	OnPeerEvent       func(event string, peer *PeerInfo)
 	stopChan          chan struct{}
+	// Dedicated broadcast sender socket with SO_BROADCAST (works on Windows too)
+	bcastSendConn *net.UDPConn
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
+	// Create a dedicated UDP socket for sending broadcasts (avoids SO_BROADCAST issues on Windows)
+	bcastConn, _ := net.ListenUDP("udp4", &net.UDPAddr{Port: 0})
 	return &P2PNode{
-		LocalID:  localID,
-		Nickname: nickname,
-		Peers:    make(map[string]*PeerInfo),
-		audio:    audio,
-		stopChan: make(chan struct{}),
+		LocalID:       localID,
+		Nickname:      nickname,
+		Peers:         make(map[string]*PeerInfo),
+		audio:         audio,
+		stopChan:      make(chan struct{}),
+		bcastSendConn: bcastConn,
 	}
 }
 
@@ -577,9 +582,16 @@ func (n *P2PNode) sendBroadcastPacket(pkt *P2PPacket, port int) {
 	}
 
 	baddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("255.255.255.255:%d", port))
-	if err == nil {
-		n.Conn.WriteToUDP(data, baddr)
+	if err != nil {
+		return
 	}
+
+	// Use dedicated broadcast socket first (works better on Windows)
+	if n.bcastSendConn != nil {
+		n.bcastSendConn.WriteToUDP(data, baddr)
+	}
+	// Also try via main connection as fallback
+	n.Conn.WriteToUDP(data, baddr)
 }
 
 func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
@@ -710,6 +722,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	case PacketJoinRequest:
 		// Only an active Host of this exact room code can admit joiners
 		if !n.IsConnected || !n.IsHost {
+			// If we're a Joiner still searching, send our JoinRequest directly back to the requester's address
+			// (might be another joiner who thought we were host — just ignore)
 			return
 		}
 
@@ -776,6 +790,24 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		go n.sendPacketTo(raddr, &welcomePkt)
 
 	case PacketHello:
+		// If we're a Joiner still searching and we see a Hello from an active host
+		// in our target room → send a JoinRequest DIRECTLY to that host (unicast, bypasses broadcast issues)
+		if n.Connecting && !n.IsConnected {
+			room := n.ConnectTargetRoom
+			if NormalizeCode(pkt.RoomCode) == room {
+				joinPkt := P2PPacket{
+					Type:       PacketJoinRequest,
+					RoomCode:   room,
+					SenderID:   n.LocalID,
+					Nickname:   n.Nickname,
+					IsMuted:    n.audio.Muted,
+					IsDeafened: n.audio.Deafened,
+					Timestamp:  time.Now().UnixMilli(),
+				}
+				go n.sendPacketTo(raddr, &joinPkt)
+			}
+			return
+		}
 		if !n.IsConnected {
 			return
 		}
@@ -1022,7 +1054,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 }
 
 func (n *P2PNode) heartbeatLoop() {
-	ticker := time.NewTicker(1200 * time.Millisecond)
+	ticker := time.NewTicker(600 * time.Millisecond)
 	for range ticker.C {
 		n.mu.Lock()
 		if !n.IsConnected {
@@ -1033,6 +1065,7 @@ func (n *P2PNode) heartbeatLoop() {
 		now := time.Now()
 
 		// If no peers connected yet, keep announcing presence to discover peers
+		// (faster tick so cross-machine joiners can find us)
 		if len(n.Peers) == 0 {
 			n.mu.Unlock()
 			n.broadcastHello()
