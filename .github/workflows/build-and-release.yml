@@ -1,55 +1,55 @@
-name: "Release"
+name: Build and Release
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build:
-    name: "Build and Release"
+    name: Build Packages
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: "Checkout"
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: "Set up Go"
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          check-latest: true
 
-      - name: "Build All Platforms"
+      - name: Test
         run: |
-          set -e
+          go test -mod=vendor -v ./...
+
+      - name: Build All Platforms
+        run: |
           VERSION="${GITHUB_REF_NAME}"
           if [ -z "${VERSION}" ] || [ "${VERSION}" = "main" ]; then
             VERSION="v1.0.0"
           fi
           RAW_VERSION="${VERSION#v}"
-          echo "Building version ${VERSION} (${RAW_VERSION})"
+          echo "Building ${VERSION} (${RAW_VERSION})"
 
           mkdir -p release_assets
           mkdir -p dist/linux-amd64 dist/linux-arm64 dist/windows-amd64 dist/windows-arm64
 
           LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
 
-          # Linux amd64 & arm64
+          # Linux
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/linux-amd64/limoni-voice .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/linux-arm64/limoni-voice .
 
-          # Windows amd64 & arm64
+          # Windows
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/windows-amd64/limoni-voice.exe .
           CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/windows-arm64/limoni-voice.exe .
 
-          # Linux Tarballs
+          # Linux tar.gz
           mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
           cp dist/linux-amd64/limoni-voice README.md microphone.obj dist/pkg-linux-amd64/
           tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg-linux-amd64 .
@@ -57,7 +57,7 @@ jobs:
           cp dist/linux-arm64/limoni-voice README.md microphone.obj dist/pkg-linux-arm64/
           tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
-          # Windows standalone and zip
+          # Windows exe and zip
           cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_amd64.exe"
           cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
 
@@ -68,7 +68,7 @@ jobs:
           cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
           zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
 
-          # Debian packages (.deb)
+          # Debian packages
           build_deb() {
             local ARCH=$1
             local DEB_ARCH=$2
@@ -117,8 +117,11 @@ EOF
           sha256sum * > checksums.txt
           cat checksums.txt
 
-      - name: "Upload Release Assets"
-        uses: softprops/action-gh-release@v2
+      - name: Release
         if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: release_assets/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd release_assets
+          gh release delete "${GITHUB_REF_NAME}" --yes || true
+          gh release create "${GITHUB_REF_NAME}" * --title "Limoni Voice ${GITHUB_REF_NAME}" --generate-notes
