@@ -1,9 +1,12 @@
-name: "Release and Build Packages"
+name: Build & Release Multiplatform
 
 on:
   push:
+    branches: [ main, master ]
     tags:
       - 'v*'
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
     inputs:
       tag_name:
@@ -16,21 +19,23 @@ permissions:
 
 jobs:
   build-and-release:
-    name: "Build Multiplatform Release"
+    name: Build Packages & Release
     runs-on: ubuntu-latest
 
     steps:
-      - name: "Checkout Repository"
+      - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: "Set up Go"
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           check-latest: true
 
-      - name: "Determine Version"
-        id: get_version
+      - name: Determine Version
+        id: version
         run: |
           if [ -n "${{ github.event.inputs.tag_name }}" ]; then
             VERSION="${{ github.event.inputs.tag_name }}"
@@ -42,11 +47,11 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "RAW_VERSION=${VERSION#v}" >> $GITHUB_ENV
 
-      - name: "Run Tests"
+      - name: Run Tests
         run: |
           go test -mod=vendor -v ./...
 
-      - name: "Build Binaries and Packages"
+      - name: Build Binaries and Packages
         run: |
           mkdir -p release_assets
           mkdir -p dist/linux-amd64 dist/linux-arm64 dist/windows-amd64 dist/windows-arm64
@@ -135,14 +140,11 @@ EOF
           sha256sum * > checksums.txt
           cat checksums.txt
 
-      - name: "Create GitHub Release and Upload Assets"
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag_name != ''
-        with:
-          tag_name: ${{ env.VERSION }}
-          name: "Limoni Voice ${{ env.VERSION }}"
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          files: |
-            release_assets/*
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd release_assets
+          gh release delete "${VERSION}" --yes || true
+          gh release create "${VERSION}" * --title "Limoni Voice ${VERSION}" --generate-notes
