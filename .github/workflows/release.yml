@@ -1,4 +1,4 @@
-name: Release & Build Packages
+name: "Release and Build Packages"
 
 on:
   push:
@@ -16,20 +16,20 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build Multiplatform Release
+    name: "Build Multiplatform Release"
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: "Checkout Repository"
         uses: actions/checkout@v4
 
-      - name: Set up Go
+      - name: "Set up Go"
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           check-latest: true
 
-      - name: Determine Version
+      - name: "Determine Version"
         id: get_version
         run: |
           if [ -n "${{ github.event.inputs.tag_name }}" ]; then
@@ -42,11 +42,11 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "RAW_VERSION=${VERSION#v}" >> $GITHUB_ENV
 
-      - name: Run Tests
+      - name: "Run Tests"
         run: |
           go test -mod=vendor -v ./...
 
-      - name: Build Binaries and Packages
+      - name: "Build Binaries and Packages"
         run: |
           mkdir -p release_assets
           mkdir -p dist/linux-amd64 dist/linux-arm64 dist/windows-amd64 dist/windows-arm64
@@ -68,15 +68,23 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/windows-arm64/limoni-voice.exe .
 
           # 3. Package Linux Tarballs (.tar.gz)
-          tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/linux-amd64 limoni-voice -C ../../ README.md microphone.obj
-          tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/linux-arm64 limoni-voice -C ../../ README.md microphone.obj
+          mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
+          cp dist/linux-amd64/limoni-voice README.md microphone.obj dist/pkg-linux-amd64/
+          tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg-linux-amd64 .
+
+          cp dist/linux-arm64/limoni-voice README.md microphone.obj dist/pkg-linux-arm64/
+          tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
           # 4. Package Windows Zip (.zip) & standalone EXEs
           cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_amd64.exe"
           cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
           
-          zip -j "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/windows-amd64/limoni-voice.exe README.md microphone.obj
-          zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/windows-arm64/limoni-voice.exe README.md microphone.obj
+          mkdir -p dist/pkg-windows-amd64 dist/pkg-windows-arm64
+          cp dist/windows-amd64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-amd64/
+          zip -j "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
+
+          cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
+          zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
 
           # 5. Build Debian Packages (.deb)
           build_deb() {
@@ -127,12 +135,12 @@ EOF
           sha256sum * > checksums.txt
           cat checksums.txt
 
-      - name: Create GitHub Release & Upload Assets
+      - name: "Create GitHub Release and Upload Assets"
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag_name != ''
         with:
           tag_name: ${{ env.VERSION }}
-          name: Limoni Voice ${{ env.VERSION }}
+          name: "Limoni Voice ${{ env.VERSION }}"
           draft: false
           prerelease: false
           generate_release_notes: true
