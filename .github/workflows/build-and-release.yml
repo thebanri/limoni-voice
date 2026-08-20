@@ -21,99 +21,8 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Test
-        run: |
-          go test -mod=vendor -v ./...
-
-      - name: Build All Platforms
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          if [ -z "${VERSION}" ] || [ "${VERSION}" = "main" ]; then
-            VERSION="v1.0.0"
-          fi
-          RAW_VERSION="${VERSION#v}"
-          echo "Building ${VERSION} (${RAW_VERSION})"
-
-          mkdir -p release_assets
-          mkdir -p dist/linux-amd64 dist/linux-arm64 dist/windows-amd64 dist/windows-arm64
-
-          LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
-
-          # Linux
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/linux-amd64/limoni-voice .
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/linux-arm64/limoni-voice .
-
-          # Windows
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/windows-amd64/limoni-voice.exe .
-          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" -o dist/windows-arm64/limoni-voice.exe .
-
-          # Linux tar.gz
-          mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
-          cp dist/linux-amd64/limoni-voice README.md microphone.obj dist/pkg-linux-amd64/
-          tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg-linux-amd64 .
-
-          cp dist/linux-arm64/limoni-voice README.md microphone.obj dist/pkg-linux-arm64/
-          tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
-
-          # Windows exe and zip
-          cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_amd64.exe"
-          cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
-
-          mkdir -p dist/pkg-windows-amd64 dist/pkg-windows-arm64
-          cp dist/windows-amd64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-amd64/
-          zip -j "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
-
-          cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
-          zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
-
-          # Debian packages
-          build_deb() {
-            local ARCH=$1
-            local DEB_ARCH=$2
-            local PKG_DIR="deb_pkg_${DEB_ARCH}"
-
-            rm -rf "${PKG_DIR}"
-            mkdir -p "${PKG_DIR}/DEBIAN"
-            mkdir -p "${PKG_DIR}/usr/bin"
-            mkdir -p "${PKG_DIR}/usr/share/applications"
-            mkdir -p "${PKG_DIR}/usr/share/doc/limoni-voice"
-
-            cp "dist/${ARCH}/limoni-voice" "${PKG_DIR}/usr/bin/limoni-voice"
-            chmod 755 "${PKG_DIR}/usr/bin/limoni-voice"
-            cp README.md "${PKG_DIR}/usr/share/doc/limoni-voice/README"
-
-            cat <<EOF > "${PKG_DIR}/usr/share/applications/limoni-voice.desktop"
-[Desktop Entry]
-Name=Limoni Voice
-Comment=P2P Encrypted Voice Chat TUI
-Exec=/usr/bin/limoni-voice
-Terminal=true
-Type=Application
-Categories=AudioVideo;Audio;Network;
-EOF
-
-            cat <<EOF > "${PKG_DIR}/DEBIAN/control"
-Package: limoni-voice
-Version: ${RAW_VERSION}
-Section: sound
-Priority: optional
-Architecture: ${DEB_ARCH}
-Maintainer: TheBanri <https://github.com/thebanri>
-Description: Terminal-based P2P Encrypted Voice Chat Room built with Limoni TUI
- Limoni Voice is a zero-setup, end-to-end encrypted P2P voice chat application
- featuring real-time audio visualization, noise suppression, and 3D graphics.
-EOF
-
-            dpkg-deb --build --root-owner-group "${PKG_DIR}" "release_assets/limoni-voice_${RAW_VERSION}_${DEB_ARCH}.deb"
-          }
-
-          build_deb "linux-amd64" "amd64"
-          build_deb "linux-arm64" "arm64"
-
-          # Checksums
-          cd release_assets
-          sha256sum * > checksums.txt
-          cat checksums.txt
+      - name: Build Packages
+        run: bash scripts/build_packages.sh
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -127,5 +36,4 @@ EOF
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd release_assets
-          gh release delete "${GITHUB_REF_NAME}" --yes || true
           gh release create "${GITHUB_REF_NAME}" * --title "Limoni Voice ${GITHUB_REF_NAME}" --generate-notes || true

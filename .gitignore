@@ -3,6 +3,12 @@ limoni-voice
 *.exe
 *.test
 
+# Build Artifacts
+dist/
+release_assets/
+deb_pkg_*/
+
 # OS Files
 .DS_Store
 Thumbs.db
+
