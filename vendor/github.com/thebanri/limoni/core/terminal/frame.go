@@ -1,0 +1,851 @@
+package terminal
+
+import (
+	"image"
+	"io"
+	"reflect"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/thebanri/limoni/core/accessibility"
+	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/buffer"
+	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/layout"
+	"github.com/thebanri/limoni/widgets"
+)
+
+type TraceEntry struct {
+	RegionID string
+	Action   string // "enter", "leave", "capture", "target", "bubble"
+	ZIndex   int
+	Phase    backend.EventPhase
+}
+
+// ClickRegion, ekranda tıklanabilir (interaktif) bir bölgeyi ve bu bölgeye tıklandığında
+// çalıştırılacak olan fare olay yöneticisi (callback) fonksiyonunu tanımlar.
+type ClickRegion struct {
+	// Area, tıklanabilir bölgenin ekran koordinatları ve boyut sınırlarıdır.
+	Area cell.Rect
+	// Handler, bu alana tıklandığında tetiklenecek olan olay yöneticisi fonksiyonudur.
+	Handler func(ev backend.MouseEvent)
+	// LayerID, bu tıklama bölgesinin hangi katmana ait olduğunu belirtir.
+	// Boş string ise kök (root) katmanına aittir.
+	LayerID string
+	// MouseOnly, MouseNone hareket/hover olaylarının da bu bölgeye yönlendirilmesini sağlar.
+	MouseOnly bool
+}
+
+// ImageRegion, ekranda grafik olarak çizdirilmek istenen bir resmi ve bu resmin
+// çizileceği hedef hücre koordinatlarını tanımlar.
+type ImageRegion struct {
+	// Area, resmin çizileceği hedef hücre koordinatları ve satır/sütun boyutlarıdır.
+	Area cell.Rect
+	// Img, çizilecek olan ham resim verisidir.
+	Img image.Image
+	// ZIndex, resmin dikey katman sıralama parametresidir.
+	ZIndex int
+	// Transparent, resmin şeffaf piksellerinin korunup korunmayacağını belirtir.
+	Transparent bool
+}
+
+// Frame, tek bir çizim karesinin (render pass) bağlamını temsil eder.
+// Çizim işlemi sırasında hem ham tampona yazmayı hem de interaktif tıklama, resim çizim alanları ve odak yönetimini kaydetmeyi yönetir.
+type Frame struct {
+	// Buffer, bu karede üzerine çizim yapılan aktif terminal hücre matrisidir.
+	Buffer *buffer.Buffer
+
+	// ClickRegions, bu karede widget'lar tarafından kaydedilen tıklanabilir bölgeler listesidir.
+	ClickRegions []ClickRegion
+	EventRegions []eventRegion
+
+	// ImageRegions, bu karede widget'lar tarafından kaydedilen resim çizim alanları listesidir.
+	ImageRegions []ImageRegion
+
+	// FocusManager, bu karedeki odak durumunu ve sekmeli geçiş sırasını yönetir.
+	FocusManager *FocusManager
+
+	// ActiveModal, bu çizim karesinde etkin olan en üst modal katman bilgisidir.
+	ActiveModal *Modal
+
+	// Layers, bu çizim karesinde aktif olan katmanların z-index sırasına göre listesidir.
+	// En yüksek z-index en sonda (en üstte) yer alır.
+	Layers []Layer
+
+	// activeLayerID, çizim sırasında mevcut katmanın ID'sini tutar.
+	activeLayerID string
+
+	// DebugRegions, bu çizim karesinde çizilen widget'ların yerleşim alanlarını saklar.
+	DebugRegions []DebugRegion
+
+	// mouseCaptureRequest, çizim sırasında bir widget tarafından talep edilen fare yakalama callback'idir.
+	mouseCaptureRequest func(ev backend.MouseEvent)
+	hoveredRegionID     string
+	lastClickID         string
+	lastClickAt         time.Time
+	lastEventTrace      []string
+	lastTraceEntries    []TraceEntry
+
+	Theme    widgets.Theme
+	ThemeSet bool
+
+	// WidgetStats, bu çizim karesinde çizilen widget'ların render sürelerini saklar.
+	WidgetStats   []WidgetStat
+	Accessibility []accessibility.AccessibilityNode
+
+	// Pre-allocated context parameters and closures to avoid heap allocation
+	currentArea           cell.Rect
+	currentIsOutsideModal bool
+	currentLayerID        string
+	eventCtx              backend.EventContext
+
+	clickClosure    func(cell.Rect, func())
+	mouseClosure    func(cell.Rect, func(backend.MouseEvent))
+	eventClosure    func(cell.Rect, backend.EventPhase, func(*backend.EventContext))
+	captureClosure  func(func(backend.MouseEvent))
+	imageClosure    func(cell.Rect, image.Image, int, bool) bool
+	focusClosure    func(string)
+	setFocusClosure func(string)
+}
+
+// DispatchClick dispatches a click to the topmost enabled target region and
+// reports ClickCount 2 when the same region is clicked twice within 500ms.
+// The timestamp is supplied by the caller to keep tests deterministic.
+func (f *Frame) DispatchClick(ev backend.MouseEvent, at time.Time) bool {
+	if f == nil {
+		return false
+	}
+	var target *eventRegion
+	for i := len(f.EventRegions) - 1; i >= 0; i-- {
+		region := &f.EventRegions[i]
+		if region.Phase == TargetPhase && !region.Disabled && region.Area.Contains(ev.X, ev.Y) {
+			target = region
+			break
+		}
+	}
+	if target == nil {
+		return false
+	}
+	clickCount := 1
+	if f.lastClickID == target.ID && !f.lastClickAt.IsZero() && at.Sub(f.lastClickAt) >= 0 && at.Sub(f.lastClickAt) <= 500*time.Millisecond {
+		clickCount = 2
+	}
+	f.lastClickID = target.ID
+	f.lastClickAt = at
+	f.eventCtx = backend.EventContext{
+		Mouse: ev, Phase: TargetPhase, RegionID: target.ID,
+		LayerID: target.LayerID, ZIndex: target.ZIndex,
+		ClickCount: clickCount, EventTime: at,
+	}
+	target.Handler(&f.eventCtx)
+	return true
+}
+
+type WidgetStat struct {
+	Type     string
+	Duration time.Duration
+}
+
+type DebugRegion struct {
+	Area       cell.Rect
+	WidgetType string
+	ZIndex     int
+	Measured   layout.Measure
+	Allocated  cell.Rect
+	Overflowed bool
+}
+
+// NewFrame, belirtilen buffer ve odak yöneticisi üzerinde çizim yapacak yeni bir Frame örneği oluşturur.
+func NewFrame(buf *buffer.Buffer, focusMgr *FocusManager) *Frame {
+	f := &Frame{
+		Buffer:           buf,
+		ClickRegions:     make([]ClickRegion, 0, 128),
+		EventRegions:     make([]eventRegion, 0, 128),
+		ImageRegions:     make([]ImageRegion, 0, 16),
+		FocusManager:     focusMgr,
+		ActiveModal:      nil,
+		Layers:           make([]Layer, 0, 128),
+		DebugRegions:     make([]DebugRegion, 0, 64),
+		lastEventTrace:   make([]string, 0, 32),
+		lastTraceEntries: make([]TraceEntry, 0, 32),
+		WidgetStats:      make([]WidgetStat, 0, 32),
+		Accessibility:    make([]accessibility.AccessibilityNode, 0, 32),
+	}
+	f.initClosures()
+	return f
+}
+
+var typeNameCache sync.Map
+
+func getWidgetTypeName(w widgets.Widget) string {
+	t := reflect.TypeOf(w)
+	if val, ok := typeNameCache.Load(t); ok {
+		return val.(string)
+	}
+	name := t.String()
+	if idx := strings.Index(name, "."); idx != -1 {
+		name = name[idx+1:]
+	}
+	typeNameCache.Store(t, name)
+	return name
+}
+
+func (f *Frame) initClosures() {
+	f.clickClosure = func(clickArea cell.Rect, handler func()) {
+		if f.currentIsOutsideModal {
+			return
+		}
+		f.RegisterClickHandlerInLayer(clickArea, func(ev backend.MouseEvent) {
+			handler()
+		}, f.currentLayerID)
+	}
+
+	f.mouseClosure = func(mouseArea cell.Rect, handler func(ev backend.MouseEvent)) {
+		if f.currentIsOutsideModal {
+			return
+		}
+		f.registerMouseHandler(mouseArea, handler, f.currentLayerID)
+	}
+
+	f.eventClosure = func(eventArea cell.Rect, phase backend.EventPhase, handler func(*backend.EventContext)) {
+		if f.currentIsOutsideModal {
+			return
+		}
+		f.RegisterEventHandler(eventArea, phase, handler)
+	}
+
+	f.captureClosure = func(handler func(ev backend.MouseEvent)) {
+		if f.currentIsOutsideModal {
+			return
+		}
+		f.mouseCaptureRequest = handler
+	}
+
+	f.imageClosure = func(imageArea cell.Rect, img image.Image, zIndex int, transparent bool) bool {
+		topModal := f.TopmostModal()
+		if zIndex == -99 {
+			if topModal != nil || len(f.Layers) > 0 {
+				zIndex = -2
+			} else {
+				zIndex = -4
+			}
+		} else if zIndex == 0 {
+			isForeground := false
+			if topModal != nil && ContainsRect(topModal.Area, imageArea) {
+				isForeground = true
+			} else {
+				for _, layer := range f.Layers {
+					if ContainsRect(layer.Area, imageArea) {
+						isForeground = true
+						break
+					}
+				}
+			}
+
+			if isForeground {
+				zIndex = -1
+			} else {
+				zIndex = -3
+			}
+		}
+
+		f.ImageRegions = append(f.ImageRegions, ImageRegion{
+			Area:        imageArea,
+			Img:         img,
+			ZIndex:      zIndex,
+			Transparent: transparent,
+		})
+		return true
+	}
+
+	f.focusClosure = func(id string) {
+		if f.currentIsOutsideModal {
+			return
+		}
+		if f.FocusManager != nil {
+			f.FocusManager.Register(id)
+			f.FocusManager.RegisterBounds(id, f.currentArea)
+		}
+	}
+
+	f.setFocusClosure = func(id string) {
+		if f.currentIsOutsideModal {
+			return
+		}
+		if f.FocusManager != nil {
+			f.FocusManager.SetFocused(id)
+		}
+	}
+}
+
+// Reset, çizim karesinin durumunu (kaydedilmiş tıklama, resim alanları, modal ve katmanları) sıfırlar.
+// Bellek Optimizasyonu: Slice kapasitesini koruyarak sıfır tahsisatla listeyi temizler (slice[:0]).
+// BeginFocusScope restricts keyboard navigation to widgets rendered in the scope.
+func (f *Frame) BeginFocusScope(id string) {
+	if f.FocusManager != nil {
+		f.FocusManager.BeginScope(id)
+	}
+}
+
+func (f *Frame) EndFocusScope() {
+	if f.FocusManager != nil {
+		f.FocusManager.EndScope()
+	}
+}
+
+// IsFocused reports whether a widget owns focus in this frame.
+func (f *Frame) IsFocused(id string) bool {
+	return f.FocusManager != nil && f.FocusManager.IsFocused(id)
+}
+
+// SetTheme sets the semantic theme inherited by widgets rendered in this frame.
+func (f *Frame) SetTheme(theme widgets.Theme) {
+	f.Theme = theme
+	f.ThemeSet = true
+}
+
+func (f *Frame) Reset() {
+	f.ClickRegions = f.ClickRegions[:0]
+	f.EventRegions = f.EventRegions[:0]
+	f.ImageRegions = f.ImageRegions[:0]
+	f.ActiveModal = nil
+	f.Layers = f.Layers[:0]
+	f.activeLayerID = ""
+	f.DebugRegions = f.DebugRegions[:0]
+	f.mouseCaptureRequest = nil
+	f.hoveredRegionID = ""
+	f.lastClickID = ""
+	f.lastClickAt = time.Time{}
+	f.lastEventTrace = f.lastEventTrace[:0]
+	f.lastTraceEntries = f.lastTraceEntries[:0]
+	f.WidgetStats = f.WidgetStats[:0]
+	f.Accessibility = f.Accessibility[:0]
+}
+
+// RegisterAccessibility adds a semantic node to the current frame tree.
+func (f *Frame) RegisterAccessibility(node accessibility.AccessibilityNode) {
+	if f != nil {
+		f.Accessibility = append(f.Accessibility, node)
+	}
+}
+
+// AccessibilityTree returns the nodes registered during the current frame.
+func (f *Frame) AccessibilityTree() []accessibility.AccessibilityNode {
+	if f == nil {
+		return nil
+	}
+	result := make([]accessibility.AccessibilityNode, len(f.Accessibility))
+	copy(result, f.Accessibility)
+	return result
+}
+
+// ValidateAccessibility validates the semantic tree registered in this frame.
+func (f *Frame) ValidateAccessibility() error {
+	if f == nil {
+		return nil
+	}
+	return accessibility.ValidateTree(f.Accessibility)
+}
+
+// ImageRegionsSnapshot returns a copy of image registrations for assertions.
+func (f *Frame) ImageRegionsSnapshot() []ImageRegion {
+	if f == nil {
+		return nil
+	}
+	regions := make([]ImageRegion, len(f.ImageRegions))
+	copy(regions, f.ImageRegions)
+	return regions
+}
+
+// AccessibilityLineMode returns the current frame's semantic tree in a
+// deterministic, line-oriented format suitable for screen readers.
+func (f *Frame) AccessibilityLineMode(mode accessibility.Mode) string {
+	if f == nil {
+		return ""
+	}
+	return mode.LineMode(f.Accessibility)
+}
+
+// WriteAccessibilityLineMode streams the current semantic tree to a
+// screen-reader or log writer without exposing renderer internals.
+func (f *Frame) WriteAccessibilityLineMode(w io.Writer, mode accessibility.Mode) error {
+	if f == nil {
+		return accessibility.Mode{}.WriteLineMode(w, nil)
+	}
+	return mode.WriteLineMode(w, f.Accessibility)
+}
+
+// RegisterModal, bu karede çizilen aktif bir modal katmanı kaydeder.
+// Sadece tek bir aktif modal desteklenir ve en son kaydedilen (en üstteki) modal geçerli olur.
+// Geriye dönük uyumluluk: Eski API'yi korumak için ActiveModal'a da yazar.
+func (f *Frame) RegisterModal(id string, area cell.Rect, onClickOutside func()) {
+	f.ActiveModal = &Modal{
+		ID:           id,
+		Area:         area,
+		ClickOutside: onClickOutside,
+	}
+	// Yeni katman sistemine de ekle
+	f.Layers = append(f.Layers, Layer{
+		ID:           id,
+		Type:         LayerModal,
+		Area:         area,
+		ClickOutside: onClickOutside,
+		ZIndex:       1000,
+	})
+}
+
+// RegisterLayer, yeni katmanlı render sistemi için bir katman kaydeder.
+// ZIndex değeri büyüdükçe katman üst üste biner. Çizim sırasına göre son katman en üsttedir.
+func (f *Frame) RegisterLayer(id string, layerType LayerType, area cell.Rect, zIndex int, onClickOutside func()) {
+	layer := Layer{
+		ID:           id,
+		Type:         layerType,
+		Area:         area,
+		ClickOutside: onClickOutside,
+		ZIndex:       zIndex,
+	}
+	f.Layers = append(f.Layers, layer)
+
+	// Geriye dönük uyumluluk: Modal türündeyse ActiveModal'ı da güncelle
+	if layerType == LayerModal {
+		f.ActiveModal = &Modal{
+			ID:           id,
+			Area:         area,
+			ClickOutside: onClickOutside,
+		}
+	}
+}
+
+// RemoveLayer, belirtilen ID'ye sahip katmanı listeden kaldırır.
+func (f *Frame) RemoveLayer(id string) {
+	for i := 0; i < len(f.Layers); i++ {
+		if f.Layers[i].ID == id {
+			f.Layers = append(f.Layers[:i], f.Layers[i+1:]...)
+			i--
+		}
+	}
+	// ActiveModal güncelleme: Sadece modal türündeki katmanlar için
+	if f.ActiveModal != nil {
+		found := false
+		for _, l := range f.Layers {
+			if l.ID == f.ActiveModal.ID && l.Type == LayerModal {
+				found = true
+				break
+			}
+		}
+		if !found {
+			f.ActiveModal = nil
+		}
+	}
+}
+
+// TopLayer, en yüksek z-index değerine sahip katmanı döndürür.
+// Hiç katman yoksa nil döner.
+func (f *Frame) TopLayer() *Layer {
+	if len(f.Layers) == 0 {
+		return nil
+	}
+	top := &f.Layers[0]
+	for i := 1; i < len(f.Layers); i++ {
+		if f.Layers[i].ZIndex > top.ZIndex {
+			top = &f.Layers[i]
+		}
+	}
+	return top
+}
+
+// TopmostModal, aktif katmanlar arasında en üstteki (en yüksek ZIndex'e sahip) modal katmanı döner.
+func (f *Frame) TopmostModal() *Layer {
+	var top *Layer
+	for i := range f.Layers {
+		l := &f.Layers[i]
+		if l.Type == LayerModal {
+			if top == nil || l.ZIndex >= top.ZIndex {
+				top = l
+			}
+		}
+	}
+	return top
+}
+
+// IsInsideAnyLayer, verilen koordinatın herhangi bir katman alanı içinde olup olmadığını kontrol eder.
+func (f *Frame) IsInsideAnyLayer(x, y uint16) bool {
+	for i := range f.Layers {
+		if f.Layers[i].Area.Contains(x, y) {
+			return true
+		}
+	}
+	return false
+}
+
+// RegisterClickHandler, belirtilen alan (rect) üzerine fare tıklaması yapıldığında
+// çalıştırılacak bir callback kaydeder. Otomatik fare yönlendirme sistemi (Mouse Event Router) bu kaydı kullanır.
+// layerID parametresi, bu tıklama bölgesinin hangi katmana ait olduğunu belirtir.
+func (f *Frame) RegisterClickHandler(area cell.Rect, handler func(ev backend.MouseEvent)) {
+	if handler == nil {
+		return
+	}
+	f.ClickRegions = append(f.ClickRegions, ClickRegion{
+		Area:      area,
+		Handler:   handler,
+		LayerID:   f.activeLayerID,
+		MouseOnly: false,
+	})
+}
+
+func (f *Frame) registerMouseHandler(area cell.Rect, handler func(ev backend.MouseEvent), layerID string) {
+	if handler == nil {
+		return
+	}
+	f.ClickRegions = append(f.ClickRegions, ClickRegion{
+		Area:      area,
+		Handler:   handler,
+		LayerID:   layerID,
+		MouseOnly: true,
+	})
+}
+
+// RegisterEventHandler registers an opt-in capture/target/bubble handler.
+func (f *Frame) RegisterEventHandler(area cell.Rect, phase EventPhase, handler func(*EventContext)) {
+	f.RegisterEventRegion(EventRegion{Area: area, Phase: phase, Handler: handler})
+}
+
+// RegisterEventRegion registers a metadata-rich event region.
+func (f *Frame) RegisterEventRegion(region EventRegion) {
+	if f == nil || region.Handler == nil {
+		return
+	}
+	f.EventRegions = append(f.EventRegions, eventRegion{
+		Area: region.Area, ID: region.ID, LayerID: region.LayerID,
+		ZIndex: region.ZIndex, Disabled: region.Disabled,
+		Phase: region.Phase, Handler: region.Handler,
+		OnEnter: region.OnEnter, OnLeave: region.OnLeave,
+	})
+}
+
+// HoveredRegionID returns the ID of the target region currently under the
+// pointer. It is empty when no registered target region is hovered.
+func (f *Frame) HoveredRegionID() string {
+	if f == nil {
+		return ""
+	}
+	return f.hoveredRegionID
+}
+
+// DispatchPointerMove updates hover state and invokes enter/leave callbacks.
+func (f *Frame) DispatchPointerMove(ev backend.MouseEvent) bool {
+	if f == nil {
+		return false
+	}
+	var target *eventRegion
+	for i := len(f.EventRegions) - 1; i >= 0; i-- {
+		region := &f.EventRegions[i]
+		if region.Phase == TargetPhase && !region.Disabled && region.Area.Contains(ev.X, ev.Y) {
+			target = region
+			break
+		}
+	}
+	newID := ""
+	if target != nil {
+		newID = target.ID
+	}
+	if newID == f.hoveredRegionID {
+		return target != nil
+	}
+	if f.hoveredRegionID != "" {
+		for i := range f.EventRegions {
+			region := &f.EventRegions[i]
+			if region.ID == f.hoveredRegionID && region.OnLeave != nil {
+				f.lastEventTrace = append(f.lastEventTrace, region.ID+":leave")
+				f.lastTraceEntries = append(f.lastTraceEntries, TraceEntry{
+					RegionID: region.ID,
+					Action:   "leave",
+					ZIndex:   region.ZIndex,
+					Phase:    TargetPhase,
+				})
+				f.eventCtx = backend.EventContext{
+					Mouse: ev, Phase: TargetPhase, RegionID: region.ID,
+					LayerID: region.LayerID, ZIndex: region.ZIndex,
+					PointerKind: backend.PointerLeave,
+				}
+				region.OnLeave(&f.eventCtx)
+			}
+		}
+	}
+	if target != nil && target.OnEnter != nil {
+		f.lastEventTrace = append(f.lastEventTrace, target.ID+":enter")
+		f.lastTraceEntries = append(f.lastTraceEntries, TraceEntry{
+			RegionID: target.ID,
+			Action:   "enter",
+			ZIndex:   target.ZIndex,
+			Phase:    TargetPhase,
+		})
+		f.eventCtx = backend.EventContext{
+			Mouse: ev, Phase: TargetPhase, RegionID: target.ID,
+			LayerID: target.LayerID, ZIndex: target.ZIndex,
+			PointerKind: backend.PointerEnter,
+		}
+		target.OnEnter(&f.eventCtx)
+	}
+	f.hoveredRegionID = newID
+	return target != nil
+}
+
+// DispatchEventRegions dispatches a mouse event through registered capture,
+// target, and bubble handlers. It is useful for deterministic event tests and
+// custom event loops that do not use Terminal.RouteMouseEvent.
+func (f *Frame) DispatchEventRegions(ev backend.MouseEvent) bool {
+	if f == nil {
+		return false
+	}
+	f.eventCtx = backend.EventContext{Mouse: ev}
+	handled := false
+	for _, phase := range []backend.EventPhase{backend.CapturePhase, backend.TargetPhase, backend.BubblePhase} {
+		f.eventCtx.Phase = phase
+		if phase == backend.TargetPhase {
+			for i := len(f.EventRegions) - 1; i >= 0; i-- {
+				region := f.EventRegions[i]
+				if region.Disabled {
+					continue
+				}
+				if region.Phase == phase && region.Area.Contains(ev.X, ev.Y) {
+					f.lastEventTrace = append(f.lastEventTrace, region.ID+":"+phaseName(phase))
+					f.lastTraceEntries = append(f.lastTraceEntries, TraceEntry{
+						RegionID: region.ID,
+						Action:   phaseName(phase),
+						ZIndex:   region.ZIndex,
+						Phase:    phase,
+					})
+					handled = true
+					f.eventCtx.RegionID, f.eventCtx.LayerID, f.eventCtx.ZIndex = region.ID, region.LayerID, region.ZIndex
+					region.Handler(&f.eventCtx)
+					break
+				}
+			}
+		} else {
+			for i := 0; i < len(f.EventRegions); i++ {
+				region := f.EventRegions[i]
+				if region.Disabled {
+					continue
+				}
+				if region.Phase == phase && region.Area.Contains(ev.X, ev.Y) {
+					f.lastEventTrace = append(f.lastEventTrace, region.ID+":"+phaseName(phase))
+					f.lastTraceEntries = append(f.lastTraceEntries, TraceEntry{
+						RegionID: region.ID,
+						Action:   phaseName(phase),
+						ZIndex:   region.ZIndex,
+						Phase:    phase,
+					})
+					handled = true
+					f.eventCtx.RegionID, f.eventCtx.LayerID, f.eventCtx.ZIndex = region.ID, region.LayerID, region.ZIndex
+					region.Handler(&f.eventCtx)
+					if f.eventCtx.IsPropagationStopped() {
+						return true
+					}
+				}
+			}
+		}
+		if f.eventCtx.IsPropagationStopped() {
+			return true
+		}
+	}
+	return handled || f.eventCtx.IsDefaultPrevented()
+}
+
+func phaseName(phase backend.EventPhase) string {
+	switch phase {
+	case backend.CapturePhase:
+		return "capture"
+	case backend.TargetPhase:
+		return "target"
+	default:
+		return "bubble"
+	}
+}
+
+// EventTrace returns the propagation/hover trace from the last dispatched event.
+func (f *Frame) EventTrace() []string {
+	if f == nil {
+		return nil
+	}
+	trace := make([]string, len(f.lastEventTrace))
+	copy(trace, f.lastEventTrace)
+	return trace
+}
+
+// CaptureMouse, aktif farenin sürükleme boyunca kayıtlı handler'a yönlendirilmesini sağlar.
+// Handler, MouseRelease olayını aldıktan sonra yakalama otomatik olarak bırakılır.
+func (f *Frame) CaptureMouse(handler func(ev backend.MouseEvent)) {
+	if handler != nil {
+		f.mouseCaptureRequest = handler
+	}
+}
+
+// TakeMouseCapture returns and clears a mouse capture requested while drawing.
+// It is primarily useful to deterministic test harnesses and custom event
+// loops that dispatch events without owning a Terminal instance.
+func (f *Frame) TakeMouseCapture() func(ev backend.MouseEvent) {
+	handler := f.mouseCaptureRequest
+	f.mouseCaptureRequest = nil
+	return handler
+}
+
+// RegisterClickHandlerInLayer, belirtilen katman ID'si altında bir tıklama alanı kaydeder.
+func (f *Frame) RegisterClickHandlerInLayer(area cell.Rect, handler func(ev backend.MouseEvent), layerID string) {
+	if handler == nil {
+		return
+	}
+	f.ClickRegions = append(f.ClickRegions, ClickRegion{
+		Area:    area,
+		Handler: handler,
+		LayerID: layerID,
+	})
+}
+
+// RenderWidget, verilen widget'ı varsayılan temiz bir stil bağlamıyla tampon üzerine çizer.
+// Çizim işlemi, widget'a ait Draw metodu çağrılarak stil mirası zinciri başlatılarak gerçekleştirilir.
+//
+// Parametreler:
+//   - w: Çizilmek istenen durumsuz Widget.
+//   - area: Widget'ın kaplayacağı çizim alanı sınırı.
+func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
+	if w == nil {
+		return
+	}
+
+	// Hata ayıklama bölgesi olarak kaydet. Overlay widget'ları çizim için
+	// tam ekran alanı kullanabilir; DebugArea ile gerçek görünür sınırlarını
+	// ayrıca bildirebilirler.
+	wType := getWidgetTypeName(w)
+	debugArea := area
+	if provider, ok := w.(interface{ DebugArea(cell.Rect) cell.Rect }); ok {
+		debugArea = provider.DebugArea(area)
+	}
+	measured := layout.MeasureAny(w, area)
+	zIndex := 0
+	if f.activeLayerID != "" {
+		for _, l := range f.Layers {
+			if l.ID == f.activeLayerID {
+				zIndex = l.ZIndex
+				break
+			}
+		}
+	} else if f.ActiveModal != nil && ContainsRect(f.ActiveModal.Area, area) {
+		zIndex = 10
+	}
+	f.DebugRegions = append(f.DebugRegions, DebugRegion{
+		Area:       debugArea,
+		WidgetType: wType,
+		ZIndex:     zIndex,
+		Measured:   measured,
+		Allocated:  debugArea,
+		Overflowed: debugArea.Width < measured.IdealWidth || debugArea.Height < measured.IdealHeight,
+	})
+
+	var defStyle cell.Style
+	defStyle.Reset()
+
+	// Katman durumunu belirle: Widget, herhangi bir katmanın içinde mi?
+	isInsideLayer := f.activeLayerID != ""
+	isOutsideModal := false
+
+	// Z-Index / Modal Stack Sandboxing
+	topModal := f.TopmostModal()
+	if topModal != nil {
+		allowed := false
+		if ContainsRect(topModal.Area, area) {
+			allowed = true
+		} else if isInsideLayer {
+			var widgetLayerZIndex int
+			for _, l := range f.Layers {
+				if l.ID == f.activeLayerID {
+					widgetLayerZIndex = l.ZIndex
+					break
+				}
+			}
+			if widgetLayerZIndex >= topModal.ZIndex {
+				allowed = true
+			}
+		}
+		if !allowed {
+			isOutsideModal = true
+		}
+	} else if f.ActiveModal != nil && !ContainsRect(f.ActiveModal.Area, area) {
+		// Eski modal sistemi ile geriye dönük uyumluluk
+		isOutsideModal = true
+	} else if len(f.Layers) > 0 && f.ActiveModal == nil {
+		// Kök katmanda çizilen widget'lar, katmanlar varken engellenmeli.
+		isOutsideModal = true
+	}
+
+	// Update pre-allocated closures state parameters
+	f.currentArea = area
+	f.currentIsOutsideModal = isOutsideModal
+	f.currentLayerID = f.activeLayerID
+
+	// Temiz stil ve sınırlandırılmış alan ile çizim bağlamı oluştur
+	ctx := cell.NewContext(area, defStyle)
+	if f.ThemeSet {
+		ctx.ThemeStyle = func(role string) cell.Style { return f.Theme.RoleStyle(role) }
+	}
+
+	// Assign pre-allocated closures to avoid heap allocation on draw loops
+	ctx.RegisterClick = f.clickClosure
+	ctx.RegisterMouse = f.mouseClosure
+	ctx.RegisterEvent = f.eventClosure
+	ctx.CaptureMouse = f.captureClosure
+	ctx.RegisterImage = f.imageClosure
+	ctx.RegisterFocus = f.focusClosure
+	ctx.SetFocus = f.setFocusClosure
+
+	if f.FocusManager != nil {
+		ctx.FocusedID = f.FocusManager.Focused()
+	}
+
+	t0 := time.Now()
+	w.Draw(ctx, f.Buffer)
+	if provider, ok := w.(accessibility.Provider); ok {
+		node := provider.AccessibilityNode(area, false)
+		if f.FocusManager != nil && f.FocusManager.IsFocused(node.ID) {
+			node.State |= accessibility.StateFocused
+		}
+		f.RegisterAccessibility(node)
+	}
+	dur := time.Since(t0)
+
+	f.WidgetStats = append(f.WidgetStats, WidgetStat{
+		Type:     wType,
+		Duration: dur,
+	})
+}
+
+// BeginLayer, bir sonraki çizilecek widget'ların belirli bir katmana ait olduğunu bildirir.
+// Widget'lar Draw() sırasında hangi katmana ait olduklarını bu şekilde öğrenir.
+func (f *Frame) BeginLayer(id string) {
+	f.activeLayerID = id
+}
+
+// EndLayer, aktif katman çizimini sonlandırır ve kök katmana geri döner.
+func (f *Frame) EndLayer() {
+	f.activeLayerID = ""
+}
+
+// EventTraceEntries returns the chronological metadata event trace.
+func (f *Frame) EventTraceEntries() []TraceEntry {
+	if f == nil {
+		return nil
+	}
+	entries := make([]TraceEntry, len(f.lastTraceEntries))
+	copy(entries, f.lastTraceEntries)
+	return entries
+}
+
+// Area returns the total rectangular area of the frame buffer.
+func (f *Frame) Area() cell.Rect {
+	if f == nil || f.Buffer == nil {
+		return cell.Rect{}
+	}
+	return f.Buffer.Area
+}
+
