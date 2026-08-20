@@ -121,6 +121,24 @@ LAUNCHER_EOF
     fi
     tar -czf "../../release_assets/Limoni-Voice_${VERSION}_macOS_${MAC_ARCH}.app.tar.gz" "${APP_NAME}"
   )
+
+  # Package into .dmg (Apple Disk Image) with Drag-and-Drop to /Applications
+  local DMG_STAGE="dist/dmg-${MAC_ARCH}"
+  rm -rf "${DMG_STAGE}"
+  mkdir -p "${DMG_STAGE}"
+  cp -R "${APP_DIR}" "${DMG_STAGE}/"
+  ln -s /Applications "${DMG_STAGE}/Applications"
+
+  if command -v genisoimage >/dev/null 2>&1; then
+    echo "==> Creating macOS DMG (${MAC_ARCH})..."
+    genisoimage -V "Limoni Voice" -D -R -apple -no-pad -quiet -o "release_assets/Limoni-Voice_${VERSION}_macOS_${MAC_ARCH}.dmg" "${DMG_STAGE}"
+  elif command -v mkisofs >/dev/null 2>&1; then
+    echo "==> Creating macOS DMG (${MAC_ARCH})..."
+    mkisofs -V "Limoni Voice" -D -R -apple -no-pad -quiet -o "release_assets/Limoni-Voice_${VERSION}_macOS_${MAC_ARCH}.dmg" "${DMG_STAGE}"
+  elif command -v hdiutil >/dev/null 2>&1; then
+    echo "==> Creating macOS DMG (${MAC_ARCH})..."
+    hdiutil create -volname "Limoni Voice" -srcfolder "${DMG_STAGE}" -ov -format UDZO "release_assets/Limoni-Voice_${VERSION}_macOS_${MAC_ARCH}.dmg"
+  fi
 }
 
 build_macos_app "darwin-arm64" "arm64"

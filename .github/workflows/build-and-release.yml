@@ -26,6 +26,11 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Install System Packaging Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y genisoimage zip
+
       - name: Build Packages
         run: bash scripts/build_packages.sh
 
