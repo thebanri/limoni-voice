@@ -52,8 +52,82 @@ tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg
 cp dist/linux-arm64/limoni-voice README.md microphone.obj dist/pkg-linux-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
-# 6. Package macOS Tarballs & Zips (.tar.gz & .zip)
-echo "==> Packaging macOS Tarballs..."
+# 6. Package macOS Native Application Bundles (.app.zip & .app.tar.gz)
+build_macos_app() {
+  local ARCH=$1
+  local MAC_ARCH=$2
+  local APP_NAME="Limoni Voice.app"
+  local APP_DIR="dist/app-${MAC_ARCH}/${APP_NAME}"
+
+  echo "==> Building macOS Application Bundle (${MAC_ARCH})..."
+  rm -rf "dist/app-${MAC_ARCH}"
+  mkdir -p "${APP_DIR}/Contents/MacOS"
+  mkdir -p "${APP_DIR}/Contents/Resources"
+
+  cp "dist/${ARCH}/limoni-voice" "${APP_DIR}/Contents/MacOS/limoni-voice"
+  chmod 755 "${APP_DIR}/Contents/MacOS/limoni-voice"
+  cp README.md microphone.obj "${APP_DIR}/Contents/MacOS/"
+
+  cat <<PLIST_EOF > "${APP_DIR}/Contents/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>limoni-voice-launcher</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.thebanri.limonivoice</string>
+    <key>CFBundleName</key>
+    <string>Limoni Voice</string>
+    <key>CFBundleDisplayName</key>
+    <string>Limoni Voice</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${RAW_VERSION}</string>
+    <key>CFBundleVersion</key>
+    <string>${RAW_VERSION}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Limoni Voice requires microphone access for real-time P2P encrypted voice chat.</string>
+</dict>
+</plist>
+PLIST_EOF
+
+  echo -n "APPL????" > "${APP_DIR}/Contents/PkgInfo"
+
+  cat <<'LAUNCHER_EOF' > "${APP_DIR}/Contents/MacOS/limoni-voice-launcher"
+#!/bin/sh
+DIR="$(cd "$(dirname "$0")" && pwd)"
+osascript <<EOF
+tell application "Terminal"
+    activate
+    do script "cd \"$DIR\" && clear && \"$DIR/limoni-voice\"; exit"
+end tell
+EOF
+LAUNCHER_EOF
+  chmod 755 "${APP_DIR}/Contents/MacOS/limoni-voice-launcher"
+
+  # Package into .app.zip and .app.tar.gz
+  (
+    cd "dist/app-${MAC_ARCH}"
+    if command -v zip >/dev/null 2>&1; then
+      zip -r -y "../../release_assets/Limoni-Voice_${VERSION}_macOS_${MAC_ARCH}.app.zip" "${APP_NAME}"
+    elif command -v 7z >/dev/null 2>&1; then
+      7z a -tzip "../../release_assets/Limoni-Voice_${VERSION}_macOS_${MAC_ARCH}.app.zip" "${APP_NAME}"
+    fi
+    tar -czf "../../release_assets/Limoni-Voice_${VERSION}_macOS_${MAC_ARCH}.app.tar.gz" "${APP_NAME}"
+  )
+}
+
+build_macos_app "darwin-arm64" "arm64"
+build_macos_app "darwin-amd64" "amd64"
+
+# 7. Package macOS CLI Tarballs & Zips
+echo "==> Packaging macOS CLI Binaries..."
 mkdir -p dist/pkg-darwin-arm64 dist/pkg-darwin-amd64
 cp dist/darwin-arm64/limoni-voice README.md microphone.obj dist/pkg-darwin-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_arm64.tar.gz" -C dist/pkg-darwin-arm64 .
@@ -61,12 +135,7 @@ tar -czf "release_assets/limoni-voice_${VERSION}_darwin_arm64.tar.gz" -C dist/pk
 cp dist/darwin-amd64/limoni-voice README.md microphone.obj dist/pkg-darwin-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_amd64.tar.gz" -C dist/pkg-darwin-amd64 .
 
-if command -v zip >/dev/null 2>&1; then
-  zip -j "release_assets/limoni-voice_${VERSION}_darwin_arm64.zip" dist/pkg-darwin-arm64/*
-  zip -j "release_assets/limoni-voice_${VERSION}_darwin_amd64.zip" dist/pkg-darwin-amd64/*
-fi
-
-# 7. Package Windows Standalone EXEs & Zips
+# 8. Package Windows Standalone EXEs & Zips
 echo "==> Packaging Windows Binaries..."
 cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_amd64.exe"
 cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
@@ -77,9 +146,13 @@ if command -v zip >/dev/null 2>&1; then
   zip -j "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
   cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
   zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
+elif command -v 7z >/dev/null 2>&1; then
+  7z a -tzip "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
+  cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
+  7z a -tzip "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
 fi
 
-# 8. Build Debian Packages (.deb)
+# 9. Build Debian Packages (.deb)
 build_deb() {
   local ARCH=$1
   local DEB_ARCH=$2
@@ -127,7 +200,7 @@ CONTROL_EOF
 build_deb "linux-amd64" "amd64"
 build_deb "linux-arm64" "arm64"
 
-# 9. Generate Checksums
+# 10. Generate Checksums
 echo "==> Generating Checksums..."
 cd release_assets
 sha256sum * > checksums.txt || true
