@@ -428,7 +428,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsSendCh := make(chan []byte, 128)
+		wsSendCh := make(chan []byte, 16)
 		n.mu.Lock()
 		n.wsSendCh = wsSendCh
 		n.mu.Unlock()
@@ -845,6 +845,10 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 	}
 }
 
+var (
+	silenceHangover int
+)
+
 func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
 	n.mu.RLock()
 	if !n.IsConnected || len(n.Peers) == 0 {
@@ -855,6 +859,19 @@ func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
 	n.seqCounter++
 	seq := n.seqCounter
 	n.mu.RUnlock()
+
+	// DTX (Discontinuous Transmission): Do not flood network with 50 pkts/sec when silent.
+	// Allow 5 hangover frames (~100ms) to ensure natural word endings, then pause audio transmission.
+	if speaking {
+		silenceHangover = 5
+	} else {
+		if silenceHangover > 0 {
+			silenceHangover--
+		} else {
+			// Silent and hangover expired: do not transmit empty 700-byte packets to prevent bufferbloat
+			return
+		}
+	}
 
 	pkt := P2PPacket{
 		Type:       PacketAudio,
@@ -1523,12 +1540,12 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			nowMs := time.Now().UnixMilli()
 			rtt := nowMs - pkt.Timestamp
-			if rtt >= 0 && rtt < 10000 {
+			if rtt >= 0 && rtt < 3000 {
 				if peer.PingMs == 0 {
 					peer.PingMs = rtt
 				} else {
-					// Exponential Moving Average filter (70% previous + 30% current)
-					peer.PingMs = int64(float64(peer.PingMs)*0.70 + float64(rtt)*0.30)
+					// Exponential Moving Average filter (80% previous + 20% current sample)
+					peer.PingMs = int64(float64(peer.PingMs)*0.80 + float64(rtt)*0.20)
 				}
 			}
 		}

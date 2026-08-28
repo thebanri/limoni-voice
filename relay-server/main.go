@@ -106,7 +106,7 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		conn:     conn,
 		publicIP: clientIP,
-		sendCh:   make(chan []byte, 128),
+		sendCh:   make(chan []byte, 16),
 	}
 
 	// Start write pump
