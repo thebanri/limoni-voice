@@ -70,21 +70,32 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	remoteAddr := r.RemoteAddr
+	log.Printf("[🌐] New connection established from %s", remoteAddr)
+
 	client := &Client{
 		conn:   conn,
-		sendCh: make(chan []byte, 64),
+		sendCh: make(chan []byte, 128),
 	}
 
 	// Start write pump
 	go client.writePump()
 
 	defer func() {
+		log.Printf("[🔌] Connection closed for %s (%s)", client.nickname, remoteAddr)
 		s.removeClient(client)
 		conn.Close()
 	}()
 
-	// Set read deadline and pong handler for keepalive
+	// Set read deadline and handlers for keepalive
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPingHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		client.mu.Lock()
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+		client.mu.Unlock()
+		return err
+	})
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
@@ -94,10 +105,13 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				log.Printf("Client disconnected unexpectedly: %v", err)
+				log.Printf("Client disconnected: %v", err)
 			}
 			return
 		}
+
+		// Refresh deadline on valid message
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 		switch msgType {
 		case websocket.TextMessage:
@@ -117,6 +131,8 @@ func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 		sendControlMessage(client, ControlMessage{Type: "error", Message: "Gecersiz JSON mesaji"})
 		return
 	}
+
+	log.Printf("[📩] Control message '%s' from %s (%s) for room '%s'", msg.Type, msg.Nickname, msg.SenderID, msg.RoomCode)
 
 	switch msg.Type {
 	case "host_room":

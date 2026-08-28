@@ -97,6 +97,9 @@ func main() {
 
 	node.OnLog = func(msg string) {
 		room.AddLog(msg)
+		if currentScreen == ScreenLobby {
+			lobby.SetToast(msg)
+		}
 	}
 
 	// Room Transition Helpers

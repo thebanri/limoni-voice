@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"os"
 	"sync"
@@ -1126,18 +1125,48 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		return
 	}
 
-	// Replay and stale packet validation (max 15 seconds window)
-	nowMs := time.Now().UnixMilli()
-	if math.Abs(float64(nowMs-pkt.Timestamp)) > 15000 {
-		return
+	// Auto-register or refresh peer on any valid authenticated packet from this room
+	if pkt.Type != PacketJoinRequest && pkt.Type != PacketRoomFull && pkt.Type != PacketLeave {
+		if n.IsConnected {
+			peer, exists := n.Peers[pkt.SenderID]
+			if !exists {
+				if len(n.Peers) < MaxPeers-1 {
+					nick := pkt.Nickname
+					if nick == "" {
+						nick = "User_" + pkt.SenderID[:min(len(pkt.SenderID), 4)]
+					}
+					peer = &PeerInfo{
+						ID:         pkt.SenderID,
+						Nickname:   nick,
+						Addr:       raddr,
+						LastSeen:   time.Now(),
+						IsMuted:    pkt.IsMuted,
+						IsDeafened: pkt.IsDeafened,
+					}
+					n.Peers[pkt.SenderID] = peer
+					n.log(fmt.Sprintf("[+] %s ile baglanti kuruldu. (E2EE Guvenli)", nick))
+					if n.OnPeerEvent != nil {
+						go n.OnPeerEvent("join", peer)
+					}
+				}
+			} else {
+				if raddr != nil {
+					peer.Addr = raddr
+				}
+				peer.LastSeen = time.Now()
+				if pkt.Nickname != "" {
+					peer.Nickname = pkt.Nickname
+				}
+				peer.IsMuted = pkt.IsMuted
+				peer.IsDeafened = pkt.IsDeafened
+			}
+		}
 	}
 
 	switch pkt.Type {
 	case PacketJoinRequest:
 		// Only an active Host of this exact room code can admit joiners
 		if !n.IsConnected || !n.IsHost {
-			// If we're a Joiner still searching, send our JoinRequest directly back to the requester's address
-			// (might be another joiner who thought we were host — just ignore)
 			return
 		}
 
@@ -1230,37 +1259,6 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 		if !n.IsConnected {
 			return
-		}
-
-		// Check peer limit
-		if len(n.Peers) >= MaxPeers-1 && n.Peers[pkt.SenderID] == nil {
-			n.log(fmt.Sprintf("Oda dolu! (%s katilamadi)", pkt.Nickname))
-			return
-		}
-
-		peer, exists := n.Peers[pkt.SenderID]
-		if !exists {
-			peer = &PeerInfo{
-				ID:         pkt.SenderID,
-				Nickname:   pkt.Nickname,
-				Addr:       raddr,
-				LastSeen:   time.Now(),
-				IsMuted:    pkt.IsMuted,
-				IsDeafened: pkt.IsDeafened,
-			}
-			n.Peers[pkt.SenderID] = peer
-			n.log(fmt.Sprintf("[+] %s odaya katildi! (E2EE Guvenli)", pkt.Nickname))
-			if n.OnPeerEvent != nil {
-				go n.OnPeerEvent("join", peer)
-			}
-		} else {
-			if raddr != nil {
-				peer.Addr = raddr
-			}
-			peer.LastSeen = time.Now()
-			peer.Nickname = pkt.Nickname
-			peer.IsMuted = pkt.IsMuted
-			peer.IsDeafened = pkt.IsDeafened
 		}
 
 		// Reply with Welcome and existing peers list
@@ -1359,32 +1357,6 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			return
 		}
 
-		peer, exists := n.Peers[pkt.SenderID]
-		if !exists {
-			if len(n.Peers) < MaxPeers-1 {
-				peer = &PeerInfo{
-					ID:         pkt.SenderID,
-					Nickname:   pkt.Nickname,
-					Addr:       raddr,
-					LastSeen:   time.Now(),
-					IsMuted:    pkt.IsMuted,
-					IsDeafened: pkt.IsDeafened,
-				}
-				n.Peers[pkt.SenderID] = peer
-				n.log(fmt.Sprintf("[+] %s ile baglanti kuruldu. (E2EE Guvenli)", pkt.Nickname))
-				if n.OnPeerEvent != nil {
-					go n.OnPeerEvent("join", peer)
-				}
-			}
-		} else {
-			if raddr != nil {
-				peer.Addr = raddr
-			}
-			peer.LastSeen = time.Now()
-			peer.IsMuted = pkt.IsMuted
-			peer.IsDeafened = pkt.IsDeafened
-		}
-
 		// Connect to other peers reported in Welcome packet (mesh topology)
 		for _, pSum := range pkt.Peers {
 			if pSum.ID != n.LocalID && n.Peers[pSum.ID] == nil && len(n.Peers) < MaxPeers-1 {
@@ -1434,15 +1406,11 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketPing:
-		if peer, exists := n.Peers[pkt.SenderID]; exists {
-			peer.LastSeen = time.Now()
-			peer.IsMuted = pkt.IsMuted
-			peer.IsDeafened = pkt.IsDeafened
-		}
 		pong := P2PPacket{
 			Type:       PacketPong,
 			RoomCode:   n.RoomCode,
 			SenderID:   n.LocalID,
+			Nickname:   n.Nickname,
 			IsMuted:    n.audio.Muted,
 			IsDeafened: n.audio.Deafened,
 			Timestamp:  pkt.Timestamp, // Echo timestamp
@@ -1451,30 +1419,22 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 
 	case PacketPong:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
-			peer.LastSeen = time.Now()
-			peer.IsMuted = pkt.IsMuted
-			peer.IsDeafened = pkt.IsDeafened
-			peer.PingMs = time.Now().UnixMilli() - pkt.Timestamp
-			if peer.PingMs < 0 {
+			nowMs := time.Now().UnixMilli()
+			peer.PingMs = nowMs - pkt.Timestamp
+			if peer.PingMs < 0 || peer.PingMs > 5000 {
 				peer.PingMs = 0
 			}
 		}
 
 	case PacketAudio:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
-			peer.LastSeen = time.Now()
-			peer.IsMuted = pkt.IsMuted
-			peer.IsDeafened = pkt.IsDeafened
 			peer.Speaking = pkt.Speaking
 			peer.RMS = pkt.RMS
 			n.audio.PlayPeerPCM(pkt.SenderID, pkt.Payload, pkt.RMS, pkt.Speaking)
 		}
 
 	case PacketMuteState:
-		if peer, exists := n.Peers[pkt.SenderID]; exists {
-			peer.IsMuted = pkt.IsMuted
-			peer.IsDeafened = pkt.IsDeafened
-		}
+		// handled by auto-register / refresh at top
 
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
