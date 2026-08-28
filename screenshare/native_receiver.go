@@ -11,23 +11,41 @@ import (
 	"sync"
 )
 
-// NativeKittyReceiver implements high-performance in-terminal video streaming via FFmpeg + Go Kitty Engine
-type NativeKittyReceiver struct {
-	cmd       *exec.Cmd
-	ctx       context.Context
-	cancel    context.CancelFunc
-	errCh     chan error
-	doneCh    chan struct{}
-	stopped   bool
-	mu        sync.Mutex
-	targetURL string
+// KittyFrame holds the latest decoded video frame in memory
+type KittyFrame struct {
+	RGB  []byte
+	W    int
+	H    int
+	Left int
+	Top  int
+	Cols int
+	Rows int
 }
 
-// StartNativeKittyReceiver runs FFmpeg to decode MPEG-TS into raw RGB24 frames and emits Kitty protocol commands
+var (
+	latestFrameLock sync.RWMutex
+	latestFrame     *KittyFrame
+)
+
+// SetLatestKittyFrame stores the most recent decoded video frame
+func SetLatestKittyFrame(f *KittyFrame) {
+	latestFrameLock.Lock()
+	latestFrame = f
+	latestFrameLock.Unlock()
+}
+
+// ClearLatestKittyFrame clears stored frame and removes Kitty graphics from terminal
+func ClearLatestKittyFrame() {
+	latestFrameLock.Lock()
+	latestFrame = nil
+	latestFrameLock.Unlock()
+	_, _ = os.Stdout.Write([]byte("\x1b_Ga=d,d=A\x1b\\"))
+}
+
+// StartNativeKittyReceiver runs FFmpeg to decode MPEG-TS into raw RGB24 frames and buffers them in memory
 func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions) (*Session, error) {
 	ffmpegPath, err := FindExecutable("ffmpeg")
 	if err != nil {
-		// Fallback to mpv if ffmpeg is somehow missing
 		return StartReceiving(ctx, port, opt)
 	}
 
@@ -77,10 +95,10 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 		return nil, fmt.Errorf("failed to start ffmpeg native receiver: %w", err)
 	}
 
-	// Reader goroutine: pipe raw RGB frames to terminal using Kitty protocol with ANSI cursor placement
+	// Background reader goroutine: decodes raw RGB frames and updates latestFrame buffer
 	go func() {
 		defer close(s.doneCh)
-		frameBuf := make([]byte, frameBytes)
+		defer ClearLatestKittyFrame()
 
 		for {
 			select {
@@ -89,6 +107,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 			default:
 			}
 
+			frameBuf := make([]byte, frameBytes)
 			_, err := io.ReadFull(stdoutPipe, frameBuf)
 			if err != nil {
 				if sessionCtx.Err() == nil && err != io.EOF {
@@ -104,26 +123,55 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 				return
 			}
 
-			// Render directly to terminal via Kitty Graphics Protocol at exact (Top, Left) cell
-			EmitKittyRGBFrame(frameBuf, frameW, frameH, opt.Left, opt.Top, opt.Cols, opt.Rows)
+			// Store latest frame for synchronized TUI rendering
+			SetLatestKittyFrame(&KittyFrame{
+				RGB:  frameBuf,
+				W:    frameW,
+				H:    frameH,
+				Left: opt.Left,
+				Top:  opt.Top,
+				Cols: opt.Cols,
+				Rows: opt.Rows,
+			})
 		}
 	}()
 
 	return s, nil
 }
 
-// EmitKittyRGBFrame emits a single 24-bit RGB frame to stdout using Kitty Graphics Protocol with ANSI cursor positioning
-func EmitKittyRGBFrame(rgb []byte, w, h, left, top, cols, rows int) {
-	encoded := base64.StdEncoding.EncodeToString(rgb)
+// RenderLatestKittyFrame is called synchronously by the Limoni TUI render loop to draw the current video frame
+func RenderLatestKittyFrame(left, top, cols, rows int) {
+	latestFrameLock.RLock()
+	frame := latestFrame
+	latestFrameLock.RUnlock()
+
+	if frame == nil || len(frame.RGB) == 0 {
+		return
+	}
+
+	if left <= 0 {
+		left = frame.Left
+	}
+	if top <= 0 {
+		top = frame.Top
+	}
+	if cols <= 0 {
+		cols = frame.Cols
+	}
+	if rows <= 0 {
+		rows = frame.Rows
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(frame.RGB)
 	chunkSize := 4096
 	total := len(encoded)
 
 	var sb bytes.Buffer
 
-	// 1. Save cursor position (\x1b7) and move directly to (Top, Left) cell (\x1b[Top;LeftH)
-	fmt.Fprintf(&sb, "\x1b7\x1b[%d;%dH", top, left)
+	// 1. Synchronized update start (\x1b[?2025h) + save cursor (\x1b7) + move to (top, left)
+	fmt.Fprintf(&sb, "\x1b[?2025h\x1b7\x1b[%d;%dH", top, left)
 
-	// 2. Emit Kitty Graphics chunk sequence
+	// 2. Transmit Kitty Graphics payload
 	for i := 0; i < total; i += chunkSize {
 		end := i + chunkSize
 		m := 1
@@ -133,22 +181,16 @@ func EmitKittyRGBFrame(rgb []byte, w, h, left, top, cols, rows int) {
 		}
 		chunk := encoded[i:end]
 		if i == 0 {
-			// a=T (Transmit and display)
-			// f=24 (24-bit raw RGB)
-			// s=w, v=h (Source pixel dimensions)
-			// c=cols, r=rows (Grid dimensions - scaled strictly to fit!)
-			// i=1 (Fixed image ID to overwrite previous frame without flickering/mouse trails)
-			// q=2 (Quiet mode: no responses from terminal)
-			// C=1 (Do not advance cursor)
+			// a=T, f=24, s=W, v=H, c=cols, r=rows, i=1, q=2, C=1
 			fmt.Fprintf(&sb, "\x1b_Ga=T,f=24,s=%d,v=%d,c=%d,r=%d,i=1,q=2,C=1,m=%d;%s\x1b\\",
-				w, h, cols, rows, m, chunk)
+				frame.W, frame.H, cols, rows, m, chunk)
 		} else {
 			fmt.Fprintf(&sb, "\x1b_Gm=%d;%s\x1b\\", m, chunk)
 		}
 	}
 
-	// 3. Restore original cursor position (\x1b8)
-	sb.WriteString("\x1b8")
+	// 3. Restore cursor (\x1b8) + synchronized update end (\x1b[?2025l)
+	sb.WriteString("\x1b8\x1b[?2025l")
 
 	_, _ = os.Stdout.Write(sb.Bytes())
 }
