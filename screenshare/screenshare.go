@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -67,11 +69,59 @@ type Session struct {
 	mu        sync.Mutex
 }
 
+// FindExecutable searches for a binary in PATH, next to current executable, in ~/.limoni-voice/bin/, and common Windows paths
+func FindExecutable(name string) (string, error) {
+	// 1. Check system PATH
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+
+	exts := []string{""}
+	if runtime.GOOS == "windows" {
+		exts = []string{".exe", ""}
+	}
+
+	searchDirs := []string{}
+
+	// 2. Next to running executable
+	if execPath, err := os.Executable(); err == nil {
+		searchDirs = append(searchDirs, filepath.Dir(execPath))
+	}
+
+	// 3. User app cache directory (~/.limoni-voice/bin)
+	if home, err := os.UserHomeDir(); err == nil {
+		searchDirs = append(searchDirs, filepath.Join(home, ".limoni-voice", "bin"))
+		searchDirs = append(searchDirs, filepath.Join(home, "AppData", "Local", "limoni-voice", "bin"))
+	}
+
+	// 4. Common Windows installer directories
+	if runtime.GOOS == "windows" {
+		searchDirs = append(searchDirs,
+			`C:\ffmpeg\bin`,
+			`C:\ProgramData\chocolatey\bin`,
+			`C:\Program Files\mpv`,
+			`C:\Program Files (x86)\mpv`,
+			`C:\tools\ffmpeg\bin`,
+		)
+	}
+
+	for _, dir := range searchDirs {
+		for _, ext := range exts {
+			candidate := filepath.Join(dir, name+ext)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("executable '%s' not found", name)
+}
+
 // CheckDependencies checks for required tools based on current OS and roles
 func CheckDependencies() DependencyStatus {
-	_, errMpv := exec.LookPath("mpv")
-	_, errGSR := exec.LookPath("gpu-screen-recorder")
-	_, errFFmpeg := exec.LookPath("ffmpeg")
+	_, errMpv := FindExecutable("mpv")
+	_, errGSR := FindExecutable("gpu-screen-recorder")
+	_, errFFmpeg := FindExecutable("ffmpeg")
 
 	status := DependencyStatus{
 		HasMPV:               errMpv == nil,
@@ -106,14 +156,14 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	targetURL := fmt.Sprintf("udp://%s:%d?pkt_size=1316", targetIP, port)
 
-	var binName string
+	var binPath string
 	var args []string
 
 	switch runtime.GOOS {
 	case "linux":
 		// Check if gpu-screen-recorder is available
-		if _, err := exec.LookPath("gpu-screen-recorder"); err == nil {
-			binName = "gpu-screen-recorder"
+		if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
+			binPath = p
 			windowTarget := opt.WindowID
 			if windowTarget == "" {
 				windowTarget = "portal"
@@ -128,9 +178,9 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c", "mpegts",
 				"-o", targetURL,
 			}
-		} else if _, err := exec.LookPath("ffmpeg"); err == nil {
+		} else if p, err := FindExecutable("ffmpeg"); err == nil {
 			// Fallback to ffmpeg x11grab on Linux
-			binName = "ffmpeg"
+			binPath = p
 			args = []string{
 				"-f", "x11grab",
 				"-framerate", fmt.Sprintf("%d", opt.FPS),
@@ -149,10 +199,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	case "windows":
 		// Windows DXGI Desktop Duplication API via FFmpeg ddagrab
-		if _, err := exec.LookPath("ffmpeg"); err != nil {
-			return nil, errors.New("'ffmpeg' is required on Windows for screen sharing (ddagrab)")
+		p, err := FindExecutable("ffmpeg")
+		if err != nil {
+			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya sistem PATH'ine ekleyin.")
 		}
-		binName = "ffmpeg"
+		binPath = p
 		scaleOpt := fmt.Sprintf("scale=%s", opt.Resolution)
 		args = []string{
 			"-f", "lavfi",
@@ -167,11 +218,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 
 	case "darwin":
-		// macOS AVFoundation screen capture via FFmpeg
-		if _, err := exec.LookPath("ffmpeg"); err != nil {
+		p, err := FindExecutable("ffmpeg")
+		if err != nil {
 			return nil, errors.New("'ffmpeg' is required on macOS for screen sharing (avfoundation)")
 		}
-		binName = "ffmpeg"
+		binPath = p
 		args = []string{
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
@@ -191,7 +242,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(sessionCtx, binName, args...)
+	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	setupProcessGroup(cmd)
 
 	s := &Session{
@@ -206,7 +257,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to start screen broadcaster (%s): %w", binName, err)
+		return nil, fmt.Errorf("failed to start screen broadcaster (%s): %w", binPath, err)
 	}
 
 	go s.monitor()
@@ -219,8 +270,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		return nil, fmt.Errorf("invalid receiver port: %d", port)
 	}
 
-	if _, err := exec.LookPath("mpv"); err != nil {
-		return nil, errors.New("'mpv' is required to view the screen stream (install via: sudo pacman -S mpv / apt install mpv / choco install mpv)")
+	mpvPath, err := FindExecutable("mpv")
+	if err != nil {
+		return nil, errors.New("'mpv' bulunamadi. Lutfen 'mpv' uygulamasini yukleyin veya 'mpv.exe'yi uygulamanin yanina koyun.")
 	}
 
 	opt := DefaultReceiverOptions()
@@ -251,7 +303,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(sessionCtx, "mpv", args...)
+	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
 	setupProcessGroup(cmd)
 
 	s := &Session{

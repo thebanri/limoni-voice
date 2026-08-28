@@ -57,9 +57,10 @@ type P2PPacket struct {
 	RMS        float64
 	Seq        uint32
 	Timestamp  int64
-	Payload    []byte
-	VideoPort  int           // Port used for UDP screen streaming
-	Peers      []PeerSummary // for Welcome message
+	Payload         []byte
+	IsSharingScreen bool
+	VideoPort       int           // Port used for UDP screen streaming
+	Peers           []PeerSummary // for Welcome message
 }
 
 type PeerSummary struct {
@@ -1558,19 +1559,27 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketPing:
+		if peer, exists := n.Peers[pkt.SenderID]; exists {
+			peer.IsSharingScreen = pkt.IsSharingScreen
+			peer.VideoPort = pkt.VideoPort
+		}
 		pong := P2PPacket{
-			Type:       PacketPong,
-			RoomCode:   n.RoomCode,
-			SenderID:   n.LocalID,
-			Nickname:   n.Nickname,
-			IsMuted:    n.audio.Muted,
-			IsDeafened: n.audio.Deafened,
-			Timestamp:  pkt.Timestamp, // Echo timestamp
+			Type:            PacketPong,
+			RoomCode:        n.RoomCode,
+			SenderID:        n.LocalID,
+			Nickname:        n.Nickname,
+			IsMuted:         n.audio.Muted,
+			IsDeafened:      n.audio.Deafened,
+			IsSharingScreen: n.IsSharingScreen,
+			VideoPort:       n.ScreenSharePort,
+			Timestamp:       pkt.Timestamp, // Echo timestamp
 		}
 		go n.sendPacketTo(raddr, &pong)
 
 	case PacketPong:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
+			peer.IsSharingScreen = pkt.IsSharingScreen
+			peer.VideoPort = pkt.VideoPort
 			nowMs := time.Now().UnixMilli()
 			rtt := nowMs - pkt.Timestamp
 			if rtt >= 0 && rtt < 3000 {
@@ -1666,13 +1675,14 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 	n.mu.Unlock()
 
 	pkt := P2PPacket{
-		Type:      PacketScreenShareStart,
-		RoomCode:  n.RoomCode,
-		SenderID:  n.LocalID,
-		Nickname:  n.Nickname,
-		VideoPort: targetPort,
+		Type:            PacketScreenShareStart,
+		RoomCode:        n.RoomCode,
+		SenderID:        n.LocalID,
+		Nickname:        n.Nickname,
+		IsSharingScreen: true,
+		VideoPort:       targetPort,
 	}
-	go n.sendPacketTo(nil, &pkt)
+	n.broadcastToPeers(&pkt)
 	n.log("📺 Ekran paylasimi baslatildi (60 FPS)")
 
 	go func() {
@@ -1688,12 +1698,14 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 		n.mu.Unlock()
 
 		stopPkt := P2PPacket{
-			Type:     PacketScreenShareStop,
-			RoomCode: n.RoomCode,
-			SenderID: n.LocalID,
-			Nickname: n.Nickname,
+			Type:            PacketScreenShareStop,
+			RoomCode:        n.RoomCode,
+			SenderID:        n.LocalID,
+			Nickname:        n.Nickname,
+			IsSharingScreen: false,
+			VideoPort:       0,
 		}
-		n.sendPacketTo(nil, &stopPkt)
+		n.broadcastToPeers(&stopPkt)
 	}()
 
 	return nil
@@ -1713,12 +1725,14 @@ func (n *P2PNode) StopScreenShare() error {
 	n.IsSharingScreen = false
 
 	stopPkt := P2PPacket{
-		Type:     PacketScreenShareStop,
-		RoomCode: n.RoomCode,
-		SenderID: n.LocalID,
-		Nickname: n.Nickname,
+		Type:            PacketScreenShareStop,
+		RoomCode:        n.RoomCode,
+		SenderID:        n.LocalID,
+		Nickname:        n.Nickname,
+		IsSharingScreen: false,
+		VideoPort:       0,
 	}
-	go n.sendPacketTo(nil, &stopPkt)
+	n.broadcastToPeers(&stopPkt)
 	n.log("⏹️ Ekran paylasimi durduruldu.")
 	return nil
 }
@@ -1802,13 +1816,15 @@ func (n *P2PNode) heartbeatLoop() {
 			}
 
 			pingPkt := P2PPacket{
-				Type:       PacketPing,
-				RoomCode:   n.RoomCode,
-				SenderID:   n.LocalID,
-				Nickname:   n.Nickname,
-				IsMuted:    n.audio.Muted,
-				IsDeafened: n.audio.Deafened,
-				Timestamp:  now.UnixMilli(),
+				Type:            PacketPing,
+				RoomCode:        n.RoomCode,
+				SenderID:        n.LocalID,
+				Nickname:        n.Nickname,
+				IsMuted:         n.audio.Muted,
+				IsDeafened:      n.audio.Deafened,
+				IsSharingScreen: n.IsSharingScreen,
+				VideoPort:       n.ScreenSharePort,
+				Timestamp:       now.UnixMilli(),
 			}
 			go n.sendPacketTo(peer.Addr, &pingPkt)
 		}
