@@ -1104,13 +1104,17 @@ func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
 		return
 	}
 
-	if addr != nil && n.Conn != nil {
-		n.Conn.WriteToUDP(data, addr)
-	} else if isRelay && wsSendCh != nil {
+	// 1. Guaranteed delivery via WebSocket relay (ensures pings and audio never drop over the internet)
+	if isRelay && wsSendCh != nil {
 		select {
 		case wsSendCh <- data:
 		default:
 		}
+	}
+
+	// 2. Also send directly via UDP if destination endpoint is reachable (LAN / P2P hole-punched)
+	if addr != nil && n.Conn != nil {
+		n.Conn.WriteToUDP(data, addr)
 	}
 }
 
@@ -1568,9 +1572,9 @@ func (n *P2PNode) heartbeatLoop() {
 			continue
 		}
 
-		// Check timeouts & send pings (20s timeout for resilient internet connections)
+		// Check timeouts & send pings (45s timeout for resilient internet connections)
 		for id, peer := range n.Peers {
-			if now.Sub(peer.LastSeen) > 20*time.Second {
+			if now.Sub(peer.LastSeen) > 45*time.Second {
 				delete(n.Peers, id)
 				n.log(fmt.Sprintf("[-] %s zaman asimina ugradi.", peer.Nickname))
 				if n.OnPeerEvent != nil {
