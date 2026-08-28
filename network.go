@@ -1782,7 +1782,7 @@ func (n *P2PNode) StopScreenShare() error {
 	return nil
 }
 
-// StartWatchingScreen launches mpv with Kitty graphics to view a peer's stream
+// StartWatchingScreen launches native Go Kitty receiver with FFmpeg to view a peer's stream directly inside the Stage Block
 func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
@@ -1797,7 +1797,14 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	}
 	n.mu.Unlock()
 
-	session, err := screenshare.StartReceiving(context.Background(), port, opts...)
+	var opt screenshare.ReceiverOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	} else {
+		opt = screenshare.DefaultReceiverOptions()
+	}
+
+	session, err := screenshare.StartNativeKittyReceiver(context.Background(), port, opt)
 	if err != nil {
 		return err
 	}
@@ -1806,8 +1813,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	n.receiverSession = session
 	n.IsWatchingScreen = true
 	n.mu.Unlock()
-
-	n.log(fmt.Sprintf("🎬 Kitty terminalinde 60 FPS ekran izleniyor (Port: %d)", port))
+	n.log(fmt.Sprintf("📺 Canli yayin izleyici baslatildi (Port: %d, Native Kitty Engine).", port))
 
 	go func() {
 		select {
