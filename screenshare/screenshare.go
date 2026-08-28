@@ -179,7 +179,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-k", "h264",
 				"-q", opt.Quality,
 				"-tune", "performance",
-				"-keyint", "15",
+				"-keyint", "5",
 				"-c", "mpegts",
 				"-o", targetURL,
 			}
@@ -194,7 +194,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-g", "15",
+				"-g", "5",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
 				targetURL,
@@ -218,7 +218,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-g", "15",
+			"-g", "5",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
 			targetURL,
@@ -293,8 +293,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		streamURL,
 		"--really-quiet",
 		"--no-audio",
-		"--vo=kitty,gpu,x11",
-		"--vo-kitty-use-shm=yes",
+		"--vo=gpu,gpu-next,x11,direct3d,sdl,kitty",
+		"--force-window=yes",
+		"--title=Limoni Voice - Canli Ekran Yayini (60 FPS)",
+		"--autofit=65%x65%",
+		"--keepaspect=yes",
 		"--demuxer-lavf-format=mpegts",
 		"--demuxer-lavf-analyzeduration=0",
 		"--demuxer-lavf-probesize=32",
@@ -306,22 +309,6 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--video-sync=desync",
 		"--vd-lavc-threads=1",
 		"--framedrop=decoder+vo",
-		"--keepaspect=yes",
-	}
-
-	if opt.Left > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-left=%d", opt.Left))
-	}
-	if opt.Top > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-top=%d", opt.Top))
-	}
-	if opt.Cols > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-cols=%d", opt.Cols))
-	}
-	if opt.Rows > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-rows=%d", opt.Rows))
-	} else if opt.Geometry != "" {
-		args = append(args, "--geometry="+opt.Geometry)
 	}
 
 	if len(opt.CustomMpvFlags) > 0 {
@@ -330,7 +317,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = nil // Do not hijack terminal TTY
 	cmd.Stderr = nil // Suppress ffmpeg decoding noise from corrupting TUI
 	setupProcessGroup(cmd)
 
