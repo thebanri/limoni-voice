@@ -24,7 +24,7 @@ import (
 const MaxPeers = 4
 
 // DefaultRelayURL is the default public WebSocket relay server URL
-const DefaultRelayURL = "wss://limoni-voice-relay.onrender.com/ws"
+const DefaultRelayURL = "wss://limoni-voice.onrender.com/ws"
 
 // MagicPrefix identifies authentic Limoni Voice Secure v1 packets
 var MagicPrefix = []byte("LVS1")
