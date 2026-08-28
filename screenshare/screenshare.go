@@ -293,11 +293,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		streamURL,
 		"--really-quiet",
 		"--no-audio",
-		"--vo=gpu,gpu-next,x11,direct3d,sdl,kitty",
-		"--force-window=yes",
-		"--title=Limoni Voice - Canli Ekran Yayini (60 FPS)",
-		"--autofit=65%x65%",
-		"--keepaspect=yes",
+		"--vo=kitty,gpu,x11",
+		"--vo-kitty-use-shm=yes",
 		"--demuxer-lavf-format=mpegts",
 		"--demuxer-lavf-analyzeduration=0",
 		"--demuxer-lavf-probesize=32",
@@ -309,7 +306,21 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--video-sync=desync",
 		"--vd-lavc-threads=1",
 		"--framedrop=decoder+vo",
+		"--keepaspect=yes",
 		"--idle=yes",
+	}
+
+	if opt.Left > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-left=%d", opt.Left))
+	}
+	if opt.Top > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-top=%d", opt.Top))
+	}
+	if opt.Cols > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-cols=%d", opt.Cols))
+	}
+	if opt.Rows > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-rows=%d", opt.Rows))
 	}
 
 	if len(opt.CustomMpvFlags) > 0 {
@@ -318,8 +329,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
-	cmd.Stdout = nil // Do not hijack terminal TTY
-	cmd.Stderr = nil // Suppress ffmpeg decoding noise from corrupting TUI
+	cmd.Stdout = os.Stdout // Kitty escape codes flow directly to terminal block
+	cmd.Stderr = nil       // Suppress ffmpeg decoding noise from corrupting TUI
 	setupProcessGroup(cmd)
 
 	s := &Session{
@@ -354,7 +365,7 @@ func (s *Session) monitor() {
 	close(s.doneCh)
 }
 
-// Stop terminates the subprocess and its children cleanly and immediately without blocking UI
+// Stop terminates the subprocess and cleans up terminal graphics
 func (s *Session) Stop() error {
 	s.mu.Lock()
 	if s.stopped {
@@ -365,6 +376,9 @@ func (s *Session) Stop() error {
 	s.mu.Unlock()
 
 	s.cancel()
+
+	// Clean up Kitty terminal graphics immediately
+	_, _ = os.Stdout.WriteString("\x1b_Ga=d,d=A\x1b\\")
 
 	// Terminate process group instantly in background
 	if s.cmd != nil && s.cmd.Process != nil {
