@@ -287,7 +287,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		opt = opts[0]
 	}
 
-	streamURL := fmt.Sprintf("udp://0.0.0.0:%d", port)
+	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?reuse=1&pkt_size=1316&buffer_size=65536", port)
 
 	args := []string{
 		streamURL,
@@ -309,6 +309,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--video-sync=desync",
 		"--vd-lavc-threads=1",
 		"--framedrop=decoder+vo",
+		"--idle=yes",
 	}
 
 	if len(opt.CustomMpvFlags) > 0 {
