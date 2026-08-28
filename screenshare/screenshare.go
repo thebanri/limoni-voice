@@ -284,8 +284,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	args := []string{
 		"--title=Limoni Voice - Canli Ekran Yayini (60 FPS)",
-		"--vo=kitty,gpu,gpu-next,direct3d,x11,tct",
-		"--force-window=immediate",
+		"--vo=gpu,gpu-next,x11,direct3d,sdl,kitty",
+		"--force-window=yes",
+		"--no-terminal",
+		"--autofit=65%",
+		"--keepaspect=yes",
 		"--video-sync=desync",
 		"--no-audio",
 		"--vd-lavc-threads=1",
