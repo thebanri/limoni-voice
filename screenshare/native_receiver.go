@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 )
 
-// StartNativeKittyReceiver runs FFmpeg to decode MPEG-TS into raw RGB24 frames and streams directly to Kitty terminal
+// StartNativeKittyReceiver runs FFmpeg to decode MPEG-TS and streams via Zero-Copy Double-Buffered SHM to Kitty
 func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions) (*Session, error) {
 	ffmpegPath, err := FindExecutable("ffmpeg")
 	if err != nil {
@@ -63,14 +65,28 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 		return nil, fmt.Errorf("failed to start ffmpeg native receiver: %w", err)
 	}
 
-	// Reader goroutine: streams raw RGB frames directly to Kitty terminal without cursor collisions
+	// Prepare zero-copy double-buffer file paths in RAM disk (/dev/shm on Linux or TempDir)
+	shmDir := "/dev/shm"
+	if runtime.GOOS == "windows" || !dirExists(shmDir) {
+		shmDir = os.TempDir()
+	}
+	shmFile1 := filepath.Join(shmDir, "tty-graphics-protocol-video-1.raw")
+	shmFile2 := filepath.Join(shmDir, "tty-graphics-protocol-video-2.raw")
+
+	b64Path1 := base64.StdEncoding.EncodeToString([]byte(shmFile1))
+	b64Path2 := base64.StdEncoding.EncodeToString([]byte(shmFile2))
+
+	// Reader goroutine: streams via Double-Buffered SHM
 	go func() {
 		defer close(s.doneCh)
 		defer func() {
 			_, _ = os.Stdout.Write([]byte("\x1b_Ga=d,d=A\x1b\\"))
+			_ = os.Remove(shmFile1)
+			_ = os.Remove(shmFile2)
 		}()
 
 		frameBuf := make([]byte, frameBytes)
+		currentBuffer := 1
 
 		for {
 			select {
@@ -94,16 +110,36 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 				return
 			}
 
-			// Transmit frame directly to Kitty GPU texture buffer
-			DirectEmitKittyRGBFrame(frameBuf, frameW, frameH, opt.Left, opt.Top, opt.Cols, opt.Rows)
+			// Alternate between buffer 1 and 2 (Double Buffering)
+			var targetFile, b64Path string
+			var newID, oldID int
+			if currentBuffer == 1 {
+				targetFile = shmFile1
+				b64Path = b64Path1
+				newID = 1
+				oldID = 2
+				currentBuffer = 2
+			} else {
+				targetFile = shmFile2
+				b64Path = b64Path2
+				newID = 2
+				oldID = 1
+				currentBuffer = 1
+			}
+
+			// 1. Write raw bytes to RAM disk file (extremely fast, ~0.1ms)
+			_ = os.WriteFile(targetFile, frameBuf, 0600)
+
+			// 2. Transmit tiny command to Kitty (Zero-Copy, 0% CPU, instant GPU render)
+			EmitSHMKittyFrame(b64Path, frameW, frameH, opt.Left, opt.Top, opt.Cols, opt.Rows, newID, oldID)
 		}
 	}()
 
 	return s, nil
 }
 
-// DirectEmitKittyRGBFrame emits a single 24-bit RGB frame to stdout using Kitty Graphics Protocol
-func DirectEmitKittyRGBFrame(rgb []byte, w, h, left, top, cols, rows int) {
+// EmitSHMKittyFrame sends an atomic double-buffered zero-copy Kitty escape sequence
+func EmitSHMKittyFrame(b64Path string, w, h, left, top, cols, rows, newID, oldID int) {
 	if left <= 0 {
 		left = 32
 	}
@@ -117,34 +153,32 @@ func DirectEmitKittyRGBFrame(rgb []byte, w, h, left, top, cols, rows int) {
 		rows = 22
 	}
 
-	encoded := base64.StdEncoding.EncodeToString(rgb)
-	chunkSize := 4096
-	total := len(encoded)
-
 	var sb bytes.Buffer
 
-	// Save cursor and move to top-left cell of the stage
+	// Move cursor to stage top-left
 	fmt.Fprintf(&sb, "\x1b7\x1b[%d;%dH", top, left)
 
-	for i := 0; i < total; i += chunkSize {
-		end := i + chunkSize
-		m := 1
-		if end >= total {
-			end = total
-			m = 0
-		}
-		chunk := encoded[i:end]
-		if i == 0 {
-			// a=T, f=24, s=w, v=h, c=cols, r=rows, i=1, q=2, C=1
-			fmt.Fprintf(&sb, "\x1b_Ga=T,f=24,s=%d,v=%d,c=%d,r=%d,i=1,q=2,C=1,m=%d;%s\x1b\\",
-				w, h, cols, rows, m, chunk)
-		} else {
-			fmt.Fprintf(&sb, "\x1b_Gm=%d;%s\x1b\\", m, chunk)
-		}
-	}
+	// a=T (Transmit and display)
+	// t=f (Read from temporary file / SHM)
+	// f=24 (24-bit raw RGB)
+	// s=w, v=h (Source dimensions)
+	// c=cols, r=rows (Grid bounds)
+	// i=newID (Image ID)
+	// q=2 (Quiet mode)
+	// C=1 (Do not move cursor)
+	fmt.Fprintf(&sb, "\x1b_Ga=T,t=f,f=24,s=%d,v=%d,c=%d,r=%d,i=%d,q=2,C=1;%s\x1b\\",
+		w, h, cols, rows, newID, b64Path)
+
+	// Delete old buffer image to keep terminal memory pristine
+	fmt.Fprintf(&sb, "\x1b_Ga=d,d=i,i=%d,q=2\x1b\\", oldID)
 
 	// Restore cursor
 	sb.WriteString("\x1b8")
 
 	_, _ = os.Stdout.Write(sb.Bytes())
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
