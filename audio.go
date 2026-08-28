@@ -254,6 +254,12 @@ func (a *AudioEngine) Stop() {
 }
 
 func (a *AudioEngine) startCapture(onFrame func(rms float64, speaking bool, pcm []byte)) {
+	// 1. Try native Windows audio capture (winmm waveIn)
+	if a.startWindowsCapture(onFrame) {
+		return
+	}
+
+	// 2. Try Linux/macOS command-line capture tools
 	var cmd *exec.Cmd
 	if p, err := exec.LookPath("parec"); err == nil {
 		cmd = exec.Command(p, "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
@@ -570,6 +576,12 @@ func (a *AudioEngine) fallbackSimulatedLoop(onFrame func(rms float64, speaking b
 }
 
 func (a *AudioEngine) startPlayback() {
+	// 1. Try native Windows audio playback (winmm waveOut)
+	if a.startWindowsPlayback() {
+		return
+	}
+
+	// 2. Try Linux/macOS command-line playback tools
 	var cmd *exec.Cmd
 	if p, err := exec.LookPath("pacat"); err == nil {
 		cmd = exec.Command(p, "--playback", "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
