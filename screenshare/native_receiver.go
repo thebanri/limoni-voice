@@ -33,8 +33,8 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 
 	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?reuse=1&pkt_size=1316&buffer_size=131072", port)
 
-	frameW := 480
-	frameH := 270
+	frameW := 854
+	frameH := 480
 	frameBytes := frameW * frameH * 3
 
 	args := []string{
@@ -47,7 +47,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 		"-vf", fmt.Sprintf("scale=%d:%d", frameW, frameH),
 		"-f", "rawvideo",
 		"-pix_fmt", "rgb24",
-		"-r", "30",
+		"-r", "60",
 		"-",
 	}
 
@@ -77,7 +77,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 		return nil, fmt.Errorf("failed to start ffmpeg native receiver: %w", err)
 	}
 
-	// Reader goroutine: pipe raw RGB frames to terminal using Kitty protocol
+	// Reader goroutine: pipe raw RGB frames to terminal using Kitty protocol with ANSI cursor placement
 	go func() {
 		defer close(s.doneCh)
 		frameBuf := make([]byte, frameBytes)
@@ -104,7 +104,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 				return
 			}
 
-			// Render directly to terminal via Kitty Graphics Protocol
+			// Render directly to terminal via Kitty Graphics Protocol at exact (Top, Left) cell
 			EmitKittyRGBFrame(frameBuf, frameW, frameH, opt.Left, opt.Top, opt.Cols, opt.Rows)
 		}
 	}()
@@ -112,13 +112,18 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 	return s, nil
 }
 
-// EmitKittyRGBFrame emits a single 24-bit RGB frame to stdout using Kitty Graphics Protocol
+// EmitKittyRGBFrame emits a single 24-bit RGB frame to stdout using Kitty Graphics Protocol with ANSI cursor positioning
 func EmitKittyRGBFrame(rgb []byte, w, h, left, top, cols, rows int) {
 	encoded := base64.StdEncoding.EncodeToString(rgb)
 	chunkSize := 4096
 	total := len(encoded)
 
 	var sb bytes.Buffer
+
+	// 1. Save cursor position (\x1b7) and move directly to (Top, Left) cell (\x1b[Top;LeftH)
+	fmt.Fprintf(&sb, "\x1b7\x1b[%d;%dH", top, left)
+
+	// 2. Emit Kitty Graphics chunk sequence
 	for i := 0; i < total; i += chunkSize {
 		end := i + chunkSize
 		m := 1
@@ -128,17 +133,22 @@ func EmitKittyRGBFrame(rgb []byte, w, h, left, top, cols, rows int) {
 		}
 		chunk := encoded[i:end]
 		if i == 0 {
-			// a=T (Transmit and display immediately)
-			// f=24 (24-bit RGB)
-			// s=width, v=height (pixels)
-			// c=cols, r=rows (cell grid bounds - prevents overflowing)
-			// X=left, Y=top (1-based cell coordinate placement)
-			// C=1 (Do not move cursor)
-			fmt.Fprintf(&sb, "\x1b_Ga=T,f=24,s=%d,v=%d,c=%d,r=%d,X=%d,Y=%d,C=1,m=%d;%s\x1b\\",
-				w, h, cols, rows, left, top, m, chunk)
+			// a=T (Transmit and display)
+			// f=24 (24-bit raw RGB)
+			// s=w, v=h (Source pixel dimensions)
+			// c=cols, r=rows (Grid dimensions - scaled strictly to fit!)
+			// i=1 (Fixed image ID to overwrite previous frame without flickering/mouse trails)
+			// q=2 (Quiet mode: no responses from terminal)
+			// C=1 (Do not advance cursor)
+			fmt.Fprintf(&sb, "\x1b_Ga=T,f=24,s=%d,v=%d,c=%d,r=%d,i=1,q=2,C=1,m=%d;%s\x1b\\",
+				w, h, cols, rows, m, chunk)
 		} else {
 			fmt.Fprintf(&sb, "\x1b_Gm=%d;%s\x1b\\", m, chunk)
 		}
 	}
+
+	// 3. Restore original cursor position (\x1b8)
+	sb.WriteString("\x1b8")
+
 	_, _ = os.Stdout.Write(sb.Bytes())
 }

@@ -456,8 +456,8 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 // CalculateStageVideoBounds computes the exact inner cell bounds for embedding player directly inside Stage Block
 func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
-	cols := int(inner.Width) - 2
-	rows := int(inner.Height) - 2
+	cols := int(inner.Width) - 3
+	rows := int(inner.Height) - 3
 	if cols < 10 {
 		cols = 10
 	}
@@ -465,8 +465,8 @@ func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
 		rows = 4
 	}
 
-	left := int(inner.X) + 1
-	top := int(inner.Y) + 1
+	left := int(inner.X) + 2
+	top := int(inner.Y) + 2
 
 	return screenshare.ReceiverOptions{
 		Left: left,
