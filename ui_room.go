@@ -454,55 +454,25 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 	}
 }
 
-// CalculateStageVideoBounds computes mathematically centered 16:9 terminal cell bounds inside Stage Block
+// CalculateStageVideoBounds computes the exact inner cell bounds for embedding player directly inside Stage Block
 func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
-	// Leave safe margins so borders and headers/footers are NEVER touched
-	availCols := int(inner.Width) - 8
-	availRows := int(inner.Height) - 6
-	if availCols < 10 {
-		availCols = 10
+	cols := int(inner.Width) - 2
+	rows := int(inner.Height) - 2
+	if cols < 10 {
+		cols = 10
 	}
-	if availRows < 4 {
-		availRows = 4
-	}
-
-	// Height-first constraint with terminal cell aspect ratio:
-	// In Kitty terminal font height is ~2.15x font width.
-	// 16:9 aspect ratio in character cells: cols / rows = (16/9) * 2.15 ≈ 3.82
-	idealCols := int(float64(availRows) * 3.82)
-	idealRows := availRows
-
-	// If width exceeds available cols, scale down both
-	if idealCols > availCols {
-		idealCols = availCols
-		idealRows = int(float64(idealCols) / 3.82)
+	if rows < 4 {
+		rows = 4
 	}
 
-	if idealCols < 10 {
-		idealCols = 10
-	}
-	if idealRows < 4 {
-		idealRows = 4
-	}
-
-	// Center horizontally and vertically inside Stage Block
-	offsetX := (int(inner.Width) - idealCols) / 2
-	offsetY := (int(inner.Height) - idealRows) / 2
-	if offsetX < 3 {
-		offsetX = 3
-	}
-	if offsetY < 2 {
-		offsetY = 2
-	}
-
-	left := int(inner.X) + offsetX
-	top := int(inner.Y) + offsetY
+	left := int(inner.X) + 1
+	top := int(inner.Y) + 1
 
 	return screenshare.ReceiverOptions{
 		Left: left,
 		Top:  top,
-		Cols: idealCols,
-		Rows: idealRows,
+		Cols: cols,
+		Rows: rows,
 	}
 }
 
