@@ -45,6 +45,7 @@ type ReceiverOptions struct {
 	VO             string // e.g. "kitty" (default) or "gpu" / "tct"
 	WindowTitle    string // Title for the playback window if applicable
 	KeepAspect     bool
+	Geometry       string // e.g. "65%x80%+33%+12%"
 	CustomMpvFlags []string
 }
 
@@ -53,6 +54,7 @@ func DefaultReceiverOptions() ReceiverOptions {
 	return ReceiverOptions{
 		VO:         "kitty",
 		KeepAspect: true,
+		Geometry:   "66%x82%+33%+12%",
 	}
 }
 
@@ -284,6 +286,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	args := []string{
 		streamURL,
+		"--really-quiet",
 		"--no-audio",
 		"--vo=kitty,gpu,x11",
 		"--vo-kitty-use-shm=yes",
@@ -298,6 +301,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--keepaspect=yes",
 	}
 
+	if opt.Geometry != "" {
+		args = append(args, "--geometry="+opt.Geometry)
+	}
 	if len(opt.CustomMpvFlags) > 0 {
 		args = append(args, opt.CustomMpvFlags...)
 	}
@@ -305,7 +311,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = nil // Suppress ffmpeg decoding noise from corrupting TUI
 	setupProcessGroup(cmd)
 
 	s := &Session{
