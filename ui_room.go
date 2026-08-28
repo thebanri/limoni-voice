@@ -451,8 +451,9 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 // CalculateStageVideoBounds computes mathematically centered 16:9 terminal cell bounds inside Stage Block
 func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
-	availCols := int(inner.Width) - 4
-	availRows := int(inner.Height) - 3
+	// Leave safe margins so borders and headers/footers are NEVER touched
+	availCols := int(inner.Width) - 6
+	availRows := int(inner.Height) - 4
 	if availCols < 10 {
 		availCols = 10
 	}
@@ -460,18 +461,18 @@ func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
 		availRows = 5
 	}
 
-	// Terminal cell aspect ratio: font height is ~2x font width.
-	// 16:9 video requires: rows = cols * (9/16) * 0.5 = cols * 9 / 32
-	idealRows := int(float64(availCols) * (9.0 / 32.0))
-	idealCols := availCols
+	// Height-first constraint with terminal cell aspect ratio:
+	// In Kitty terminal font height is ~2.15x font width.
+	// 16:9 aspect ratio in character cells: cols / rows = (16/9) * 2.15 ≈ 3.82
+	idealCols := int(float64(availRows) * 3.82)
+	idealRows := availRows
 
-	if idealRows > availRows {
-		idealRows = availRows
-		idealCols = int(float64(idealRows) * (32.0 / 9.0))
-		if idealCols > availCols {
-			idealCols = availCols
-		}
+	// If width exceeds available cols, scale down both
+	if idealCols > availCols {
+		idealCols = availCols
+		idealRows = int(float64(idealCols) / 3.82)
 	}
+
 	if idealCols < 10 {
 		idealCols = 10
 	}
@@ -480,11 +481,17 @@ func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
 	}
 
 	// Center horizontally and vertically inside Stage Block
-	offsetX := (availCols - idealCols) / 2
-	offsetY := (availRows - idealRows) / 2
+	offsetX := (int(inner.Width) - idealCols) / 2
+	offsetY := (int(inner.Height) - idealRows) / 2
+	if offsetX < 2 {
+		offsetX = 2
+	}
+	if offsetY < 2 {
+		offsetY = 2
+	}
 
-	left := int(inner.X) + 2 + offsetX
-	top := int(inner.Y) + 2 + offsetY
+	left := int(inner.X) + offsetX
+	top := int(inner.Y) + offsetY
 
 	return screenshare.ReceiverOptions{
 		Left: left,

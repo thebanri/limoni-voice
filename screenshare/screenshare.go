@@ -309,6 +309,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--vd-lavc-threads=1",
 		"--framedrop=decoder+vo",
 		"--keepaspect=yes",
+		"--video-aspect-override=16:9",
+		"--panscan=0.0",
+		"--video-unscaled=no",
 		"--idle=yes",
 	}
 
