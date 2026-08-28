@@ -389,7 +389,8 @@ func (n *P2PNode) LeaveRoom() {
 	}
 }
 
-// connectRelay connects to the WebSocket relay server in the background and sends the initial host/join message
+// connectRelay connects to the WebSocket relay server in the background and sends the initial host/join message.
+// If the connection drops while the room is active, it automatically reconnects.
 func (n *P2PNode) connectRelay(action string, roomCode string) {
 	n.mu.Lock()
 	relayURL := n.RelayURL
@@ -408,23 +409,46 @@ func (n *P2PNode) connectRelay(action string, roomCode string) {
 	}
 	wsCancel := make(chan struct{})
 	n.wsCancel = wsCancel
-	wsSendCh := make(chan []byte, 64)
-	n.wsSendCh = wsSendCh
 	n.mu.Unlock()
 
-	go func() {
+	go n.relayConnectionSupervisor(relayURL, action, roomCode, wsCancel)
+}
+
+func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, cancel chan struct{}) {
+	firstConnect := true
+	for {
+		select {
+		case <-cancel:
+			return
+		default:
+		}
+
+		wsSendCh := make(chan []byte, 128)
+		n.mu.Lock()
+		n.wsSendCh = wsSendCh
+		n.mu.Unlock()
+
 		dialer := websocket.Dialer{
-			HandshakeTimeout: 5 * time.Second,
+			HandshakeTimeout: 6 * time.Second,
 		}
 		conn, _, err := dialer.Dial(relayURL, nil)
 		if err != nil {
-			n.log(fmt.Sprintf("[☁️] Relay sunucusuna ulasilamadi (%s). Yerel ag (LAN) modu devrede.", relayURL))
-			return
+			if firstConnect {
+				n.log(fmt.Sprintf("[☁️] Relay sunucusuna baglanilamadi (%v). LAN modu devrede.", err))
+				firstConnect = false
+			}
+			// Wait before retry
+			select {
+			case <-cancel:
+				return
+			case <-time.After(3 * time.Second):
+				continue
+			}
 		}
 
 		n.mu.Lock()
 		select {
-		case <-wsCancel:
+		case <-cancel:
 			conn.Close()
 			n.mu.Unlock()
 			return
@@ -434,13 +458,19 @@ func (n *P2PNode) connectRelay(action string, roomCode string) {
 		n.isRelayConnected = true
 		n.mu.Unlock()
 
-		n.log(fmt.Sprintf("[☁️] Relay sunucusuna baglanildi (%s | Internet Aktif)", relayURL))
+		if firstConnect {
+			n.log(fmt.Sprintf("[☁️] Relay sunucusuna baglanildi (%s | Internet Aktif)", relayURL))
+			firstConnect = false
+		} else {
+			n.log("[☁️] Relay baglantisi otomatik olarak yeniden kuruldu.")
+		}
 
-		// Start pumps
-		go n.relayWritePump(conn, wsSendCh, wsCancel)
-		go n.relayListenLoop(conn, wsCancel)
+		connCancel := make(chan struct{})
 
-		// Send initial action
+		// Start write pump
+		go n.relayWritePump(conn, wsSendCh, connCancel)
+
+		// Send initial action (host or join)
 		if action == "host" {
 			n.sendRelayControl(RelayControlMessage{
 				Type:     "host_room",
@@ -456,7 +486,32 @@ func (n *P2PNode) connectRelay(action string, roomCode string) {
 				Nickname: n.Nickname,
 			})
 		}
-	}()
+
+		// Run listen loop (blocks until disconnect or cancel)
+		n.relayListenLoop(conn, connCancel)
+
+		close(connCancel)
+		conn.Close()
+
+		n.mu.Lock()
+		if n.wsConn == conn {
+			n.wsConn = nil
+			n.isRelayConnected = false
+		}
+		isActive := n.IsConnected || n.Connecting
+		n.mu.Unlock()
+
+		if !isActive {
+			return
+		}
+
+		// Wait briefly before reconnecting
+		select {
+		case <-cancel:
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 func (n *P2PNode) closeRelay() {
@@ -495,7 +550,7 @@ func (n *P2PNode) sendRelayControlLocked(msg RelayControlMessage) {
 }
 
 func (n *P2PNode) relayWritePump(conn *websocket.Conn, sendCh chan []byte, cancel chan struct{}) {
-	ticker := time.NewTicker(25 * time.Second)
+	ticker := time.NewTicker(20 * time.Second)
 	defer func() {
 		ticker.Stop()
 		conn.Close()
@@ -530,7 +585,18 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, sendCh chan []byte, cance
 
 func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 	defer conn.Close()
+
+	// 60-second read deadline for robust keepalive
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+	conn.SetPingHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		n.wsMu.Lock()
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+		n.wsMu.Unlock()
+		return err
+	})
+
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
@@ -547,6 +613,9 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 		if err != nil {
 			return
 		}
+
+		// Refresh read deadline on every valid packet received
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 		switch msgType {
 		case websocket.TextMessage:
@@ -1419,7 +1488,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 }
 
 func (n *P2PNode) heartbeatLoop() {
-	ticker := time.NewTicker(600 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Second)
 	for range ticker.C {
 		n.mu.Lock()
 		if !n.IsConnected {
@@ -1430,18 +1499,20 @@ func (n *P2PNode) heartbeatLoop() {
 		now := time.Now()
 
 		// If no peers connected yet, keep announcing presence to discover peers
-		// (faster tick so cross-machine joiners can find us)
 		if len(n.Peers) == 0 {
 			n.mu.Unlock()
 			n.broadcastHello()
 			continue
 		}
 
-		// Check timeouts & send pings
+		// Check timeouts & send pings (20s timeout for resilient internet connections)
 		for id, peer := range n.Peers {
-			if now.Sub(peer.LastSeen) > 8*time.Second {
+			if now.Sub(peer.LastSeen) > 20*time.Second {
 				delete(n.Peers, id)
 				n.log(fmt.Sprintf("[-] %s zaman asimina ugradi.", peer.Nickname))
+				if n.OnPeerEvent != nil {
+					go n.OnPeerEvent("leave", peer)
+				}
 				continue
 			}
 

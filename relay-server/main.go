@@ -136,7 +136,7 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 		return
 	}
 
-	// Remove from any existing room
+	// Remove from any previous room
 	s.removeClient(client)
 
 	client.senderID = msg.SenderID
@@ -146,17 +146,27 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 	// Check if room already exists
 	if existing, ok := s.rooms[msg.RoomCode]; ok {
-		existing.mu.RLock()
+		existing.mu.Lock()
+		existingHostID := existing.HostID
 		memberCount := len(existing.Members)
-		existing.mu.RUnlock()
 
-		if memberCount > 0 {
+		// Allow reclaiming if same host reconnecting or room is empty
+		if existingHostID == msg.SenderID || memberCount == 0 {
+			existing.HostID = msg.SenderID
+			existing.Members[msg.SenderID] = client
+			client.room = existing
+			existing.mu.Unlock()
 			s.mu.Unlock()
-			sendControlMessage(client, ControlMessage{Type: "error", Message: "Bu oda kodu zaten kullaniliyor"})
+
+			log.Printf("[~] Host reconnected to room: %s by %s (%s)", msg.RoomCode, msg.Nickname, msg.SenderID)
+			sendControlMessage(client, ControlMessage{Type: "room_created", RoomCode: msg.RoomCode})
 			return
 		}
-		// Empty room, clean it up
-		delete(s.rooms, msg.RoomCode)
+
+		existing.mu.Unlock()
+		s.mu.Unlock()
+		sendControlMessage(client, ControlMessage{Type: "error", Message: "Bu oda kodu zaten kullaniliyor"})
+		return
 	}
 
 	room := &Room{
@@ -179,7 +189,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		return
 	}
 
-	// Remove from any existing room
+	// Remove from any previous room
 	s.removeClient(client)
 
 	client.senderID = msg.SenderID
@@ -195,7 +205,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	}
 
 	room.mu.Lock()
-	if len(room.Members) >= MaxRoomMembers {
+	if len(room.Members) >= MaxRoomMembers && room.Members[msg.SenderID] == nil {
 		room.mu.Unlock()
 		sendControlMessage(client, ControlMessage{Type: "room_full", Message: "Oda dolu (Maks 4 kisi)"})
 		return
@@ -205,8 +215,10 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	peers := make([]PeerInfo, 0, len(room.Members))
 	existingMembers := make([]*Client, 0, len(room.Members))
 	for _, m := range room.Members {
-		peers = append(peers, PeerInfo{SenderID: m.senderID, Nickname: m.nickname})
-		existingMembers = append(existingMembers, m)
+		if m.senderID != msg.SenderID {
+			peers = append(peers, PeerInfo{SenderID: m.senderID, Nickname: m.nickname})
+			existingMembers = append(existingMembers, m)
+		}
 	}
 
 	room.Members[msg.SenderID] = client
@@ -231,7 +243,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		Peers:    peers,
 	})
 
-	// Notify existing members about new peer
+	// Notify existing members about new/reconnected peer
 	joinNotify := ControlMessage{
 		Type:     "peer_joined",
 		SenderID: msg.SenderID,
@@ -280,7 +292,6 @@ func (s *RelayServer) removeClient(client *Client) {
 		remainingMembers = append(remainingMembers, m)
 	}
 	isEmpty := len(room.Members) == 0
-	isHost := room.HostID == senderID
 	room.mu.Unlock()
 
 	if isEmpty {
@@ -299,31 +310,8 @@ func (s *RelayServer) removeClient(client *Client) {
 		SenderID: senderID,
 		Nickname: nickname,
 	}
-
-	// If host left, notify everyone that room is closing
-	if isHost {
-		leaveMsg.Type = "host_left"
-		leaveMsg.Message = "Host odadan ayrildi, oda kapaniyor"
-	}
-
 	for _, m := range remainingMembers {
 		sendControlMessage(m, leaveMsg)
-	}
-
-	// If host left, close the room and disconnect everyone
-	if isHost {
-		room.mu.Lock()
-		for _, m := range room.Members {
-			m.room = nil
-			m.conn.Close()
-		}
-		room.Members = make(map[string]*Client)
-		room.mu.Unlock()
-
-		s.mu.Lock()
-		delete(s.rooms, room.Code)
-		s.mu.Unlock()
-		log.Printf("[-] Room %s closed (host left)", room.Code)
 	}
 }
 
