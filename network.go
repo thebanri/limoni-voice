@@ -966,6 +966,32 @@ func (n *P2PNode) SendDeafenState(isDeafened bool) {
 	n.broadcastToPeers(&pkt)
 }
 
+func (n *P2PNode) SendScreenShareState(isSharing bool, videoPort int) {
+	n.mu.RLock()
+	if !n.IsConnected || len(n.Peers) == 0 {
+		n.mu.RUnlock()
+		return
+	}
+	room := n.RoomCode
+	n.mu.RUnlock()
+
+	pktType := PacketScreenShareStop
+	if isSharing {
+		pktType = PacketScreenShareStart
+	}
+
+	pkt := P2PPacket{
+		Type:            pktType,
+		RoomCode:        room,
+		SenderID:        n.LocalID,
+		Nickname:        n.Nickname,
+		IsSharingScreen: isSharing,
+		VideoPort:       videoPort,
+		Timestamp:       time.Now().UnixMilli(),
+	}
+	n.broadcastToPeers(&pkt)
+}
+
 func (n *P2PNode) broadcastJoinRequest() {
 	n.mu.RLock()
 	room := n.ConnectTargetRoom
@@ -1762,12 +1788,16 @@ func (n *P2PNode) StartWatchingScreen(port int) error {
 	n.log(fmt.Sprintf("🎬 Kitty terminalinde 60 FPS ekran izleniyor (Port: %d)", port))
 
 	go func() {
-		<-session.Done()
+		select {
+		case err := <-session.Err():
+			n.log(fmt.Sprintf("⚠️ Ekran izleyici kapandi/hata: %v", err))
+		case <-session.Done():
+			n.log("ℹ️ Ekran izleyici oturumu kapandi.")
+		}
 		n.mu.Lock()
 		n.IsWatchingScreen = false
 		n.receiverSession = nil
 		n.mu.Unlock()
-		n.log("⏹️ Ekran izleyici kapandi.")
 	}()
 
 	return nil

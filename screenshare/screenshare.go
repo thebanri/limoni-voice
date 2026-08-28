@@ -283,8 +283,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?pkt_size=1316", port)
 
 	args := []string{
-		streamURL,
-		fmt.Sprintf("--vo=%s", opt.VO),
+		"--title=Limoni Voice - Canli Ekran Yayini (60 FPS)",
+		"--vo=kitty,gpu,gpu-next,direct3d,x11,tct",
+		"--force-window=immediate",
 		"--video-sync=desync",
 		"--no-audio",
 		"--vd-lavc-threads=1",
@@ -301,6 +302,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	if len(opt.CustomMpvFlags) > 0 {
 		args = append(args, opt.CustomMpvFlags...)
 	}
+	// URL should be passed as the last argument to mpv
+	args = append(args, streamURL)
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
