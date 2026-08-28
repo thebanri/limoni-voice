@@ -8,16 +8,23 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const MaxPeers = 4
+
+// DefaultRelayURL is the default public WebSocket relay server URL
+const DefaultRelayURL = "wss://limoni-voice-relay.onrender.com/ws"
 
 // MagicPrefix identifies authentic Limoni Voice Secure v1 packets
 var MagicPrefix = []byte("LVS1")
@@ -71,6 +78,21 @@ type PeerInfo struct {
 	RMS        float64
 }
 
+// RelayControlMessage represents control JSON payloads sent to/from the relay server
+type RelayControlMessage struct {
+	Type     string      `json:"type"`
+	RoomCode string      `json:"room_code,omitempty"`
+	SenderID string      `json:"sender_id,omitempty"`
+	Nickname string      `json:"nickname,omitempty"`
+	Message  string      `json:"message,omitempty"`
+	Peers    []RelayPeer `json:"peers,omitempty"`
+}
+
+type RelayPeer struct {
+	SenderID string `json:"sender_id"`
+	Nickname string `json:"nickname"`
+}
+
 type P2PNode struct {
 	mu                sync.RWMutex
 	LocalID           string
@@ -98,14 +120,26 @@ type P2PNode struct {
 	stopChan          chan struct{}
 	// Dedicated broadcast sender socket with SO_BROADCAST (works on Windows too)
 	bcastSendConn *net.UDPConn
+	// WebSocket Relay for internet-wide P2P forwarding
+	RelayURL         string
+	wsConn           *websocket.Conn
+	wsSendCh         chan []byte
+	wsMu             sync.Mutex
+	isRelayConnected bool
+	wsCancel         chan struct{}
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
+	relayURL := os.Getenv("LIMONI_RELAY_URL")
+	if relayURL == "" {
+		relayURL = DefaultRelayURL
+	}
 	// Create a dedicated UDP socket for sending broadcasts (avoids SO_BROADCAST issues on Windows)
 	bcastConn, _ := net.ListenUDP("udp4", &net.UDPAddr{Port: 0})
 	return &P2PNode{
 		LocalID:       localID,
 		Nickname:      nickname,
+		RelayURL:      relayURL,
 		Peers:         make(map[string]*PeerInfo),
 		audio:         audio,
 		stopChan:      make(chan struct{}),
@@ -197,6 +231,7 @@ func (n *P2PNode) HostRoom(roomCode string) {
 
 	n.log(fmt.Sprintf("[👑] Oda acildi (HOST): %s (Port: %d | E2EE Guvenli)", n.RoomCode, n.Port))
 	n.broadcastHello()
+	n.connectRelay("host", n.RoomCode)
 }
 
 // RequestJoinRoom searches for an active host and requests admission. Fails if no open room exists.
@@ -238,7 +273,10 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 
 	n.log(fmt.Sprintf("[⏳] '%s' odasi araniyor ve host dogrulaniyor...", cleanCode))
 
-	// Background probe and timeout handler
+	// Connect to internet relay server for cross-network join
+	n.connectRelay("join", cleanCode)
+
+	// Background LAN probe and timeout handler
 	go func() {
 		probeTicker := time.NewTicker(250 * time.Millisecond)
 		defer probeTicker.Stop()
@@ -338,6 +376,7 @@ func (n *P2PNode) LeaveRoom() {
 		Timestamp:  time.Now().UnixMilli(),
 	}
 	n.broadcastToPeers(&pkt)
+	n.closeRelay()
 
 	n.mu.Lock()
 	n.Peers = make(map[string]*PeerInfo)
@@ -347,6 +386,296 @@ func (n *P2PNode) LeaveRoom() {
 		n.log("Odayi kapattiniz (Host ayrildi).")
 	} else {
 		n.log("Odadan ayrildiniz.")
+	}
+}
+
+// connectRelay connects to the WebSocket relay server in the background and sends the initial host/join message
+func (n *P2PNode) connectRelay(action string, roomCode string) {
+	n.mu.Lock()
+	relayURL := n.RelayURL
+	if relayURL == "" {
+		n.mu.Unlock()
+		return
+	}
+	// Close existing WS connection if any
+	if n.wsConn != nil {
+		if n.wsCancel != nil {
+			close(n.wsCancel)
+		}
+		n.wsConn.Close()
+		n.wsConn = nil
+		n.isRelayConnected = false
+	}
+	wsCancel := make(chan struct{})
+	n.wsCancel = wsCancel
+	wsSendCh := make(chan []byte, 64)
+	n.wsSendCh = wsSendCh
+	n.mu.Unlock()
+
+	go func() {
+		dialer := websocket.Dialer{
+			HandshakeTimeout: 5 * time.Second,
+		}
+		conn, _, err := dialer.Dial(relayURL, nil)
+		if err != nil {
+			n.log(fmt.Sprintf("[☁️] Relay sunucusuna ulasilamadi (%s). Yerel ag (LAN) modu devrede.", relayURL))
+			return
+		}
+
+		n.mu.Lock()
+		select {
+		case <-wsCancel:
+			conn.Close()
+			n.mu.Unlock()
+			return
+		default:
+		}
+		n.wsConn = conn
+		n.isRelayConnected = true
+		n.mu.Unlock()
+
+		n.log(fmt.Sprintf("[☁️] Relay sunucusuna baglanildi (%s | Internet Aktif)", relayURL))
+
+		// Start pumps
+		go n.relayWritePump(conn, wsSendCh, wsCancel)
+		go n.relayListenLoop(conn, wsCancel)
+
+		// Send initial action
+		if action == "host" {
+			n.sendRelayControl(RelayControlMessage{
+				Type:     "host_room",
+				RoomCode: roomCode,
+				SenderID: n.LocalID,
+				Nickname: n.Nickname,
+			})
+		} else if action == "join" {
+			n.sendRelayControl(RelayControlMessage{
+				Type:     "join_room",
+				RoomCode: roomCode,
+				SenderID: n.LocalID,
+				Nickname: n.Nickname,
+			})
+		}
+	}()
+}
+
+func (n *P2PNode) closeRelay() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.wsCancel != nil {
+		close(n.wsCancel)
+		n.wsCancel = nil
+	}
+	if n.wsConn != nil {
+		n.sendRelayControlLocked(RelayControlMessage{Type: "leave"})
+		n.wsConn.Close()
+		n.wsConn = nil
+	}
+	n.isRelayConnected = false
+}
+
+func (n *P2PNode) sendRelayControl(msg RelayControlMessage) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.sendRelayControlLocked(msg)
+}
+
+func (n *P2PNode) sendRelayControlLocked(msg RelayControlMessage) {
+	if n.wsConn == nil {
+		return
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	n.wsMu.Lock()
+	defer n.wsMu.Unlock()
+	n.wsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	n.wsConn.WriteMessage(websocket.TextMessage, data)
+}
+
+func (n *P2PNode) relayWritePump(conn *websocket.Conn, sendCh chan []byte, cancel chan struct{}) {
+	ticker := time.NewTicker(25 * time.Second)
+	defer func() {
+		ticker.Stop()
+		conn.Close()
+	}()
+
+	for {
+		select {
+		case <-cancel:
+			return
+		case data, ok := <-sendCh:
+			if !ok {
+				return
+			}
+			n.wsMu.Lock()
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			err := conn.WriteMessage(websocket.BinaryMessage, data)
+			n.wsMu.Unlock()
+			if err != nil {
+				return
+			}
+		case <-ticker.C:
+			n.wsMu.Lock()
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			err := conn.WriteMessage(websocket.PingMessage, nil)
+			n.wsMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	for {
+		select {
+		case <-cancel:
+			return
+		default:
+		}
+
+		msgType, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		switch msgType {
+		case websocket.TextMessage:
+			var msg RelayControlMessage
+			if err := json.Unmarshal(data, &msg); err != nil {
+				continue
+			}
+			n.handleRelayControl(msg)
+
+		case websocket.BinaryMessage:
+			n.mu.RLock()
+			aead := n.aead
+			active := n.IsConnected || n.Connecting
+			n.mu.RUnlock()
+
+			if !active || aead == nil {
+				continue
+			}
+
+			var pkt P2PPacket
+			if err := decryptAndDecodePacket(data, &pkt, aead); err != nil {
+				continue
+			}
+
+			n.handlePacket(&pkt, nil)
+		}
+	}
+}
+
+func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	switch msg.Type {
+	case "room_created":
+		n.log(fmt.Sprintf("[☁️] Relay uzerinde '%s' odasi acildi (Internet E2EE)", msg.RoomCode))
+
+	case "welcome":
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.IsConnected = true
+			n.IsHost = false
+			n.HostID = msg.SenderID
+			n.HostNick = msg.Nickname
+			n.RoomCode = n.ConnectTargetRoom
+
+			hostPeer := &PeerInfo{
+				ID:       msg.SenderID,
+				Nickname: msg.Nickname,
+				LastSeen: time.Now(),
+			}
+			n.Peers[msg.SenderID] = hostPeer
+
+			for _, p := range msg.Peers {
+				if p.SenderID != n.LocalID && n.Peers[p.SenderID] == nil {
+					n.Peers[p.SenderID] = &PeerInfo{
+						ID:       p.SenderID,
+						Nickname: p.Nickname,
+						LastSeen: time.Now(),
+					}
+				}
+			}
+
+			n.log(fmt.Sprintf("[☁️] %s odasina baglanildi! (Host: %s | Internet E2EE)", n.RoomCode, msg.Nickname))
+			successCb := n.OnJoinSuccess
+			if successCb != nil {
+				go successCb(msg.Nickname)
+			}
+			if n.OnPeerEvent != nil {
+				go n.OnPeerEvent("join", hostPeer)
+			}
+		}
+
+	case "peer_joined":
+		if n.IsConnected && msg.SenderID != n.LocalID {
+			peer, exists := n.Peers[msg.SenderID]
+			if !exists {
+				peer = &PeerInfo{
+					ID:       msg.SenderID,
+					Nickname: msg.Nickname,
+					LastSeen: time.Now(),
+				}
+				n.Peers[msg.SenderID] = peer
+				n.log(fmt.Sprintf("[+] %s odaya katildi! (Internet E2EE)", msg.Nickname))
+				if n.OnPeerEvent != nil {
+					go n.OnPeerEvent("join", peer)
+				}
+			} else {
+				peer.Nickname = msg.Nickname
+				peer.LastSeen = time.Now()
+			}
+		}
+
+	case "peer_left":
+		if peer, exists := n.Peers[msg.SenderID]; exists {
+			delete(n.Peers, msg.SenderID)
+			n.log(fmt.Sprintf("[-] %s ayrildi.", peer.Nickname))
+			if n.OnPeerEvent != nil {
+				go n.OnPeerEvent("leave", peer)
+			}
+		}
+
+	case "host_left":
+		n.log("❌ Host ayrildi, oda kapandi.")
+		if n.OnPeerEvent != nil {
+			if host, ok := n.Peers[n.HostID]; ok {
+				go n.OnPeerEvent("leave", host)
+			}
+		}
+
+	case "room_full":
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.aead = nil
+			n.RoomCode = ""
+			failedCb := n.OnJoinFailed
+			n.log("❌ Odaya katilim reddedildi: Oda dolu (Maks 4 kisi).")
+			if failedCb != nil {
+				go failedCb("Bu oda dolu! (Maksimum 4 kisi)")
+			}
+		}
 	}
 }
 
@@ -523,7 +852,7 @@ func (n *P2PNode) broadcastHello() {
 		}
 	}
 
-	// 2. Send via LAN broadcast 255.255.255.255 to common ports
+	// 2. Send via LAN broadcast 255.255.255.255 to common ports (best-effort)
 	for p := 50000; p <= 50010; p++ {
 		n.sendBroadcastPacket(&pkt, p)
 	}
@@ -545,7 +874,6 @@ func (n *P2PNode) broadcastHello() {
 				if !ok || ipnet.IP.To4() == nil {
 					continue
 				}
-				// Calculate IPv4 broadcast
 				ip := ipnet.IP.To4()
 				mask := ipnet.Mask
 				if len(mask) == 4 {
@@ -595,12 +923,10 @@ func (n *P2PNode) sendBroadcastPacket(pkt *P2PPacket, port int) {
 }
 
 func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
-	if addr == nil || n.Conn == nil {
-		return
-	}
-
 	n.mu.RLock()
 	aead := n.aead
+	wsSendCh := n.wsSendCh
+	isRelay := n.isRelayConnected
 	n.mu.RUnlock()
 
 	if aead == nil {
@@ -611,13 +937,23 @@ func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
 	if err != nil {
 		return
 	}
-	n.Conn.WriteToUDP(data, addr)
+
+	if addr != nil && n.Conn != nil {
+		n.Conn.WriteToUDP(data, addr)
+	} else if isRelay && wsSendCh != nil {
+		select {
+		case wsSendCh <- data:
+		default:
+		}
+	}
 }
 
 func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 	n.mu.RLock()
 	aead := n.aead
-	if aead == nil || len(n.Peers) == 0 {
+	wsSendCh := n.wsSendCh
+	isRelay := n.isRelayConnected
+	if aead == nil || (len(n.Peers) == 0 && !isRelay) {
 		n.mu.RUnlock()
 		return
 	}
@@ -628,8 +964,17 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 		return
 	}
 
+	// 1. Forward via WebSocket Relay to all members
+	if isRelay && wsSendCh != nil {
+		select {
+		case wsSendCh <- data:
+		default:
+		}
+	}
+
+	// 2. Also send via direct UDP to known LAN peer addresses
 	for _, peer := range n.Peers {
-		if peer.Addr != nil {
+		if peer.Addr != nil && n.Conn != nil {
 			n.Conn.WriteToUDP(data, peer.Addr)
 		}
 	}
@@ -756,7 +1101,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				go n.OnPeerEvent("join", peer)
 			}
 		} else {
-			peer.Addr = raddr
+			if raddr != nil {
+				peer.Addr = raddr
+			}
 			peer.LastSeen = time.Now()
 			peer.Nickname = pkt.Nickname
 			peer.IsMuted = pkt.IsMuted
@@ -767,10 +1114,14 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		summaries := make([]PeerSummary, 0, len(n.Peers))
 		for _, p := range n.Peers {
 			if p.ID != pkt.SenderID {
+				addrStr := ""
+				if p.Addr != nil {
+					addrStr = p.Addr.String()
+				}
 				summaries = append(summaries, PeerSummary{
 					ID:         p.ID,
 					Nickname:   p.Nickname,
-					AddrStr:    p.Addr.String(),
+					AddrStr:    addrStr,
 					IsMuted:    p.IsMuted,
 					IsDeafened: p.IsDeafened,
 				})
@@ -834,7 +1185,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				go n.OnPeerEvent("join", peer)
 			}
 		} else {
-			peer.Addr = raddr
+			if raddr != nil {
+				peer.Addr = raddr
+			}
 			peer.LastSeen = time.Now()
 			peer.Nickname = pkt.Nickname
 			peer.IsMuted = pkt.IsMuted
@@ -845,10 +1198,14 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		summaries := make([]PeerSummary, 0, len(n.Peers))
 		for _, p := range n.Peers {
 			if p.ID != pkt.SenderID {
+				addrStr := ""
+				if p.Addr != nil {
+					addrStr = p.Addr.String()
+				}
 				summaries = append(summaries, PeerSummary{
 					ID:         p.ID,
 					Nickname:   p.Nickname,
-					AddrStr:    p.Addr.String(),
+					AddrStr:    addrStr,
 					IsMuted:    p.IsMuted,
 					IsDeafened: p.IsDeafened,
 				})
@@ -895,17 +1252,20 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			// Connect to other peers reported in Welcome packet (mesh topology)
 			for _, pSum := range pkt.Peers {
 				if pSum.ID != n.LocalID && n.Peers[pSum.ID] == nil && len(n.Peers) < MaxPeers-1 {
-					pAddr, err := net.ResolveUDPAddr("udp4", pSum.AddrStr)
-					if err == nil {
-						newPeer := &PeerInfo{
-							ID:         pSum.ID,
-							Nickname:   pSum.Nickname,
-							Addr:       pAddr,
-							LastSeen:   time.Now(),
-							IsMuted:    pSum.IsMuted,
-							IsDeafened: pSum.IsDeafened,
-						}
-						n.Peers[pSum.ID] = newPeer
+					var pAddr *net.UDPAddr
+					if pSum.AddrStr != "" {
+						pAddr, _ = net.ResolveUDPAddr("udp4", pSum.AddrStr)
+					}
+					newPeer := &PeerInfo{
+						ID:         pSum.ID,
+						Nickname:   pSum.Nickname,
+						Addr:       pAddr,
+						LastSeen:   time.Now(),
+						IsMuted:    pSum.IsMuted,
+						IsDeafened: pSum.IsDeafened,
+					}
+					n.Peers[pSum.ID] = newPeer
+					if pAddr != nil {
 						helloPkt := P2PPacket{
 							Type:       PacketHello,
 							RoomCode:   n.RoomCode,
@@ -948,7 +1308,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				}
 			}
 		} else {
-			peer.Addr = raddr
+			if raddr != nil {
+				peer.Addr = raddr
+			}
 			peer.LastSeen = time.Now()
 			peer.IsMuted = pkt.IsMuted
 			peer.IsDeafened = pkt.IsDeafened
@@ -957,17 +1319,20 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		// Connect to other peers reported in Welcome packet (mesh topology)
 		for _, pSum := range pkt.Peers {
 			if pSum.ID != n.LocalID && n.Peers[pSum.ID] == nil && len(n.Peers) < MaxPeers-1 {
-				pAddr, err := net.ResolveUDPAddr("udp4", pSum.AddrStr)
-				if err == nil {
-					newPeer := &PeerInfo{
-						ID:         pSum.ID,
-						Nickname:   pSum.Nickname,
-						Addr:       pAddr,
-						LastSeen:   time.Now(),
-						IsMuted:    pSum.IsMuted,
-						IsDeafened: pSum.IsDeafened,
-					}
-					n.Peers[pSum.ID] = newPeer
+				var pAddr *net.UDPAddr
+				if pSum.AddrStr != "" {
+					pAddr, _ = net.ResolveUDPAddr("udp4", pSum.AddrStr)
+				}
+				newPeer := &PeerInfo{
+					ID:         pSum.ID,
+					Nickname:   pSum.Nickname,
+					Addr:       pAddr,
+					LastSeen:   time.Now(),
+					IsMuted:    pSum.IsMuted,
+					IsDeafened: pSum.IsDeafened,
+				}
+				n.Peers[pSum.ID] = newPeer
+				if pAddr != nil {
 					// Introduce self to this peer
 					helloPkt := P2PPacket{
 						Type:       PacketHello,
