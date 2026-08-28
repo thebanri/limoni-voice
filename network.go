@@ -79,17 +79,23 @@ type PeerInfo struct {
 
 // RelayControlMessage represents control JSON payloads sent to/from the relay server
 type RelayControlMessage struct {
-	Type     string      `json:"type"`
-	RoomCode string      `json:"room_code,omitempty"`
-	SenderID string      `json:"sender_id,omitempty"`
-	Nickname string      `json:"nickname,omitempty"`
-	Message  string      `json:"message,omitempty"`
-	Peers    []RelayPeer `json:"peers,omitempty"`
+	Type       string      `json:"type"`
+	RoomCode   string      `json:"room_code,omitempty"`
+	SenderID   string      `json:"sender_id,omitempty"`
+	Nickname   string      `json:"nickname,omitempty"`
+	Message    string      `json:"message,omitempty"`
+	Port       int         `json:"port,omitempty"`
+	PublicIP   string      `json:"public_ip,omitempty"`
+	PublicPort int         `json:"public_port,omitempty"`
+	YourIP     string      `json:"your_ip,omitempty"`
+	Peers      []RelayPeer `json:"peers,omitempty"`
 }
 
 type RelayPeer struct {
-	SenderID string `json:"sender_id"`
-	Nickname string `json:"nickname"`
+	SenderID  string `json:"sender_id"`
+	Nickname  string `json:"nickname"`
+	PublicIP  string `json:"public_ip,omitempty"`
+	LocalPort int    `json:"local_port,omitempty"`
 }
 
 type P2PNode struct {
@@ -473,13 +479,18 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		// Start write pump
 		go n.relayWritePump(conn, wsSendCh, connCancel)
 
-		// Send initial action (host or join)
+		// Send initial action (host or join) with local UDP port for direct P2P hole-punching
+		n.mu.RLock()
+		localPort := n.Port
+		n.mu.RUnlock()
+
 		if action == "host" {
 			n.sendRelayControl(RelayControlMessage{
 				Type:     "host_room",
 				RoomCode: roomCode,
 				SenderID: n.LocalID,
 				Nickname: n.Nickname,
+				Port:     localPort,
 			})
 		} else if action == "join" {
 			n.sendRelayControl(RelayControlMessage{
@@ -487,6 +498,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 				RoomCode: roomCode,
 				SenderID: n.LocalID,
 				Nickname: n.Nickname,
+				Port:     localPort,
 			})
 		}
 
@@ -589,7 +601,6 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, sendCh chan []byte, cance
 func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 	defer conn.Close()
 
-	// 60-second read deadline for robust keepalive
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 	conn.SetPingHandler(func(appData string) error {
@@ -617,7 +628,6 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 			return
 		}
 
-		// Refresh read deadline on every valid packet received
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 		switch msgType {
@@ -648,6 +658,57 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 	}
 }
 
+// punchPeerUDP sends direct UDP probe packets to punch through NAT and establish zero-latency P2P
+func (n *P2PNode) punchPeerUDP(publicIP string, localPort int) {
+	if publicIP == "" {
+		return
+	}
+
+	pkt := P2PPacket{
+		Type:       PacketHello,
+		RoomCode:   n.RoomCode,
+		SenderID:   n.LocalID,
+		Nickname:   n.Nickname,
+		IsMuted:    n.audio.Muted,
+		IsDeafened: n.audio.Deafened,
+		Timestamp:  time.Now().UnixMilli(),
+	}
+
+	// Try the peer's reported local port as well as common ports
+	targetPorts := []int{localPort}
+	for p := 50000; p <= 50008; p++ {
+		if p != localPort {
+			targetPorts = append(targetPorts, p)
+		}
+	}
+	targetPorts = append(targetPorts, 45454)
+
+	for _, p := range targetPorts {
+		if p > 0 {
+			raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", publicIP, p))
+			if err == nil && n.Conn != nil {
+				go n.sendDirectUDPPacket(raddr, &pkt)
+			}
+		}
+	}
+}
+
+func (n *P2PNode) sendDirectUDPPacket(addr *net.UDPAddr, pkt *P2PPacket) {
+	if addr == nil || n.Conn == nil {
+		return
+	}
+	n.mu.RLock()
+	aead := n.aead
+	n.mu.RUnlock()
+	if aead == nil {
+		return
+	}
+	data, err := encodeAndEncryptPacket(pkt, aead)
+	if err == nil && n.Conn != nil {
+		n.Conn.WriteToUDP(data, addr)
+	}
+}
+
 func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -669,19 +730,38 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			n.HostNick = msg.Nickname
 			n.RoomCode = n.ConnectTargetRoom
 
+			var hostAddr *net.UDPAddr
+			if msg.PublicIP != "" && msg.Port > 0 {
+				hostAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", msg.PublicIP, msg.Port))
+			}
+
 			hostPeer := &PeerInfo{
 				ID:       msg.SenderID,
 				Nickname: msg.Nickname,
+				Addr:     hostAddr,
 				LastSeen: time.Now(),
 			}
 			n.Peers[msg.SenderID] = hostPeer
 
+			// Trigger direct UDP hole-punching to Host
+			if msg.PublicIP != "" {
+				go n.punchPeerUDP(msg.PublicIP, msg.Port)
+			}
+
 			for _, p := range msg.Peers {
 				if p.SenderID != n.LocalID && n.Peers[p.SenderID] == nil {
+					var pAddr *net.UDPAddr
+					if p.PublicIP != "" && p.LocalPort > 0 {
+						pAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", p.PublicIP, p.LocalPort))
+					}
 					n.Peers[p.SenderID] = &PeerInfo{
 						ID:       p.SenderID,
 						Nickname: p.Nickname,
+						Addr:     pAddr,
 						LastSeen: time.Now(),
+					}
+					if p.PublicIP != "" {
+						go n.punchPeerUDP(p.PublicIP, p.LocalPort)
 					}
 				}
 			}
@@ -698,11 +778,17 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 
 	case "peer_joined":
 		if n.IsConnected && msg.SenderID != n.LocalID {
+			var peerAddr *net.UDPAddr
+			if msg.PublicIP != "" && msg.Port > 0 {
+				peerAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", msg.PublicIP, msg.Port))
+			}
+
 			peer, exists := n.Peers[msg.SenderID]
 			if !exists {
 				peer = &PeerInfo{
 					ID:       msg.SenderID,
 					Nickname: msg.Nickname,
+					Addr:     peerAddr,
 					LastSeen: time.Now(),
 				}
 				n.Peers[msg.SenderID] = peer
@@ -713,6 +799,14 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			} else {
 				peer.Nickname = msg.Nickname
 				peer.LastSeen = time.Now()
+				if peerAddr != nil && peer.Addr == nil {
+					peer.Addr = peerAddr
+				}
+			}
+
+			// Trigger direct UDP hole-punching to the new joiner
+			if msg.PublicIP != "" {
+				go n.punchPeerUDP(msg.PublicIP, msg.Port)
 			}
 		}
 

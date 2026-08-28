@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,29 +15,38 @@ import (
 
 const MaxRoomMembers = 4
 
-// ControlMessage is a JSON message exchanged between client and relay for room management
+// ControlMessage is a JSON message exchanged between client and relay for room management and P2P hole-punching
 type ControlMessage struct {
-	Type     string `json:"type"`
-	RoomCode string `json:"room_code,omitempty"`
-	SenderID string `json:"sender_id,omitempty"`
-	Nickname string `json:"nickname,omitempty"`
-	Message  string `json:"message,omitempty"`
-	// For welcome message: list of existing peers
-	Peers []PeerInfo `json:"peers,omitempty"`
+	Type       string     `json:"type"`
+	RoomCode   string     `json:"room_code,omitempty"`
+	SenderID   string     `json:"sender_id,omitempty"`
+	Nickname   string     `json:"nickname,omitempty"`
+	Message    string     `json:"message,omitempty"`
+	Port       int        `json:"port,omitempty"`        // Client's local UDP port
+	PublicIP   string     `json:"public_ip,omitempty"`    // Sender's observed public IP
+	PublicPort int        `json:"public_port,omitempty"`  // Sender's observed port
+	YourIP     string     `json:"your_ip,omitempty"`      // Client's own detected public IP
+	Peers      []PeerInfo `json:"peers,omitempty"`
 }
 
 type PeerInfo struct {
-	SenderID string `json:"sender_id"`
-	Nickname string `json:"nickname"`
+	SenderID   string `json:"sender_id"`
+	Nickname   string `json:"nickname"`
+	PublicIP   string `json:"public_ip,omitempty"`
+	LocalPort  int    `json:"local_port,omitempty"`
+	PublicPort int    `json:"public_port,omitempty"`
 }
 
 type Client struct {
-	conn     *websocket.Conn
-	senderID string
-	nickname string
-	room     *Room
-	sendCh   chan []byte // buffered channel for outgoing messages
-	mu       sync.Mutex
+	conn       *websocket.Conn
+	senderID   string
+	nickname   string
+	localPort  int
+	publicIP   string
+	publicPort int
+	room       *Room
+	sendCh     chan []byte // buffered channel for outgoing messages
+	mu         sync.Mutex
 }
 
 type Room struct {
@@ -64,6 +74,20 @@ func NewRelayServer() *RelayServer {
 	}
 }
 
+func extractClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -76,11 +100,13 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remoteAddr := r.RemoteAddr
-	log.Printf("[🌐] New connection established from %s", remoteAddr)
+	clientIP := extractClientIP(r)
+	log.Printf("[🌐] New connection from IP: %s (remote: %s)", clientIP, remoteAddr)
 
 	client := &Client{
-		conn:   conn,
-		sendCh: make(chan []byte, 128),
+		conn:     conn,
+		publicIP: clientIP,
+		sendCh:   make(chan []byte, 128),
 	}
 
 	// Start write pump
@@ -137,7 +163,7 @@ func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 		return
 	}
 
-	log.Printf("[📩] Control message '%s' from %s (%s) for room '%s'", msg.Type, msg.Nickname, msg.SenderID, msg.RoomCode)
+	log.Printf("[📩] Control message '%s' from %s (%s) for room '%s' (port: %d)", msg.Type, msg.Nickname, msg.SenderID, msg.RoomCode, msg.Port)
 
 	switch msg.Type {
 	case "host_room":
@@ -162,6 +188,7 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 	client.senderID = msg.SenderID
 	client.nickname = msg.Nickname
+	client.localPort = msg.Port
 
 	s.mu.Lock()
 
@@ -180,7 +207,11 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 			s.mu.Unlock()
 
 			log.Printf("[~] Host reconnected to room: %s by %s (%s)", msg.RoomCode, msg.Nickname, msg.SenderID)
-			sendControlMessage(client, ControlMessage{Type: "room_created", RoomCode: msg.RoomCode})
+			sendControlMessage(client, ControlMessage{
+				Type:     "room_created",
+				RoomCode: msg.RoomCode,
+				YourIP:   client.publicIP,
+			})
 			return
 		}
 
@@ -200,8 +231,12 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 	client.room = room
 	s.mu.Unlock()
 
-	log.Printf("[+] Room created: %s by %s (%s)", msg.RoomCode, msg.Nickname, msg.SenderID)
-	sendControlMessage(client, ControlMessage{Type: "room_created", RoomCode: msg.RoomCode})
+	log.Printf("[+] Room created: %s by %s (%s, IP: %s:%d)", msg.RoomCode, msg.Nickname, msg.SenderID, client.publicIP, client.localPort)
+	sendControlMessage(client, ControlMessage{
+		Type:     "room_created",
+		RoomCode: msg.RoomCode,
+		YourIP:   client.publicIP,
+	})
 }
 
 func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
@@ -215,6 +250,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 
 	client.senderID = msg.SenderID
 	client.nickname = msg.Nickname
+	client.localPort = msg.Port
 
 	s.mu.RLock()
 	room, exists := s.rooms[msg.RoomCode]
@@ -232,12 +268,17 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		return
 	}
 
-	// Build peer list for welcome message
+	// Build peer list for welcome message (including public IP and port for P2P UDP hole punching)
 	peers := make([]PeerInfo, 0, len(room.Members))
 	existingMembers := make([]*Client, 0, len(room.Members))
 	for _, m := range room.Members {
 		if m.senderID != msg.SenderID {
-			peers = append(peers, PeerInfo{SenderID: m.senderID, Nickname: m.nickname})
+			peers = append(peers, PeerInfo{
+				SenderID:  m.senderID,
+				Nickname:  m.nickname,
+				PublicIP:  m.publicIP,
+				LocalPort: m.localPort,
+			})
 			existingMembers = append(existingMembers, m)
 		}
 	}
@@ -246,29 +287,38 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	client.room = room
 	hostID := room.HostID
 
-	// Find host nickname
+	// Find host nickname & info
 	hostNick := ""
+	hostIP := ""
+	hostPort := 0
 	if host, ok := room.Members[hostID]; ok {
 		hostNick = host.nickname
+		hostIP = host.publicIP
+		hostPort = host.localPort
 	}
 	room.mu.Unlock()
 
-	log.Printf("[+] %s (%s) joined room %s", msg.Nickname, msg.SenderID, msg.RoomCode)
+	log.Printf("[+] %s (%s, IP: %s:%d) joined room %s", msg.Nickname, msg.SenderID, client.publicIP, client.localPort, msg.RoomCode)
 
-	// Send welcome to joiner with peer list
+	// Send welcome to joiner with peer list and direct P2P endpoint info
 	sendControlMessage(client, ControlMessage{
-		Type:     "welcome",
-		RoomCode: msg.RoomCode,
-		SenderID: hostID,
-		Nickname: hostNick,
-		Peers:    peers,
+		Type:       "welcome",
+		RoomCode:   msg.RoomCode,
+		SenderID:   hostID,
+		Nickname:   hostNick,
+		PublicIP:   hostIP,
+		Port:       hostPort,
+		YourIP:     client.publicIP,
+		Peers:      peers,
 	})
 
-	// Notify existing members about new/reconnected peer
+	// Notify existing members about new/reconnected peer with direct IP info for hole-punching
 	joinNotify := ControlMessage{
 		Type:     "peer_joined",
 		SenderID: msg.SenderID,
 		Nickname: msg.Nickname,
+		PublicIP: client.publicIP,
+		Port:     client.localPort,
 	}
 	for _, m := range existingMembers {
 		sendControlMessage(m, joinNotify)
