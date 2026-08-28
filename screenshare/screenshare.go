@@ -304,6 +304,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	setupProcessGroup(cmd)
 
 	s := &Session{
