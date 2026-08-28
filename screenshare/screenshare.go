@@ -280,33 +280,27 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		opt = opts[0]
 	}
 
-	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?pkt_size=1316", port)
+	streamURL := fmt.Sprintf("udp://0.0.0.0:%d", port)
 
 	args := []string{
-		"--title=Limoni Voice - Canli Ekran Yayini (60 FPS)",
-		"--vo=gpu,gpu-next,x11,direct3d,sdl,kitty",
-		"--force-window=yes",
-		"--no-terminal",
-		"--autofit=65%",
-		"--keepaspect=yes",
-		"--video-sync=desync",
+		streamURL,
 		"--no-audio",
-		"--vd-lavc-threads=1",
-		"--framedrop=decoder+vo",
-		"--untimed",
-		"--demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer",
+		"--vo=kitty,gpu,x11",
+		"--vo-kitty-use-shm=yes",
 		"--profile=low-latency",
-		"--idle=yes",
+		"--untimed=yes",
+		"--cache=no",
+		"--no-cache",
+		"--video-sync=desync",
+		"--vd-lavc-threads=1",
+		"--demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer",
+		"--framedrop=decoder+vo",
+		"--keepaspect=yes",
 	}
 
-	if opt.KeepAspect {
-		args = append(args, "--keepaspect=yes")
-	}
 	if len(opt.CustomMpvFlags) > 0 {
 		args = append(args, opt.CustomMpvFlags...)
 	}
-	// URL should be passed as the last argument to mpv
-	args = append(args, streamURL)
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
