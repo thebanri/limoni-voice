@@ -20,6 +20,7 @@ type RoomView struct {
 	Logs            []string
 	OnLeave         func()
 	OnOpenTestModal func()
+	LastStageArea   cell.Rect
 }
 
 func NewRoomView() *RoomView {
@@ -367,6 +368,8 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 	inner := block.Inner(area)
 	buf := frame.Buffer
 
+	r.LastStageArea = inner
+
 	// 2. Case: We are watching a peer's stream (Rendered directly inside Stage Block)
 	if node.IsWatchingScreen && streamingPeer != nil {
 		// Fill video cells with cell.RuneImage so Limoni's diff engine skips these cells completely
@@ -435,10 +438,10 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				port = 50100
 			}
 			opts := screenshare.ReceiverOptions{
-				Left: int(inner.X) + 1,
+				Left: int(inner.X) + 2,
 				Top:  int(inner.Y) + 2,
-				Cols: int(inner.Width) - 2,
-				Rows: int(inner.Height) - 3,
+				Cols: int(inner.Width) - 3,
+				Rows: int(inner.Height) - 2,
 			}
 			err := node.StartWatchingScreen(port, opts)
 			if err != nil {
