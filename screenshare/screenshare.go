@@ -190,11 +190,17 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-f", "x11grab",
 				"-framerate", fmt.Sprintf("%d", opt.FPS),
 				"-i", ":0.0",
-				"-vf", fmt.Sprintf("scale=%s", opt.Resolution),
+				"-vf", fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution),
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-g", "5",
+				"-crf", "20",
+				"-b:v", "4M",
+				"-maxrate", "6M",
+				"-bufsize", "1M",
+				"-pix_fmt", "yuv420p",
+				"-g", "15",
+				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
 				targetURL,
@@ -210,7 +216,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya sistem PATH'ine ekleyin.")
 		}
 		binPath = p
-		scaleOpt := fmt.Sprintf("scale=%s", opt.Resolution)
+		scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution)
 		args = []string{
 			"-f", "lavfi",
 			"-i", fmt.Sprintf("ddagrab=framerate=%d:draw_mouse=1", opt.FPS),
@@ -218,7 +224,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-g", "5",
+			"-crf", "20",
+			"-b:v", "4M",
+			"-maxrate", "6M",
+			"-bufsize", "1M",
+			"-pix_fmt", "yuv420p",
+			"-g", "15",
+			"-bf", "0",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
 			targetURL,

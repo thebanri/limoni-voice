@@ -19,7 +19,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 		return StartReceiving(ctx, port, opt)
 	}
 
-	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?reuse=1&pkt_size=1316&buffer_size=131072", port)
+	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?reuse=1&pkt_size=1316&buffer_size=1048576", port)
 
 	frameW := 854
 	frameH := 480
@@ -32,7 +32,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 		"-analyzeduration", "0",
 		"-probesize", "32",
 		"-i", streamURL,
-		"-vf", fmt.Sprintf("scale=%d:%d", frameW, frameH),
+		"-vf", fmt.Sprintf("scale=%d:%d:flags=bicubic", frameW, frameH),
 		"-f", "rawvideo",
 		"-pix_fmt", "rgb24",
 		"-r", "60",
