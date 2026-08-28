@@ -375,9 +375,16 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 	r.LastStageArea = inner
 
-	// 2. Case: We are watching a peer's stream (Rendered directly inside Stage Block via Native ANSI Half-Block Engine)
+	// 2. Case: We are watching a peer's stream (Rendered directly inside Stage Block via Kitty Protocol)
 	if node.IsWatchingScreen && streamingPeer != nil {
-		topBarText := fmt.Sprintf(" 🎬 %s CANLI YAYINI (30 FPS HD) ", streamingPeer.Nickname)
+		// Fill video cells with cell.RuneImage so Limoni's diff engine skips these cells completely
+		for y := inner.Y + 1; y < inner.Y+inner.Height; y++ {
+			for x := inner.X; x < inner.X+inner.Width; x++ {
+				buf.SetCell(x, y, cell.Cell{Content: cell.RuneImage})
+			}
+		}
+
+		topBarText := fmt.Sprintf(" 🎬 %s CANLI YAYINI (60 FPS) ", streamingPeer.Nickname)
 		buf.SetString(inner.X+1, inner.Y, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 
 		btnText := " [⏹️ Esc / W: Kapat] "
@@ -389,47 +396,6 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			_ = node.StopWatchingScreen()
 			r.SetToast("Ekran izleyici kapatildi")
 		})
-
-		// Draw ANSI Half-Block Video directly into Limoni's buffer!
-		ansiFrame := screenshare.GetLatestANSIFrame()
-		if ansiFrame != nil && len(ansiFrame.RGB) > 0 {
-			videoY := inner.Y + 1
-			videoHeight := inner.Height - 1
-			videoWidth := inner.Width
-
-			for cy := uint16(0); cy < videoHeight; cy++ {
-				for cx := uint16(0); cx < videoWidth; cx++ {
-					if int(cx) >= ansiFrame.Cols || int(cy) >= ansiFrame.Rows {
-						continue
-					}
-
-					// Upper pixel (y = cy*2)
-					upperIdx := (int(cy*2)*ansiFrame.W + int(cx)) * 3
-					// Lower pixel (y = cy*2 + 1)
-					lowerIdx := (int(cy*2+1)*ansiFrame.W + int(cx)) * 3
-
-					if lowerIdx+2 < len(ansiFrame.RGB) {
-						upR, upG, upB := ansiFrame.RGB[upperIdx], ansiFrame.RGB[upperIdx+1], ansiFrame.RGB[upperIdx+2]
-						lowR, lowG, lowB := ansiFrame.RGB[lowerIdx], ansiFrame.RGB[lowerIdx+1], ansiFrame.RGB[lowerIdx+2]
-
-						buf.SetCell(inner.X+cx, videoY+cy, cell.Cell{
-							Content: '▀',
-							Style: cell.Style{
-								Fg: cell.NewColorRGB(upR, upG, upB),
-								Bg: cell.NewColorRGB(lowR, lowG, lowB),
-							},
-						})
-					}
-				}
-			}
-		} else {
-			for y := inner.Y + 1; y < inner.Y+inner.Height; y++ {
-				for x := inner.X; x < inner.X+inner.Width; x++ {
-					buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)}})
-				}
-			}
-			buf.SetString(inner.X+4, inner.Y+inner.Height/2, "⏳ Video akisi yukleniyor...", cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
-		}
 		return
 	}
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
