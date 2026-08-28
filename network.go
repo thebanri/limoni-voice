@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 const MaxPeers = 4
@@ -40,6 +42,8 @@ const (
 	PacketLeave
 	PacketJoinRequest // Client probes network to request joining an open host's room
 	PacketRoomFull    // Host rejects join request because room reached 4-peer capacity
+	PacketScreenShareStart
+	PacketScreenShareStop
 )
 
 type P2PPacket struct {
@@ -54,27 +58,32 @@ type P2PPacket struct {
 	Seq        uint32
 	Timestamp  int64
 	Payload    []byte
+	VideoPort  int           // Port used for UDP screen streaming
 	Peers      []PeerSummary // for Welcome message
 }
 
 type PeerSummary struct {
-	ID         string
-	Nickname   string
-	AddrStr    string
-	IsMuted    bool
-	IsDeafened bool
+	ID              string
+	Nickname        string
+	AddrStr         string
+	IsMuted         bool
+	IsDeafened      bool
+	IsSharingScreen bool
+	VideoPort       int
 }
 
 type PeerInfo struct {
-	ID         string
-	Nickname   string
-	Addr       *net.UDPAddr
-	PingMs     int64
-	LastSeen   time.Time
-	IsMuted    bool
-	IsDeafened bool
-	Speaking   bool
-	RMS        float64
+	ID              string
+	Nickname        string
+	Addr            *net.UDPAddr
+	PingMs          int64
+	LastSeen        time.Time
+	IsMuted         bool
+	IsDeafened      bool
+	Speaking        bool
+	RMS             float64
+	IsSharingScreen bool
+	VideoPort       int
 }
 
 // RelayControlMessage represents control JSON payloads sent to/from the relay server
@@ -132,6 +141,14 @@ type P2PNode struct {
 	wsMu             sync.Mutex
 	isRelayConnected bool
 	wsCancel         chan struct{}
+
+	// Screen Sharing State & Subprocesses
+	IsSharingScreen  bool
+	IsWatchingScreen bool
+	ScreenSharePort  int
+	screenSession    *screenshare.Session
+	receiverSession  *screenshare.Session
+	OnScreenShare    func(peerID string, isSharing bool, videoPort int)
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
@@ -354,6 +371,8 @@ func (n *P2PNode) JoinRoom(roomCode string) {
 // LeaveRoom sends leave message and clears peer state
 func (n *P2PNode) LeaveRoom() {
 	n.CancelJoin()
+	_ = n.StopScreenShare()
+	_ = n.StopWatchingScreen()
 
 	n.mu.Lock()
 	if !n.IsConnected {
@@ -1574,6 +1593,26 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	case PacketMuteState:
 		// handled by auto-register / refresh at top
 
+	case PacketScreenShareStart:
+		if peer, exists := n.Peers[pkt.SenderID]; exists {
+			peer.IsSharingScreen = true
+			peer.VideoPort = pkt.VideoPort
+			n.log(fmt.Sprintf("📺 %s ekran paylasimi baslatti (Port: %d)", peer.Nickname, pkt.VideoPort))
+			if n.OnScreenShare != nil {
+				go n.OnScreenShare(pkt.SenderID, true, pkt.VideoPort)
+			}
+		}
+
+	case PacketScreenShareStop:
+		if peer, exists := n.Peers[pkt.SenderID]; exists {
+			peer.IsSharingScreen = false
+			peer.VideoPort = 0
+			n.log(fmt.Sprintf("⏹️ %s ekran paylasimini durdurdu.", peer.Nickname))
+			if n.OnScreenShare != nil {
+				go n.OnScreenShare(pkt.SenderID, false, 0)
+			}
+		}
+
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			delete(n.Peers, pkt.SenderID)
@@ -1583,6 +1622,154 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			}
 		}
 	}
+}
+
+// StartScreenShare starts GPU-accelerated screen broadcast to the active room peers
+func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
+	n.mu.Lock()
+	if !n.IsConnected {
+		n.mu.Unlock()
+		return errors.New("cannot share screen while disconnected")
+	}
+	if n.IsSharingScreen && n.screenSession != nil {
+		n.mu.Unlock()
+		return nil
+	}
+
+	if targetIP == "" {
+		for _, peer := range n.Peers {
+			if peer.Addr != nil {
+				targetIP = peer.Addr.IP.String()
+				break
+			}
+		}
+	}
+	if targetIP == "" {
+		targetIP = "127.0.0.1"
+	}
+	if targetPort <= 0 {
+		targetPort = 50100
+	}
+
+	n.ScreenSharePort = targetPort
+	n.mu.Unlock()
+
+	opts := screenshare.DefaultBroadcastOptions()
+	session, err := screenshare.StartBroadcasting(context.Background(), targetIP, targetPort, opts)
+	if err != nil {
+		return err
+	}
+
+	n.mu.Lock()
+	n.screenSession = session
+	n.IsSharingScreen = true
+	n.mu.Unlock()
+
+	pkt := P2PPacket{
+		Type:      PacketScreenShareStart,
+		RoomCode:  n.RoomCode,
+		SenderID:  n.LocalID,
+		Nickname:  n.Nickname,
+		VideoPort: targetPort,
+	}
+	go n.sendPacketTo(nil, &pkt)
+	n.log("📺 Ekran paylasimi baslatildi (60 FPS)")
+
+	go func() {
+		select {
+		case err := <-session.Err():
+			n.log(fmt.Sprintf("⚠️ Ekran yayini kapandi: %v", err))
+		case <-session.Done():
+			n.log("ℹ️ Ekran yayini sonlandi.")
+		}
+		n.mu.Lock()
+		n.IsSharingScreen = false
+		n.screenSession = nil
+		n.mu.Unlock()
+
+		stopPkt := P2PPacket{
+			Type:     PacketScreenShareStop,
+			RoomCode: n.RoomCode,
+			SenderID: n.LocalID,
+			Nickname: n.Nickname,
+		}
+		n.sendPacketTo(nil, &stopPkt)
+	}()
+
+	return nil
+}
+
+// StopScreenShare stops active broadcasting
+func (n *P2PNode) StopScreenShare() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if !n.IsSharingScreen || n.screenSession == nil {
+		return nil
+	}
+
+	_ = n.screenSession.Stop()
+	n.screenSession = nil
+	n.IsSharingScreen = false
+
+	stopPkt := P2PPacket{
+		Type:     PacketScreenShareStop,
+		RoomCode: n.RoomCode,
+		SenderID: n.LocalID,
+		Nickname: n.Nickname,
+	}
+	go n.sendPacketTo(nil, &stopPkt)
+	n.log("⏹️ Ekran paylasimi durduruldu.")
+	return nil
+}
+
+// StartWatchingScreen launches mpv with Kitty graphics to view a peer's stream
+func (n *P2PNode) StartWatchingScreen(port int) error {
+	n.mu.Lock()
+	if n.receiverSession != nil {
+		_ = n.receiverSession.Stop()
+		n.receiverSession = nil
+	}
+	if port <= 0 {
+		port = 50100
+	}
+	n.mu.Unlock()
+
+	session, err := screenshare.StartReceiving(context.Background(), port)
+	if err != nil {
+		return err
+	}
+
+	n.mu.Lock()
+	n.receiverSession = session
+	n.IsWatchingScreen = true
+	n.mu.Unlock()
+
+	n.log(fmt.Sprintf("🎬 Kitty terminalinde 60 FPS ekran izleniyor (Port: %d)", port))
+
+	go func() {
+		<-session.Done()
+		n.mu.Lock()
+		n.IsWatchingScreen = false
+		n.receiverSession = nil
+		n.mu.Unlock()
+		n.log("⏹️ Ekran izleyici kapandi.")
+	}()
+
+	return nil
+}
+
+// StopWatchingScreen stops the active mpv receiver
+func (n *P2PNode) StopWatchingScreen() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.receiverSession != nil {
+		_ = n.receiverSession.Stop()
+		n.receiverSession = nil
+	}
+	n.IsWatchingScreen = false
+	return nil
 }
 
 func (n *P2PNode) heartbeatLoop() {

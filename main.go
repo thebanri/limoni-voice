@@ -463,6 +463,47 @@ func main() {
 								room.SetToast("Kulaklik Acildi")
 							}
 
+						case 'v', 'V':
+							if node.IsSharingScreen {
+								_ = node.StopScreenShare()
+								room.SetToast("Ekran paylasimi durduruldu")
+							} else {
+								err := node.StartScreenShare("", 50100)
+								if err != nil {
+									room.SetToast(fmt.Sprintf("Hata: %v", err))
+								} else {
+									room.SetToast("Ekran paylasimi baslatildi (60 FPS)")
+								}
+							}
+
+						case 'w', 'W':
+							if node.IsWatchingScreen {
+								_ = node.StopWatchingScreen()
+								room.SetToast("Ekran izleyici kapatildi")
+							} else {
+								var streamingPeer *PeerInfo
+								for _, p := range node.Peers {
+									if p.IsSharingScreen {
+										streamingPeer = p
+										break
+									}
+								}
+								if streamingPeer != nil {
+									port := streamingPeer.VideoPort
+									if port <= 0 {
+										port = 50100
+									}
+									err := node.StartWatchingScreen(port)
+									if err != nil {
+										room.SetToast(fmt.Sprintf("Hata: %v", err))
+									} else {
+										room.SetToast(fmt.Sprintf("%s yayini acildi (Kitty 60 FPS)", streamingPeer.Nickname))
+									}
+								} else {
+									room.SetToast("Odada su an ekran paylasan kimse yok")
+								}
+							}
+
 						case '+', '=':
 							gain := audio.AdjustGain(0.1)
 							room.SetToast(fmt.Sprintf("Mikrofon Sesi: %.0f%%", gain*100))

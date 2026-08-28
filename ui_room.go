@@ -492,23 +492,105 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		})
 	}
 
+	// Screen Share Button [V]
+	screenLabel := "[V] Ekran Paylas"
+	screenStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	if node.IsSharingScreen {
+		screenLabel = "[V] Yayini Durdur"
+		screenStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+			Modifier: cell.ModifierBold,
+		}
+	}
+	screenX := noiseX + noiseLen + 2
+	screenLen := uint16(len([]rune(screenLabel)))
+	if screenX+screenLen <= ctrlInner.X+ctrlInner.Width {
+		buf.SetString(screenX, row1Y, screenLabel, screenStyle)
+		frame.RegisterClickHandler(cell.NewRect(screenX, row1Y, screenLen, 1), func(_ backend.MouseEvent) {
+			if node.IsSharingScreen {
+				_ = node.StopScreenShare()
+				r.SetToast("Ekran paylasimi durduruldu")
+			} else {
+				err := node.StartScreenShare("", 50100)
+				if err != nil {
+					r.SetToast(fmt.Sprintf("Hata: %v", err))
+				} else {
+					r.SetToast("Ekran paylasimi baslatildi (60 FPS)")
+				}
+			}
+		})
+	}
+
 	// --- ROW 2: Tools & Room Actions ---
 	if ctrlInner.Height >= 2 {
+		// Watch Stream Button [W] (if any peer is streaming or we are watching)
+		var streamingPeer *PeerInfo
+		for _, p := range node.Peers {
+			if p.IsSharingScreen {
+				streamingPeer = p
+				break
+			}
+		}
+
+		watchLabel := "[W] Ekran Izle"
+		watchStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+		if node.IsWatchingScreen {
+			watchLabel = "[W] Izlemeyi Kapat"
+			watchStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+				Modifier: cell.ModifierBold,
+			}
+		} else if streamingPeer != nil {
+			watchLabel = fmt.Sprintf("[W] %s Izle 🔴", streamingPeer.Nickname)
+			watchStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
+				Modifier: cell.ModifierBold,
+			}
+		}
+
+		watchX := ctrlInner.X + 1
+		watchLen := uint16(len([]rune(watchLabel)))
+		buf.SetString(watchX, row2Y, watchLabel, watchStyle)
+		frame.RegisterClickHandler(cell.NewRect(watchX, row2Y, watchLen, 1), func(_ backend.MouseEvent) {
+			if node.IsWatchingScreen {
+				_ = node.StopWatchingScreen()
+				r.SetToast("Ekran izleyici kapatildi")
+			} else if streamingPeer != nil {
+				port := streamingPeer.VideoPort
+				if port <= 0 {
+					port = 50100
+				}
+				err := node.StartWatchingScreen(port)
+				if err != nil {
+					r.SetToast(fmt.Sprintf("Hata: %v", err))
+				} else {
+					r.SetToast(fmt.Sprintf("%s yayini acildi (Kitty 60 FPS)", streamingPeer.Nickname))
+				}
+			} else {
+				r.SetToast("Odada su an ekran paylasan kimse yok")
+			}
+		})
+
 		// Sound Test Panel Button [T]
-		testLabel := "[T] Ses Testi"
+		testLabel := "[T] Test"
 		testStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
 			Modifier: cell.ModifierBold,
 		}
-		testX := ctrlInner.X + 1
+		testX := watchX + watchLen + 2
 		testLen := uint16(len([]rune(testLabel)))
-		buf.SetString(testX, row2Y, testLabel, testStyle)
-		frame.RegisterClickHandler(cell.NewRect(testX, row2Y, testLen, 1), func(_ backend.MouseEvent) {
-			if r.OnOpenTestModal != nil {
-				r.OnOpenTestModal()
-			}
-		})
+		if testX+testLen <= ctrlInner.X+ctrlInner.Width {
+			buf.SetString(testX, row2Y, testLabel, testStyle)
+			frame.RegisterClickHandler(cell.NewRect(testX, row2Y, testLen, 1), func(_ backend.MouseEvent) {
+				if r.OnOpenTestModal != nil {
+					r.OnOpenTestModal()
+				}
+			})
+		}
 
 		// Volume Controls [+/-]
 		gainText := fmt.Sprintf("[+/-] Ses: %.0f%%", audio.Gain*100)
@@ -526,7 +608,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 
 		// Copy Code [C]
-		copyText := "[C] Kodu Kopyala"
+		copyText := "[C] Kopyala"
 		copyX := gainX + gainLen + 2
 		copyLen := uint16(len([]rune(copyText)))
 		if copyX+copyLen <= ctrlInner.X+ctrlInner.Width {
@@ -538,7 +620,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 
 		// Leave Room [Esc]
-		leaveText := "[Esc] Odadan Ayril"
+		leaveText := "[Esc] Ayril"
 		leaveLen := uint16(len([]rune(leaveText)))
 		leaveX := copyX + copyLen + 2
 		if ctrlInner.Width >= leaveX-ctrlInner.X+leaveLen {
