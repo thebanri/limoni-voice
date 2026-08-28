@@ -437,12 +437,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			if port <= 0 {
 				port = 50100
 			}
-			opts := screenshare.ReceiverOptions{
-				Left: int(inner.X) + 2,
-				Top:  int(inner.Y) + 2,
-				Cols: int(inner.Width) - 4,
-				Rows: int(inner.Height) - 3,
-			}
+			opts := CalculateStageVideoBounds(inner)
 			err := node.StartWatchingScreen(port, opts)
 			if err != nil {
 				r.SetToast(fmt.Sprintf("Hata: %v", err))
@@ -451,6 +446,51 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			}
 		})
 		return
+	}
+}
+
+// CalculateStageVideoBounds computes mathematically centered 16:9 terminal cell bounds inside Stage Block
+func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
+	availCols := int(inner.Width) - 4
+	availRows := int(inner.Height) - 3
+	if availCols < 10 {
+		availCols = 10
+	}
+	if availRows < 5 {
+		availRows = 5
+	}
+
+	// Terminal cell aspect ratio: font height is ~2x font width.
+	// 16:9 video requires: rows = cols * (9/16) * 0.5 = cols * 9 / 32
+	idealRows := int(float64(availCols) * (9.0 / 32.0))
+	idealCols := availCols
+
+	if idealRows > availRows {
+		idealRows = availRows
+		idealCols = int(float64(idealRows) * (32.0 / 9.0))
+		if idealCols > availCols {
+			idealCols = availCols
+		}
+	}
+	if idealCols < 10 {
+		idealCols = 10
+	}
+	if idealRows < 4 {
+		idealRows = 4
+	}
+
+	// Center horizontally and vertically inside Stage Block
+	offsetX := (availCols - idealCols) / 2
+	offsetY := (availRows - idealRows) / 2
+
+	left := int(inner.X) + 2 + offsetX
+	top := int(inner.Y) + 2 + offsetY
+
+	return screenshare.ReceiverOptions{
+		Left: left,
+		Top:  top,
+		Cols: idealCols,
+		Rows: idealRows,
 	}
 }
 

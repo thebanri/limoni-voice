@@ -11,7 +11,6 @@ import (
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/terminal"
-	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 type AppScreen int
@@ -502,18 +501,7 @@ func main() {
 									if port <= 0 {
 										port = 50100
 									}
-									opts := screenshare.ReceiverOptions{
-										Left: int(room.LastStageArea.X) + 2,
-										Top:  int(room.LastStageArea.Y) + 2,
-										Cols: int(room.LastStageArea.Width) - 4,
-										Rows: int(room.LastStageArea.Height) - 3,
-									}
-									if opts.Cols <= 0 || opts.Rows <= 0 {
-										opts.Left = 32
-										opts.Top = 5
-										opts.Cols = 70
-										opts.Rows = 22
-									}
+									opts := CalculateStageVideoBounds(room.LastStageArea)
 									err := node.StartWatchingScreen(port, opts)
 									if err != nil {
 										room.SetToast(fmt.Sprintf("Hata: %v", err))
