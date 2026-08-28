@@ -293,10 +293,12 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		streamURL,
 		"--really-quiet",
 		"--no-audio",
-		"--vo=kitty,gpu,x11",
-		"--vo-kitty-use-shm=yes",
-		"--vo-kitty-alt-screen=no",
-		"--vo-kitty-config-clear=no",
+		"--vo=gpu,gpu-next,x11,direct3d,sdl,kitty",
+		"--no-border",
+		"--force-window=yes",
+		"--title=Limoni Voice - Canli Yayin (60 FPS)",
+		"--autofit=60%x60%",
+		"--keepaspect=yes",
 		"--demuxer-lavf-format=mpegts",
 		"--demuxer-lavf-analyzeduration=0",
 		"--demuxer-lavf-probesize=32",
@@ -308,21 +310,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--video-sync=desync",
 		"--vd-lavc-threads=1",
 		"--framedrop=decoder+vo",
-		"--keepaspect=no",
 		"--idle=yes",
-	}
-
-	if opt.Left > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-left=%d", opt.Left))
-	}
-	if opt.Top > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-top=%d", opt.Top))
-	}
-	if opt.Cols > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-cols=%d", opt.Cols))
-	}
-	if opt.Rows > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-rows=%d", opt.Rows))
 	}
 
 	if len(opt.CustomMpvFlags) > 0 {
@@ -331,8 +319,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
-	cmd.Stdout = os.Stdout // Kitty escape codes flow directly to terminal block
-	cmd.Stderr = nil       // Suppress ffmpeg decoding noise from corrupting TUI
+	cmd.Stdout = nil // Isolate from TTY
+	cmd.Stderr = nil // Suppress ffmpeg decoding noise from corrupting TUI
 	setupProcessGroup(cmd)
 
 	s := &Session{
