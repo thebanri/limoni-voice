@@ -375,26 +375,24 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 	r.LastStageArea = inner
 
-	// 2. Case: We are watching a peer's stream (Frameless Native GPU Player Active)
+	// 2. Case: We are watching a peer's stream (Rendered directly inside Stage Block via Kitty Protocol)
 	if node.IsWatchingScreen && streamingPeer != nil {
-		for y := inner.Y; y < inner.Y+inner.Height; y++ {
+		// Fill video cells with cell.RuneImage so Limoni's diff engine skips these cells completely
+		for y := inner.Y + 1; y < inner.Y+inner.Height; y++ {
 			for x := inner.X; x < inner.X+inner.Width; x++ {
-				buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)}})
+				buf.SetCell(x, y, cell.Cell{Content: cell.RuneImage})
 			}
 		}
 
-		centerY := inner.Y + inner.Height/2
-		msg1 := fmt.Sprintf("🎬 %s CANLI YAYINI ACILDI (60 FPS - GPU)", streamingPeer.Nickname)
-		msg2 := "Çerçevesiz Donanım Hızlandırmalı Video Sahnesi Aktif."
-		btnText := "   ⏹️ [W] IZLEMEYI KAPAT (Tikla veya Esc)   "
+		topBarText := fmt.Sprintf(" 🎬 %s CANLI YAYINI (60 FPS) ", streamingPeer.Nickname)
+		buf.SetString(inner.X+1, inner.Y, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 
-		buf.SetString(inner.X+4, centerY-3, msg1, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
-		buf.SetString(inner.X+4, centerY-1, msg2, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
-
+		btnText := " [⏹️ Esc / W: Kapat] "
+		btnX := inner.X + inner.Width - uint16(len([]rune(btnText))) - 1
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0xFF, 0x9F, 0x43), Modifier: cell.ModifierBold}
-		buf.SetString(inner.X+4, centerY+2, btnText, btnStyle)
+		buf.SetString(btnX, inner.Y, btnText, btnStyle)
 
-		frame.RegisterClickHandler(cell.NewRect(inner.X+4, centerY+2, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(btnX, inner.Y, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
 			_ = node.StopWatchingScreen()
 			r.SetToast("Ekran izleyici kapatildi")
 		})
