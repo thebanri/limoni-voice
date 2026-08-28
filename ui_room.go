@@ -54,10 +54,15 @@ func (r *RoomView) Update() {
 }
 
 func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
+	footerHeight := uint16(7)
+	if node.IsWatchingScreen {
+		footerHeight = 4 // Compact footer when watching stream so Stage gets maximum height!
+	}
+
 	fl := layout.NewFlexLayout(layout.Vertical, 0,
-		layout.Fixed(3), // Header
-		layout.Fill(),   // 2x2 Participant Cards
-		layout.Fixed(7), // Controls & Mini Logs
+		layout.Fixed(3),            // Header
+		layout.Fill(),              // 2x2 Participant Cards or Big Stream Stage
+		layout.Fixed(footerHeight), // Controls & Mini Logs
 	)
 	vSplits := fl.Split(area)
 	if len(vSplits) < 3 {
@@ -452,13 +457,13 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 // CalculateStageVideoBounds computes mathematically centered 16:9 terminal cell bounds inside Stage Block
 func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
 	// Leave safe margins so borders and headers/footers are NEVER touched
-	availCols := int(inner.Width) - 6
-	availRows := int(inner.Height) - 4
+	availCols := int(inner.Width) - 8
+	availRows := int(inner.Height) - 6
 	if availCols < 10 {
 		availCols = 10
 	}
-	if availRows < 5 {
-		availRows = 5
+	if availRows < 4 {
+		availRows = 4
 	}
 
 	// Height-first constraint with terminal cell aspect ratio:
@@ -483,8 +488,8 @@ func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
 	// Center horizontally and vertically inside Stage Block
 	offsetX := (int(inner.Width) - idealCols) / 2
 	offsetY := (int(inner.Height) - idealRows) / 2
-	if offsetX < 2 {
-		offsetX = 2
+	if offsetX < 3 {
+		offsetX = 3
 	}
 	if offsetY < 2 {
 		offsetY = 2
