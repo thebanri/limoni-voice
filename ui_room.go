@@ -440,8 +440,8 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			opts := screenshare.ReceiverOptions{
 				Left: int(inner.X) + 2,
 				Top:  int(inner.Y) + 2,
-				Cols: int(inner.Width) - 3,
-				Rows: int(inner.Height) - 2,
+				Cols: int(inner.Width) - 4,
+				Rows: int(inner.Height) - 3,
 			}
 			err := node.StartWatchingScreen(port, opts)
 			if err != nil {

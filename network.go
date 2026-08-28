@@ -1648,13 +1648,24 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				go n.OnScreenShare(pkt.SenderID, false, 0)
 			}
 		}
+		if n.IsWatchingScreen {
+			go func() {
+				_ = n.StopWatchingScreen()
+			}()
+		}
 
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
+			wasSharing := peer.IsSharingScreen
 			delete(n.Peers, pkt.SenderID)
 			n.log(fmt.Sprintf("[-] %s odadan ayrildi.", peer.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
+			}
+			if wasSharing && n.IsWatchingScreen {
+				go func() {
+					_ = n.StopWatchingScreen()
+				}()
 			}
 		}
 	}
