@@ -369,6 +369,13 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 	// 2. Case: We are watching a peer's stream (Rendered directly inside Stage Block)
 	if node.IsWatchingScreen && streamingPeer != nil {
+		// Fill video cells with cell.RuneImage so Limoni's diff engine skips these cells completely
+		for y := inner.Y + 1; y < inner.Y+inner.Height; y++ {
+			for x := inner.X; x < inner.X+inner.Width; x++ {
+				buf.SetCell(x, y, cell.Cell{Content: cell.RuneImage})
+			}
+		}
+
 		topBarText := fmt.Sprintf(" 🎬 %s CANLI YAYINI (60 FPS) ", streamingPeer.Nickname)
 		buf.SetString(inner.X+1, inner.Y, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 
@@ -381,7 +388,6 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			_ = node.StopWatchingScreen()
 			r.SetToast("Ekran izleyici kapatildi")
 		})
-		// Do not overwrite interior with spaces so Kitty graphics protocol renders flawlessly
 		return
 	}
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {

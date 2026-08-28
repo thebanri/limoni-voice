@@ -295,6 +295,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--no-audio",
 		"--vo=kitty,gpu,x11",
 		"--vo-kitty-use-shm=yes",
+		"--vo-kitty-z-index=-1",
 		"--demuxer-lavf-format=mpegts",
 		"--demuxer-lavf-analyzeduration=0",
 		"--demuxer-lavf-probesize=32",
