@@ -17,6 +17,7 @@ var (
 	procWaveInStart            = modwinmm.NewProc("waveInStart")
 	procWaveInStop             = modwinmm.NewProc("waveInStop")
 	procWaveInReset            = modwinmm.NewProc("waveInReset")
+	procWaveInGetNumDevs       = modwinmm.NewProc("waveInGetNumDevs")
 
 	procWaveOutOpen            = modwinmm.NewProc("waveOutOpen")
 	procWaveOutClose           = modwinmm.NewProc("waveOutClose")
@@ -24,13 +25,17 @@ var (
 	procWaveOutUnprepareHeader = modwinmm.NewProc("waveOutUnprepareHeader")
 	procWaveOutWrite           = modwinmm.NewProc("waveOutWrite")
 	procWaveOutReset           = modwinmm.NewProc("waveOutReset")
+	procWaveOutGetNumDevs      = modwinmm.NewProc("waveOutGetNumDevs")
 )
 
 const (
 	WAVE_FORMAT_PCM = 1
 	WAVE_MAPPER     = ^uintptr(0) // (UINT)-1: default device
-	CALLBACK_NULL   = 0
 	CALLBACK_EVENT  = 0x00050000
+
+	WHDR_DONE     = 0x00000001
+	WHDR_PREPARED = 0x00000002
+	WHDR_INQUEUE  = 0x00000010
 )
 
 type WAVEFORMATEX struct {
@@ -54,14 +59,10 @@ type WAVEHDR struct {
 	reserved        uintptr
 }
 
-const (
-	WHDR_DONE = 0x00000001
-)
-
 var (
-	kernel32        = syscall.NewLazyDLL("kernel32.dll")
-	procCreateEvent = kernel32.NewProc("CreateEventW")
-	procCloseHandle = kernel32.NewProc("CloseHandle")
+	kernel32                = syscall.NewLazyDLL("kernel32.dll")
+	procCreateEvent         = kernel32.NewProc("CreateEventW")
+	procCloseHandle         = kernel32.NewProc("CloseHandle")
 	procWaitForSingleObject = kernel32.NewProc("WaitForSingleObject")
 )
 
@@ -83,6 +84,11 @@ func waitForWindowsEvent(h uintptr, ms uint32) uint32 {
 
 // startWindowsCapture initializes native Windows audio capture using winmm waveIn API
 func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking bool, pcm []byte)) bool {
+	numDevs, _, _ := procWaveInGetNumDevs.Call()
+	if numDevs == 0 {
+		return false
+	}
+
 	wfx := WAVEFORMATEX{
 		wFormatTag:      WAVE_FORMAT_PCM,
 		nChannels:       1,
@@ -113,8 +119,8 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 		return false
 	}
 
-	// Create 4 alternating audio chunk buffers (each 20ms = 640 bytes)
-	const numBufs = 4
+	// 8 alternating buffers (each 20ms = 640 bytes)
+	const numBufs = 8
 	const bufSize = AudioChunkSize
 
 	buffers := make([][]byte, numBufs)
@@ -132,6 +138,10 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 
 	ret, _, _ = procWaveInStart.Call(hWaveIn)
 	if ret != 0 {
+		procWaveInReset.Call(hWaveIn)
+		for i := 0; i < numBufs; i++ {
+			procWaveInUnprepareHeader.Call(hWaveIn, uintptr(unsafe.Pointer(&headers[i])), unsafe.Sizeof(headers[i]))
+		}
 		procWaveInClose.Call(hWaveIn)
 		closeWindowsHandle(eventHandle)
 		return false
@@ -156,13 +166,11 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 			default:
 			}
 
-			// Wait for audio buffer ready event (up to 100ms)
-			res := waitForWindowsEvent(eventHandle, 100)
-			if res != 0 {
-				continue
-			}
+			// Wait up to 50ms for next recorded buffer
+			waitForWindowsEvent(eventHandle, 50)
 
-			for i := 0; i < numBufs; i++ {
+			// Process any completed buffers
+			for count := 0; count < numBufs; count++ {
 				hdr := &headers[bufIdx]
 				if hdr.dwFlags&WHDR_DONE != 0 {
 					data := buffers[bufIdx]
@@ -214,12 +222,14 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 						}
 					}
 
-					// Reset and re-add buffer to queue
+					// Re-queue the buffer
 					hdr.dwFlags = 0
 					hdr.dwBytesRecorded = 0
 					procWaveInAddBuffer.Call(hWaveIn, uintptr(unsafe.Pointer(hdr)), unsafe.Sizeof(*hdr))
+					bufIdx = (bufIdx + 1) % numBufs
+				} else {
+					break
 				}
-				bufIdx = (bufIdx + 1) % numBufs
 			}
 		}
 	}()
@@ -227,7 +237,7 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 	return true
 }
 
-// windowsWaveWriter implements io.WriteCloser using winmm waveOut API
+// windowsWaveWriter implements io.WriteCloser using winmm waveOut API with a robust multi-buffer pool
 type windowsWaveWriter struct {
 	hWaveOut    uintptr
 	eventHandle uintptr
@@ -238,6 +248,11 @@ type windowsWaveWriter struct {
 }
 
 func newWindowsWaveWriter() *windowsWaveWriter {
+	numDevs, _, _ := procWaveOutGetNumDevs.Call()
+	if numDevs == 0 {
+		return nil
+	}
+
 	wfx := WAVEFORMATEX{
 		wFormatTag:      WAVE_FORMAT_PCM,
 		nChannels:       1,
@@ -268,7 +283,8 @@ func newWindowsWaveWriter() *windowsWaveWriter {
 		return nil
 	}
 
-	const numBufs = 8
+	// 16 buffers to ensure smooth playback without glitches
+	const numBufs = 16
 	const bufSize = AudioChunkSize
 
 	buffers := make([][]byte, numBufs)
@@ -279,6 +295,7 @@ func newWindowsWaveWriter() *windowsWaveWriter {
 		headers[i] = WAVEHDR{
 			lpData:         uintptr(unsafe.Pointer(&buffers[i][0])),
 			dwBufferLength: bufSize,
+			dwFlags:        WHDR_DONE, // Start as available
 		}
 		procWaveOutPrepareHeader.Call(hWaveOut, uintptr(unsafe.Pointer(&headers[i])), unsafe.Sizeof(headers[i]))
 	}
@@ -296,8 +313,33 @@ func (w *windowsWaveWriter) Write(p []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	hdr := &w.headers[w.bufIdx]
-	buf := w.buffers[w.bufIdx]
+	numBufs := len(w.headers)
+	foundIdx := -1
+
+	// Look for an available (done) buffer slot
+	for attempt := 0; attempt < 3; attempt++ {
+		for i := 0; i < numBufs; i++ {
+			idx := (w.bufIdx + i) % numBufs
+			hdr := &w.headers[idx]
+			if hdr.dwFlags&WHDR_INQUEUE == 0 || hdr.dwFlags&WHDR_DONE != 0 {
+				foundIdx = idx
+				break
+			}
+		}
+		if foundIdx >= 0 {
+			break
+		}
+		// Wait briefly for a playing buffer to complete
+		waitForWindowsEvent(w.eventHandle, 10)
+	}
+
+	if foundIdx < 0 {
+		// Fallback: force write to current index
+		foundIdx = w.bufIdx
+	}
+
+	hdr := &w.headers[foundIdx]
+	buf := w.buffers[foundIdx]
 
 	copyLen := len(p)
 	if copyLen > len(buf) {
@@ -305,10 +347,17 @@ func (w *windowsWaveWriter) Write(p []byte) (n int, err error) {
 	}
 	copy(buf, p[:copyLen])
 
+	// If already prepared, unprepare first
+	if hdr.dwFlags&WHDR_PREPARED != 0 {
+		procWaveOutUnprepareHeader.Call(w.hWaveOut, uintptr(unsafe.Pointer(hdr)), unsafe.Sizeof(*hdr))
+	}
+
 	hdr.dwBufferLength = uint32(copyLen)
+	hdr.dwFlags = 0
+	procWaveOutPrepareHeader.Call(w.hWaveOut, uintptr(unsafe.Pointer(hdr)), unsafe.Sizeof(*hdr))
 	procWaveOutWrite.Call(w.hWaveOut, uintptr(unsafe.Pointer(hdr)), unsafe.Sizeof(*hdr))
 
-	w.bufIdx = (w.bufIdx + 1) % len(w.headers)
+	w.bufIdx = (foundIdx + 1) % numBufs
 	return copyLen, nil
 }
 
@@ -319,7 +368,9 @@ func (w *windowsWaveWriter) Close() error {
 	w.closed = true
 	procWaveOutReset.Call(w.hWaveOut)
 	for i := 0; i < len(w.headers); i++ {
-		procWaveOutUnprepareHeader.Call(w.hWaveOut, uintptr(unsafe.Pointer(&w.headers[i])), unsafe.Sizeof(w.headers[i]))
+		if w.headers[i].dwFlags&WHDR_PREPARED != 0 {
+			procWaveOutUnprepareHeader.Call(w.hWaveOut, uintptr(unsafe.Pointer(&w.headers[i])), unsafe.Sizeof(w.headers[i]))
+		}
 	}
 	procWaveOutClose.Call(w.hWaveOut)
 	closeWindowsHandle(w.eventHandle)
