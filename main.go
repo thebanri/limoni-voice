@@ -104,23 +104,16 @@ func main() {
 
 	// Room Transition Helpers
 	startHost := func() {
-		hostCode := NormalizeCode(lobby.HostCodeState.Value())
-		if hostCode == "" {
-			hostCode = GenerateRoomCode()
-			lobby.HostCodeState.SetValue(hostCode)
-		}
-		lobby.CurrentCode = hostCode
-
 		nick := strings.TrimSpace(lobby.NickState.Value())
 		if nick == "" {
-			if len(hostCode) >= 4 {
-				nick = "User_" + hostCode[:4]
+			if len(lobby.CurrentCode) >= 4 {
+				nick = "User_" + lobby.CurrentCode[:4]
 			} else {
 				nick = "User_Host"
 			}
 		}
 		node.Nickname = nick
-		node.HostRoom(hostCode)
+		node.HostRoom(lobby.CurrentCode)
 		room = NewRoomView()
 		currentScreen = ScreenRoom
 	}
@@ -335,16 +328,13 @@ func main() {
 				// --- 2. Screen: Lobby Key Handling ---
 				if currentScreen == ScreenLobby {
 					if e.Type == backend.KeyF2 {
-						code := lobby.HostCodeState.Value()
-						CopyToClipboard(code)
-						lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", code))
+						CopyToClipboard(lobby.CurrentCode)
+						lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", lobby.CurrentCode))
 						continue
 					}
 					if e.Type == backend.KeyF3 {
-						newCode := GenerateRoomCode()
-						lobby.HostCodeState.SetValue(newCode)
-						lobby.CurrentCode = newCode
-						lobby.SetToast(fmt.Sprintf("Yeni oda anahtari uretildi: %s", newCode))
+						lobby.CurrentCode = GenerateRoomCode()
+						lobby.SetToast(fmt.Sprintf("Yeni oda anahtari uretildi: %s", lobby.CurrentCode))
 						continue
 					}
 
@@ -358,11 +348,6 @@ func main() {
 							} else if lobby.ActiveInput == 1 {
 								cleanCode := NormalizeCode(clipText)
 								lobby.CodeState.SetValue(cleanCode)
-								lobby.SetToast(fmt.Sprintf("Oda anahtari yapistirildi: %s", cleanCode))
-							} else if lobby.ActiveInput == 2 {
-								cleanCode := NormalizeCode(clipText)
-								lobby.HostCodeState.SetValue(cleanCode)
-								lobby.CurrentCode = cleanCode
 								lobby.SetToast(fmt.Sprintf("Oda anahtari yapistirildi: %s", cleanCode))
 							}
 						} else {
@@ -402,24 +387,41 @@ func main() {
 					switch lobby.ActiveInput {
 					case 0: // Nickname Input Focused
 						if e.Type == backend.KeyEsc {
-							openExitModal()
+							lobby.ActiveInput = 2
 						} else {
 							lobby.NickState.HandleKey(e)
 						}
 
-					case 1: // Join Room Code Input Focused
+					case 1: // Join Room Code Input Focused (Full cursor navigation & editing)
 						if e.Type == backend.KeyEsc {
-							openExitModal()
+							lobby.ActiveInput = 2
 						} else {
 							lobby.CodeState.HandleKey(e)
 						}
 
-					case 2: // Host Room Code Input Focused
-						if e.Type == backend.KeyEsc {
+					case 2: // Host / General Section
+						switch e.Type {
+						case backend.KeyEsc:
 							openExitModal()
-						} else {
-							lobby.HostCodeState.HandleKey(e)
-							lobby.CurrentCode = lobby.HostCodeState.Value()
+						case backend.KeyRune:
+							switch e.Ch {
+							case '1':
+								lobby.ActiveInput = 0
+							case '2':
+								startHost()
+							case '3':
+								lobby.ActiveInput = 1
+							case 'c', 'C':
+								CopyToClipboard(lobby.CurrentCode)
+								lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", lobby.CurrentCode))
+							case 'g', 'G':
+								lobby.CurrentCode = GenerateRoomCode()
+								lobby.SetToast("Yeni oda anahtari uretildi!")
+							case 't', 'T':
+								openTestModal()
+							case 'q', 'Q':
+								openExitModal()
+							}
 						}
 					}
 
@@ -535,7 +537,7 @@ func main() {
 					case 1:
 						t.FocusManager().SetFocused("roomcode_input")
 					case 2:
-						t.FocusManager().SetFocused("hostcode_input")
+						t.FocusManager().SetFocused("")
 					}
 				}
 				lobby.Update(dt)

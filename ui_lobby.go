@@ -31,12 +31,11 @@ type LobbyView struct {
 
 	// Room & Inputs
 	CurrentCode      string
-	HostCodeState    *widgets.TextInputState
 	NickState        *widgets.TextInputState
 	CodeState        *widgets.TextInputState
 	ToastMsg         string
 	ToastTimer       int
-	ActiveInput      int // 0: Nickname, 1: RoomCode to Join, 2: Host Code / Host Section
+	ActiveInput      int // 0: Nickname, 1: RoomCode to Join, 2: Host / General
 	IsConnecting     bool
 	ConnectingTarget string
 
@@ -218,9 +217,6 @@ func NewLobbyView() *LobbyView {
 	nickState := widgets.NewTextInputState()
 	nickState.SetValue("User_" + code[:4])
 
-	hostCodeState := widgets.NewTextInputState()
-	hostCodeState.SetValue(code)
-
 	codeState := widgets.NewTextInputState()
 
 	return &LobbyView{
@@ -233,7 +229,6 @@ func NewLobbyView() *LobbyView {
 		AutoRotateSpeed: 1.8,
 		StartTime:       time.Now(),
 		CurrentCode:     code,
-		HostCodeState:   hostCodeState,
 		NickState:       nickState,
 		CodeState:       codeState,
 		ActiveInput:     2,
@@ -405,6 +400,10 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	hostTitle := " [2] ODA OLUSTUR (SEN HOST OL) "
 	hostBorderStyle := unfocusedBorder
 	hostBgStyle := unfocusedBg
+	keyStyle := cell.Style{
+		Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
+		Bg: cell.NewColorRGB(0x22, 0x28, 0x34),
+	}
 	hostBtnStyle := cell.Style{
 		Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
 		Bg: nickBgStyle.Bg,
@@ -417,6 +416,11 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Modifier: cell.ModifierBold,
 		}
 		hostBgStyle = cell.Style{Bg: cell.NewColorRGB(0x1A, 0x1D, 0x26)}
+		keyStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Modifier: cell.ModifierBold,
+		}
 		hostBtnStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Bg:       hostBgStyle.Bg,
@@ -440,26 +444,22 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 
-	codeLabel := "Oda Anahtariniz (Duzenleyebilir veya [F3] ile degistirebilirsiniz):"
+	codeLabel := "Oda Anahtariniz (Arkadasina Gonder):"
 	codeLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: hostBgStyle.Bg}
 	if isHostFocused {
 		codeLabelStyle = cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: hostBgStyle.Bg}
 	}
 	buf.SetString(hostInner.X, hostInner.Y, codeLabel, codeLabelStyle)
 
-	hostInputRect := cell.Rect{
-		X:      hostInner.X + 1,
-		Y:      hostInner.Y + 1,
-		Width:  hostInner.Width - 2,
-		Height: 1,
-	}
+	keyBoxStr := fmt.Sprintf("  [ %s ]  ", l.CurrentCode)
+	buf.SetString(hostInner.X+2, hostInner.Y+1, keyBoxStr, keyStyle)
 
-	hostCodeInput := widgets.TextInput{
-		ID:          "hostcode_input",
-		State:       l.HostCodeState,
-		Placeholder: "orn: 1307-sonic-radar",
-	}
-	frame.RenderWidget(hostCodeInput, hostInputRect)
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(len([]rune(keyBoxStr))), 1), func(_ backend.MouseEvent) {
+		l.ActiveInput = 2
+		if l.OnCopyCode != nil {
+			l.OnCopyCode(l.CurrentCode)
+		}
+	})
 
 	hostBtns := "[Enter] Bu Odayi Ac   •   [F2] Kodu Kopyala   •   [F3] Yeni Kod"
 	buf.SetString(hostInner.X, hostInner.Y+3, hostBtns, hostBtnStyle)
@@ -473,7 +473,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	frame.RegisterClickHandler(cell.NewRect(hostInner.X+22, hostInner.Y+3, 17, 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
-			l.OnCopyCode(l.HostCodeState.Value())
+			l.OnCopyCode(l.CurrentCode)
 		}
 	})
 	frame.RegisterClickHandler(cell.NewRect(hostInner.X+42, hostInner.Y+3, 14, 1), func(_ backend.MouseEvent) {
