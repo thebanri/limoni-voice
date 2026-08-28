@@ -357,6 +357,13 @@ func (s *RelayServer) removeClient(client *Client) {
 	client.room = nil
 
 	room.mu.Lock()
+	// CRITICAL FIX: Only remove from room if THIS client instance is the currently registered one.
+	// If the user already reconnected with a newer connection, do NOT delete the new connection!
+	if room.Members[senderID] != client {
+		room.mu.Unlock()
+		return
+	}
+
 	delete(room.Members, senderID)
 	remainingMembers := make([]*Client, 0, len(room.Members))
 	for _, m := range room.Members {
