@@ -1782,7 +1782,7 @@ func (n *P2PNode) StopScreenShare() error {
 	return nil
 }
 
-// StartWatchingScreen launches native Go Kitty receiver with FFmpeg to view a peer's stream directly inside the Stage Block
+// StartWatchingScreen launches native TrueColor ANSI Half-Block receiver with FFmpeg to view a peer's stream directly inside Limoni Stage Buffer
 func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
@@ -1804,7 +1804,16 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		opt = screenshare.DefaultReceiverOptions()
 	}
 
-	session, err := screenshare.StartNativeKittyReceiver(context.Background(), port, opt)
+	cols := opt.Cols
+	rows := opt.Rows
+	if cols <= 0 {
+		cols = 72
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+
+	session, err := screenshare.StartANSIReceiver(context.Background(), port, cols, rows)
 	if err != nil {
 		return err
 	}
@@ -1813,7 +1822,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	n.receiverSession = session
 	n.IsWatchingScreen = true
 	n.mu.Unlock()
-	n.log(fmt.Sprintf("📺 Canli yayin izleyici baslatildi (Port: %d, Native Kitty Engine).", port))
+	n.log(fmt.Sprintf("📺 Canli yayin izleyici baslatildi (Port: %d, TrueColor Engine).", port))
 
 	go func() {
 		select {
