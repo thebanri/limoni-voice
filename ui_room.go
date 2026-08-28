@@ -571,13 +571,30 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 	}
 
+	maxW := int(logInner.Width) - 2
+	if maxW < 5 {
+		maxW = 5
+	}
+
+	truncate := func(s string, limit int) string {
+		runes := []rune(s)
+		if len(runes) <= limit {
+			return s
+		}
+		if limit <= 3 {
+			return string(runes[:limit])
+		}
+		return string(runes[:limit-1]) + "…"
+	}
+
 	if r.ToastMsg != "" {
 		toastStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Modifier: cell.ModifierBold,
 		}
-		buf.SetString(logInner.X+1, logInner.Y, "  "+r.ToastMsg+"  ", toastStyle)
+		toastText := truncate("  "+r.ToastMsg+"  ", maxW)
+		buf.SetString(logInner.X+1, logInner.Y, toastText, toastStyle)
 	} else if len(r.Logs) > 0 {
 		startIdx := 0
 		if len(r.Logs) > int(logInner.Height) {
@@ -585,10 +602,12 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 		for i, line := range r.Logs[startIdx:] {
 			if uint16(i) < logInner.Height {
-				buf.SetString(logInner.X+1, logInner.Y+uint16(i), line, cell.Style{Fg: cell.NewColorRGB(0xB2, 0xBE, 0xC3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+				safeLine := truncate(line, maxW)
+				buf.SetString(logInner.X+1, logInner.Y+uint16(i), safeLine, cell.Style{Fg: cell.NewColorRGB(0xB2, 0xBE, 0xC3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
 			}
 		}
 	} else {
-		buf.SetString(logInner.X+1, logInner.Y, "Baglanti bekleniyor... Arkadasiniz odaya katildiginda burada gorunecek.", cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+		placeholder := truncate("Baglanti bekleniyor... Arkadasiniz odaya katildiginda burada gorunecek.", maxW)
+		buf.SetString(logInner.X+1, logInner.Y, placeholder, cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
 	}
 }

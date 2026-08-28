@@ -104,12 +104,23 @@ func main() {
 
 	// Room Transition Helpers
 	startHost := func() {
+		hostCode := NormalizeCode(lobby.HostCodeState.Value())
+		if hostCode == "" {
+			hostCode = GenerateRoomCode()
+			lobby.HostCodeState.SetValue(hostCode)
+		}
+		lobby.CurrentCode = hostCode
+
 		nick := strings.TrimSpace(lobby.NickState.Value())
 		if nick == "" {
-			nick = "User_" + lobby.CurrentCode[:4]
+			if len(hostCode) >= 4 {
+				nick = "User_" + hostCode[:4]
+			} else {
+				nick = "User_Host"
+			}
 		}
 		node.Nickname = nick
-		node.HostRoom(lobby.CurrentCode)
+		node.HostRoom(hostCode)
 		room = NewRoomView()
 		currentScreen = ScreenRoom
 	}
@@ -324,13 +335,16 @@ func main() {
 				// --- 2. Screen: Lobby Key Handling ---
 				if currentScreen == ScreenLobby {
 					if e.Type == backend.KeyF2 {
-						CopyToClipboard(lobby.CurrentCode)
-						lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", lobby.CurrentCode))
+						code := lobby.HostCodeState.Value()
+						CopyToClipboard(code)
+						lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", code))
 						continue
 					}
 					if e.Type == backend.KeyF3 {
-						lobby.CurrentCode = GenerateRoomCode()
-						lobby.SetToast("Yeni oda anahtari uretildi!")
+						newCode := GenerateRoomCode()
+						lobby.HostCodeState.SetValue(newCode)
+						lobby.CurrentCode = newCode
+						lobby.SetToast(fmt.Sprintf("Yeni oda anahtari uretildi: %s", newCode))
 						continue
 					}
 
@@ -344,6 +358,11 @@ func main() {
 							} else if lobby.ActiveInput == 1 {
 								cleanCode := NormalizeCode(clipText)
 								lobby.CodeState.SetValue(cleanCode)
+								lobby.SetToast(fmt.Sprintf("Oda anahtari yapistirildi: %s", cleanCode))
+							} else if lobby.ActiveInput == 2 {
+								cleanCode := NormalizeCode(clipText)
+								lobby.HostCodeState.SetValue(cleanCode)
+								lobby.CurrentCode = cleanCode
 								lobby.SetToast(fmt.Sprintf("Oda anahtari yapistirildi: %s", cleanCode))
 							}
 						} else {
@@ -373,53 +392,34 @@ func main() {
 						joinCode := NormalizeCode(lobby.CodeState.Value())
 						if lobby.ActiveInput == 1 && joinCode != "" {
 							joinRoom(joinCode)
-						} else if lobby.ActiveInput == 0 && joinCode != "" {
-							joinRoom(joinCode)
 						} else {
 							startHost()
 						}
 						continue
 					}
 
-					// Input Routing based on ActiveInput Focus
+					// Input Routing based on ActiveInput Focus (Supports Left, Right, Home, End, Backspace, Delete)
 					switch lobby.ActiveInput {
 					case 0: // Nickname Input Focused
 						if e.Type == backend.KeyEsc {
-							lobby.ActiveInput = 2 // unfocus to buttons
+							openExitModal()
 						} else {
 							lobby.NickState.HandleKey(e)
 						}
 
 					case 1: // Join Room Code Input Focused
 						if e.Type == backend.KeyEsc {
-							lobby.ActiveInput = 2 // unfocus to buttons
+							openExitModal()
 						} else {
 							lobby.CodeState.HandleKey(e)
 						}
 
-					case 2: // Host / General Section
-						switch e.Type {
-						case backend.KeyEsc:
+					case 2: // Host Room Code Input Focused
+						if e.Type == backend.KeyEsc {
 							openExitModal()
-						case backend.KeyRune:
-							switch e.Ch {
-							case '1':
-								lobby.ActiveInput = 0
-							case '2':
-								startHost()
-							case '3':
-								lobby.ActiveInput = 1
-							case 'c', 'C':
-								CopyToClipboard(lobby.CurrentCode)
-								lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", lobby.CurrentCode))
-							case 'g', 'G':
-								lobby.CurrentCode = GenerateRoomCode()
-								lobby.SetToast("Yeni oda anahtari uretildi!")
-							case 't', 'T':
-								openTestModal()
-							case 'q', 'Q':
-								openExitModal()
-							}
+						} else {
+							lobby.HostCodeState.HandleKey(e)
+							lobby.CurrentCode = lobby.HostCodeState.Value()
 						}
 					}
 
@@ -528,6 +528,16 @@ func main() {
 			}
 
 			if currentScreen == ScreenLobby {
+				if !showTestModal && !showExitModal {
+					switch lobby.ActiveInput {
+					case 0:
+						t.FocusManager().SetFocused("nick_input")
+					case 1:
+						t.FocusManager().SetFocused("roomcode_input")
+					case 2:
+						t.FocusManager().SetFocused("hostcode_input")
+					}
+				}
 				lobby.Update(dt)
 				_ = t.Draw(func(f *terminal.Frame) {
 					lobby.Render(f, f.Area())

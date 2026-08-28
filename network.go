@@ -819,11 +819,25 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			}
 		}
 
+	case "new_host":
+		n.HostID = msg.SenderID
+		n.HostNick = msg.Nickname
+		if msg.SenderID == n.LocalID {
+			n.IsHost = true
+			n.log("👑 Eski yonetici ayrildi, yeni oda yoneticisi (HOST) sen oldun!")
+		} else {
+			n.IsHost = false
+			n.log(fmt.Sprintf("👑 Yeni oda yoneticisi (HOST): %s", msg.Nickname))
+		}
+
 	case "host_left":
-		n.log("❌ Host ayrildi, oda kapandi.")
-		if n.OnPeerEvent != nil {
-			if host, ok := n.Peers[n.HostID]; ok {
-				go n.OnPeerEvent("leave", host)
+		// Only close if no new host was elected
+		if n.HostID == msg.SenderID && !n.IsHost {
+			n.log("❌ Host ayrildi, oda kapandi.")
+			if n.OnPeerEvent != nil {
+				if host, ok := n.Peers[n.HostID]; ok {
+					go n.OnPeerEvent("leave", host)
+				}
 			}
 		}
 
