@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -1870,6 +1871,10 @@ func (n *P2PNode) GetPeersList() []*PeerInfo {
 	for _, p := range n.Peers {
 		list = append(list, p)
 	}
+	// Deterministic sorting by ID to eliminate position flickering across render cycles
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].ID < list[j].ID
+	})
 	return list
 }
 
