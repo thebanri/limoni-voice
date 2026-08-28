@@ -292,8 +292,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--framedrop=decoder+vo",
 		"--untimed",
 		"--demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer",
-		"--low-latency=yes",
 		"--profile=low-latency",
+		"--idle=yes",
 	}
 
 	if opt.KeepAspect {
