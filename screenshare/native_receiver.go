@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 )
 
 // KittyFrame holds the latest decoded video frame in memory
@@ -20,11 +21,14 @@ type KittyFrame struct {
 	Top  int
 	Cols int
 	Rows int
+	Seq  uint64
 }
 
 var (
 	latestFrameLock sync.RWMutex
 	latestFrame     *KittyFrame
+	frameCounter    uint64
+	lastRenderedSeq uint64
 )
 
 // SetLatestKittyFrame stores the most recent decoded video frame
@@ -38,6 +42,7 @@ func SetLatestKittyFrame(f *KittyFrame) {
 func ClearLatestKittyFrame() {
 	latestFrameLock.Lock()
 	latestFrame = nil
+	lastRenderedSeq = 0
 	latestFrameLock.Unlock()
 	_, _ = os.Stdout.Write([]byte("\x1b_Ga=d,d=A\x1b\\"))
 }
@@ -123,6 +128,8 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 				return
 			}
 
+			seq := atomic.AddUint64(&frameCounter, 1)
+
 			// Store latest frame for synchronized TUI rendering
 			SetLatestKittyFrame(&KittyFrame{
 				RGB:  frameBuf,
@@ -132,6 +139,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 				Top:  opt.Top,
 				Cols: opt.Cols,
 				Rows: opt.Rows,
+				Seq:  seq,
 			})
 		}
 	}()
@@ -139,7 +147,7 @@ func StartNativeKittyReceiver(ctx context.Context, port int, opt ReceiverOptions
 	return s, nil
 }
 
-// RenderLatestKittyFrame is called synchronously by the Limoni TUI render loop to draw the current video frame
+// RenderLatestKittyFrame is called strictly AFTER Limoni has flushed its frame buffer
 func RenderLatestKittyFrame(left, top, cols, rows int) {
 	latestFrameLock.RLock()
 	frame := latestFrame
@@ -148,6 +156,12 @@ func RenderLatestKittyFrame(left, top, cols, rows int) {
 	if frame == nil || len(frame.RGB) == 0 {
 		return
 	}
+
+	// Avoid re-transmitting identical frame if no new frame arrived
+	if frame.Seq == lastRenderedSeq {
+		return
+	}
+	lastRenderedSeq = frame.Seq
 
 	if left <= 0 {
 		left = frame.Left
@@ -168,8 +182,8 @@ func RenderLatestKittyFrame(left, top, cols, rows int) {
 
 	var sb bytes.Buffer
 
-	// 1. Synchronized update start (\x1b[?2025h) + save cursor (\x1b7) + move to (top, left)
-	fmt.Fprintf(&sb, "\x1b[?2025h\x1b7\x1b[%d;%dH", top, left)
+	// 1. Move cursor to (Top, Left) cell without disturbing TUI
+	fmt.Fprintf(&sb, "\x1b7\x1b[%d;%dH", top, left)
 
 	// 2. Transmit Kitty Graphics payload
 	for i := 0; i < total; i += chunkSize {
@@ -189,8 +203,8 @@ func RenderLatestKittyFrame(left, top, cols, rows int) {
 		}
 	}
 
-	// 3. Restore cursor (\x1b8) + synchronized update end (\x1b[?2025l)
-	sb.WriteString("\x1b8\x1b[?2025l")
+	// 3. Restore cursor
+	sb.WriteString("\x1b8")
 
 	_, _ = os.Stdout.Write(sb.Bytes())
 }

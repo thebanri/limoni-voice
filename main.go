@@ -11,6 +11,7 @@ import (
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 type AppScreen int
@@ -624,6 +625,11 @@ func main() {
 						})
 					}
 				})
+
+				// Render Kitty video frame strictly AFTER Limoni has flushed the frame buffer!
+				if node.IsWatchingScreen && !showTestModal && !showLeaveModal {
+					screenshare.RenderLatestKittyFrame(int(room.LastStageArea.X)+2, int(room.LastStageArea.Y)+2, int(room.LastStageArea.Width)-3, int(room.LastStageArea.Height)-3)
+				}
 			}
 		}
 	}

@@ -396,9 +396,6 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			_ = node.StopWatchingScreen()
 			r.SetToast("Ekran izleyici kapatildi")
 		})
-
-		// Synchronously render latest buffered Kitty video frame within Limoni's render cycle to eliminate flickering
-		screenshare.RenderLatestKittyFrame(int(inner.X)+2, int(inner.Y)+2, int(inner.Width)-3, int(inner.Height)-3)
 		return
 	}
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
