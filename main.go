@@ -429,7 +429,15 @@ func main() {
 					// --- 3. Screen: Room Key Handling ---
 					switch e.Type {
 					case backend.KeyEsc:
-						openLeaveModal()
+						if node.IsWatchingScreen {
+							_ = node.StopWatchingScreen()
+							room.SetToast("Ekran izleyici kapatildi")
+						} else if node.IsSharingScreen {
+							_ = node.StopScreenShare()
+							room.SetToast("Ekran paylasimi durduruldu")
+						} else {
+							openLeaveModal()
+						}
 
 					case backend.KeyF2:
 						CopyToClipboard(node.RoomCode)
