@@ -1741,21 +1741,28 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 // StopScreenShare stops active broadcasting
 func (n *P2PNode) StopScreenShare() error {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	if !n.IsSharingScreen || n.screenSession == nil {
+		n.mu.Unlock()
 		return nil
 	}
 
-	_ = n.screenSession.Stop()
+	session := n.screenSession
 	n.screenSession = nil
 	n.IsSharingScreen = false
+	roomCode := n.RoomCode
+	localID := n.LocalID
+	nickname := n.Nickname
+	n.mu.Unlock()
+
+	if session != nil {
+		_ = session.Stop()
+	}
 
 	stopPkt := P2PPacket{
 		Type:            PacketScreenShareStop,
-		RoomCode:        n.RoomCode,
-		SenderID:        n.LocalID,
-		Nickname:        n.Nickname,
+		RoomCode:        roomCode,
+		SenderID:        localID,
+		Nickname:        nickname,
 		IsSharingScreen: false,
 		VideoPort:       0,
 	}
@@ -1768,8 +1775,11 @@ func (n *P2PNode) StopScreenShare() error {
 func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
-		_ = n.receiverSession.Stop()
+		prevSession := n.receiverSession
 		n.receiverSession = nil
+		n.mu.Unlock()
+		_ = prevSession.Stop()
+		n.mu.Lock()
 	}
 	if port <= 0 {
 		port = 50100
@@ -1807,13 +1817,14 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 // StopWatchingScreen stops the active mpv receiver
 func (n *P2PNode) StopWatchingScreen() error {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	if n.receiverSession != nil {
-		_ = n.receiverSession.Stop()
-		n.receiverSession = nil
-	}
+	session := n.receiverSession
+	n.receiverSession = nil
 	n.IsWatchingScreen = false
+	n.mu.Unlock()
+
+	if session != nil {
+		_ = session.Stop()
+	}
 	return nil
 }
 
