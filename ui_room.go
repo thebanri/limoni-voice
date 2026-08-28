@@ -10,6 +10,7 @@ import (
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/layout"
 	"github.com/thebanri/limoni/widgets"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 type RoomView struct {
@@ -426,7 +427,13 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			if port <= 0 {
 				port = 50100
 			}
-			err := node.StartWatchingScreen(port)
+			opts := screenshare.ReceiverOptions{
+				Left: int(inner.X) + 1,
+				Top:  int(inner.Y) + 2,
+				Cols: int(inner.Width) - 2,
+				Rows: int(inner.Height) - 3,
+			}
+			err := node.StartWatchingScreen(port, opts)
 			if err != nil {
 				r.SetToast(fmt.Sprintf("Hata: %v", err))
 			} else {

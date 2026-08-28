@@ -1765,7 +1765,7 @@ func (n *P2PNode) StopScreenShare() error {
 }
 
 // StartWatchingScreen launches mpv with Kitty graphics to view a peer's stream
-func (n *P2PNode) StartWatchingScreen(port int) error {
+func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
 		_ = n.receiverSession.Stop()
@@ -1776,7 +1776,7 @@ func (n *P2PNode) StartWatchingScreen(port int) error {
 	}
 	n.mu.Unlock()
 
-	session, err := screenshare.StartReceiving(context.Background(), port)
+	session, err := screenshare.StartReceiving(context.Background(), port, opts...)
 	if err != nil {
 		return err
 	}

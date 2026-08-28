@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"time"
 )
 
 // DependencyStatus contains the availability of required external CLI tools
@@ -45,6 +44,10 @@ type ReceiverOptions struct {
 	VO             string // e.g. "kitty" (default) or "gpu" / "tct"
 	WindowTitle    string // Title for the playback window if applicable
 	KeepAspect     bool
+	Left           int    // 1-based character column offset inside terminal
+	Top            int    // 1-based character row offset inside terminal
+	Cols           int    // Width in terminal character columns
+	Rows           int    // Height in terminal character rows
 	Geometry       string // e.g. "65%x80%+33%+12%"
 	CustomMpvFlags []string
 }
@@ -54,7 +57,6 @@ func DefaultReceiverOptions() ReceiverOptions {
 	return ReceiverOptions{
 		VO:         "kitty",
 		KeepAspect: true,
-		Geometry:   "66%x82%+33%+12%",
 	}
 }
 
@@ -307,9 +309,21 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		"--keepaspect=yes",
 	}
 
-	if opt.Geometry != "" {
+	if opt.Left > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-left=%d", opt.Left))
+	}
+	if opt.Top > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-top=%d", opt.Top))
+	}
+	if opt.Cols > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-cols=%d", opt.Cols))
+	}
+	if opt.Rows > 0 {
+		args = append(args, fmt.Sprintf("--vo-kitty-rows=%d", opt.Rows))
+	} else if opt.Geometry != "" {
 		args = append(args, "--geometry="+opt.Geometry)
 	}
+
 	if len(opt.CustomMpvFlags) > 0 {
 		args = append(args, opt.CustomMpvFlags...)
 	}
@@ -352,7 +366,7 @@ func (s *Session) monitor() {
 	close(s.doneCh)
 }
 
-// Stop terminates the subprocess and its children cleanly
+// Stop terminates the subprocess and its children cleanly and immediately without blocking UI
 func (s *Session) Stop() error {
 	s.mu.Lock()
 	if s.stopped {
@@ -364,18 +378,9 @@ func (s *Session) Stop() error {
 
 	s.cancel()
 
-	// Terminate process group cleanly
+	// Terminate process group instantly in background
 	if s.cmd != nil && s.cmd.Process != nil {
-		killProcessGroup(s.cmd)
-	}
-
-	select {
-	case <-s.doneCh:
-	case <-time.After(1 * time.Second):
-		// Force kill if not exited after 1 second
-		if s.cmd != nil && s.cmd.Process != nil {
-			_ = s.cmd.Process.Kill()
-		}
+		go killProcessGroup(s.cmd)
 	}
 
 	return nil

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 func setupProcessGroup(cmd *exec.Cmd) {
@@ -23,14 +22,10 @@ func killProcessGroup(cmd *exec.Cmd) {
 
 	// ONLY kill process group if it is a valid distinct group, and NOT the application's own process group!
 	if err == nil && pgid > 1 && pgid != selfPgid {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-		go func(p int) {
-			time.Sleep(200 * time.Millisecond)
-			_ = syscall.Kill(-p, syscall.SIGKILL)
-		}(pgid)
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		return
 	}
 
-	// Fallback to safely killing only the subprocess
+	// Fallback to safely killing only the subprocess instantly
 	_ = cmd.Process.Kill()
 }

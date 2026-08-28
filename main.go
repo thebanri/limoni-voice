@@ -11,6 +11,7 @@ import (
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 type AppScreen int
@@ -501,7 +502,13 @@ func main() {
 									if port <= 0 {
 										port = 50100
 									}
-									err := node.StartWatchingScreen(port)
+									opts := screenshare.ReceiverOptions{
+										Left: 30,
+										Top:  4,
+										Cols: 80,
+										Rows: 24,
+									}
+									err := node.StartWatchingScreen(port, opts)
 									if err != nil {
 										room.SetToast(fmt.Sprintf("Hata: %v", err))
 									} else {
