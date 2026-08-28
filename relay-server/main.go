@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -68,6 +69,10 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
+	}
+
+	if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
 	}
 
 	remoteAddr := r.RemoteAddr

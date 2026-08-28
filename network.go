@@ -457,6 +457,10 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		n.isRelayConnected = true
 		n.mu.Unlock()
 
+		if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+			_ = tcpConn.SetNoDelay(true)
+		}
+
 		if firstConnect {
 			n.log(fmt.Sprintf("[☁️] Relay sunucusuna baglanildi (%s | Internet Aktif)", relayURL))
 			firstConnect = false
@@ -1420,9 +1424,14 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	case PacketPong:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			nowMs := time.Now().UnixMilli()
-			peer.PingMs = nowMs - pkt.Timestamp
-			if peer.PingMs < 0 || peer.PingMs > 5000 {
-				peer.PingMs = 0
+			rtt := nowMs - pkt.Timestamp
+			if rtt >= 0 && rtt < 10000 {
+				if peer.PingMs == 0 {
+					peer.PingMs = rtt
+				} else {
+					// Exponential Moving Average filter (70% previous + 30% current)
+					peer.PingMs = int64(float64(peer.PingMs)*0.70 + float64(rtt)*0.30)
+				}
 			}
 		}
 
@@ -1448,7 +1457,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 }
 
 func (n *P2PNode) heartbeatLoop() {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(1500 * time.Millisecond)
 	for range ticker.C {
 		n.mu.Lock()
 		if !n.IsConnected {
@@ -1480,6 +1489,7 @@ func (n *P2PNode) heartbeatLoop() {
 				Type:       PacketPing,
 				RoomCode:   n.RoomCode,
 				SenderID:   n.LocalID,
+				Nickname:   n.Nickname,
 				IsMuted:    n.audio.Muted,
 				IsDeafened: n.audio.Deafened,
 				Timestamp:  now.UnixMilli(),
