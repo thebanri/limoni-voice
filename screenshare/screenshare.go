@@ -433,7 +433,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	return s, nil
 }
 
-// StartReceiving launches a high-performance native video window (mpv or ffplay fallback) with direct stdin pipe
+// StartReceiving launches a high-performance native video window (mpv or ffplay fallback) with zero-latency flags
 func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Session, error) {
 	if port <= 0 || port > 65535 {
 		return nil, fmt.Errorf("invalid receiver port: %d", port)
@@ -449,13 +449,15 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		windowTitle = "Limoni Voice - Canli Ekran Yayini (HD 60 FPS)"
 	}
 
+	streamURL := fmt.Sprintf("udp://127.0.0.1:%d?listen=1&reuse=1&buffer_size=4194304", port)
+
 	var binPath string
 	var args []string
 
 	if p, err := FindExecutable("mpv"); err == nil {
 		binPath = p
 		args = []string{
-			"-",
+			streamURL,
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
@@ -482,7 +484,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-analyzeduration", "0",
 			"-window_title", windowTitle,
 			"-autoexit",
-			"-i", "-",
+			"-i", streamURL,
 		}
 	} else {
 		if runtime.GOOS == "windows" {
@@ -493,11 +495,6 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
-	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to open stdin pipe: %w", err)
-	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	setupProcessGroup(cmd)
@@ -509,8 +506,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		errCh:     make(chan error, 1),
 		doneCh:    make(chan struct{}),
 		isBroad:   false,
-		targetURL: "stdin",
-		stdin:     stdinPipe,
+		targetURL: streamURL,
 	}
 
 	if err := cmd.Start(); err != nil {
