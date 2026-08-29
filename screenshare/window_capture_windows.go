@@ -148,29 +148,12 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// 1. Get window screen coordinates
+			// 1. Get window screen coordinates for mouse position
 			var pt winPOINT
 			procWinClientToScreen.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
 
-			// 2. Capture full DWM composited window surface (100% complete Spotify, Discord, Chrome)
-			hdcScreen, _, _ := procWinGetDC.Call(0)
-			bltRet, _, _ := procWinBitBlt.Call(
-				hdcMem,
-				0,
-				0,
-				uintptr(w),
-				uintptr(h),
-				hdcScreen,
-				uintptr(pt.X),
-				uintptr(pt.Y),
-				uintptr(SRCCOPY|CAPTUREBLT),
-			)
-			procWinReleaseDC.Call(0, hdcScreen)
-
-			// Fallback to PrintWindow if BitBlt fails
-			if bltRet == 0 {
-				procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_CLIENTONLY|PW_RENDERFULLCONTENT))
-			}
+			// 2. Capture isolated window surface directly via PrintWindow (ignores overlapping foreground windows)
+			procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_CLIENTONLY|PW_RENDERFULLCONTENT))
 
 			// 3. Draw live mouse cursor overlay
 			var ci winCURSORINFO
