@@ -4,12 +4,40 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/thebanri/limoni/widgets"
 )
+
+func findAudioTool(names ...string) string {
+	searchPaths := []string{
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+	}
+	if p, err := os.Executable(); err == nil {
+		searchPaths = append([]string{filepath.Dir(p)}, searchPaths...)
+	}
+
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+		for _, dir := range searchPaths {
+			candidate := filepath.Join(dir, name)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
 
 const (
 	AudioSampleRate = 16000
@@ -259,17 +287,45 @@ func (a *AudioEngine) startCapture(onFrame func(rms float64, speaking bool, pcm 
 		return
 	}
 
-	// 2. Try Linux/macOS command-line capture tools
+	// 2. Try macOS specific audio capture (avfoundation ffmpeg or sox/rec)
+	if runtime.GOOS == "darwin" {
+		var darwinCmds []*exec.Cmd
+		if p := findAudioTool("rec"); p != "" {
+			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"))
+		}
+		if p := findAudioTool("sox"); p != "" {
+			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-d", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"))
+		}
+		if p := findAudioTool("ffmpeg"); p != "" {
+			darwinCmds = append(darwinCmds,
+				exec.Command(p, "-loglevel", "quiet", "-f", "avfoundation", "-i", ":default", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"),
+				exec.Command(p, "-loglevel", "quiet", "-f", "avfoundation", "-i", ":0", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"),
+				exec.Command(p, "-loglevel", "quiet", "-f", "avfoundation", "-i", ":none", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"),
+			)
+		}
+
+		for _, cmd := range darwinCmds {
+			stdout, err := cmd.StdoutPipe()
+			if err == nil && cmd.Start() == nil {
+				a.captureCmd = cmd
+				a.capturePipe = stdout
+				go a.readCaptureLoop(stdout, onFrame)
+				return
+			}
+		}
+	}
+
+	// 3. Try Linux command-line capture tools
 	var cmd *exec.Cmd
-	if p, err := exec.LookPath("parec"); err == nil {
+	if p := findAudioTool("parec"); p != "" {
 		cmd = exec.Command(p, "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
-	} else if p, err := exec.LookPath("pw-record"); err == nil {
+	} else if p := findAudioTool("pw-record"); p != "" {
 		cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
-	} else if p, err := exec.LookPath("rec"); err == nil {
+	} else if p := findAudioTool("rec"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
-	} else if p, err := exec.LookPath("sox"); err == nil {
+	} else if p := findAudioTool("sox"); p != "" {
 		cmd = exec.Command(p, "-q", "-d", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
-	} else if p, err := exec.LookPath("arecord"); err == nil {
+	} else if p := findAudioTool("arecord"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
 	}
 
@@ -581,17 +637,47 @@ func (a *AudioEngine) startPlayback() {
 		return
 	}
 
-	// 2. Try Linux/macOS command-line playback tools
+	// 2. Try macOS specific audio playback (ffplay, mpv, sox/play)
+	if runtime.GOOS == "darwin" {
+		var darwinCmds []*exec.Cmd
+		if p := findAudioTool("ffplay"); p != "" {
+			darwinCmds = append(darwinCmds, exec.Command(p, "-loglevel", "quiet", "-nodisp", "-autoexit", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0"))
+		}
+		if p := findAudioTool("mpv"); p != "" {
+			darwinCmds = append(darwinCmds, exec.Command(p, "--really-quiet", "--no-video", "--demuxer-rawaudio-rate=16000", "--demuxer-rawaudio-channels=1", "--demuxer-rawaudio-format=s16le", "--demuxer=rawaudio", "-"))
+		}
+		if p := findAudioTool("play"); p != "" {
+			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"))
+		}
+		if p := findAudioTool("sox"); p != "" {
+			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-", "-d"))
+		}
+
+		for _, cmd := range darwinCmds {
+			stdin, err := cmd.StdinPipe()
+			if err == nil && cmd.Start() == nil {
+				a.playbackCmd = cmd
+				a.playbackPipe = stdin
+				return
+			}
+		}
+	}
+
+	// 3. Try Linux command-line playback tools
 	var cmd *exec.Cmd
-	if p, err := exec.LookPath("pacat"); err == nil {
+	if p := findAudioTool("pacat"); p != "" {
 		cmd = exec.Command(p, "--playback", "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
-	} else if p, err := exec.LookPath("pw-play"); err == nil {
+	} else if p := findAudioTool("pw-play"); p != "" {
 		cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
-	} else if p, err := exec.LookPath("play"); err == nil {
+	} else if p := findAudioTool("ffplay"); p != "" {
+		cmd = exec.Command(p, "-loglevel", "quiet", "-nodisp", "-autoexit", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0")
+	} else if p := findAudioTool("mpv"); p != "" {
+		cmd = exec.Command(p, "--really-quiet", "--no-video", "--demuxer-rawaudio-rate=16000", "--demuxer-rawaudio-channels=1", "--demuxer-rawaudio-format=s16le", "--demuxer=rawaudio", "-")
+	} else if p := findAudioTool("play"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
-	} else if p, err := exec.LookPath("sox"); err == nil {
+	} else if p := findAudioTool("sox"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-", "-d")
-	} else if p, err := exec.LookPath("aplay"); err == nil {
+	} else if p := findAudioTool("aplay"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
 	}
 
