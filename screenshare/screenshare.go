@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DependencyStatus contains the availability of required external CLI tools
@@ -124,6 +125,36 @@ func ListWindows() []WindowInfo {
 		}
 	}
 	return targets
+}
+
+func getMacScreenDevice(binPath string) string {
+	if binPath == "" {
+		binPath = "ffmpeg"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binPath, "-f", "avfoundation", "-list_devices", "true", "-i", "")
+	out, _ := cmd.CombinedOutput()
+
+	outStr := string(out)
+	lines := strings.Split(outStr, "\n")
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "capture screen") || (strings.Contains(lower, "screen") && strings.Contains(line, "[")) {
+			// Extract device number e.g. "[AVFoundation indev @ ...] [1] Capture screen 0"
+			parts := strings.Split(line, "]")
+			for _, part := range parts {
+				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
+					numStr := strings.TrimSpace(part[idx1+1:])
+					if _, err := strconv.Atoi(numStr); err == nil {
+						return numStr + ":none"
+					}
+				}
+			}
+		}
+	}
+	return "Capture screen 0:none"
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -541,17 +572,19 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, errors.New("'ffmpeg' is required on macOS for screen sharing (avfoundation)")
 		}
 		binPath = p
+		screenDev := getMacScreenDevice(binPath)
 		args = []string{
 			"-fflags", "nobuffer+flush_packets",
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
 			"-framerate", fmt.Sprintf("%d", opt.FPS),
-			"-i", "1:none",
+			"-i", screenDev,
 			"-vf", fmt.Sprintf("scale=%s", opt.Resolution),
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
 			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+			"-pix_fmt", "yuv420p",
 			"-g", "15",
 			"-bf", "0",
 			"-bsf:v", "dump_extra",
