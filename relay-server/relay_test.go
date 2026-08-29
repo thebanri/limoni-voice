@@ -88,19 +88,21 @@ func TestRelayServerRoomMatchingAndForwarding(t *testing.T) {
 		t.Fatalf("Expected peer_joined for joiner_1, got %+v", peerJoinedMsg)
 	}
 
-	// Test binary audio forwarding (Host -> Joiner)
-	testAudioData := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x42}
-	if err := hostConn.WriteMessage(websocket.BinaryMessage, testAudioData); err != nil {
-		t.Fatalf("Failed to send binary audio: %v", err)
-	}
-
-	// Joiner should receive the exact binary payload
-	msgType, receivedAudio, err := joinConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("Joiner failed to read binary audio: %v", err)
-	}
-	if msgType != websocket.BinaryMessage || len(receivedAudio) != len(testAudioData) {
-		t.Fatalf("Binary audio mismatch: type=%d, len=%d", msgType, len(receivedAudio))
+	// Test high-throughput video packet forwarding (Host -> Joiner)
+	for i := 0; i < 50; i++ {
+		testVideoChunk := make([]byte, 1316)
+		testVideoChunk[0] = byte(i)
+		testVideoChunk[1315] = byte(i * 2)
+		if err := hostConn.WriteMessage(websocket.BinaryMessage, testVideoChunk); err != nil {
+			t.Fatalf("Failed to send video chunk %d: %v", i, err)
+		}
+		msgType, receivedVideo, err := joinConn.ReadMessage()
+		if err != nil {
+			t.Fatalf("Joiner failed to read video chunk %d: %v", i, err)
+		}
+		if msgType != websocket.BinaryMessage || len(receivedVideo) != 1316 || receivedVideo[0] != byte(i) {
+			t.Fatalf("Video chunk %d mismatch: type=%d, len=%d", i, msgType, len(receivedVideo))
+		}
 	}
 }
 

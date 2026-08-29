@@ -677,6 +677,19 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 				continue
 			}
 
+			// Fast-path: feed video chunks directly to local player without heavy room locks
+			if pkt.Type == PacketScreenShareData {
+				n.mu.RLock()
+				watching := n.IsWatchingScreen
+				playbackConn := n.videoPlaybackConn
+				n.mu.RUnlock()
+
+				if watching && playbackConn != nil && len(pkt.Payload) > 0 {
+					_, _ = playbackConn.Write(pkt.Payload)
+				}
+				continue
+			}
+
 			n.handlePacket(&pkt, nil)
 		}
 	}
@@ -1295,6 +1308,18 @@ func (n *P2PNode) listenLoop() {
 			continue
 		}
 
+		if pkt.Type == PacketScreenShareData {
+			n.mu.RLock()
+			watching := n.IsWatchingScreen
+			playbackConn := n.videoPlaybackConn
+			n.mu.RUnlock()
+
+			if watching && playbackConn != nil && len(pkt.Payload) > 0 {
+				_, _ = playbackConn.Write(pkt.Payload)
+			}
+			continue
+		}
+
 		n.handlePacket(&pkt, raddr)
 	}
 }
@@ -1322,6 +1347,18 @@ func (n *P2PNode) listenBroadcastLoop() {
 		var pkt P2PPacket
 		if err := decryptAndDecodePacket(buf[:readBytes], &pkt, aead); err != nil {
 			// Unauthorized packet, wrong key or corrupt data -> silently drop
+			continue
+		}
+
+		if pkt.Type == PacketScreenShareData {
+			n.mu.RLock()
+			watching := n.IsWatchingScreen
+			playbackConn := n.videoPlaybackConn
+			n.mu.RUnlock()
+
+			if watching && playbackConn != nil && len(pkt.Payload) > 0 {
+				_, _ = playbackConn.Write(pkt.Payload)
+			}
 			continue
 		}
 
@@ -1698,13 +1735,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketScreenShareData:
-		n.mu.RLock()
-		watching := n.IsWatchingScreen
-		playbackConn := n.videoPlaybackConn
-		n.mu.RUnlock()
-
-		if watching && playbackConn != nil && len(pkt.Payload) > 0 {
-			_, _ = playbackConn.Write(pkt.Payload)
+		if n.IsWatchingScreen && n.videoPlaybackConn != nil && len(pkt.Payload) > 0 {
+			_, _ = n.videoPlaybackConn.Write(pkt.Payload)
 		}
 
 	case PacketLeave:
