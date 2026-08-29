@@ -880,6 +880,46 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				go failedCb("Bu oda dolu! (Maksimum 4 kisi)")
 			}
 		}
+
+	case "room_not_found":
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.aead = nil
+			n.RoomCode = ""
+			failedCb := n.OnJoinFailed
+			msgText := msg.Message
+			if msgText == "" {
+				msgText = "Bu oda su anda acik degil! Arkadasinizin [2] ODA OLUSTUR butonuna basarak odayi actigindan emin olun."
+			}
+			n.log(fmt.Sprintf("❌ Odaya katilim basarisiz: %s", msgText))
+			if failedCb != nil {
+				go failedCb(msgText)
+			}
+		}
+
+	case "error":
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.aead = nil
+			n.RoomCode = ""
+			failedCb := n.OnJoinFailed
+			msgText := msg.Message
+			if msgText == "" {
+				msgText = "Sunucu baglanti hatasi olustu."
+			}
+			n.log(fmt.Sprintf("❌ Sunucu hatasi: %s", msgText))
+			if failedCb != nil {
+				go failedCb(msgText)
+			}
+		}
 	}
 }
 

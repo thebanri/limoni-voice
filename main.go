@@ -134,7 +134,7 @@ func main() {
 		lobby.ConnectingTarget = cleanCode
 		lobby.SetToast(fmt.Sprintf("'%s' odasi araniyor ve host dogrulaniyor...", cleanCode))
 
-		node.RequestJoinRoom(cleanCode, 3500*time.Millisecond,
+		node.RequestJoinRoom(cleanCode, 8*time.Second,
 			func(hostNick string) {
 				lobby.IsConnecting = false
 				room = NewRoomView()
