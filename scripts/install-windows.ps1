@@ -1,5 +1,5 @@
 # Limoni Voice - Windows 1-Click Installer & Dependency Setup
-# Installs Limoni Voice along with FFmpeg and MPV for full screenshare support.
+# Installs Limoni Voice along with FFmpeg, MPV, 3D assets, and custom icon.
 
 [CmdletBinding()]
 param(
@@ -17,17 +17,43 @@ if (!(Test-Path $binDir)) {
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 }
 
-# 1. Copy current binary if present in current directory
+$repoUrl = "https://github.com/thebanri/limoni-voice"
+
+# 1. Download or copy limoni-voice.exe
+$targetExe = Join-Path $InstallDir "limoni-voice.exe"
 $currentExe = Join-Path $PSScriptRoot "limoni-voice.exe"
 if (!(Test-Path $currentExe)) {
     $currentExe = Join-Path (Get-Location) "limoni-voice.exe"
 }
+
 if (Test-Path $currentExe) {
-    Copy-Item $currentExe (Join-Path $InstallDir "limoni-voice.exe") -Force
-    Write-Host "[+] limoni-voice.exe kopyalandi -> $InstallDir" -ForegroundColor Green
+    Copy-Item $currentExe $targetExe -Force
+    Write-Host "[+] limoni-voice.exe yerel dizinden kopyalandi." -ForegroundColor Green
+} else {
+    Write-Host "[*] limoni-voice.exe GitHub Releases uzerinden indiriliyor..." -ForegroundColor Yellow
+    $exeUrl = "https://github.com/thebanri/limoni-voice/raw/main/dist/windows-amd64/limoni-voice.exe"
+    try {
+        Invoke-WebRequest -Uri $exeUrl -OutFile $targetExe -UseBasicParsing
+        Write-Host "[+] limoni-voice.exe basariyla indirildi." -ForegroundColor Green
+    } catch {
+        Write-Host "[-] limoni-voice.exe indirilemedi: $_" -ForegroundColor DarkYellow
+    }
 }
 
-# 2. Check and Download FFmpeg if missing
+# 2. Download or copy icon.ico and microphone.obj
+$iconPath = Join-Path $InstallDir "icon.ico"
+$micPath = Join-Path $InstallDir "microphone.obj"
+
+try {
+    if (!(Test-Path $iconPath)) {
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/thebanri/limoni-voice/main/assets/icon.ico" -OutFile $iconPath -UseBasicParsing
+    }
+    if (!(Test-Path $micPath)) {
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/thebanri/limoni-voice/main/microphone.obj" -OutFile $micPath -UseBasicParsing
+    }
+} catch {}
+
+# 3. Check and Download FFmpeg if missing
 $ffmpegExe = Join-Path $binDir "ffmpeg.exe"
 if (!(Test-Path $ffmpegExe) -and !(Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue)) {
     Write-Host "[*] FFmpeg indiriliyor (Ekran yayini icin gerekli)..." -ForegroundColor Yellow
@@ -51,10 +77,10 @@ if (!(Test-Path $ffmpegExe) -and !(Get-Command "ffmpeg.exe" -ErrorAction Silentl
     Write-Host "[+] FFmpeg zaten mevcut." -ForegroundColor Green
 }
 
-# 3. Check and Download MPV if missing
+# 4. Check and Download MPV if missing
 $mpvExe = Join-Path $binDir "mpv.exe"
 if (!(Test-Path $mpvExe) -and !(Get-Command "mpv.exe" -ErrorAction SilentlyContinue)) {
-    Write-Host "[*] MPV Player indiriliyor (Yayin izleyici icin gerekli)..." -ForegroundColor Yellow
+    Write-Host "[*] MPV Player kontrol ediliyor (Yayin izleyici icin gerekli)..." -ForegroundColor Yellow
     try {
         winget install mpv.mpv --accept-source-agreements --accept-package-agreements
         Write-Host "[+] MPV basariyla kuruldu!" -ForegroundColor Green
@@ -65,26 +91,34 @@ if (!(Test-Path $mpvExe) -and !(Get-Command "mpv.exe" -ErrorAction SilentlyConti
     Write-Host "[+] MPV zaten mevcut." -ForegroundColor Green
 }
 
-# 4. Add bin directory to User PATH
+# 5. Add bin directory to User PATH
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$binDir*") {
     [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
     Write-Host "[+] $binDir Kullanici PATH degiskenine eklendi." -ForegroundColor Green
 }
 
-# 5. Create Desktop Shortcut
+# 6. Create Desktop Shortcut with custom Icon
 $desktop = [Environment]::GetFolderPath("Desktop")
 $shortcutPath = Join-Path $desktop "Limoni Voice.lnk"
 $wscript = New-Object -ComObject WScript.Shell
 $shortcut = $wscript.CreateShortcut($shortcutPath)
-$target = Join-Path $InstallDir "limoni-voice.exe"
-if (Test-Path $target) {
-    $shortcut.TargetPath = $target
+if (Test-Path $targetExe) {
+    $shortcut.TargetPath = $targetExe
     $shortcut.WorkingDirectory = $InstallDir
+    if (Test-Path $iconPath) {
+        $shortcut.IconLocation = "$iconPath,0"
+    }
     $shortcut.Description = "Limoni Voice - P2P Encrypted Voice & Screen Sharing"
     $shortcut.Save()
-    Write-Host "[+] Masaustu kisayolu olusturuldu!" -ForegroundColor Green
+    Write-Host "[+] Masaustu kisayolu olusturuldu (Ikonlu)!" -ForegroundColor Green
 }
+
+# Unblock files so Windows Defender / SmartScreen never interferes
+try {
+    Unblock-File -Path "$InstallDir\*" -ErrorAction SilentlyContinue
+    Unblock-File -Path "$binDir\*" -ErrorAction SilentlyContinue
+} catch {}
 
 Write-Host "`n==========================================" -ForegroundColor Cyan
 Write-Host " [✓] Kurulum Tamamlandi! Limoni Voice Hazir." -ForegroundColor Green
