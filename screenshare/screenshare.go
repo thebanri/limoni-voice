@@ -436,9 +436,17 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 					"-i", "desktop",
 				)
 			} else {
+				physW, physH := GetPhysicalDesktopSize()
+				if physW > 0 && physH > 0 {
+					inputArgs = append(inputArgs, "-video_size", fmt.Sprintf("%dx%d", physW, physH), "-offset_x", "0", "-offset_y", "0")
+				}
 				inputArgs = append(inputArgs, "-i", "desktop")
 			}
 		} else {
+			physW, physH := GetPhysicalDesktopSize()
+			if physW > 0 && physH > 0 {
+				inputArgs = append(inputArgs, "-video_size", fmt.Sprintf("%dx%d", physW, physH), "-offset_x", "0", "-offset_y", "0")
+			}
 			inputArgs = append(inputArgs, "-i", "desktop")
 		}
 
