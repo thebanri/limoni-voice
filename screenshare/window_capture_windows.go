@@ -17,8 +17,10 @@ var (
 
 	procWinGetDC                  = modWinUser32.NewProc("GetDC")
 	procWinReleaseDC              = modWinUser32.NewProc("ReleaseDC")
-	procWinPrintWindow            = modWinUser32.NewProc("PrintWindow")
+	procWinGetClientRect          = modWinUser32.NewProc("GetClientRect")
+	procWinClientToScreen         = modWinUser32.NewProc("ClientToScreen")
 	procWinGetWindowRect          = modWinUser32.NewProc("GetWindowRect")
+	procWinPrintWindow            = modWinUser32.NewProc("PrintWindow")
 	procWinGetCursorInfo          = modWinUser32.NewProc("GetCursorInfo")
 	procWinDrawIconEx             = modWinUser32.NewProc("DrawIconEx")
 	procWinCreateCompatibleDC     = modWinGdi32.NewProc("CreateCompatibleDC")
@@ -27,10 +29,14 @@ var (
 	procWinDeleteObject           = modWinGdi32.NewProc("DeleteObject")
 	procWinDeleteDC               = modWinGdi32.NewProc("DeleteDC")
 	procWinGetDIBits              = modWinGdi32.NewProc("GetDIBits")
+	procWinBitBlt                 = modWinGdi32.NewProc("BitBlt")
 )
 
 const (
+	PW_CLIENTONLY        = 0x00000001
 	PW_RENDERFULLCONTENT = 0x00000002
+	SRCCOPY              = 0x00CC0020
+	CAPTUREBLT           = 0x40000000
 	DIB_RGB_COLORS       = 0
 	BI_RGB               = 0
 	CURSOR_SHOWING       = 0x00000001
@@ -71,15 +77,18 @@ type winBITMAPINFO struct {
 	BmiColors [1]uint32
 }
 
-// GetWindowDimensions returns width and height for a given window handle in physical pixels
+// GetWindowDimensions returns width and height for a given window handle
 func GetWindowDimensions(hwnd uintptr) (int, int) {
 	var r winRECT
-	ret, _, _ := procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-	if ret == 0 {
-		return 1280, 720
+	ret, _, _ := procWinGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ret == 0 || r.Right <= 0 || r.Bottom <= 0 {
+		procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+		r.Right = r.Right - r.Left
+		r.Bottom = r.Bottom - r.Top
 	}
-	w := int(r.Right - r.Left)
-	h := int(r.Bottom - r.Top)
+
+	w := int(r.Right)
+	h := int(r.Bottom)
 	if w <= 100 || h <= 100 {
 		return 1280, 720
 	}
@@ -89,8 +98,9 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 	return w, h
 }
 
-// StreamWindowFrames captures hardware-accelerated window frames via PrintWindow PW_RENDERFULLCONTENT,
-// draws the live mouse cursor, and writes raw BGRA frames directly to the stdin pipe of FFmpeg.
+// StreamWindowFrames captures application windows using DWM BitBlt with CAPTUREBLT
+// (falling back to PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT), overlays live mouse cursor,
+// and streams raw BGRA frames directly into FFmpeg.
 func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.WriteCloser) error {
 	defer outPipe.Close()
 
@@ -138,20 +148,37 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// 1. Refresh window position for mouse tracking
-			var winRect winRECT
-			procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&winRect)))
+			// 1. Get window screen coordinates
+			var pt winPOINT
+			procWinClientToScreen.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
 
-			// 2. Capture hardware-accelerated DWM frame (Spotify, Discord, Chrome, etc.)
-			procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_RENDERFULLCONTENT))
+			// 2. Capture full DWM composited window surface (100% complete Spotify, Discord, Chrome)
+			hdcScreen, _, _ := procWinGetDC.Call(0)
+			bltRet, _, _ := procWinBitBlt.Call(
+				hdcMem,
+				0,
+				0,
+				uintptr(w),
+				uintptr(h),
+				hdcScreen,
+				uintptr(pt.X),
+				uintptr(pt.Y),
+				uintptr(SRCCOPY|CAPTUREBLT),
+			)
+			procWinReleaseDC.Call(0, hdcScreen)
+
+			// Fallback to PrintWindow if BitBlt fails
+			if bltRet == 0 {
+				procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_CLIENTONLY|PW_RENDERFULLCONTENT))
+			}
 
 			// 3. Draw live mouse cursor overlay
 			var ci winCURSORINFO
 			ci.CbSize = uint32(unsafe.Sizeof(ci))
 			if ret, _, _ := procWinGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); ret != 0 {
 				if ci.Flags == CURSOR_SHOWING {
-					mx := ci.PtScreenPos.X - winRect.Left
-					my := ci.PtScreenPos.Y - winRect.Top
+					mx := ci.PtScreenPos.X - pt.X
+					my := ci.PtScreenPos.Y - pt.Y
 					if mx >= 0 && mx < int32(w) && my >= 0 && my < int32(h) {
 						procWinDrawIconEx.Call(hdcMem, uintptr(mx), uintptr(my), uintptr(ci.HCursor), 0, 0, 0, 0, DI_NORMAL)
 					}
