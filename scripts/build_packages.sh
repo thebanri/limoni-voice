@@ -43,13 +43,13 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}
 echo "==> Building macOS Intel (AMD64)..."
 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/darwin-amd64/limoni-voice .
 
-# 5. Package Linux Tarballs (.tar.gz)
+## 5. Package Linux Tarballs (.tar.gz)
 echo "==> Packaging Linux Tarballs..."
 mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
-cp dist/linux-amd64/limoni-voice README.md microphone.obj dist/pkg-linux-amd64/
+cp dist/linux-amd64/limoni-voice README.md LICENSE microphone.obj dist/pkg-linux-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg-linux-amd64 .
 
-cp dist/linux-arm64/limoni-voice README.md microphone.obj dist/pkg-linux-arm64/
+cp dist/linux-arm64/limoni-voice README.md LICENSE microphone.obj dist/pkg-linux-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
 # 6. Package macOS Native Application Bundles (.app.zip & .app.tar.gz)
@@ -66,7 +66,7 @@ build_macos_app() {
 
   cp "dist/${ARCH}/limoni-voice" "${APP_DIR}/Contents/MacOS/limoni-voice"
   chmod 755 "${APP_DIR}/Contents/MacOS/limoni-voice"
-  cp README.md microphone.obj "${APP_DIR}/Contents/MacOS/"
+  cp README.md LICENSE microphone.obj "${APP_DIR}/Contents/MacOS/"
 
   cat <<PLIST_EOF > "${APP_DIR}/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -147,10 +147,10 @@ build_macos_app "darwin-amd64" "amd64"
 # 7. Package macOS CLI Tarballs & Zips
 echo "==> Packaging macOS CLI Binaries..."
 mkdir -p dist/pkg-darwin-arm64 dist/pkg-darwin-amd64
-cp dist/darwin-arm64/limoni-voice README.md microphone.obj dist/pkg-darwin-arm64/
+cp dist/darwin-arm64/limoni-voice README.md LICENSE microphone.obj dist/pkg-darwin-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_arm64.tar.gz" -C dist/pkg-darwin-arm64 .
 
-cp dist/darwin-amd64/limoni-voice README.md microphone.obj dist/pkg-darwin-amd64/
+cp dist/darwin-amd64/limoni-voice README.md LICENSE microphone.obj dist/pkg-darwin-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_amd64.tar.gz" -C dist/pkg-darwin-amd64 .
 
 # 8. Package Windows Standalone EXEs & Zips
@@ -159,14 +159,14 @@ cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_w
 cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
 
 mkdir -p dist/pkg-windows-amd64 dist/pkg-windows-arm64
-cp dist/windows-amd64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-amd64/
+cp dist/windows-amd64/limoni-voice.exe README.md LICENSE microphone.obj scripts/install-windows.ps1 dist/pkg-windows-amd64/
 if command -v zip >/dev/null 2>&1; then
   zip -j "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
-  cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
+  cp dist/windows-arm64/limoni-voice.exe README.md LICENSE microphone.obj scripts/install-windows.ps1 dist/pkg-windows-arm64/
   zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
 elif command -v 7z >/dev/null 2>&1; then
   7z a -tzip "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
-  cp dist/windows-arm64/limoni-voice.exe README.md microphone.obj dist/pkg-windows-arm64/
+  cp dist/windows-arm64/limoni-voice.exe README.md LICENSE microphone.obj scripts/install-windows.ps1 dist/pkg-windows-arm64/
   7z a -tzip "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
 fi
 
