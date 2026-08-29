@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -46,13 +47,32 @@ func ListWindows() []WindowInfo {
 	if runtime.GOOS == "windows" {
 		psScript := `
 		Add-Type -AssemblyName System.Windows.Forms
+		Add-Type @"
+		using System;
+		using System.Runtime.InteropServices;
+		public struct RECT { public int Left, Top, Right, Bottom; }
+		public class WinPos {
+			[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+			[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+		}
+"@
 		[System.Windows.Forms.Screen]::AllScreens | ForEach-Object -Begin {$idx=1} -Process {
 			$p = if ($_.Primary) {" (Ana Ekran)"} else {""}
 			"SCREEN|$($_.Bounds.X)|$($_.Bounds.Y)|$($_.Bounds.Width)|$($_.Bounds.Height)|Monitor $idx$p ($($_.Bounds.Width)x$($_.Bounds.Height))"
 			$idx++
 		}
 		Get-Process | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object {
-			"WIN|$($_.MainWindowTitle)"
+			$h = $_.MainWindowHandle
+			if (-not [WinPos]::IsIconic($h)) {
+				$rect = New-Object RECT
+				if ([WinPos]::GetWindowRect($h, [ref]$rect)) {
+					$w = $rect.Right - $rect.Left
+					$hgt = $rect.Bottom - $rect.Top
+					if ($w -gt 120 -and $hgt -gt 120 -and $rect.Left -ge -5000) {
+						"WIN_RECT|$($rect.Left)|$($rect.Top)|$w|$hgt|$($_.MainWindowTitle)"
+					}
+				}
+			}
 		}
 		`
 		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
@@ -74,18 +94,21 @@ func ListWindows() []WindowInfo {
 					if len(screenParts) >= 5 {
 						x, y, w, h, name := screenParts[0], screenParts[1], screenParts[2], screenParts[3], screenParts[4]
 						targets = append(targets, WindowInfo{
-							ID:    fmt.Sprintf("monitor:%s:%s:%s:%s", x, y, w, h),
+							ID:    fmt.Sprintf("rect:%s:%s:%s:%s", x, y, w, h),
 							Title: "🖥️  " + name,
 						})
 					}
-				} else if parts[0] == "WIN" {
-					title := parts[1]
-					if !seen[title] && !strings.EqualFold(title, "Program Manager") {
-						seen[title] = true
-						targets = append(targets, WindowInfo{
-							ID:    "title=" + title,
-							Title: "🪟  " + title,
-						})
+				} else if parts[0] == "WIN_RECT" {
+					winParts := strings.SplitN(parts[1], "|", 5)
+					if len(winParts) >= 5 {
+						x, y, w, h, title := winParts[0], winParts[1], winParts[2], winParts[3], winParts[4]
+						if !seen[title] && !strings.EqualFold(title, "Program Manager") {
+							seen[title] = true
+							targets = append(targets, WindowInfo{
+								ID:    fmt.Sprintf("rect:%s:%s:%s:%s", x, y, w, h),
+								Title: "🪟  " + title,
+							})
+						}
 					}
 				}
 			}
@@ -423,23 +446,39 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-draw_mouse", "1",
 		}
 
-		if strings.HasPrefix(opt.WindowID, "monitor:") {
-			// Format: monitor:X:Y:WIDTH:HEIGHT
+		if strings.HasPrefix(opt.WindowID, "rect:") || strings.HasPrefix(opt.WindowID, "monitor:") {
+			// Format: rect:X:Y:WIDTH:HEIGHT or monitor:X:Y:WIDTH:HEIGHT
 			mParts := strings.Split(opt.WindowID, ":")
 			if len(mParts) >= 5 {
+				x, _ := strconv.Atoi(mParts[1])
+				y, _ := strconv.Atoi(mParts[2])
+				w, _ := strconv.Atoi(mParts[3])
+				h, _ := strconv.Atoi(mParts[4])
+				if x < 0 {
+					x = 0
+				}
+				if y < 0 {
+					y = 0
+				}
+				// Force even dimensions for H.264
+				w = (w / 2) * 2
+				h = (h / 2) * 2
+				if w < 120 {
+					w = 1920
+				}
+				if h < 120 {
+					h = 1080
+				}
+
 				inputArgs = append(inputArgs,
-					"-offset_x", mParts[1],
-					"-offset_y", mParts[2],
-					"-video_size", fmt.Sprintf("%sx%s", mParts[3], mParts[4]),
+					"-offset_x", strconv.Itoa(x),
+					"-offset_y", strconv.Itoa(y),
+					"-video_size", fmt.Sprintf("%dx%d", w, h),
 					"-i", "desktop",
 				)
 			} else {
 				inputArgs = append(inputArgs, "-i", "desktop")
 			}
-		} else if strings.HasPrefix(opt.WindowID, "title=") {
-			inputArgs = append(inputArgs, "-i", opt.WindowID)
-		} else if opt.WindowID != "" && opt.WindowID != "portal" && opt.WindowID != "desktop" {
-			inputArgs = append(inputArgs, "-i", fmt.Sprintf("title=%s", opt.WindowID))
 		} else {
 			inputArgs = append(inputArgs, "-i", "desktop")
 		}
