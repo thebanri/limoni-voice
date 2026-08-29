@@ -68,10 +68,21 @@ type Session struct {
 	mu        sync.Mutex
 }
 
+var execCache sync.Map
+
 // FindExecutable searches for a binary in PATH, next to current executable, Program Files (all mpv/ffmpeg subfolders), AppData, WinGet, Scoop
 func FindExecutable(name string) (string, error) {
+	if cached, ok := execCache.Load(name); ok {
+		if p, ok := cached.(string); ok && p != "" {
+			if _, err := os.Stat(p); err == nil {
+				return p, nil
+			}
+		}
+	}
+
 	// 1. Check system PATH
 	if p, err := exec.LookPath(name); err == nil {
+		execCache.Store(name, p)
 		return p, nil
 	}
 
@@ -210,6 +221,7 @@ func FindExecutable(name string) (string, error) {
 			for _, ext := range exts {
 				candidate := filepath.Join(dir, cName+ext)
 				if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+					execCache.Store(name, candidate)
 					return candidate, nil
 				}
 			}

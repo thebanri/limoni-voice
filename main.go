@@ -474,21 +474,28 @@ func main() {
 
 						case 'v', 'V':
 							if node.IsSharingScreen {
-								_ = node.StopScreenShare()
-								room.SetToast("Ekran paylasimi durduruldu")
+								go func() {
+									_ = node.StopScreenShare()
+									room.SetToast("Ekran paylasimi durduruldu")
+								}()
 							} else {
-								err := node.StartScreenShare("", 50100)
-								if err != nil {
-									room.SetToast(fmt.Sprintf("Hata: %v", err))
-								} else {
-									room.SetToast("Ekran paylasimi baslatildi (60 FPS)")
-								}
+								room.SetToast("🎬 Ekran paylasimi baslatiliyor...")
+								go func() {
+									err := node.StartScreenShare("", 50100)
+									if err != nil {
+										room.SetToast(fmt.Sprintf("Hata: %v", err))
+									} else {
+										room.SetToast("Ekran paylasimi baslatildi (1080p 60 FPS)")
+									}
+								}()
 							}
 
 						case 'w', 'W':
 							if node.IsWatchingScreen {
-								_ = node.StopWatchingScreen()
-								room.SetToast("Ekran izleyici kapatildi")
+								go func() {
+									_ = node.StopWatchingScreen()
+									room.SetToast("Ekran izleyici kapatildi")
+								}()
 							} else {
 								var streamingPeer *PeerInfo
 								for _, p := range node.Peers {
@@ -505,12 +512,15 @@ func main() {
 									opts := screenshare.ReceiverOptions{
 										WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
 									}
-									err := node.StartWatchingScreen(port, opts)
-									if err != nil {
-										room.SetToast(fmt.Sprintf("Hata: %v", err))
-									} else {
-										room.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
-									}
+									room.SetToast("🎬 Yayin izleyici baslatiliyor...")
+									go func() {
+										err := node.StartWatchingScreen(port, opts)
+										if err != nil {
+											room.SetToast(fmt.Sprintf("Hata: %v", err))
+										} else {
+											room.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
+										}
+									}()
 								} else {
 									room.SetToast("Odada su an ekran paylasan kimse yok")
 								}

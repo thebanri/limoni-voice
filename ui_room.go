@@ -447,12 +447,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			opts := screenshare.ReceiverOptions{
 				WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
 			}
-			err := node.StartWatchingScreen(port, opts)
-			if err != nil {
-				r.SetToast(fmt.Sprintf("Hata: %v", err))
-			} else {
-				r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
-			}
+			r.SetToast("🎬 Yayin izleyici baslatiliyor...")
+			go func() {
+				err := node.StartWatchingScreen(port, opts)
+				if err != nil {
+					r.SetToast(fmt.Sprintf("Hata: %v", err))
+				} else {
+					r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
+				}
+			}()
 		})
 		return
 	}
@@ -717,8 +720,10 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		// Click on preview banner to watch / stop watching
 		frame.RegisterClickHandler(cell.NewRect(inner.X+1, bannerY, bannerW, 2), func(_ backend.MouseEvent) {
 			if node.IsWatchingScreen {
-				_ = node.StopWatchingScreen()
-				r.SetToast("Ekran izleyici kapatildi")
+				go func() {
+					_ = node.StopWatchingScreen()
+					r.SetToast("Ekran izleyici kapatildi")
+				}()
 			} else {
 				port := peer.VideoPort
 				if port <= 0 {
@@ -727,12 +732,15 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 				opts := screenshare.ReceiverOptions{
 					WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", peer.Nickname),
 				}
-				err := node.StartWatchingScreen(port, opts)
-				if err != nil {
-					r.SetToast(fmt.Sprintf("Hata: %v", err))
-				} else {
-					r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", peer.Nickname))
-				}
+				r.SetToast("🎬 Yayin izleyici baslatiliyor...")
+				go func() {
+					err := node.StartWatchingScreen(port, opts)
+					if err != nil {
+						r.SetToast(fmt.Sprintf("Hata: %v", err))
+					} else {
+						r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", peer.Nickname))
+					}
+				}()
 			}
 		})
 
@@ -963,8 +971,10 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		buf.SetString(watchX, row2Y, watchLabel, watchStyle)
 		frame.RegisterClickHandler(cell.NewRect(watchX, row2Y, watchLen, 1), func(_ backend.MouseEvent) {
 			if node.IsWatchingScreen {
-				_ = node.StopWatchingScreen()
-				r.SetToast("Ekran izleyici kapatildi")
+				go func() {
+					_ = node.StopWatchingScreen()
+					r.SetToast("Ekran izleyici kapatildi")
+				}()
 			} else if streamingPeer != nil {
 				port := streamingPeer.VideoPort
 				if port <= 0 {
@@ -973,12 +983,15 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				opts := screenshare.ReceiverOptions{
 					WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
 				}
-				err := node.StartWatchingScreen(port, opts)
-				if err != nil {
-					r.SetToast(fmt.Sprintf("Hata: %v", err))
-				} else {
-					r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
-				}
+				r.SetToast("🎬 Yayin izleyici baslatiliyor...")
+				go func() {
+					err := node.StartWatchingScreen(port, opts)
+					if err != nil {
+						r.SetToast(fmt.Sprintf("Hata: %v", err))
+					} else {
+						r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
+					}
+				}()
 			} else {
 				r.SetToast("Odada su an ekran paylasan kimse yok")
 			}
