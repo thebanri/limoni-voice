@@ -123,6 +123,103 @@ func ListWindows() []WindowInfo {
 				targets = append(targets, winTargets...)
 			}
 		}
+	} else if runtime.GOOS == "darwin" {
+		var screenTargets []WindowInfo
+		var winTargets []WindowInfo
+
+		// 1. Discover screens via ffmpeg list_devices
+		if ffmpegPath, err := FindExecutable("ffmpeg"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			out, _ := exec.CommandContext(ctx, ffmpegPath, "-f", "avfoundation", "-list_devices", "true", "-i", "").CombinedOutput()
+			cancel()
+
+			lines := strings.Split(string(out), "\n")
+			for _, line := range lines {
+				lower := strings.ToLower(line)
+				if strings.Contains(lower, "capture screen") {
+					parts := strings.Split(line, "]")
+					for _, part := range parts {
+						if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
+							numStr := strings.TrimSpace(part[idx1+1:])
+							if num, err := strconv.Atoi(numStr); err == nil {
+								scrName := fmt.Sprintf("Ekran %d", num+1)
+								if num == 0 {
+									scrName += " (Ana Ekran)"
+								}
+								screenTargets = append(screenTargets, WindowInfo{
+									ID:    fmt.Sprintf("mac_screen:%d", num),
+									Title: "🖥️  " + scrName,
+								})
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if len(screenTargets) == 0 {
+			screenTargets = append(screenTargets, WindowInfo{
+				ID:    "desktop",
+				Title: "🖥️  Ekran 1 (Ana Ekran - Tam Gorunum)",
+			})
+		}
+
+		// 2. Discover open application windows via AppleScript
+		asScript := `
+		tell application "System Events"
+			set winList to ""
+			set appList to every application process whose background only is false
+			repeat with theApp in appList
+				try
+					set aName to name of theApp
+					set winCount to count of windows of theApp
+					if winCount > 0 then
+						set wName to name of window 1 of theApp
+						if wName is not "" and wName is not missing value then
+							set winList to winList & aName & "|" & wName & "\n"
+						else
+							set winList to winList & aName & "|" & aName & "\n"
+						end if
+					end if
+				end try
+			end repeat
+			return winList
+		end tell
+		`
+		ctxAS, cancelAS := context.WithTimeout(context.Background(), 2*time.Second)
+		outAS, errAS := exec.CommandContext(ctxAS, "osascript", "-e", asScript).Output()
+		cancelAS()
+
+		if errAS == nil && len(outAS) > 0 {
+			lines := strings.Split(string(outAS), "\n")
+			seen := make(map[string]bool)
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" {
+					continue
+				}
+				parts := strings.SplitN(trimmed, "|", 2)
+				if len(parts) >= 2 {
+					appName, winTitle := parts[0], parts[1]
+					if !seen[appName] && appName != "Finder" && appName != "Dock" {
+						seen[appName] = true
+						displayTitle := appName
+						if winTitle != "" && winTitle != appName {
+							displayTitle = fmt.Sprintf("%s - %s", appName, winTitle)
+						}
+						winTargets = append(winTargets, WindowInfo{
+							ID:    "mac_win:" + appName,
+							Title: "🪟  " + displayTitle,
+						})
+					}
+				}
+			}
+		}
+
+		targets = screenTargets
+		if len(winTargets) > 0 {
+			targets = append(targets, winTargets...)
+		}
 	}
 	return targets
 }
@@ -572,14 +669,43 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, errors.New("'ffmpeg' is required on macOS for screen sharing (avfoundation)")
 		}
 		binPath = p
+
 		screenDev := getMacScreenDevice(binPath)
+		scaleFilter := fmt.Sprintf("scale=%s", opt.Resolution)
+
+		if strings.HasPrefix(opt.WindowID, "mac_screen:") {
+			scrIdx := strings.TrimPrefix(opt.WindowID, "mac_screen:")
+			screenDev = scrIdx + ":none"
+		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
+			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
+			// Get window position and size on macOS
+			boundsScript := fmt.Sprintf(`tell application "System Events" to tell process "%s" to get {position, size} of window 1`, appName)
+			ctxB, cancelB := context.WithTimeout(context.Background(), 1*time.Second)
+			outB, errB := exec.CommandContext(ctxB, "osascript", "-e", boundsScript).Output()
+			cancelB()
+
+			if errB == nil && len(outB) > 0 {
+				clean := strings.ReplaceAll(strings.ReplaceAll(string(outB), "{", ""), "}", "")
+				parts := strings.Split(clean, ",")
+				if len(parts) >= 4 {
+					x, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+					y, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+					w, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
+					h, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
+					if w > 100 && h > 100 && x >= 0 && y >= 0 {
+						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s", w, h, x, y, opt.Resolution)
+					}
+				}
+			}
+		}
+
 		args = []string{
 			"-fflags", "nobuffer+flush_packets",
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
 			"-framerate", fmt.Sprintf("%d", opt.FPS),
 			"-i", screenDev,
-			"-vf", fmt.Sprintf("scale=%s", opt.Resolution),
+			"-vf", scaleFilter,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
@@ -590,6 +716,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
 			"-mpegts_flags", "+latm+pat_pmt_at_frames",
+			"-pcr_period", "20",
 			targetURL,
 		}
 
