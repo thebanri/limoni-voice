@@ -45,6 +45,7 @@ const (
 	PacketRoomFull    // Host rejects join request because room reached 4-peer capacity
 	PacketScreenShareStart
 	PacketScreenShareStop
+	PacketScreenShareData
 )
 
 type P2PPacket struct {
@@ -145,12 +146,14 @@ type P2PNode struct {
 	wsCancel         chan struct{}
 
 	// Screen Sharing State & Subprocesses
-	IsSharingScreen  bool
-	IsWatchingScreen bool
-	ScreenSharePort  int
-	screenSession    *screenshare.Session
-	receiverSession  *screenshare.Session
-	OnScreenShare    func(peerID string, isSharing bool, videoPort int)
+	IsSharingScreen   bool
+	IsWatchingScreen  bool
+	ScreenSharePort   int
+	screenSession     *screenshare.Session
+	receiverSession   *screenshare.Session
+	videoCaptureConn  *net.UDPConn
+	videoPlaybackConn *net.UDPConn
+	OnScreenShare     func(peerID string, isSharing bool, videoPort int)
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
@@ -449,7 +452,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsSendCh := make(chan []byte, 16)
+		wsSendCh := make(chan []byte, 512)
 		n.mu.Lock()
 		n.wsSendCh = wsSendCh
 		n.mu.Unlock()
@@ -1654,6 +1657,16 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			}()
 		}
 
+	case PacketScreenShareData:
+		n.mu.RLock()
+		watching := n.IsWatchingScreen
+		playbackConn := n.videoPlaybackConn
+		n.mu.RUnlock()
+
+		if watching && playbackConn != nil && len(pkt.Payload) > 0 {
+			_, _ = playbackConn.Write(pkt.Payload)
+		}
+
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			wasSharing := peer.IsSharingScreen
@@ -1671,7 +1684,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	}
 }
 
-// StartScreenShare starts GPU-accelerated screen broadcast to the active room peers
+// StartScreenShare starts GPU-accelerated screen broadcast and streams video chunks across the Internet
 func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 	n.mu.Lock()
 	if !n.IsConnected {
@@ -1682,47 +1695,85 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 		n.mu.Unlock()
 		return nil
 	}
-
-	if targetIP == "" {
-		for _, peer := range n.Peers {
-			if peer.Addr != nil {
-				targetIP = peer.Addr.IP.String()
-				break
-			}
-		}
-	}
-	if targetIP == "" {
-		targetIP = "127.0.0.1"
-	}
 	if targetPort <= 0 {
 		targetPort = 50100
 	}
-
 	n.ScreenSharePort = targetPort
 	n.mu.Unlock()
 
-	opts := screenshare.DefaultBroadcastOptions()
-	session, err := screenshare.StartBroadcasting(context.Background(), targetIP, targetPort, opts)
+	// 1. Listen on local loopback UDP port to receive MPEG-TS chunks from ffmpeg/gpu-screen-recorder
+	captureAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", targetPort))
 	if err != nil {
+		return err
+	}
+	captureConn, err := net.ListenUDP("udp4", captureAddr)
+	if err != nil {
+		return fmt.Errorf("ekran yakalama portu acilamadi (%d): %w", targetPort, err)
+	}
+
+	opts := screenshare.DefaultBroadcastOptions()
+	session, err := screenshare.StartBroadcasting(context.Background(), "127.0.0.1", targetPort, opts)
+	if err != nil {
+		_ = captureConn.Close()
 		return err
 	}
 
 	n.mu.Lock()
 	n.screenSession = session
+	n.videoCaptureConn = captureConn
 	n.IsSharingScreen = true
+	roomCode := n.RoomCode
+	localID := n.LocalID
+	nickname := n.Nickname
 	n.mu.Unlock()
 
-	pkt := P2PPacket{
+	startPkt := P2PPacket{
 		Type:            PacketScreenShareStart,
-		RoomCode:        n.RoomCode,
-		SenderID:        n.LocalID,
-		Nickname:        n.Nickname,
+		RoomCode:        roomCode,
+		SenderID:        localID,
+		Nickname:        nickname,
 		IsSharingScreen: true,
 		VideoPort:       targetPort,
 	}
-	n.broadcastToPeers(&pkt)
-	n.log("📺 Ekran paylasimi baslatildi (60 FPS)")
+	n.broadcastToPeers(&startPkt)
+	n.log("📺 Ekran paylasimi baslatildi (1080p 60 FPS - Internet)")
 
+	// 2. Read raw MPEG-TS video chunks and broadcast to all room peers over WebSocket Relay (Internet) and UDP
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			nBytes, _, err := captureConn.ReadFromUDP(buf)
+			if err != nil {
+				break
+			}
+			if nBytes <= 0 {
+				continue
+			}
+
+			n.mu.RLock()
+			sharing := n.IsSharingScreen
+			currentRoom := n.RoomCode
+			n.mu.RUnlock()
+
+			if !sharing {
+				break
+			}
+
+			chunk := make([]byte, nBytes)
+			copy(chunk, buf[:nBytes])
+
+			vidPkt := P2PPacket{
+				Type:     PacketScreenShareData,
+				RoomCode: currentRoom,
+				SenderID: localID,
+				Nickname: nickname,
+				Payload:  chunk,
+			}
+			n.broadcastToPeers(&vidPkt)
+		}
+	}()
+
+	// 3. Monitor session lifecycle
 	go func() {
 		select {
 		case err := <-session.Err():
@@ -1730,16 +1781,19 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 		case <-session.Done():
 			n.log("ℹ️ Ekran yayini sonlandi.")
 		}
+		_ = captureConn.Close()
+
 		n.mu.Lock()
 		n.IsSharingScreen = false
 		n.screenSession = nil
+		n.videoCaptureConn = nil
 		n.mu.Unlock()
 
 		stopPkt := P2PPacket{
 			Type:            PacketScreenShareStop,
-			RoomCode:        n.RoomCode,
-			SenderID:        n.LocalID,
-			Nickname:        n.Nickname,
+			RoomCode:        roomCode,
+			SenderID:        localID,
+			Nickname:        nickname,
 			IsSharingScreen: false,
 			VideoPort:       0,
 		}
@@ -1758,13 +1812,18 @@ func (n *P2PNode) StopScreenShare() error {
 	}
 
 	session := n.screenSession
+	conn := n.videoCaptureConn
 	n.screenSession = nil
+	n.videoCaptureConn = nil
 	n.IsSharingScreen = false
 	roomCode := n.RoomCode
 	localID := n.LocalID
 	nickname := n.Nickname
 	n.mu.Unlock()
 
+	if conn != nil {
+		_ = conn.Close()
+	}
 	if session != nil {
 		_ = session.Stop()
 	}
@@ -1782,19 +1841,38 @@ func (n *P2PNode) StopScreenShare() error {
 	return nil
 }
 
-// StartWatchingScreen launches native hardware-accelerated video receiver (mpv/ffplay) to view a peer's stream in full 60 FPS HD
+// StartWatchingScreen launches native hardware-accelerated video receiver (mpv/ffplay) and feeds it decrypted stream chunks over 127.0.0.1
 func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
 		prevSession := n.receiverSession
+		prevConn := n.videoPlaybackConn
 		n.receiverSession = nil
+		n.videoPlaybackConn = nil
 		n.mu.Unlock()
+		if prevConn != nil {
+			_ = prevConn.Close()
+		}
 		_ = prevSession.Stop()
 		n.mu.Lock()
 	}
 	if port <= 0 {
 		port = 50100
 	}
+
+	playbackAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		n.mu.Unlock()
+		return err
+	}
+	playbackConn, err := net.DialUDP("udp4", nil, playbackAddr)
+	if err != nil {
+		n.mu.Unlock()
+		return fmt.Errorf("yerel oynatma soketi acilamadi: %w", err)
+	}
+
+	n.videoPlaybackConn = playbackConn
+	n.IsWatchingScreen = true
 	n.mu.Unlock()
 
 	var opt screenshare.ReceiverOptions
@@ -1806,12 +1884,18 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 
 	session, err := screenshare.StartReceiving(context.Background(), port, opt)
 	if err != nil {
+		n.mu.Lock()
+		n.IsWatchingScreen = false
+		if n.videoPlaybackConn != nil {
+			_ = n.videoPlaybackConn.Close()
+			n.videoPlaybackConn = nil
+		}
+		n.mu.Unlock()
 		return err
 	}
 
 	n.mu.Lock()
 	n.receiverSession = session
-	n.IsWatchingScreen = true
 	n.mu.Unlock()
 	n.log(fmt.Sprintf("🎬 Canli ekran yayini izleyici penceresi acildi (Port: %d).", port))
 
@@ -1825,6 +1909,10 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		n.mu.Lock()
 		n.IsWatchingScreen = false
 		n.receiverSession = nil
+		if n.videoPlaybackConn != nil {
+			_ = n.videoPlaybackConn.Close()
+			n.videoPlaybackConn = nil
+		}
 		n.mu.Unlock()
 	}()
 
@@ -1835,12 +1923,17 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 func (n *P2PNode) StopWatchingScreen() error {
 	n.mu.Lock()
 	session := n.receiverSession
+	conn := n.videoPlaybackConn
 	n.receiverSession = nil
+	n.videoPlaybackConn = nil
 	n.IsWatchingScreen = false
 	n.mu.Unlock()
 
+	if conn != nil {
+		_ = conn.Close()
+	}
 	if session != nil {
-		_ = session.Stop()
+		return session.Stop()
 	}
 	return nil
 }

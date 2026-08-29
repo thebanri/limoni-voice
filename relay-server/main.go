@@ -68,8 +68,8 @@ func NewRelayServer() *RelayServer {
 		rooms: make(map[string]*Room),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
-			ReadBufferSize:  4096,
-			WriteBufferSize: 4096,
+			ReadBufferSize:  65536,
+			WriteBufferSize: 65536,
 		},
 	}
 }
@@ -106,7 +106,7 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		conn:     conn,
 		publicIP: clientIP,
-		sendCh:   make(chan []byte, 16),
+		sendCh:   make(chan []byte, 512),
 	}
 
 	// Start write pump

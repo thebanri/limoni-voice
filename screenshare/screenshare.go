@@ -408,7 +408,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		windowTitle = "Limoni Voice - Canli Ekran Yayini (HD 60 FPS)"
 	}
 
-	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?reuse=1&pkt_size=1316&buffer_size=1048576", port)
+	streamURL := fmt.Sprintf("udp://127.0.0.1:%d?reuse=1&pkt_size=1316&buffer_size=2097152", port)
 
 	var binPath string
 	var args []string
