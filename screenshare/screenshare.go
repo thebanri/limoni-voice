@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -38,79 +37,58 @@ type WindowInfo struct {
 	Title string `json:"title"`
 }
 
-// ListWindows returns active shareable targets (monitors / windows)
+// ListWindows returns active shareable screen and monitor targets
 func ListWindows() []WindowInfo {
 	targets := []WindowInfo{
-		{ID: "desktop", Title: "🖥️  Tum Masaustu (Tum Ekranlar)"},
+		{ID: "desktop", Title: "🖥️  Ekran 1 (Ana Ekran - Tam Gorunum)"},
 	}
 
 	if runtime.GOOS == "windows" {
 		psScript := `
 		Add-Type -AssemblyName System.Windows.Forms
-		Add-Type @"
-		using System;
-		using System.Runtime.InteropServices;
-		public struct RECT { public int Left, Top, Right, Bottom; }
-		public class WinPos {
-			[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-			[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-		}
-"@
-		[System.Windows.Forms.Screen]::AllScreens | ForEach-Object -Begin {$idx=1} -Process {
-			$p = if ($_.Primary) {" (Ana Ekran)"} else {""}
-			"SCREEN|$($_.Bounds.X)|$($_.Bounds.Y)|$($_.Bounds.Width)|$($_.Bounds.Height)|Monitor $idx$p ($($_.Bounds.Width)x$($_.Bounds.Height))"
-			$idx++
-		}
-		Get-Process | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object {
-			$h = $_.MainWindowHandle
-			if (-not [WinPos]::IsIconic($h)) {
-				$rect = New-Object RECT
-				if ([WinPos]::GetWindowRect($h, [ref]$rect)) {
-					$w = $rect.Right - $rect.Left
-					$hgt = $rect.Bottom - $rect.Top
-					if ($w -gt 120 -and $hgt -gt 120 -and $rect.Left -ge -5000) {
-						"WIN_RECT|$($rect.Left)|$($rect.Top)|$w|$hgt|$($_.MainWindowTitle)"
-					}
-				}
+		$screens = [System.Windows.Forms.Screen]::AllScreens
+		if ($screens.Count -gt 1) {
+			$idx = 1
+			foreach ($s in $screens) {
+				$p = if ($s.Primary) {" (Ana Ekran)"} else {""}
+				"SCREEN|$($s.Bounds.X)|$($s.Bounds.Y)|$($s.Bounds.Width)|$($s.Bounds.Height)|Ekran $idx$p ($($s.Bounds.Width)x$($s.Bounds.Height))"
+				$idx++
 			}
+			"ALL|0|0|0|0|Tum Ekranlar (Genisletilmis Masaustu)"
 		}
 		`
 		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 		out, err := cmd.Output()
-		if err == nil {
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
 			lines := strings.Split(string(out), "\n")
-			seen := make(map[string]bool)
+			var newTargets []WindowInfo
 			for _, line := range lines {
 				trimmed := strings.TrimSpace(line)
 				if trimmed == "" {
 					continue
 				}
-				parts := strings.SplitN(trimmed, "|", 2)
-				if len(parts) < 2 {
-					continue
-				}
-				if parts[0] == "SCREEN" {
-					screenParts := strings.Split(parts[1], "|")
-					if len(screenParts) >= 5 {
-						x, y, w, h, name := screenParts[0], screenParts[1], screenParts[2], screenParts[3], screenParts[4]
-						targets = append(targets, WindowInfo{
-							ID:    fmt.Sprintf("rect:%s:%s:%s:%s", x, y, w, h),
+				parts := strings.Split(trimmed, "|")
+				if len(parts) >= 6 {
+					tag, x, y, w, h, name := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+					if tag == "SCREEN" {
+						id := fmt.Sprintf("monitor:%s:%s:%s:%s", x, y, w, h)
+						if x == "0" && y == "0" {
+							id = "desktop"
+						}
+						newTargets = append(newTargets, WindowInfo{
+							ID:    id,
+							Title: "🖥️  " + name,
+						})
+					} else if tag == "ALL" {
+						newTargets = append(newTargets, WindowInfo{
+							ID:    "desktop",
 							Title: "🖥️  " + name,
 						})
 					}
-				} else if parts[0] == "WIN_RECT" {
-					winParts := strings.SplitN(parts[1], "|", 5)
-					if len(winParts) >= 5 {
-						x, y, w, h, title := winParts[0], winParts[1], winParts[2], winParts[3], winParts[4]
-						if !seen[title] && !strings.EqualFold(title, "Program Manager") {
-							seen[title] = true
-							targets = append(targets, WindowInfo{
-								ID:    fmt.Sprintf("rect:%s:%s:%s:%s", x, y, w, h),
-								Title: "🪟  " + title,
-							})
-						}
-					}
 				}
+			}
+			if len(newTargets) > 0 {
+				targets = newTargets
 			}
 		}
 	}
@@ -446,34 +424,14 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-draw_mouse", "1",
 		}
 
-		if strings.HasPrefix(opt.WindowID, "rect:") || strings.HasPrefix(opt.WindowID, "monitor:") {
-			// Format: rect:X:Y:WIDTH:HEIGHT or monitor:X:Y:WIDTH:HEIGHT
+		if strings.HasPrefix(opt.WindowID, "monitor:") {
+			// Format: monitor:X:Y:WIDTH:HEIGHT
 			mParts := strings.Split(opt.WindowID, ":")
-			if len(mParts) >= 5 {
-				x, _ := strconv.Atoi(mParts[1])
-				y, _ := strconv.Atoi(mParts[2])
-				w, _ := strconv.Atoi(mParts[3])
-				h, _ := strconv.Atoi(mParts[4])
-				if x < 0 {
-					x = 0
-				}
-				if y < 0 {
-					y = 0
-				}
-				// Force even dimensions for H.264
-				w = (w / 2) * 2
-				h = (h / 2) * 2
-				if w < 120 {
-					w = 1920
-				}
-				if h < 120 {
-					h = 1080
-				}
-
+			if len(mParts) >= 5 && (mParts[1] != "0" || mParts[2] != "0") {
 				inputArgs = append(inputArgs,
-					"-offset_x", strconv.Itoa(x),
-					"-offset_y", strconv.Itoa(y),
-					"-video_size", fmt.Sprintf("%dx%d", w, h),
+					"-offset_x", mParts[1],
+					"-offset_y", mParts[2],
+					"-video_size", fmt.Sprintf("%sx%s", mParts[3], mParts[4]),
 					"-i", "desktop",
 				)
 			} else {
