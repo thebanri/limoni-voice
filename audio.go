@@ -632,6 +632,13 @@ func (a *AudioEngine) fallbackSimulatedLoop(onFrame func(rms float64, speaking b
 }
 
 func (a *AudioEngine) startPlayback() {
+	a.mu.Lock()
+	if a.playbackPipe != nil {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+
 	// 1. Try native Windows audio playback (winmm waveOut)
 	if a.startWindowsPlayback() {
 		return
@@ -641,10 +648,10 @@ func (a *AudioEngine) startPlayback() {
 	if runtime.GOOS == "darwin" {
 		var darwinCmds []*exec.Cmd
 		if p := findAudioTool("ffplay"); p != "" {
-			darwinCmds = append(darwinCmds, exec.Command(p, "-loglevel", "quiet", "-nodisp", "-autoexit", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0"))
+			darwinCmds = append(darwinCmds, exec.Command(p, "-loglevel", "quiet", "-nodisp", "-f", "s16le", "-ar", "16000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay", "-i", "pipe:0"))
 		}
 		if p := findAudioTool("mpv"); p != "" {
-			darwinCmds = append(darwinCmds, exec.Command(p, "--really-quiet", "--no-video", "--demuxer-rawaudio-rate=16000", "--demuxer-rawaudio-channels=1", "--demuxer-rawaudio-format=s16le", "--demuxer=rawaudio", "-"))
+			darwinCmds = append(darwinCmds, exec.Command(p, "--really-quiet", "--no-video", "--idle=yes", "--keep-open=yes", "--profile=low-latency", "--untimed", "--cache=no", "--no-cache", "--demuxer=rawaudio", "--demuxer-rawaudio-rate=16000", "--demuxer-rawaudio-channels=1", "--demuxer-rawaudio-format=s16le", "-"))
 		}
 		if p := findAudioTool("play"); p != "" {
 			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"))
@@ -656,8 +663,10 @@ func (a *AudioEngine) startPlayback() {
 		for _, cmd := range darwinCmds {
 			stdin, err := cmd.StdinPipe()
 			if err == nil && cmd.Start() == nil {
+				a.mu.Lock()
 				a.playbackCmd = cmd
 				a.playbackPipe = stdin
+				a.mu.Unlock()
 				return
 			}
 		}
@@ -670,9 +679,9 @@ func (a *AudioEngine) startPlayback() {
 	} else if p := findAudioTool("pw-play"); p != "" {
 		cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
 	} else if p := findAudioTool("ffplay"); p != "" {
-		cmd = exec.Command(p, "-loglevel", "quiet", "-nodisp", "-autoexit", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0")
+		cmd = exec.Command(p, "-loglevel", "quiet", "-nodisp", "-f", "s16le", "-ar", "16000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay", "-i", "pipe:0")
 	} else if p := findAudioTool("mpv"); p != "" {
-		cmd = exec.Command(p, "--really-quiet", "--no-video", "--demuxer-rawaudio-rate=16000", "--demuxer-rawaudio-channels=1", "--demuxer-rawaudio-format=s16le", "--demuxer=rawaudio", "-")
+		cmd = exec.Command(p, "--really-quiet", "--no-video", "--idle=yes", "--keep-open=yes", "--profile=low-latency", "--untimed", "--cache=no", "--no-cache", "--demuxer=rawaudio", "--demuxer-rawaudio-rate=16000", "--demuxer-rawaudio-channels=1", "--demuxer-rawaudio-format=s16le", "-")
 	} else if p := findAudioTool("play"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
 	} else if p := findAudioTool("sox"); p != "" {
@@ -684,8 +693,10 @@ func (a *AudioEngine) startPlayback() {
 	if cmd != nil {
 		stdin, err := cmd.StdinPipe()
 		if err == nil && cmd.Start() == nil {
+			a.mu.Lock()
 			a.playbackCmd = cmd
 			a.playbackPipe = stdin
+			a.mu.Unlock()
 		}
 	}
 }
@@ -702,6 +713,7 @@ func (a *AudioEngine) playbackMixerLoop() {
 			a.mu.Lock()
 			if a.playbackPipe == nil {
 				a.mu.Unlock()
+				a.startPlayback()
 				continue
 			}
 
@@ -720,11 +732,19 @@ func (a *AudioEngine) playbackMixerLoop() {
 					streams = append(streams, buf)
 					delete(a.peerBuffers, "local_loopback")
 				}
+				pipe := a.playbackPipe
 				a.mu.Unlock()
 
-				if len(streams) > 0 && a.playbackPipe != nil {
+				if len(streams) > 0 && pipe != nil {
 					mixed := mixPCM(streams, AudioChunkSize/2)
-					_, _ = a.playbackPipe.Write(mixed)
+					if _, err := pipe.Write(mixed); err != nil {
+						a.mu.Lock()
+						if a.playbackPipe == pipe {
+							a.playbackPipe = nil
+						}
+						a.mu.Unlock()
+						a.startPlayback()
+					}
 				}
 				continue
 			}
@@ -748,11 +768,19 @@ func (a *AudioEngine) playbackMixerLoop() {
 					delete(a.peerBuffers, id)
 				}
 			}
+			pipe := a.playbackPipe
 			a.mu.Unlock()
 
-			if len(streams) > 0 && a.playbackPipe != nil {
+			if len(streams) > 0 && pipe != nil {
 				mixed := mixPCM(streams, AudioChunkSize/2)
-				_, _ = a.playbackPipe.Write(mixed)
+				if _, err := pipe.Write(mixed); err != nil {
+					a.mu.Lock()
+					if a.playbackPipe == pipe {
+						a.playbackPipe = nil
+					}
+					a.mu.Unlock()
+					a.startPlayback()
+				}
 			}
 		}
 	}
