@@ -146,14 +146,15 @@ type P2PNode struct {
 	wsCancel         chan struct{}
 
 	// Screen Sharing State & Subprocesses
-	IsSharingScreen   bool
-	IsWatchingScreen  bool
-	ScreenSharePort   int
-	screenSession     *screenshare.Session
-	receiverSession   *screenshare.Session
-	videoCaptureConn  *net.UDPConn
-	videoPlaybackConn *net.UDPConn
-	OnScreenShare     func(peerID string, isSharing bool, videoPort int)
+	IsSharingScreen  bool
+	IsWatchingScreen bool
+	ScreenSharePort  int
+	screenSession    *screenshare.Session
+	receiverSession  *screenshare.Session
+	videoCaptureConn *net.UDPConn
+	videoTCPListener net.Listener
+	videoTCPConn     net.Conn
+	OnScreenShare    func(peerID string, isSharing bool, videoPort int)
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
@@ -681,11 +682,11 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 			if pkt.Type == PacketScreenShareData {
 				n.mu.RLock()
 				watching := n.IsWatchingScreen
-				playbackConn := n.videoPlaybackConn
+				tcpConn := n.videoTCPConn
 				n.mu.RUnlock()
 
-				if watching && playbackConn != nil && len(pkt.Payload) > 0 {
-					_, _ = playbackConn.Write(pkt.Payload)
+				if watching && tcpConn != nil && len(pkt.Payload) > 0 {
+					_, _ = tcpConn.Write(pkt.Payload)
 				}
 				continue
 			}
@@ -1311,11 +1312,11 @@ func (n *P2PNode) listenLoop() {
 		if pkt.Type == PacketScreenShareData {
 			n.mu.RLock()
 			watching := n.IsWatchingScreen
-			playbackConn := n.videoPlaybackConn
+			tcpConn := n.videoTCPConn
 			n.mu.RUnlock()
 
-			if watching && playbackConn != nil && len(pkt.Payload) > 0 {
-				_, _ = playbackConn.Write(pkt.Payload)
+			if watching && tcpConn != nil && len(pkt.Payload) > 0 {
+				_, _ = tcpConn.Write(pkt.Payload)
 			}
 			continue
 		}
@@ -1353,11 +1354,11 @@ func (n *P2PNode) listenBroadcastLoop() {
 		if pkt.Type == PacketScreenShareData {
 			n.mu.RLock()
 			watching := n.IsWatchingScreen
-			playbackConn := n.videoPlaybackConn
+			tcpConn := n.videoTCPConn
 			n.mu.RUnlock()
 
-			if watching && playbackConn != nil && len(pkt.Payload) > 0 {
-				_, _ = playbackConn.Write(pkt.Payload)
+			if watching && tcpConn != nil && len(pkt.Payload) > 0 {
+				_, _ = tcpConn.Write(pkt.Payload)
 			}
 			continue
 		}
@@ -1735,8 +1736,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketScreenShareData:
-		if n.IsWatchingScreen && n.videoPlaybackConn != nil && len(pkt.Payload) > 0 {
-			_, _ = n.videoPlaybackConn.Write(pkt.Payload)
+		if n.IsWatchingScreen && n.videoTCPConn != nil && len(pkt.Payload) > 0 {
+			_, _ = n.videoTCPConn.Write(pkt.Payload)
 		}
 
 	case PacketLeave:
@@ -1767,30 +1768,28 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 		n.mu.Unlock()
 		return nil
 	}
-	if targetPort <= 0 {
-		targetPort = 50100
-	}
-	n.ScreenSharePort = targetPort
 	n.mu.Unlock()
 
-	// 1. Listen on local loopback UDP port to receive MPEG-TS chunks from ffmpeg/gpu-screen-recorder
-	captureAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", targetPort))
+	// 1. Listen on a dynamic free local UDP port (port 0 = OS assigns available port)
+	captureAddr, err := net.ResolveUDPAddr("udp4", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
 	captureConn, err := net.ListenUDP("udp4", captureAddr)
 	if err != nil {
-		return fmt.Errorf("ekran yakalama portu acilamadi (%d): %w", targetPort, err)
+		return fmt.Errorf("ekran yakalama portu acilamadi: %w", err)
 	}
+	localAssignedPort := captureConn.LocalAddr().(*net.UDPAddr).Port
 
 	opts := screenshare.DefaultBroadcastOptions()
-	session, err := screenshare.StartBroadcasting(context.Background(), "127.0.0.1", targetPort, opts)
+	session, err := screenshare.StartBroadcasting(context.Background(), "127.0.0.1", localAssignedPort, opts)
 	if err != nil {
 		_ = captureConn.Close()
 		return err
 	}
 
 	n.mu.Lock()
+	n.ScreenSharePort = localAssignedPort
 	n.screenSession = session
 	n.videoCaptureConn = captureConn
 	n.IsSharingScreen = true
@@ -1805,7 +1804,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 		SenderID:        localID,
 		Nickname:        nickname,
 		IsSharingScreen: true,
-		VideoPort:       targetPort,
+		VideoPort:       localAssignedPort,
 	}
 	n.broadcastToPeers(&startPkt)
 	n.log("📺 Ekran paylasimi baslatildi (1080p 60 FPS - Internet)")
@@ -1911,23 +1910,25 @@ func (n *P2PNode) StopScreenShare() error {
 	return nil
 }
 
-// StartWatchingScreen launches native hardware-accelerated video receiver (mpv/ffplay) and feeds it decrypted stream chunks over 127.0.0.1
+// StartWatchingScreen launches native hardware-accelerated video receiver (mpv/ffplay) and feeds it decrypted stream chunks over dynamic local TCP server
 func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
 		prevSession := n.receiverSession
-		prevConn := n.videoPlaybackConn
+		prevLn := n.videoTCPListener
+		prevConn := n.videoTCPConn
 		n.receiverSession = nil
-		n.videoPlaybackConn = nil
+		n.videoTCPListener = nil
+		n.videoTCPConn = nil
 		n.mu.Unlock()
 		if prevConn != nil {
 			_ = prevConn.Close()
 		}
+		if prevLn != nil {
+			_ = prevLn.Close()
+		}
 		_ = prevSession.Stop()
 		n.mu.Lock()
-	}
-	if port <= 0 {
-		port = 50100
 	}
 
 	var opt screenshare.ReceiverOptions
@@ -1938,34 +1939,44 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	}
 	n.mu.Unlock()
 
-	session, err := screenshare.StartReceiving(context.Background(), port, opt)
+	// 1. Open a local TCP listener on a dynamic free port (127.0.0.1:0)
+	tcpLn, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		return err
+		return fmt.Errorf("yerel TCP oynatici soketi acilamadi: %w", err)
 	}
+	assignedTCPPort := tcpLn.Addr().(*net.TCPAddr).Port
 
-	// Give MPV 100ms to open and bind the UDP listener
-	time.Sleep(100 * time.Millisecond)
-
-	playbackAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", port))
+	// 2. Start MPV connecting to tcp://127.0.0.1:assignedTCPPort
+	session, err := screenshare.StartReceiving(context.Background(), assignedTCPPort, opt)
 	if err != nil {
-		_ = session.Stop()
+		_ = tcpLn.Close()
 		return err
-	}
-	playbackConn, err := net.DialUDP("udp4", nil, playbackAddr)
-	if err != nil {
-		_ = session.Stop()
-		return fmt.Errorf("yerel oynatma soketine baglanilamadi: %w", err)
 	}
 
 	n.mu.Lock()
 	n.receiverSession = session
-	n.videoPlaybackConn = playbackConn
+	n.videoTCPListener = tcpLn
 	n.IsWatchingScreen = true
 	n.mu.Unlock()
 
-	n.log(fmt.Sprintf("🎬 Canli ekran yayini izleyici penceresi acildi (Port: %d).", port))
+	n.log("🎬 Canli ekran yayini izleyici penceresi acildi (HD 60 FPS).")
 
-	// Monitor receiver session lifecycle
+	// 3. Accept incoming TCP connection from MPV in background
+	go func() {
+		conn, err := tcpLn.Accept()
+		if err != nil {
+			return
+		}
+		n.mu.Lock()
+		if n.IsWatchingScreen {
+			n.videoTCPConn = conn
+		} else {
+			_ = conn.Close()
+		}
+		n.mu.Unlock()
+	}()
+
+	// 4. Monitor receiver session lifecycle
 	go func() {
 		select {
 		case err := <-session.Err():
@@ -1977,9 +1988,13 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		n.mu.Lock()
 		n.IsWatchingScreen = false
 		n.receiverSession = nil
-		if n.videoPlaybackConn != nil {
-			_ = n.videoPlaybackConn.Close()
-			n.videoPlaybackConn = nil
+		if n.videoTCPConn != nil {
+			_ = n.videoTCPConn.Close()
+			n.videoTCPConn = nil
+		}
+		if n.videoTCPListener != nil {
+			_ = n.videoTCPListener.Close()
+			n.videoTCPListener = nil
 		}
 		n.mu.Unlock()
 	}()
@@ -1991,14 +2006,19 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 func (n *P2PNode) StopWatchingScreen() error {
 	n.mu.Lock()
 	session := n.receiverSession
-	conn := n.videoPlaybackConn
+	conn := n.videoTCPConn
+	ln := n.videoTCPListener
 	n.receiverSession = nil
-	n.videoPlaybackConn = nil
+	n.videoTCPConn = nil
+	n.videoTCPListener = nil
 	n.IsWatchingScreen = false
 	n.mu.Unlock()
 
 	if conn != nil {
 		_ = conn.Close()
+	}
+	if ln != nil {
+		_ = ln.Close()
 	}
 	if session != nil {
 		return session.Stop()
