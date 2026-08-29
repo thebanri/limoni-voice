@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -67,7 +68,7 @@ type Session struct {
 	mu        sync.Mutex
 }
 
-// FindExecutable searches for a binary in PATH, next to current executable, in ~/.limoni-voice/bin/, WinGet, Scoop, and common Windows paths
+// FindExecutable searches for a binary in PATH, next to current executable, Program Files (all mpv/ffmpeg subfolders), AppData, WinGet, Scoop
 func FindExecutable(name string) (string, error) {
 	// 1. Check system PATH
 	if p, err := exec.LookPath(name); err == nil {
@@ -75,18 +76,26 @@ func FindExecutable(name string) (string, error) {
 	}
 
 	exts := []string{""}
+	candidateNames := []string{name}
 	if runtime.GOOS == "windows" {
-		exts = []string{".exe", ""}
+		exts = []string{".exe", ".com", ""}
+		if name == "mpv" {
+			candidateNames = append(candidateNames, "mpv", "mpvnet", "mpv-player", "mpvcom", "MPV")
+		} else if name == "ffmpeg" {
+			candidateNames = append(candidateNames, "ffmpeg", "FFmpeg")
+		} else if name == "ffplay" {
+			candidateNames = append(candidateNames, "ffplay", "FFplay")
+		}
 	}
 
 	searchDirs := []string{}
 
-	// 2. Current working directory & ./bin
+	// 2. Current working directory & ./bin & ./tools
 	if cwd, err := os.Getwd(); err == nil {
 		searchDirs = append(searchDirs, cwd, filepath.Join(cwd, "bin"), filepath.Join(cwd, "tools"))
 	}
 
-	// 3. Next to running executable & exe/bin
+	// 3. Next to running executable & exe/bin & exe/tools
 	if execPath, err := os.Executable(); err == nil {
 		execDir := filepath.Dir(execPath)
 		searchDirs = append(searchDirs, execDir, filepath.Join(execDir, "bin"), filepath.Join(execDir, "tools"))
@@ -106,28 +115,103 @@ func FindExecutable(name string) (string, error) {
 		)
 	}
 
-	// 5. Common Windows installer directories
+	// 5. Windows specific deep folder discovery
 	if runtime.GOOS == "windows" {
+		sysDrive := os.Getenv("SystemDrive")
+		if sysDrive == "" {
+			sysDrive = "C:"
+		}
+
+		basePfDirs := []string{
+			os.Getenv("ProgramFiles"),
+			os.Getenv("ProgramFiles(x86)"),
+			os.Getenv("ProgramW6432"),
+			sysDrive + `\Program Files`,
+			sysDrive + `\Program Files (x86)`,
+		}
+
+		appDataDirs := []string{
+			os.Getenv("LOCALAPPDATA"),
+			os.Getenv("APPDATA"),
+			os.Getenv("ProgramData"),
+		}
+
+		// Fixed common install folders
 		searchDirs = append(searchDirs,
-			`C:\ffmpeg\bin`,
-			`C:\ffmpeg`,
-			`C:\mpv`,
-			`C:\Program Files\mpv`,
-			`C:\Program Files (x86)\mpv`,
-			`C:\Program Files\FFmpeg\bin`,
-			`C:\Program Files (x86)\FFmpeg\bin`,
-			`C:\ProgramData\chocolatey\bin`,
-			`C:\ProgramData\chocolatey\lib\mpv\tools`,
-			`C:\tools\ffmpeg\bin`,
-			`C:\tools\mpv`,
+			sysDrive+`\ffmpeg\bin`,
+			sysDrive+`\ffmpeg`,
+			sysDrive+`\mpv`,
+			sysDrive+`\tools\ffmpeg\bin`,
+			sysDrive+`\tools\mpv`,
+			sysDrive+`\ProgramData\chocolatey\bin`,
+			sysDrive+`\ProgramData\chocolatey\lib\mpv\tools`,
 		)
+
+		// Scan Program Files subdirectories matching *mpv*, *MPV*, *ffmpeg*, *FFmpeg*, *player*
+		for _, pf := range basePfDirs {
+			if pf == "" {
+				continue
+			}
+			searchDirs = append(searchDirs,
+				filepath.Join(pf, "mpv"),
+				filepath.Join(pf, "MPV"),
+				filepath.Join(pf, "MPV Player"),
+				filepath.Join(pf, "MPV Player", "bin"),
+				filepath.Join(pf, "mpv-net"),
+				filepath.Join(pf, "mpv.net"),
+				filepath.Join(pf, "mpv-player"),
+				filepath.Join(pf, "FFmpeg"),
+				filepath.Join(pf, "FFmpeg", "bin"),
+				filepath.Join(pf, "ffmpeg"),
+				filepath.Join(pf, "ffmpeg", "bin"),
+			)
+
+			// Scan all subdirectories in Program Files for any mpv/ffmpeg folder
+			if entries, err := os.ReadDir(pf); err == nil {
+				for _, entry := range entries {
+					if entry.IsDir() {
+						lower := strings.ToLower(entry.Name())
+						if strings.Contains(lower, "mpv") || strings.Contains(lower, "ffmpeg") || strings.Contains(lower, "player") {
+							folderPath := filepath.Join(pf, entry.Name())
+							searchDirs = append(searchDirs, folderPath, filepath.Join(folderPath, "bin"))
+						}
+					}
+				}
+			}
+		}
+
+		// Scan AppData Programs
+		for _, ad := range appDataDirs {
+			if ad == "" {
+				continue
+			}
+			searchDirs = append(searchDirs,
+				filepath.Join(ad, "Programs", "mpv"),
+				filepath.Join(ad, "Programs", "MPV Player"),
+				filepath.Join(ad, "Programs", "ffmpeg", "bin"),
+			)
+			if entries, err := os.ReadDir(filepath.Join(ad, "Programs")); err == nil {
+				for _, entry := range entries {
+					if entry.IsDir() {
+						lower := strings.ToLower(entry.Name())
+						if strings.Contains(lower, "mpv") || strings.Contains(lower, "ffmpeg") {
+							folderPath := filepath.Join(ad, "Programs", entry.Name())
+							searchDirs = append(searchDirs, folderPath, filepath.Join(folderPath, "bin"))
+						}
+					}
+				}
+			}
+		}
 	}
 
+	// Iterate over all discovered directories, candidates and extensions
 	for _, dir := range searchDirs {
-		for _, ext := range exts {
-			candidate := filepath.Join(dir, name+ext)
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				return candidate, nil
+		for _, cName := range candidateNames {
+			for _, ext := range exts {
+				candidate := filepath.Join(dir, cName+ext)
+				if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+					return candidate, nil
+				}
 			}
 		}
 	}
@@ -332,15 +416,14 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--cache=no",
 			"--no-cache",
 			"--video-sync=desync",
-			"--vd-lavc-threads=1",
 			"--framedrop=decoder+vo",
 			"--demuxer-lavf-format=mpegts",
-			"--demuxer-lavf-analyzeduration=0",
-			"--demuxer-lavf-probesize=32",
 			"--demuxer-lavf-o=fflags=nobuffer+flush_packets",
+			"--force-window=yes",
+			"--idle=yes",
+			"--keep-open=yes",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
-			"--keep-open=no",
 		}
 		if len(opt.CustomMpvFlags) > 0 {
 			args = append(args, opt.CustomMpvFlags...)
@@ -352,7 +435,6 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-flags", "low_delay",
 			"-fflags", "nobuffer+fastseek+flush_packets",
 			"-analyzeduration", "0",
-			"-probesize", "32",
 			"-window_title", windowTitle,
 			"-autoexit",
 			"-i", streamURL,
