@@ -23,25 +23,31 @@ var (
 	procWinPrintWindow            = modWinUser32.NewProc("PrintWindow")
 	procWinGetCursorInfo          = modWinUser32.NewProc("GetCursorInfo")
 	procWinDrawIconEx             = modWinUser32.NewProc("DrawIconEx")
+	procWinGetDpiForWindow        = modWinUser32.NewProc("GetDpiForWindow")
+	procWinSetDpiAwarenessContext = modWinUser32.NewProc("SetProcessDpiAwarenessContext")
 	procWinCreateCompatibleDC     = modWinGdi32.NewProc("CreateCompatibleDC")
 	procWinCreateCompatibleBitmap = modWinGdi32.NewProc("CreateCompatibleBitmap")
 	procWinSelectObject           = modWinGdi32.NewProc("SelectObject")
 	procWinDeleteObject           = modWinGdi32.NewProc("DeleteObject")
 	procWinDeleteDC               = modWinGdi32.NewProc("DeleteDC")
 	procWinGetDIBits              = modWinGdi32.NewProc("GetDIBits")
-	procWinBitBlt                 = modWinGdi32.NewProc("BitBlt")
 )
 
 const (
-	PW_CLIENTONLY        = 0x00000001
-	PW_RENDERFULLCONTENT = 0x00000002
-	SRCCOPY              = 0x00CC0020
-	CAPTUREBLT           = 0x40000000
-	DIB_RGB_COLORS       = 0
-	BI_RGB               = 0
-	CURSOR_SHOWING       = 0x00000001
-	DI_NORMAL            = 0x0003
+	PW_CLIENTONLY                              = 0x00000001
+	PW_RENDERFULLCONTENT                       = 0x00000002
+	DIB_RGB_COLORS                             = 0
+	BI_RGB                                     = 0
+	CURSOR_SHOWING                             = 0x00000001
+	DI_NORMAL                                  = 0x0003
+	DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ^uintptr(3) // -4
 )
+
+func init() {
+	if procWinSetDpiAwarenessContext.Find() == nil {
+		procWinSetDpiAwarenessContext.Call(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+	}
+}
 
 type winRECT struct {
 	Left, Top, Right, Bottom int32
@@ -77,18 +83,28 @@ type winBITMAPINFO struct {
 	BmiColors [1]uint32
 }
 
-// GetWindowDimensions returns width and height for a given window handle
+// GetWindowDimensions returns the true uncropped physical dimensions of the window
 func GetWindowDimensions(hwnd uintptr) (int, int) {
 	var r winRECT
 	ret, _, _ := procWinGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-	if ret == 0 || r.Right <= 0 || r.Bottom <= 0 {
-		procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-		r.Right = r.Right - r.Left
-		r.Bottom = r.Bottom - r.Top
-	}
-
 	w := int(r.Right)
 	h := int(r.Bottom)
+	if ret == 0 || w <= 0 || h <= 0 {
+		procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+		w = int(r.Right - r.Left)
+		h = int(r.Bottom - r.Top)
+	}
+
+	// If Windows is running with DPI scaling (125%, 150%), scale to physical pixels
+	if procWinGetDpiForWindow.Find() == nil {
+		dpi, _, _ := procWinGetDpiForWindow.Call(hwnd)
+		if dpi > 0 && dpi != 96 {
+			scale := float64(dpi) / 96.0
+			w = int(float64(w) * scale)
+			h = int(float64(h) * scale)
+		}
+	}
+
 	if w <= 100 || h <= 100 {
 		return 1280, 720
 	}
@@ -98,9 +114,8 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 	return w, h
 }
 
-// StreamWindowFrames captures application windows using DWM BitBlt with CAPTUREBLT
-// (falling back to PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT), overlays live mouse cursor,
-// and streams raw BGRA frames directly into FFmpeg.
+// StreamWindowFrames captures isolated application windows via PrintWindow PW_RENDERFULLCONTENT,
+// overlays the live mouse cursor, and writes raw BGRA frames directly to the stdin pipe of FFmpeg.
 func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.WriteCloser) error {
 	defer outPipe.Close()
 
@@ -153,7 +168,7 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 			procWinClientToScreen.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
 
 			// 2. Capture isolated window surface directly via PrintWindow (ignores overlapping foreground windows)
-			procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_CLIENTONLY|PW_RENDERFULLCONTENT))
+			procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_RENDERFULLCONTENT))
 
 			// 3. Draw live mouse cursor overlay
 			var ci winCURSORINFO
