@@ -40,7 +40,7 @@ type WindowInfo struct {
 // ListWindows returns active shareable screen and monitor targets
 func ListWindows() []WindowInfo {
 	targets := []WindowInfo{
-		{ID: "desktop", Title: "🖥️  Ekran 1 (Ana Ekran - Tam Gorunum)"},
+		{ID: "desktop", Title: "🖥️  Ekran 1 (Ana Ekran - Spotify, Oyunlar ve Tum Uygulamalar)"},
 	}
 
 	if runtime.GOOS == "windows" {
@@ -56,31 +56,22 @@ func ListWindows() []WindowInfo {
 			}
 			"ALL|0|0|0|0|Tum Ekranlar (Genisletilmis Masaustu)"
 		}
-		Get-Process | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object {
-			"WIN|$($_.MainWindowTitle)"
-		}
 		`
 		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 		out, err := cmd.Output()
 		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
 			lines := strings.Split(string(out), "\n")
 			var screenTargets []WindowInfo
-			var winTargets []WindowInfo
-			seen := make(map[string]bool)
 
 			for _, line := range lines {
 				trimmed := strings.TrimSpace(line)
 				if trimmed == "" {
 					continue
 				}
-				parts := strings.SplitN(trimmed, "|", 2)
-				if len(parts) < 2 {
-					continue
-				}
-				if parts[0] == "SCREEN" {
-					sub := strings.Split(parts[1], "|")
-					if len(sub) >= 5 {
-						x, y, w, h, name := sub[0], sub[1], sub[2], sub[3], sub[4]
+				parts := strings.Split(trimmed, "|")
+				if len(parts) >= 6 {
+					tag, x, y, w, h, name := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+					if tag == "SCREEN" {
 						id := fmt.Sprintf("monitor:%s:%s:%s:%s", x, y, w, h)
 						if x == "0" && y == "0" {
 							id = "desktop"
@@ -89,22 +80,10 @@ func ListWindows() []WindowInfo {
 							ID:    id,
 							Title: "🖥️  " + name,
 						})
-					}
-				} else if parts[0] == "ALL" {
-					sub := strings.Split(parts[1], "|")
-					if len(sub) >= 5 {
+					} else if tag == "ALL" {
 						screenTargets = append(screenTargets, WindowInfo{
 							ID:    "desktop",
-							Title: "🖥️  " + sub[4],
-						})
-					}
-				} else if parts[0] == "WIN" {
-					title := parts[1]
-					if !seen[title] && !strings.EqualFold(title, "Program Manager") {
-						seen[title] = true
-						winTargets = append(winTargets, WindowInfo{
-							ID:    "title=" + title,
-							Title: "🪟  " + title,
+							Title: "🖥️  " + name,
 						})
 					}
 				}
@@ -112,9 +91,6 @@ func ListWindows() []WindowInfo {
 
 			if len(screenTargets) > 0 {
 				targets = screenTargets
-			}
-			if len(winTargets) > 0 {
-				targets = append(targets, winTargets...)
 			}
 		}
 	}
