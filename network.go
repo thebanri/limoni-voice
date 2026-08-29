@@ -1946,22 +1946,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	}
 	assignedTCPPort := tcpLn.Addr().(*net.TCPAddr).Port
 
-	// 2. Start MPV connecting to tcp://127.0.0.1:assignedTCPPort
-	session, err := screenshare.StartReceiving(context.Background(), assignedTCPPort, opt)
-	if err != nil {
-		_ = tcpLn.Close()
-		return err
-	}
-
-	n.mu.Lock()
-	n.receiverSession = session
-	n.videoTCPListener = tcpLn
-	n.IsWatchingScreen = true
-	n.mu.Unlock()
-
-	n.log("🎬 Canli ekran yayini izleyici penceresi acildi (HD 60 FPS).")
-
-	// 3. Accept incoming TCP connection from MPV in background
+	// 2. Start accepting incoming TCP connection from MPV in background immediately
 	go func() {
 		conn, err := tcpLn.Accept()
 		if err != nil {
@@ -1975,6 +1960,21 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		}
 		n.mu.Unlock()
 	}()
+
+	// 3. Start MPV connecting to tcp://127.0.0.1:assignedTCPPort
+	session, err := screenshare.StartReceiving(context.Background(), assignedTCPPort, opt)
+	if err != nil {
+		_ = tcpLn.Close()
+		return err
+	}
+
+	n.mu.Lock()
+	n.receiverSession = session
+	n.videoTCPListener = tcpLn
+	n.IsWatchingScreen = true
+	n.mu.Unlock()
+
+	n.log("🎬 Canli ekran yayini izleyici penceresi acildi (HD 60 FPS).")
 
 	// 4. Monitor receiver session lifecycle
 	go func() {
