@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -40,7 +41,7 @@ type WindowInfo struct {
 // ListWindows returns active shareable screen and monitor targets
 func ListWindows() []WindowInfo {
 	targets := []WindowInfo{
-		{ID: "desktop", Title: "🖥️  Ekran 1 (Ana Ekran - Spotify, Oyunlar ve Tum Uygulamalar)"},
+		{ID: "desktop", Title: "🖥️  Ekran 1 (Ana Ekran - Tam Gorunum)"},
 	}
 
 	if runtime.GOOS == "windows" {
@@ -56,22 +57,31 @@ func ListWindows() []WindowInfo {
 		if ($screens.Count -gt 1) {
 			"ALL|0|0|0|0|Tum Ekranlar (Genisletilmis Masaustu)"
 		}
+		Get-Process | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object {
+			"WIN|$($_.MainWindowHandle)|$($_.MainWindowTitle)"
+		}
 		`
 		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 		out, err := cmd.Output()
 		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
 			lines := strings.Split(string(out), "\n")
 			var screenTargets []WindowInfo
+			var winTargets []WindowInfo
+			seen := make(map[string]bool)
 
 			for _, line := range lines {
 				trimmed := strings.TrimSpace(line)
 				if trimmed == "" {
 					continue
 				}
-				parts := strings.Split(trimmed, "|")
-				if len(parts) >= 6 {
-					tag, x, y, w, h, name := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
-					if tag == "SCREEN" {
+				parts := strings.SplitN(trimmed, "|", 2)
+				if len(parts) < 2 {
+					continue
+				}
+				if parts[0] == "SCREEN" {
+					sub := strings.Split(parts[1], "|")
+					if len(sub) >= 5 {
+						x, y, w, h, name := sub[0], sub[1], sub[2], sub[3], sub[4]
 						id := fmt.Sprintf("monitor:%s:%s:%s:%s", x, y, w, h)
 						if x == "0" && y == "0" {
 							id = "desktop"
@@ -80,17 +90,36 @@ func ListWindows() []WindowInfo {
 							ID:    id,
 							Title: "🖥️  " + name,
 						})
-					} else if tag == "ALL" {
+					}
+				} else if parts[0] == "ALL" {
+					sub := strings.Split(parts[1], "|")
+					if len(sub) >= 5 {
 						screenTargets = append(screenTargets, WindowInfo{
 							ID:    "desktop",
-							Title: "🖥️  " + name,
+							Title: "🖥️  " + sub[4],
 						})
+					}
+				} else if parts[0] == "WIN" {
+					winSub := strings.SplitN(parts[1], "|", 2)
+					if len(winSub) >= 2 {
+						handle := winSub[0]
+						title := winSub[1]
+						if !seen[title] && !strings.EqualFold(title, "Program Manager") {
+							seen[title] = true
+							winTargets = append(winTargets, WindowInfo{
+								ID:    fmt.Sprintf("hwnd:%s:%s", handle, title),
+								Title: "🪟  " + title,
+							})
+						}
 					}
 				}
 			}
 
 			if len(screenTargets) > 0 {
 				targets = screenTargets
+			}
+			if len(winTargets) > 0 {
+				targets = append(targets, winTargets...)
 			}
 		}
 	}
@@ -358,6 +387,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	var binPath string
 	var args []string
+	var targetHwnd uintptr
 
 	switch runtime.GOOS {
 	case "linux":
@@ -416,56 +446,86 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		binPath = p
 		scaleOpt := "scale=min(1920\\,trunc(iw/2)*2):-2,format=yuv420p"
 
-		inputArgs := []string{
-			"-fflags", "nobuffer+flush_packets",
-			"-thread_queue_size", "2",
-			"-probesize", "32",
-			"-analyzeduration", "0",
-			"-f", "gdigrab",
-			"-framerate", fmt.Sprintf("%d", opt.FPS),
-			"-draw_mouse", "1",
+		if strings.HasPrefix(opt.WindowID, "hwnd:") {
+			parts := strings.SplitN(strings.TrimPrefix(opt.WindowID, "hwnd:"), ":", 2)
+			if len(parts) > 0 {
+				parsed, _ := strconv.ParseUint(parts[0], 10, 64)
+				targetHwnd = uintptr(parsed)
+			}
 		}
 
-		if strings.HasPrefix(opt.WindowID, "title=") {
-			// Capture exact application window (e.g. Spotify, Discord, Chrome, VSCode)
-			inputArgs = append(inputArgs, "-i", opt.WindowID)
-		} else if strings.HasPrefix(opt.WindowID, "monitor:") {
-			// Format: monitor:X:Y:WIDTH:HEIGHT
-			mParts := strings.Split(opt.WindowID, ":")
-			if len(mParts) >= 5 && (mParts[1] != "0" || mParts[2] != "0") {
-				inputArgs = append(inputArgs,
-					"-offset_x", mParts[1],
-					"-offset_y", mParts[2],
-					"-video_size", fmt.Sprintf("%sx%s", mParts[3], mParts[4]),
-					"-i", "desktop",
-				)
+		if targetHwnd != 0 {
+			w, h := GetWindowDimensions(targetHwnd)
+			args = []string{
+				"-fflags", "nobuffer+flush_packets",
+				"-f", "rawvideo",
+				"-pixel_format", "bgra",
+				"-video_size", fmt.Sprintf("%dx%d", w, h),
+				"-framerate", fmt.Sprintf("%d", opt.FPS),
+				"-i", "pipe:0",
+				"-vf", scaleOpt,
+				"-c:v", "libx264",
+				"-preset", "ultrafast",
+				"-tune", "zerolatency",
+				"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "20",
+				"-b:v", "6M",
+				"-maxrate", "8M",
+				"-bufsize", "2M",
+				"-pix_fmt", "yuv420p",
+				"-g", "15",
+				"-bf", "0",
+				"-bsf:v", "dump_extra",
+				"-f", "mpegts",
+				"-mpegts_flags", "+latm+pat_pmt_at_frames",
+				targetURL,
+			}
+		} else {
+			inputArgs := []string{
+				"-fflags", "nobuffer+flush_packets",
+				"-thread_queue_size", "2",
+				"-probesize", "32",
+				"-analyzeduration", "0",
+				"-f", "gdigrab",
+				"-framerate", fmt.Sprintf("%d", opt.FPS),
+				"-draw_mouse", "1",
+			}
+
+			if strings.HasPrefix(opt.WindowID, "monitor:") {
+				mParts := strings.Split(opt.WindowID, ":")
+				if len(mParts) >= 5 && (mParts[1] != "0" || mParts[2] != "0") {
+					inputArgs = append(inputArgs,
+						"-offset_x", mParts[1],
+						"-offset_y", mParts[2],
+						"-video_size", fmt.Sprintf("%sx%s", mParts[3], mParts[4]),
+						"-i", "desktop",
+					)
+				} else {
+					inputArgs = append(inputArgs, "-i", "desktop")
+				}
 			} else {
 				inputArgs = append(inputArgs, "-i", "desktop")
 			}
-		} else if opt.WindowID != "" && opt.WindowID != "portal" && opt.WindowID != "desktop" {
-			inputArgs = append(inputArgs, "-i", fmt.Sprintf("title=%s", opt.WindowID))
-		} else {
-			inputArgs = append(inputArgs, "-i", "desktop")
-		}
 
-		args = append(inputArgs,
-			"-vf", scaleOpt,
-			"-c:v", "libx264",
-			"-preset", "ultrafast",
-			"-tune", "zerolatency",
-			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-			"-crf", "20",
-			"-b:v", "6M",
-			"-maxrate", "8M",
-			"-bufsize", "2M",
-			"-pix_fmt", "yuv420p",
-			"-g", "15",
-			"-bf", "0",
-			"-bsf:v", "dump_extra",
-			"-f", "mpegts",
-			"-mpegts_flags", "+latm+pat_pmt_at_frames",
-			targetURL,
-		)
+			args = append(inputArgs,
+				"-vf", scaleOpt,
+				"-c:v", "libx264",
+				"-preset", "ultrafast",
+				"-tune", "zerolatency",
+				"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "20",
+				"-b:v", "6M",
+				"-maxrate", "8M",
+				"-bufsize", "2M",
+				"-pix_fmt", "yuv420p",
+				"-g", "15",
+				"-bf", "0",
+				"-bsf:v", "dump_extra",
+				"-f", "mpegts",
+				"-mpegts_flags", "+latm+pat_pmt_at_frames",
+				targetURL,
+			)
+		}
 
 	case "darwin":
 		p, err := FindExecutable("ffmpeg")
@@ -500,6 +560,16 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	setupProcessGroup(cmd)
 
+	var stdinPipe io.WriteCloser
+	if targetHwnd != 0 {
+		var err error
+		stdinPipe, err = cmd.StdinPipe()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to open stdin pipe for window capture: %w", err)
+		}
+	}
+
 	var stdoutPipe io.ReadCloser
 	if usePipe {
 		var err error
@@ -529,6 +599,10 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to start screen broadcaster (%s): %w", binPath, err)
+	}
+
+	if targetHwnd != 0 && stdinPipe != nil {
+		go StreamWindowFrames(sessionCtx, targetHwnd, opt.FPS, stdinPipe)
 	}
 
 	go s.monitor()
