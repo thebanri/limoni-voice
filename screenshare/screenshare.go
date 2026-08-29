@@ -56,39 +56,65 @@ func ListWindows() []WindowInfo {
 			}
 			"ALL|0|0|0|0|Tum Ekranlar (Genisletilmis Masaustu)"
 		}
+		Get-Process | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object {
+			"WIN|$($_.MainWindowTitle)"
+		}
 		`
 		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 		out, err := cmd.Output()
 		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
 			lines := strings.Split(string(out), "\n")
-			var newTargets []WindowInfo
+			var screenTargets []WindowInfo
+			var winTargets []WindowInfo
+			seen := make(map[string]bool)
+
 			for _, line := range lines {
 				trimmed := strings.TrimSpace(line)
 				if trimmed == "" {
 					continue
 				}
-				parts := strings.Split(trimmed, "|")
-				if len(parts) >= 6 {
-					tag, x, y, w, h, name := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
-					if tag == "SCREEN" {
+				parts := strings.SplitN(trimmed, "|", 2)
+				if len(parts) < 2 {
+					continue
+				}
+				if parts[0] == "SCREEN" {
+					sub := strings.Split(parts[1], "|")
+					if len(sub) >= 5 {
+						x, y, w, h, name := sub[0], sub[1], sub[2], sub[3], sub[4]
 						id := fmt.Sprintf("monitor:%s:%s:%s:%s", x, y, w, h)
 						if x == "0" && y == "0" {
 							id = "desktop"
 						}
-						newTargets = append(newTargets, WindowInfo{
+						screenTargets = append(screenTargets, WindowInfo{
 							ID:    id,
 							Title: "🖥️  " + name,
 						})
-					} else if tag == "ALL" {
-						newTargets = append(newTargets, WindowInfo{
+					}
+				} else if parts[0] == "ALL" {
+					sub := strings.Split(parts[1], "|")
+					if len(sub) >= 5 {
+						screenTargets = append(screenTargets, WindowInfo{
 							ID:    "desktop",
-							Title: "🖥️  " + name,
+							Title: "🖥️  " + sub[4],
+						})
+					}
+				} else if parts[0] == "WIN" {
+					title := parts[1]
+					if !seen[title] && !strings.EqualFold(title, "Program Manager") {
+						seen[title] = true
+						winTargets = append(winTargets, WindowInfo{
+							ID:    "title=" + title,
+							Title: "🪟  " + title,
 						})
 					}
 				}
 			}
-			if len(newTargets) > 0 {
-				targets = newTargets
+
+			if len(screenTargets) > 0 {
+				targets = screenTargets
+			}
+			if len(winTargets) > 0 {
+				targets = append(targets, winTargets...)
 			}
 		}
 	}
@@ -424,7 +450,10 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-draw_mouse", "1",
 		}
 
-		if strings.HasPrefix(opt.WindowID, "monitor:") {
+		if strings.HasPrefix(opt.WindowID, "title=") {
+			// Capture exact application window (e.g. Spotify, Discord, Chrome, VSCode)
+			inputArgs = append(inputArgs, "-i", opt.WindowID)
+		} else if strings.HasPrefix(opt.WindowID, "monitor:") {
 			// Format: monitor:X:Y:WIDTH:HEIGHT
 			mParts := strings.Split(opt.WindowID, ":")
 			if len(mParts) >= 5 && (mParts[1] != "0" || mParts[2] != "0") {
@@ -437,6 +466,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			} else {
 				inputArgs = append(inputArgs, "-i", "desktop")
 			}
+		} else if opt.WindowID != "" && opt.WindowID != "portal" && opt.WindowID != "desktop" {
+			inputArgs = append(inputArgs, "-i", fmt.Sprintf("title=%s", opt.WindowID))
 		} else {
 			inputArgs = append(inputArgs, "-i", "desktop")
 		}
