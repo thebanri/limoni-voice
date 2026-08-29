@@ -15,11 +15,22 @@ import (
 )
 
 func findAudioTool(names ...string) string {
+	home := os.Getenv("HOME")
 	searchPaths := []string{
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
+		"/opt/local/bin",
 		"/usr/bin",
 		"/bin",
+	}
+	if home != "" {
+		searchPaths = append(searchPaths,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, "bin"),
+			filepath.Join(home, "go", "bin"),
+			filepath.Join(home, "homebrew", "bin"),
+			filepath.Join(home, ".homebrew", "bin"),
+		)
 	}
 	if p, err := os.Executable(); err == nil {
 		searchPaths = append([]string{filepath.Dir(p)}, searchPaths...)
@@ -644,20 +655,20 @@ func (a *AudioEngine) startPlayback() {
 		return
 	}
 
-	// 2. Try macOS specific audio playback (ffplay, mpv, sox/play)
+	// 2. Try macOS specific audio playback (mpv, sox/play, ffplay)
 	if runtime.GOOS == "darwin" {
 		var darwinCmds []*exec.Cmd
-		if p := findAudioTool("ffplay"); p != "" {
-			darwinCmds = append(darwinCmds, exec.Command(p, "-loglevel", "quiet", "-nodisp", "-f", "s16le", "-ar", "16000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay", "-i", "pipe:0"))
-		}
 		if p := findAudioTool("mpv"); p != "" {
 			darwinCmds = append(darwinCmds, exec.Command(p, "--really-quiet", "--no-video", "--idle=yes", "--keep-open=yes", "--profile=low-latency", "--untimed", "--cache=no", "--no-cache", "--demuxer=rawaudio", "--demuxer-rawaudio-rate=16000", "--demuxer-rawaudio-channels=1", "--demuxer-rawaudio-format=s16le", "-"))
 		}
 		if p := findAudioTool("play"); p != "" {
-			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"))
+			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-t", "raw", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-"))
 		}
 		if p := findAudioTool("sox"); p != "" {
-			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-", "-d"))
+			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-t", "raw", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-", "-d"))
+		}
+		if p := findAudioTool("ffplay"); p != "" {
+			darwinCmds = append(darwinCmds, exec.Command(p, "-loglevel", "quiet", "-nodisp", "-f", "s16le", "-ar", "16000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay", "-i", "pipe:0"))
 		}
 
 		for _, cmd := range darwinCmds {
