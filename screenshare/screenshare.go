@@ -40,24 +40,53 @@ type WindowInfo struct {
 // ListWindows returns active shareable targets (monitors / windows)
 func ListWindows() []WindowInfo {
 	targets := []WindowInfo{
-		{ID: "desktop", Title: "🖥️  Tum Ekran (Masaustu)"},
+		{ID: "desktop", Title: "🖥️  Tum Masaustu (Tum Ekranlar)"},
 	}
 
 	if runtime.GOOS == "windows" {
-		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-			"Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -ExpandProperty MainWindowTitle")
+		psScript := `
+		Add-Type -AssemblyName System.Windows.Forms
+		[System.Windows.Forms.Screen]::AllScreens | ForEach-Object -Begin {$idx=1} -Process {
+			$p = if ($_.Primary) {" (Ana Ekran)"} else {""}
+			"SCREEN|$($_.Bounds.X)|$($_.Bounds.Y)|$($_.Bounds.Width)|$($_.Bounds.Height)|Monitor $idx$p ($($_.Bounds.Width)x$($_.Bounds.Height))"
+			$idx++
+		}
+		Get-Process | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object {
+			"WIN|$($_.MainWindowTitle)"
+		}
+		`
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 		out, err := cmd.Output()
 		if err == nil {
 			lines := strings.Split(string(out), "\n")
 			seen := make(map[string]bool)
 			for _, line := range lines {
 				trimmed := strings.TrimSpace(line)
-				if trimmed != "" && !seen[trimmed] && !strings.EqualFold(trimmed, "Program Manager") {
-					seen[trimmed] = true
-					targets = append(targets, WindowInfo{
-						ID:    trimmed,
-						Title: "🪟  " + trimmed,
-					})
+				if trimmed == "" {
+					continue
+				}
+				parts := strings.SplitN(trimmed, "|", 2)
+				if len(parts) < 2 {
+					continue
+				}
+				if parts[0] == "SCREEN" {
+					screenParts := strings.Split(parts[1], "|")
+					if len(screenParts) >= 5 {
+						x, y, w, h, name := screenParts[0], screenParts[1], screenParts[2], screenParts[3], screenParts[4]
+						targets = append(targets, WindowInfo{
+							ID:    fmt.Sprintf("monitor:%s:%s:%s:%s", x, y, w, h),
+							Title: "🖥️  " + name,
+						})
+					}
+				} else if parts[0] == "WIN" {
+					title := parts[1]
+					if !seen[title] && !strings.EqualFold(title, "Program Manager") {
+						seen[title] = true
+						targets = append(targets, WindowInfo{
+							ID:    "title=" + title,
+							Title: "🪟  " + title,
+						})
+					}
 				}
 			}
 		}
@@ -384,12 +413,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		binPath = p
 		scaleOpt := "scale=min(1920\\,trunc(iw/2)*2):-2,format=yuv420p"
 
-		inputTarget := "desktop"
-		if opt.WindowID != "" && opt.WindowID != "portal" && opt.WindowID != "desktop" {
-			inputTarget = fmt.Sprintf("title=%s", opt.WindowID)
-		}
-
-		args = []string{
+		inputArgs := []string{
 			"-fflags", "nobuffer+flush_packets",
 			"-thread_queue_size", "2",
 			"-probesize", "32",
@@ -397,7 +421,30 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-f", "gdigrab",
 			"-framerate", fmt.Sprintf("%d", opt.FPS),
 			"-draw_mouse", "1",
-			"-i", inputTarget,
+		}
+
+		if strings.HasPrefix(opt.WindowID, "monitor:") {
+			// Format: monitor:X:Y:WIDTH:HEIGHT
+			mParts := strings.Split(opt.WindowID, ":")
+			if len(mParts) >= 5 {
+				inputArgs = append(inputArgs,
+					"-offset_x", mParts[1],
+					"-offset_y", mParts[2],
+					"-video_size", fmt.Sprintf("%sx%s", mParts[3], mParts[4]),
+					"-i", "desktop",
+				)
+			} else {
+				inputArgs = append(inputArgs, "-i", "desktop")
+			}
+		} else if strings.HasPrefix(opt.WindowID, "title=") {
+			inputArgs = append(inputArgs, "-i", opt.WindowID)
+		} else if opt.WindowID != "" && opt.WindowID != "portal" && opt.WindowID != "desktop" {
+			inputArgs = append(inputArgs, "-i", fmt.Sprintf("title=%s", opt.WindowID))
+		} else {
+			inputArgs = append(inputArgs, "-i", "desktop")
+		}
+
+		args = append(inputArgs,
 			"-vf", scaleOpt,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
@@ -414,7 +461,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-f", "mpegts",
 			"-mpegts_flags", "+latm+pat_pmt_at_frames",
 			targetURL,
-		}
+		)
 
 	case "darwin":
 		p, err := FindExecutable("ffmpeg")
