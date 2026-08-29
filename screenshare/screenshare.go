@@ -47,13 +47,13 @@ func ListWindows() []WindowInfo {
 		psScript := `
 		Add-Type -AssemblyName System.Windows.Forms
 		$screens = [System.Windows.Forms.Screen]::AllScreens
+		$idx = 1
+		foreach ($s in $screens) {
+			$p = if ($s.Primary) {" (Ana Ekran)"} else {""}
+			"SCREEN|$($s.Bounds.X)|$($s.Bounds.Y)|$($s.Bounds.Width)|$($s.Bounds.Height)|Ekran $idx$p ($($s.Bounds.Width)x$($s.Bounds.Height))"
+			$idx++
+		}
 		if ($screens.Count -gt 1) {
-			$idx = 1
-			foreach ($s in $screens) {
-				$p = if ($s.Primary) {" (Ana Ekran)"} else {""}
-				"SCREEN|$($s.Bounds.X)|$($s.Bounds.Y)|$($s.Bounds.Width)|$($s.Bounds.Height)|Ekran $idx$p ($($s.Bounds.Width)x$($s.Bounds.Height))"
-				$idx++
-			}
 			"ALL|0|0|0|0|Tum Ekranlar (Genisletilmis Masaustu)"
 		}
 		`
