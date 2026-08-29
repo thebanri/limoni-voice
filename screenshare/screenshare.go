@@ -1,6 +1,7 @@
 package screenshare
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,11 +42,11 @@ func DefaultBroadcastOptions() BroadcastOptions {
 	}
 }
 
-// ReceiverOptions defines configuration for the video stream receiver
+// ReceiverOptions defines configuration for the video player
 type ReceiverOptions struct {
-	WindowTitle    string // Title for the playback window if applicable
-	KeepAspect     bool
-	CustomMpvFlags []string
+	WindowTitle    string   // e.g. "Limoni Voice - User Stream"
+	KeepAspect     bool     // preserve aspect ratio
+	CustomMpvFlags []string // additional mpv flags
 }
 
 // DefaultReceiverOptions returns ultra-low-latency receiver defaults
@@ -68,6 +69,7 @@ type Session struct {
 	targetURL string
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
+	stderrBuf *bytes.Buffer
 	mu        sync.Mutex
 }
 
@@ -340,7 +342,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 
 	case "windows":
-		// Windows DXGI Desktop Duplication API via FFmpeg ddagrab
+		// Windows desktop capture via FFmpeg gdigrab (100% reliable across all GPUs, laptops, and multi-monitor setups)
 		p, err := FindExecutable("ffmpeg")
 		if err != nil {
 			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya PowerShell'de 'winget install Gyan.FFmpeg' calistirin.")
@@ -348,8 +350,10 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		binPath = p
 		scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution)
 		args = []string{
-			"-f", "lavfi",
-			"-i", fmt.Sprintf("ddagrab=framerate=%d:draw_mouse=1", opt.FPS),
+			"-f", "gdigrab",
+			"-framerate", fmt.Sprintf("%d", opt.FPS),
+			"-draw_mouse", "1",
+			"-i", "desktop",
 			"-vf", scaleOpt,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
@@ -411,7 +415,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	} else {
 		cmd.Stdout = nil
 	}
-	cmd.Stderr = nil
+	stderrBuf := &bytes.Buffer{}
+	cmd.Stderr = stderrBuf
 
 	s := &Session{
 		cmd:       cmd,
@@ -422,6 +427,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		isBroad:   true,
 		targetURL: targetURL,
 		stdout:    stdoutPipe,
+		stderrBuf: stderrBuf,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -496,7 +502,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	cmd.Stdout = nil
-	cmd.Stderr = nil
+	stderrBuf := &bytes.Buffer{}
+	cmd.Stderr = stderrBuf
 	setupProcessGroup(cmd)
 
 	s := &Session{
@@ -507,6 +514,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		doneCh:    make(chan struct{}),
 		isBroad:   false,
 		targetURL: streamURL,
+		stderrBuf: stderrBuf,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -526,6 +534,9 @@ func (s *Session) monitor() {
 	s.mu.Unlock()
 
 	if err != nil && s.ctx.Err() == nil {
+		if s.stderrBuf != nil && s.stderrBuf.Len() > 0 {
+			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(s.stderrBuf.String()))
+		}
 		s.errCh <- err
 	}
 	close(s.doneCh)
