@@ -36,6 +36,11 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS
 echo "==> Building Windows ARM64 (.exe)..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/windows-arm64/limoni-voice.exe .
 
+echo "==> Building Windows Setup Installer (.exe)..."
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_amd64.exe ./cmd/installer
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup.exe ./cmd/installer
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_arm64.exe ./cmd/installer
+
 # 4. Compile macOS (Darwin) Apple Silicon (ARM64) & Intel (AMD64)
 echo "==> Building macOS Apple Silicon (ARM64)..."
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/darwin-arm64/limoni-voice .
