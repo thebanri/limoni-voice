@@ -67,7 +67,7 @@ type Session struct {
 	mu        sync.Mutex
 }
 
-// FindExecutable searches for a binary in PATH, next to current executable, in ~/.limoni-voice/bin/, and common Windows paths
+// FindExecutable searches for a binary in PATH, next to current executable, in ~/.limoni-voice/bin/, WinGet, Scoop, and common Windows paths
 func FindExecutable(name string) (string, error) {
 	// 1. Check system PATH
 	if p, err := exec.LookPath(name); err == nil {
@@ -81,25 +81,45 @@ func FindExecutable(name string) (string, error) {
 
 	searchDirs := []string{}
 
-	// 2. Next to running executable
+	// 2. Current working directory & ./bin
+	if cwd, err := os.Getwd(); err == nil {
+		searchDirs = append(searchDirs, cwd, filepath.Join(cwd, "bin"), filepath.Join(cwd, "tools"))
+	}
+
+	// 3. Next to running executable & exe/bin
 	if execPath, err := os.Executable(); err == nil {
-		searchDirs = append(searchDirs, filepath.Dir(execPath))
+		execDir := filepath.Dir(execPath)
+		searchDirs = append(searchDirs, execDir, filepath.Join(execDir, "bin"), filepath.Join(execDir, "tools"))
 	}
 
-	// 3. User app cache directory (~/.limoni-voice/bin)
+	// 4. User home directory, AppData, Scoop, WinGet
 	if home, err := os.UserHomeDir(); err == nil {
-		searchDirs = append(searchDirs, filepath.Join(home, ".limoni-voice", "bin"))
-		searchDirs = append(searchDirs, filepath.Join(home, "AppData", "Local", "limoni-voice", "bin"))
+		searchDirs = append(searchDirs,
+			filepath.Join(home, ".limoni-voice", "bin"),
+			filepath.Join(home, "AppData", "Local", "limoni-voice", "bin"),
+			filepath.Join(home, "scoop", "shims"),
+			filepath.Join(home, "scoop", "apps", "ffmpeg", "current", "bin"),
+			filepath.Join(home, "scoop", "apps", "mpv", "current"),
+			filepath.Join(home, "AppData", "Local", "Microsoft", "WinGet", "Links"),
+			filepath.Join(home, "Downloads"),
+			filepath.Join(home, "Desktop"),
+		)
 	}
 
-	// 4. Common Windows installer directories
+	// 5. Common Windows installer directories
 	if runtime.GOOS == "windows" {
 		searchDirs = append(searchDirs,
 			`C:\ffmpeg\bin`,
-			`C:\ProgramData\chocolatey\bin`,
+			`C:\ffmpeg`,
+			`C:\mpv`,
 			`C:\Program Files\mpv`,
 			`C:\Program Files (x86)\mpv`,
+			`C:\Program Files\FFmpeg\bin`,
+			`C:\Program Files (x86)\FFmpeg\bin`,
+			`C:\ProgramData\chocolatey\bin`,
+			`C:\ProgramData\chocolatey\lib\mpv\tools`,
 			`C:\tools\ffmpeg\bin`,
+			`C:\tools\mpv`,
 		)
 	}
 
@@ -210,7 +230,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		// Windows DXGI Desktop Duplication API via FFmpeg ddagrab
 		p, err := FindExecutable("ffmpeg")
 		if err != nil {
-			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya sistem PATH'ine ekleyin.")
+			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya PowerShell'de 'winget install Gyan.FFmpeg' calistirin.")
 		}
 		binPath = p
 		scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution)
@@ -338,7 +358,10 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-i", streamURL,
 		}
 	} else {
-		return nil, errors.New("ekrani izlemek icin sistemde 'mpv' veya 'ffplay' (ffmpeg) bulunamadi")
+		if runtime.GOOS == "windows" {
+			return nil, errors.New("ekran izlemek icin 'mpv.exe' veya 'ffplay.exe' bulunamadi. Lutfen 'mpv.exe'yi uygulamanin yanina koyun veya PowerShell'de 'winget install mpv.mpv' calistirin.")
+		}
+		return nil, errors.New("ekrani izlemek icin sistemde 'mpv' veya 'ffplay' (ffmpeg) bulunamadi. Lutfen 'mpv' yukleyin (ornek: sudo apt install mpv / brew install mpv).")
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
