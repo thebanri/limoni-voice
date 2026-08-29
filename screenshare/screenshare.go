@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,7 +66,17 @@ type Session struct {
 	stopped   bool
 	isBroad   bool
 	targetURL string
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
 	mu        sync.Mutex
+}
+
+func (s *Session) Stdin() io.WriteCloser {
+	return s.stdin
+}
+
+func (s *Session) Stdout() io.ReadCloser {
+	return s.stdout
 }
 
 var execCache sync.Map
@@ -257,12 +268,13 @@ func CheckDependencies() DependencyStatus {
 	return status
 }
 
-// StartBroadcasting starts hardware-accelerated screen capture and streams over UDP
+// StartBroadcasting starts hardware-accelerated screen capture and streams over pipe or UDP
 func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...BroadcastOptions) (*Session, error) {
 	if targetIP == "" {
-		return nil, errors.New("target IP cannot be empty")
+		return nil, errors.New("target IP cannot be empty (use '-' for pipe)")
 	}
-	if port <= 0 || port > 65535 {
+	usePipe := (targetIP == "-")
+	if !usePipe && (port <= 0 || port > 65535) {
 		return nil, fmt.Errorf("invalid port: %d", port)
 	}
 
@@ -271,7 +283,10 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		opt = opts[0]
 	}
 
-	targetURL := fmt.Sprintf("udp://%s:%d?pkt_size=1316", targetIP, port)
+	targetURL := "-"
+	if !usePipe {
+		targetURL = fmt.Sprintf("udp://%s:%d?pkt_size=1316", targetIP, port)
+	}
 
 	var binPath string
 	var args []string
@@ -385,6 +400,19 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	setupProcessGroup(cmd)
 
+	var stdoutPipe io.ReadCloser
+	if usePipe {
+		var err error
+		stdoutPipe, err = cmd.StdoutPipe()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to open stdout pipe: %w", err)
+		}
+	} else {
+		cmd.Stdout = nil
+	}
+	cmd.Stderr = nil
+
 	s := &Session{
 		cmd:       cmd,
 		ctx:       sessionCtx,
@@ -393,6 +421,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		doneCh:    make(chan struct{}),
 		isBroad:   true,
 		targetURL: targetURL,
+		stdout:    stdoutPipe,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -404,7 +433,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	return s, nil
 }
 
-// StartReceiving launches a high-performance native video window (mpv or ffplay fallback) with zero-latency flags
+// StartReceiving launches a high-performance native video window (mpv or ffplay fallback) with direct stdin pipe
 func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Session, error) {
 	if port <= 0 || port > 65535 {
 		return nil, fmt.Errorf("invalid receiver port: %d", port)
@@ -420,15 +449,13 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		windowTitle = "Limoni Voice - Canli Ekran Yayini (HD 60 FPS)"
 	}
 
-	streamURL := fmt.Sprintf("udp://127.0.0.1:%d?reuse=1&pkt_size=1316&buffer_size=2097152", port)
-
 	var binPath string
 	var args []string
 
 	if p, err := FindExecutable("mpv"); err == nil {
 		binPath = p
 		args = []string{
-			streamURL,
+			"-",
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
@@ -439,9 +466,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--framedrop=decoder+vo",
 			"--demuxer-lavf-format=mpegts",
 			"--demuxer-lavf-o=fflags=nobuffer+flush_packets",
-			"--force-window=yes",
-			"--idle=yes",
-			"--keep-open=yes",
+			"--demuxer-lavf-analyzeduration=0.5",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
 		}
@@ -457,7 +482,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-analyzeduration", "0",
 			"-window_title", windowTitle,
 			"-autoexit",
-			"-i", streamURL,
+			"-i", "-",
 		}
 	} else {
 		if runtime.GOOS == "windows" {
@@ -468,6 +493,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to open stdin pipe: %w", err)
+	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	setupProcessGroup(cmd)
@@ -479,7 +509,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		errCh:     make(chan error, 1),
 		doneCh:    make(chan struct{}),
 		isBroad:   false,
-		targetURL: streamURL,
+		targetURL: "stdin",
+		stdin:     stdinPipe,
 	}
 
 	if err := cmd.Start(); err != nil {
