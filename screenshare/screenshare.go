@@ -255,8 +255,12 @@ func FindExecutable(name string) (string, error) {
 			os.Getenv("ProgramData"),
 		}
 
-		// Fixed common install folders
+		// Fixed common install folders and LimoniVoice local bin
 		searchDirs = append(searchDirs,
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "LimoniVoice", "bin"),
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "LimoniVoice"),
+			filepath.Join(os.Getenv("APPDATA"), "LimoniVoice", "bin"),
+			filepath.Join(os.Getenv("APPDATA"), "LimoniVoice"),
 			sysDrive+`\ffmpeg\bin`,
 			sysDrive+`\ffmpeg`,
 			sysDrive+`\mpv`,
