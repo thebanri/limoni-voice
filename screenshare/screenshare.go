@@ -382,7 +382,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya PowerShell'de 'winget install Gyan.FFmpeg' calistirin.")
 		}
 		binPath = p
-		scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution)
+		scaleOpt := "scale=min(1920\\,trunc(iw/2)*2):-2,format=yuv420p"
 
 		inputTarget := "desktop"
 		if opt.WindowID != "" && opt.WindowID != "portal" && opt.WindowID != "desktop" {
