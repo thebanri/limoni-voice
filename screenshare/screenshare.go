@@ -444,7 +444,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya PowerShell'de 'winget install Gyan.FFmpeg' calistirin.")
 		}
 		binPath = p
-		scaleOpt := "scale=1920:-2:flags=bicubic,format=yuv420p"
+		scaleOpt := "scale=min(1920\\,trunc(iw/2)*2):trunc(ih/2)*2:flags=bicubic,format=yuv420p"
 
 		if strings.HasPrefix(opt.WindowID, "hwnd:") {
 			parts := strings.SplitN(strings.TrimPrefix(opt.WindowID, "hwnd:"), ":", 2)
@@ -467,13 +467,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "20",
+				"-x264-params", "repeat-headers=1:keyint=60:min-keyint=60:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "22",
 				"-b:v", "6M",
-				"-maxrate", "8M",
-				"-bufsize", "2M",
+				"-maxrate", "6M",
+				"-bufsize", "6M",
 				"-pix_fmt", "yuv420p",
-				"-g", "15",
+				"-g", "60",
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
@@ -512,13 +512,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "20",
+				"-x264-params", "repeat-headers=1:keyint=60:min-keyint=60:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "22",
 				"-b:v", "6M",
-				"-maxrate", "8M",
-				"-bufsize", "2M",
+				"-maxrate", "6M",
+				"-bufsize", "6M",
 				"-pix_fmt", "yuv420p",
-				"-g", "15",
+				"-g", "60",
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
