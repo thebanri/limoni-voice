@@ -85,19 +85,15 @@ type winBITMAPINFO struct {
 // GetWindowDimensions returns width and height for a given window handle in physical pixels
 func GetWindowDimensions(hwnd uintptr) (int, int) {
 	var r winRECT
-	// Try DWM extended frame bounds first for exact physical window size
-	ret, _, _ := procDwmGetWindowAttribute.Call(
-		hwnd,
-		uintptr(DWMWA_EXTENDED_FRAME_BOUNDS),
-		uintptr(unsafe.Pointer(&r)),
-		uintptr(unsafe.Sizeof(r)),
-	)
-	if ret != 0 {
+	ret, _, _ := procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ret == 0 || r.Right <= 0 || r.Bottom <= 0 {
 		procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+		r.Right = r.Right - r.Left
+		r.Bottom = r.Bottom - r.Top
 	}
 
-	w := int(r.Right - r.Left)
-	h := int(r.Bottom - r.Top)
+	w := int(r.Right)
+	h := int(r.Bottom)
 	if w <= 100 || h <= 100 {
 		return 1280, 720
 	}
