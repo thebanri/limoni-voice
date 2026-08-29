@@ -1,6 +1,12 @@
-# Limoni Voice (P2P Terminal Voice Call)
+<p align="center">
+  <img src="assets/logo.png" alt="Limoni Voice Logo" width="220" />
+</p>
 
-Limoni TUI motorunun 3D Vektör çizim yetenekleri, Braille Canvas'ı ve çift tamponlu sıfır-tahsisatlı rendering mimarisi ile inşa edilmiş Terminal Tabanlı Peer-to-Peer (P2P) Sesli Arama uygulaması.
+<h1 align="center">Limoni Voice</h1>
+<p align="center">
+  <b>Terminal Tabanlı Sıfır-Gecikmeli P2P Şifreli Sesli Konuşma & Ekran Paylaşımı</b><br>
+  <i>Built with Limoni TUI & Go</i>
+</p>
 
 ---
 

@@ -16,6 +16,9 @@ import (
 //go:embed microphone.obj
 var embeddedMicrophoneObj []byte
 
+//go:embed icon.ico
+var embeddedIconIco []byte
+
 const (
 	FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
 	REPO_URL   = "https://github.com/thebanri/limoni-voice"
@@ -49,7 +52,14 @@ func main() {
 		_ = os.WriteFile(targetMicObj, embeddedMicrophoneObj, 0644)
 	}
 
-	// 2. Install limoni-voice.exe
+	// 2. Extract embedded icon.ico
+	targetIconIco := filepath.Join(installDir, "icon.ico")
+	if len(embeddedIconIco) > 0 {
+		fmt.Println("[+] Uygulama ikonu cikariliyor (icon.ico)...")
+		_ = os.WriteFile(targetIconIco, embeddedIconIco, 0644)
+	}
+
+	// 3. Install limoni-voice.exe
 	targetVoiceExe := filepath.Join(installDir, "limoni-voice.exe")
 	currDirExe := filepath.Join(".", "limoni-voice.exe")
 	if fileExists(currDirExe) {
@@ -64,7 +74,7 @@ func main() {
 		}
 	}
 
-	// 3. Install FFmpeg
+	// 4. Install FFmpeg
 	targetFfmpeg := filepath.Join(binDir, "ffmpeg.exe")
 	if !fileExists(targetFfmpeg) && !commandExists("ffmpeg.exe") {
 		fmt.Println("[*] FFmpeg indiriliyor ve kuruluyor (Ekran paylasimi icin)...")
@@ -78,7 +88,7 @@ func main() {
 		fmt.Println("[✓] FFmpeg zaten mevcut.")
 	}
 
-	// 4. Install MPV
+	// 5. Install MPV
 	targetMpv := filepath.Join(binDir, "mpv.exe")
 	if !fileExists(targetMpv) && !commandExists("mpv.exe") {
 		fmt.Println("[*] MPV Player kontrol ediliyor (Yayin izleme icin)...")
@@ -94,7 +104,7 @@ func main() {
 		fmt.Println("[✓] MPV Player zaten mevcut.")
 	}
 
-	// 5. Update PATH
+	// 6. Update PATH
 	fmt.Println("[*] Sistem PATH degiskeni guncelleniyor...")
 	psPathScript := fmt.Sprintf(`
 		$binDir = '%s'
@@ -105,7 +115,7 @@ func main() {
 	`, binDir)
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psPathScript).Run()
 
-	// 6. Create Desktop Shortcut
+	// 7. Create Desktop Shortcut with Icon
 	fmt.Println("[*] Masaustu kisayolu olusturuluyor...")
 	desktopDir := filepath.Join(os.Getenv("USERPROFILE"), "Desktop")
 	shortcutPath := filepath.Join(desktopDir, "Limoni Voice.lnk")
@@ -114,9 +124,10 @@ func main() {
 		$shortcut = $wscript.CreateShortcut('%s')
 		$shortcut.TargetPath = '%s'
 		$shortcut.WorkingDirectory = '%s'
+		$shortcut.IconLocation = '%s,0'
 		$shortcut.Description = 'Limoni Voice - P2P Encrypted Voice & Screen Sharing'
 		$shortcut.Save()
-	`, shortcutPath, targetVoiceExe, installDir)
+	`, shortcutPath, targetVoiceExe, installDir, targetIconIco)
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psShortcutScript).Run()
 
 	fmt.Println()
@@ -125,6 +136,7 @@ func main() {
 	fmt.Println("==================================================")
 	fmt.Printf("[✓] Limoni Voice: %s\n", targetVoiceExe)
 	fmt.Printf("[✓] 3D Model: %s\n", targetMicObj)
+	fmt.Printf("[✓] Uygulama Ikonu: %s\n", targetIconIco)
 	fmt.Printf("[✓] Masaustu Kisayolu: %s\n", shortcutPath)
 	fmt.Println()
 	fmt.Println("Uygulamayi baslatmak icin 'ENTER' tusuna basin...")

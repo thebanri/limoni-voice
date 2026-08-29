@@ -1,0 +1,57 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": [
+        "icon.png"
+      ]
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "com.thebanri.limonivoice",
+          "version": "1.1.0.0"
+        },
+        "description": "Limoni Voice - P2P Encrypted Voice & Screen Sharing",
+        "minimum-os": "win7",
+        "execution-level": "as invoker",
+        "ui-access": false,
+        "auto-elevate": false,
+        "dpi-awareness": "system",
+        "disable-theming": false,
+        "disable-window-filtering": false,
+        "high-resolution-scrolling-aware": true,
+        "ultra-high-resolution-scrolling-aware": true,
+        "long-path-aware": true,
+        "printer-driver-isolation": false,
+        "gdi-scaling": false,
+        "segment-heap": false,
+        "use-common-controls-v6": true
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "1.1.0.0",
+          "product_version": "1.1.0.0"
+        },
+        "info": {
+          "0409": {
+            "Comments": "Limoni Voice - P2P Encrypted Voice & Screen Sharing",
+            "CompanyName": "TheBanri",
+            "FileDescription": "Limoni Voice",
+            "FileVersion": "1.1.0.0",
+            "InternalName": "limoni-voice",
+            "LegalCopyright": "Copyright (c) 2026 TheBanri",
+            "OriginalFilename": "limoni-voice.exe",
+            "ProductName": "Limoni Voice",
+            "ProductVersion": "1.1.0.0"
+          }
+        }
+      }
+    }
+  }
+}
