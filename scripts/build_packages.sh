@@ -11,6 +11,7 @@ echo "=========================================="
 echo " Building Limoni Voice ${VERSION} (${RAW_VERSION})"
 echo "=========================================="
 
+rm -rf release_assets dist
 mkdir -p release_assets
 mkdir -p dist/linux-amd64 dist/linux-arm64
 mkdir -p dist/windows-amd64 dist/windows-arm64
@@ -37,6 +38,7 @@ echo "==> Building Windows ARM64 (.exe)..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/windows-arm64/limoni-voice.exe .
 
 echo "==> Building Windows Setup Installer (.exe)..."
+cp microphone.obj cmd/installer/microphone.obj
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_amd64.exe ./cmd/installer
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup.exe ./cmd/installer
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_arm64.exe ./cmd/installer
@@ -158,22 +160,8 @@ tar -czf "release_assets/limoni-voice_${VERSION}_darwin_arm64.tar.gz" -C dist/pk
 cp dist/darwin-amd64/limoni-voice README.md LICENSE microphone.obj dist/pkg-darwin-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_amd64.tar.gz" -C dist/pkg-darwin-amd64 .
 
-# 8. Package Windows Standalone EXEs & Zips
-echo "==> Packaging Windows Binaries..."
-cp dist/windows-amd64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_amd64.exe"
-cp dist/windows-arm64/limoni-voice.exe "release_assets/limoni-voice_${VERSION}_windows_arm64.exe"
-
-mkdir -p dist/pkg-windows-amd64 dist/pkg-windows-arm64
-cp dist/windows-amd64/limoni-voice.exe README.md LICENSE microphone.obj scripts/install-windows.ps1 dist/pkg-windows-amd64/
-if command -v zip >/dev/null 2>&1; then
-  zip -j "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
-  cp dist/windows-arm64/limoni-voice.exe README.md LICENSE microphone.obj scripts/install-windows.ps1 dist/pkg-windows-arm64/
-  zip -j "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
-elif command -v 7z >/dev/null 2>&1; then
-  7z a -tzip "release_assets/limoni-voice_${VERSION}_windows_amd64.zip" dist/pkg-windows-amd64/*
-  cp dist/windows-arm64/limoni-voice.exe README.md LICENSE microphone.obj scripts/install-windows.ps1 dist/pkg-windows-arm64/
-  7z a -tzip "release_assets/limoni-voice_${VERSION}_windows_arm64.zip" dist/pkg-windows-arm64/*
-fi
+# 8. Windows Packaging (Setup Installer Only)
+echo "==> Windows Setup Installer packaged into release_assets/Limoni-Voice-Setup.exe"
 
 # 9. Build Debian Packages (.deb)
 build_deb() {

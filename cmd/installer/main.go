@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	_ "embed"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,9 +13,11 @@ import (
 	"time"
 )
 
+//go:embed microphone.obj
+var embeddedMicrophoneObj []byte
+
 const (
 	FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
-	MPV_URL    = "https://github.com/zhongfly/mpv-winbuild/releases/download/2026-08-27-1241/mpv-x86_64-v3-20260827-git-129a8e3.7z"
 	REPO_URL   = "https://github.com/thebanri/limoni-voice"
 )
 
@@ -39,7 +42,14 @@ func main() {
 
 	fmt.Printf("[*] Hedef Kurulum Dizini: %s\n\n", installDir)
 
-	// 1. Install limoni-voice.exe
+	// 1. Extract embedded microphone.obj (3D visualizer model)
+	targetMicObj := filepath.Join(installDir, "microphone.obj")
+	if len(embeddedMicrophoneObj) > 0 {
+		fmt.Println("[+] 3D Mikrofon modeli cikariliyor (microphone.obj)...")
+		_ = os.WriteFile(targetMicObj, embeddedMicrophoneObj, 0644)
+	}
+
+	// 2. Install limoni-voice.exe
 	targetVoiceExe := filepath.Join(installDir, "limoni-voice.exe")
 	currDirExe := filepath.Join(".", "limoni-voice.exe")
 	if fileExists(currDirExe) {
@@ -48,13 +58,13 @@ func main() {
 	} else {
 		// Download latest release binary
 		fmt.Println("[*] limoni-voice.exe GitHub Releases uzerinden indiriliyor...")
-		downloadURL := REPO_URL + "/releases/latest/download/limoni-voice_v1.1.0_windows_amd64.exe"
+		downloadURL := REPO_URL + "/releases/latest/download/limoni-voice_windows_amd64.exe"
 		if err := downloadFileWithProgress(downloadURL, targetVoiceExe, "Limoni Voice"); err != nil {
 			fmt.Printf("[-] limoni-voice.exe indirilemedi: %v\n", err)
 		}
 	}
 
-	// 2. Install FFmpeg
+	// 3. Install FFmpeg
 	targetFfmpeg := filepath.Join(binDir, "ffmpeg.exe")
 	if !fileExists(targetFfmpeg) && !commandExists("ffmpeg.exe") {
 		fmt.Println("[*] FFmpeg indiriliyor ve kuruluyor (Ekran paylasimi icin)...")
@@ -68,11 +78,10 @@ func main() {
 		fmt.Println("[✓] FFmpeg zaten mevcut.")
 	}
 
-	// 3. Install MPV
+	// 4. Install MPV
 	targetMpv := filepath.Join(binDir, "mpv.exe")
 	if !fileExists(targetMpv) && !commandExists("mpv.exe") {
 		fmt.Println("[*] MPV Player kontrol ediliyor (Yayin izleme icin)...")
-		// Try winget first
 		cmd := exec.Command("winget", "install", "mpv.mpv", "--accept-source-agreements", "--accept-package-agreements")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -85,7 +94,7 @@ func main() {
 		fmt.Println("[✓] MPV Player zaten mevcut.")
 	}
 
-	// 4. Update PATH
+	// 5. Update PATH
 	fmt.Println("[*] Sistem PATH degiskeni guncelleniyor...")
 	psPathScript := fmt.Sprintf(`
 		$binDir = '%s'
@@ -96,7 +105,7 @@ func main() {
 	`, binDir)
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psPathScript).Run()
 
-	// 5. Create Desktop Shortcut
+	// 6. Create Desktop Shortcut
 	fmt.Println("[*] Masaustu kisayolu olusturuluyor...")
 	desktopDir := filepath.Join(os.Getenv("USERPROFILE"), "Desktop")
 	shortcutPath := filepath.Join(desktopDir, "Limoni Voice.lnk")
@@ -115,6 +124,7 @@ func main() {
 	fmt.Println("   🎉  KURULUM BASARIYLA TAMAMLANDI!              ")
 	fmt.Println("==================================================")
 	fmt.Printf("[✓] Limoni Voice: %s\n", targetVoiceExe)
+	fmt.Printf("[✓] 3D Model: %s\n", targetMicObj)
 	fmt.Printf("[✓] Masaustu Kisayolu: %s\n", shortcutPath)
 	fmt.Println()
 	fmt.Println("Uygulamayi baslatmak icin 'ENTER' tusuna basin...")
