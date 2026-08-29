@@ -14,13 +14,14 @@ import (
 )
 
 type RoomView struct {
-	StartTime       time.Time
-	ToastMsg        string
-	ToastTimer      int
-	Logs            []string
-	OnLeave         func()
-	OnOpenTestModal func()
-	LastStageArea   cell.Rect
+	StartTime              time.Time
+	ToastMsg               string
+	ToastTimer             int
+	Logs                   []string
+	OnLeave                func()
+	OnOpenTestModal        func()
+	OnOpenScreenShareModal func()
+	LastStageArea          cell.Rect
 }
 
 func NewRoomView() *RoomView {
@@ -926,13 +927,17 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			if node.IsSharingScreen {
 				_ = node.StopScreenShare()
 				r.SetToast("Ekran paylasimi durduruldu")
+			} else if r.OnOpenScreenShareModal != nil {
+				r.OnOpenScreenShareModal()
 			} else {
-				err := node.StartScreenShare("", 50100)
-				if err != nil {
-					r.SetToast(fmt.Sprintf("Hata: %v", err))
-				} else {
-					r.SetToast("Ekran paylasimi baslatildi (60 FPS)")
-				}
+				go func() {
+					err := node.StartScreenShare("", 50100)
+					if err != nil {
+						r.SetToast(fmt.Sprintf("Hata: %v", err))
+					} else {
+						r.SetToast("Ekran paylasimi baslatildi (60 FPS)")
+					}
+				}()
 			}
 		})
 	}

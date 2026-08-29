@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -58,9 +59,13 @@ func main() {
 	showTestModal := false
 	showLeaveModal := false
 	showExitModal := false
+	showScreenShareModal := false
+	var screenShareTargets []screenshare.WindowInfo
+	selectedScreenShareIdx := 0
 
 	exitDialogAnim := animation.NewFloat(0.0)
 	leaveDialogAnim := animation.NewFloat(0.0)
+	screenShareDialogAnim := animation.NewFloat(0.0)
 
 	openTestModal := func() {
 		audio.EnterTestMode()
@@ -94,6 +99,54 @@ func main() {
 		leaveDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
 		t.FocusManager().SetFocused("")
 		t.ForceFullRedraw()
+	}
+
+	closeScreenShareModal := func() {
+		screenShareDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
+		t.ForceFullRedraw()
+	}
+
+	startSelectedScreenShare := func(target screenshare.WindowInfo) {
+		closeScreenShareModal()
+		room.SetToast(fmt.Sprintf("🎬 %s yayini baslatiliyor...", target.Title))
+		go func() {
+			opts := screenshare.DefaultBroadcastOptions()
+			opts.WindowID = target.ID
+			err := node.StartScreenShare("", 50100, opts)
+			if err != nil {
+				room.SetToast(fmt.Sprintf("Hata: %v", err))
+			} else {
+				room.SetToast(fmt.Sprintf("%s paylasimi baslatildi (60 FPS)", target.Title))
+			}
+		}()
+	}
+
+	openScreenShareModal := func() {
+		if node.IsSharingScreen {
+			go func() {
+				_ = node.StopScreenShare()
+				room.SetToast("Ekran paylasimi durduruldu")
+			}()
+			return
+		}
+
+		if runtime.GOOS == "windows" {
+			screenShareTargets = screenshare.ListWindows()
+			selectedScreenShareIdx = 0
+			showScreenShareModal = true
+			screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
+		} else {
+			// On Linux / macOS start directly with native system portal picker
+			room.SetToast("🎬 Ekran paylasimi baslatiliyor...")
+			go func() {
+				err := node.StartScreenShare("", 50100)
+				if err != nil {
+					room.SetToast(fmt.Sprintf("Hata: %v", err))
+				} else {
+					room.SetToast("Ekran paylasimi baslatildi (60 FPS)")
+				}
+			}()
+		}
 	}
 
 	node.OnLog = func(msg string) {
@@ -320,6 +373,28 @@ func main() {
 					continue
 				}
 
+				if showScreenShareModal {
+					switch e.Type {
+					case backend.KeyEsc:
+						closeScreenShareModal()
+					case backend.KeyArrowUp:
+						if selectedScreenShareIdx > 0 {
+							selectedScreenShareIdx--
+						}
+					case backend.KeyArrowDown:
+						if selectedScreenShareIdx < len(screenShareTargets)-1 {
+							selectedScreenShareIdx++
+						}
+					case backend.KeyEnter, backend.KeySpace:
+						if selectedScreenShareIdx >= 0 && selectedScreenShareIdx < len(screenShareTargets) {
+							startSelectedScreenShare(screenShareTargets[selectedScreenShareIdx])
+						} else {
+							closeScreenShareModal()
+						}
+					}
+					continue
+				}
+
 				// Dedicated Global Test Modal Key (F4)
 				if e.Type == backend.KeyF4 {
 					openTestModal()
@@ -473,22 +548,7 @@ func main() {
 							}
 
 						case 'v', 'V':
-							if node.IsSharingScreen {
-								go func() {
-									_ = node.StopScreenShare()
-									room.SetToast("Ekran paylasimi durduruldu")
-								}()
-							} else {
-								room.SetToast("🎬 Ekran paylasimi baslatiliyor...")
-								go func() {
-									err := node.StartScreenShare("", 50100)
-									if err != nil {
-										room.SetToast(fmt.Sprintf("Hata: %v", err))
-									} else {
-										room.SetToast("Ekran paylasimi baslatildi (1080p 60 FPS)")
-									}
-								}()
-							}
+							openScreenShareModal()
 
 						case 'w', 'W':
 							if node.IsWatchingScreen {
@@ -581,6 +641,7 @@ func main() {
 
 			exitDialogAnim.Update(now)
 			leaveDialogAnim.Update(now)
+			screenShareDialogAnim.Update(now)
 
 			exitProg := exitDialogAnim.Value()
 			if exitProg <= 0.001 && !exitDialogAnim.IsAnimating() {
@@ -590,6 +651,11 @@ func main() {
 			leaveProg := leaveDialogAnim.Value()
 			if leaveProg <= 0.001 && !leaveDialogAnim.IsAnimating() {
 				showLeaveModal = false
+			}
+
+			screenShareProg := screenShareDialogAnim.Value()
+			if screenShareProg <= 0.001 && !screenShareDialogAnim.IsAnimating() {
+				showScreenShareModal = false
 			}
 
 			if currentScreen == ScreenLobby {
@@ -623,6 +689,7 @@ func main() {
 					openLeaveModal()
 				}
 				room.OnOpenTestModal = openTestModal
+				room.OnOpenScreenShareModal = openScreenShareModal
 				room.Update()
 				_ = t.Draw(func(f *terminal.Frame) {
 					room.Render(f, f.Area(), node, audio)
@@ -634,6 +701,12 @@ func main() {
 							leaveRoom()
 						}, func() {
 							closeLeaveModal()
+						})
+					} else if showScreenShareModal || screenShareProg > 0.001 {
+						DrawScreenShareModal(f, f.Area(), screenShareProg, selectedScreenShareIdx, screenShareTargets, func(target screenshare.WindowInfo) {
+							startSelectedScreenShare(target)
+						}, func() {
+							closeScreenShareModal()
 						})
 					}
 				})

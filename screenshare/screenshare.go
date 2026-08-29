@@ -27,8 +27,42 @@ type BroadcastOptions struct {
 	Resolution string // e.g. "1280x720" or "1920x1080"
 	FPS        int    // e.g. 60 or 30
 	Bitrate    string // e.g. "4M" or "2M"
-	WindowID   string // optional window id or "portal" for Wayland/X11 window picker
+	WindowID   string // optional window id or "portal" for Wayland/X11 window picker, or "desktop"
 	Quality    string // e.g. "medium", "ultra", "fast"
+}
+
+// WindowInfo represents a shareable window or screen target
+type WindowInfo struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// ListWindows returns active shareable targets (monitors / windows)
+func ListWindows() []WindowInfo {
+	targets := []WindowInfo{
+		{ID: "desktop", Title: "🖥️  Tum Ekran (Masaustu)"},
+	}
+
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			"Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -ExpandProperty MainWindowTitle")
+		out, err := cmd.Output()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			seen := make(map[string]bool)
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" && !seen[trimmed] && !strings.EqualFold(trimmed, "Program Manager") {
+					seen[trimmed] = true
+					targets = append(targets, WindowInfo{
+						ID:    trimmed,
+						Title: "🪟  " + trimmed,
+					})
+				}
+			}
+		}
+	}
+	return targets
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -349,16 +383,26 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 		binPath = p
 		scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution)
+
+		inputTarget := "desktop"
+		if opt.WindowID != "" && opt.WindowID != "portal" && opt.WindowID != "desktop" {
+			inputTarget = fmt.Sprintf("title=%s", opt.WindowID)
+		}
+
 		args = []string{
+			"-fflags", "nobuffer+flush_packets",
+			"-thread_queue_size", "2",
+			"-probesize", "32",
+			"-analyzeduration", "0",
 			"-f", "gdigrab",
 			"-framerate", fmt.Sprintf("%d", opt.FPS),
 			"-draw_mouse", "1",
-			"-i", "desktop",
+			"-i", inputTarget,
 			"-vf", scaleOpt,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0",
+			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
 			"-crf", "20",
 			"-b:v", "6M",
 			"-maxrate", "8M",
@@ -379,6 +423,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 		binPath = p
 		args = []string{
+			"-fflags", "nobuffer+flush_packets",
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
 			"-framerate", fmt.Sprintf("%d", opt.FPS),
@@ -387,7 +432,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0",
+			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
 			"-g", "15",
 			"-bf", "0",
 			"-bsf:v", "dump_extra",
@@ -473,6 +518,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--hwdec=auto-safe",
 			"--video-sync=desync",
 			"--framedrop=decoder+vo",
+			"--demuxer-readahead-secs=0",
+			"--demuxer-max-bytes=100K",
+			"--demuxer-max-back-bytes=0",
 			"--demuxer-lavf-format=mpegts",
 			"--demuxer-lavf-o=fflags=nobuffer+flush_packets",
 			"--title=" + windowTitle,

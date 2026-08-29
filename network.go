@@ -1758,7 +1758,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 }
 
 // StartScreenShare starts capturing screen via ffmpeg/gpu-screen-recorder and streams MPEG-TS chunks over Internet E2EE
-func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
+func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts ...screenshare.BroadcastOptions) error {
 	n.mu.Lock()
 	if !n.IsConnected {
 		n.mu.Unlock()
@@ -1782,6 +1782,9 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int) error {
 	localAssignedPort := captureConn.LocalAddr().(*net.UDPAddr).Port
 
 	opts := screenshare.DefaultBroadcastOptions()
+	if len(customOpts) > 0 {
+		opts = customOpts[0]
+	}
 	session, err := screenshare.StartBroadcasting(context.Background(), "127.0.0.1", localAssignedPort, opts)
 	if err != nil {
 		_ = captureConn.Close()

@@ -9,6 +9,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 // DrawVerticalLevelMeter renders a sleek multi-column equalizer VU bar
@@ -470,4 +471,87 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 
 	frame.BeginFocusScope("exit_app_dialog")
 	frame.RenderWidget(exitDialog, animatedArea)
+}
+
+// DrawScreenShareModal renders the screen and window selection modal with opening/closing scale animation
+func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, selectedIdx int, targets []screenshare.WindowInfo, onSelect func(target screenshare.WindowInfo), onCancel func()) {
+	if progress <= 0.001 {
+		return
+	}
+
+	modalW, modalH := uint16(56), uint16(14)
+	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
+	animatedArea := terminal.ScaleRect(modalArea, progress)
+
+	if animatedArea.Width < 6 || animatedArea.Height < 4 {
+		return
+	}
+
+	frame.RegisterModal("screenshare_select_dialog", animatedArea, onCancel)
+
+	// Draw dialog backdrop and block
+	block := widgets.Block{
+		Title:       " 📺 EKRAN VEYA PENCERE SECIN ",
+		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
+		BorderStyle: cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Modifier: cell.ModifierBold},
+	}
+	frame.RenderWidget(block, animatedArea)
+
+	inner := cell.Rect{
+		X:      animatedArea.X + 1,
+		Y:      animatedArea.Y + 1,
+		Width:  animatedArea.Width - 2,
+		Height: animatedArea.Height - 2,
+	}
+	if inner.Height < 2 || inner.Width < 2 {
+		return
+	}
+
+	buf := frame.Buffer
+	headerText := "Paylasmak istediginiz ekrani veya pencereyi secin:"
+	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{Fg: cell.NewColorRGB(150, 160, 180)})
+
+	// List targets
+	listY := inner.Y + 2
+	maxDisplay := int(inner.Height - 3)
+	if maxDisplay < 1 {
+		maxDisplay = 1
+	}
+
+	for i := 0; i < len(targets) && i < maxDisplay; i++ {
+		t := targets[i]
+		rowY := listY + uint16(i)
+		isSel := (i == selectedIdx)
+
+		itemStyle := cell.Style{Fg: cell.NewColorRGB(200, 210, 225), Bg: cell.NewColorRGB(26, 30, 40)}
+		prefix := "  "
+		if isSel {
+			itemStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+				Modifier: cell.ModifierBold,
+			}
+			prefix = "▶ "
+		}
+
+		itemText := fmt.Sprintf("%s%s", prefix, t.Title)
+		if len([]rune(itemText)) > int(inner.Width-2) {
+			itemText = string([]rune(itemText)[:inner.Width-5]) + "..."
+		}
+
+		// Clear row
+		for x := inner.X + 1; x < inner.X+inner.Width-1; x++ {
+			buf.SetCell(x, rowY, cell.Cell{Content: ' ', Style: itemStyle})
+		}
+		buf.SetString(inner.X+1, rowY, itemText, itemStyle)
+
+		targetItem := t
+		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, inner.Width-2, 1), func(_ backend.MouseEvent) {
+			onSelect(targetItem)
+		})
+	}
+
+	// Bottom Cancel Guide
+	guideText := "[ENTER / TIKLA] Sec  [ESC] Iptal"
+	buf.SetString(inner.X+1, inner.Y+inner.Height-1, guideText, cell.Style{Fg: cell.NewColorRGB(120, 130, 150)})
 }
