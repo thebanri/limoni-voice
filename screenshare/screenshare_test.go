@@ -17,15 +17,15 @@ func TestBroadcastOptionsDefaults(t *testing.T) {
 	if opt.FPS != 60 {
 		t.Fatalf("expected 60 fps, got %d", opt.FPS)
 	}
-	if opt.Resolution != "1280x720" {
-		t.Fatalf("expected 1280x720, got %s", opt.Resolution)
+	if opt.Resolution != "1920x1080" {
+		t.Fatalf("expected 1920x1080, got %s", opt.Resolution)
 	}
 }
 
 func TestReceiverOptionsDefaults(t *testing.T) {
 	opt := DefaultReceiverOptions()
-	if opt.VO != "kitty" {
-		t.Fatalf("expected kitty VO, got %s", opt.VO)
+	if opt.WindowTitle == "" {
+		t.Fatal("expected non-empty window title")
 	}
 }
 

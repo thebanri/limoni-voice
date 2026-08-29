@@ -1782,7 +1782,7 @@ func (n *P2PNode) StopScreenShare() error {
 	return nil
 }
 
-// StartWatchingScreen launches native Go Kitty receiver with FFmpeg to view a peer's stream directly inside the Stage Block
+// StartWatchingScreen launches native hardware-accelerated video receiver (mpv/ffplay) to view a peer's stream in full 60 FPS HD
 func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
@@ -1804,7 +1804,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		opt = screenshare.DefaultReceiverOptions()
 	}
 
-	session, err := screenshare.StartNativeKittyReceiver(context.Background(), port, opt)
+	session, err := screenshare.StartReceiving(context.Background(), port, opt)
 	if err != nil {
 		return err
 	}
@@ -1813,14 +1813,14 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	n.receiverSession = session
 	n.IsWatchingScreen = true
 	n.mu.Unlock()
-	n.log(fmt.Sprintf("🎬 Native Kitty 60 FPS canli yayin izleyici baslatildi (Port: %d).", port))
+	n.log(fmt.Sprintf("🎬 Canli ekran yayini izleyici penceresi acildi (Port: %d).", port))
 
 	go func() {
 		select {
 		case err := <-session.Err():
 			n.log(fmt.Sprintf("⚠️ Ekran izleyici kapandi/hata: %v", err))
 		case <-session.Done():
-			n.log("ℹ️ Ekran izleyici oturumu kapandi.")
+			n.log("ℹ️ Ekran izleyici penceresi kapandi.")
 		}
 		n.mu.Lock()
 		n.IsWatchingScreen = false

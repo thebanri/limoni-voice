@@ -11,6 +11,7 @@ import (
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 type AppScreen int
@@ -501,12 +502,14 @@ func main() {
 									if port <= 0 {
 										port = 50100
 									}
-									opts := CalculateStageVideoBounds(room.LastStageArea)
+									opts := screenshare.ReceiverOptions{
+										WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
+									}
 									err := node.StartWatchingScreen(port, opts)
 									if err != nil {
 										room.SetToast(fmt.Sprintf("Hata: %v", err))
 									} else {
-										room.SetToast(fmt.Sprintf("%s yayini acildi (Kitty 60 FPS)", streamingPeer.Nickname))
+										room.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
 									}
 								} else {
 									room.SetToast("Odada su an ekran paylasan kimse yok")

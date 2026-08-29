@@ -31,32 +31,26 @@ type BroadcastOptions struct {
 // DefaultBroadcastOptions returns sensible low-latency defaults
 func DefaultBroadcastOptions() BroadcastOptions {
 	return BroadcastOptions{
-		Resolution: "1280x720",
+		Resolution: "1920x1080",
 		FPS:        60,
-		Bitrate:    "3M",
+		Bitrate:    "6M",
 		WindowID:   "portal",
-		Quality:    "medium",
+		Quality:    "high",
 	}
 }
 
-// ReceiverOptions defines configuration for the Kitty mpv receiver
+// ReceiverOptions defines configuration for the video stream receiver
 type ReceiverOptions struct {
-	VO             string // e.g. "kitty" (default) or "gpu" / "tct"
 	WindowTitle    string // Title for the playback window if applicable
 	KeepAspect     bool
-	Left           int    // 1-based character column offset inside terminal
-	Top            int    // 1-based character row offset inside terminal
-	Cols           int    // Width in terminal character columns
-	Rows           int    // Height in terminal character rows
-	Geometry       string // e.g. "65%x80%+33%+12%"
 	CustomMpvFlags []string
 }
 
-// DefaultReceiverOptions returns ultra-low-latency Kitty receiver defaults
+// DefaultReceiverOptions returns ultra-low-latency receiver defaults
 func DefaultReceiverOptions() ReceiverOptions {
 	return ReceiverOptions{
-		VO:         "kitty",
-		KeepAspect: true,
+		WindowTitle: "Limoni Voice - Canli Ekran Yayini (HD 60 FPS)",
+		KeepAspect:  true,
 	}
 }
 
@@ -124,17 +118,20 @@ func FindExecutable(name string) (string, error) {
 // CheckDependencies checks for required tools based on current OS and roles
 func CheckDependencies() DependencyStatus {
 	_, errMpv := FindExecutable("mpv")
-	_, errGSR := FindExecutable("gpu-screen-recorder")
+	_, errFFplay := FindExecutable("ffplay")
 	_, errFFmpeg := FindExecutable("ffmpeg")
+	_, errGSR := FindExecutable("gpu-screen-recorder")
+
+	hasReceiver := errMpv == nil || errFFplay == nil
 
 	status := DependencyStatus{
-		HasMPV:               errMpv == nil,
-		HasGPUScreenRecorder: errGSR == nil,
+		HasMPV:               hasReceiver,
 		HasFFmpeg:            errFFmpeg == nil,
+		HasGPUScreenRecorder: errGSR == nil,
 	}
 
-	if !status.HasMPV {
-		status.MissingRecommended = "mpv (ekran izlemek icin gereklidir)"
+	if !hasReceiver {
+		status.MissingRecommended = "mpv veya ffmpeg (ekran izlemek icin gereklidir)"
 	} else if runtime.GOOS == "linux" && !status.HasGPUScreenRecorder && !status.HasFFmpeg {
 		status.MissingRecommended = "gpu-screen-recorder veya ffmpeg (ekran paylasmak icin gereklidir)"
 	} else if runtime.GOOS == "windows" && !status.HasFFmpeg {
@@ -283,15 +280,10 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	return s, nil
 }
 
-// StartReceiving launches mpv configured with Kitty graphics protocol and zero-latency flags
+// StartReceiving launches a high-performance native video window (mpv or ffplay fallback) with zero-latency flags
 func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Session, error) {
 	if port <= 0 || port > 65535 {
 		return nil, fmt.Errorf("invalid receiver port: %d", port)
-	}
-
-	mpvPath, err := FindExecutable("mpv")
-	if err != nil {
-		return nil, errors.New("'mpv' bulunamadi. Lutfen 'mpv' uygulamasini yukleyin veya 'mpv.exe'yi uygulamanin yanina koyun.")
 	}
 
 	opt := DefaultReceiverOptions()
@@ -299,57 +291,60 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		opt = opts[0]
 	}
 
-	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?reuse=1&pkt_size=1316&buffer_size=65536", port)
-
-	args := []string{
-		streamURL,
-		"--really-quiet",
-		"--no-audio",
-		"--vo=kitty,gpu,x11",
-		"--vo-kitty-use-shm=yes",
-		"--vo-kitty-alt-screen=no",
-		"--vo-kitty-config-clear=no",
-		"--demuxer-lavf-format=mpegts",
-		"--demuxer-lavf-analyzeduration=0",
-		"--demuxer-lavf-probesize=32",
-		"--demuxer-lavf-o=fflags=nobuffer+flush_packets",
-		"--profile=low-latency",
-		"--untimed=yes",
-		"--cache=no",
-		"--no-cache",
-		"--video-sync=desync",
-		"--vd-lavc-threads=1",
-		"--framedrop=decoder+vo",
-		"--idle=yes",
+	windowTitle := opt.WindowTitle
+	if windowTitle == "" {
+		windowTitle = "Limoni Voice - Canli Ekran Yayini (HD 60 FPS)"
 	}
 
-	if opt.Cols > 0 && opt.Rows > 0 {
-		targetW := opt.Cols * 10
-		targetH := opt.Rows * 20
-		args = append(args, fmt.Sprintf("--vf=scale=%d:%d:force_original_aspect_ratio=decrease", targetW, targetH))
-	}
+	streamURL := fmt.Sprintf("udp://0.0.0.0:%d?reuse=1&pkt_size=1316&buffer_size=1048576", port)
 
-	if opt.Left > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-left=%d", opt.Left))
-	}
-	if opt.Top > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-top=%d", opt.Top))
-	}
-	if opt.Cols > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-cols=%d", opt.Cols))
-	}
-	if opt.Rows > 0 {
-		args = append(args, fmt.Sprintf("--vo-kitty-rows=%d", opt.Rows))
-	}
+	var binPath string
+	var args []string
 
-	if len(opt.CustomMpvFlags) > 0 {
-		args = append(args, opt.CustomMpvFlags...)
+	if p, err := FindExecutable("mpv"); err == nil {
+		binPath = p
+		args = []string{
+			streamURL,
+			"--really-quiet",
+			"--no-audio",
+			"--profile=low-latency",
+			"--untimed=yes",
+			"--cache=no",
+			"--no-cache",
+			"--video-sync=desync",
+			"--vd-lavc-threads=1",
+			"--framedrop=decoder+vo",
+			"--demuxer-lavf-format=mpegts",
+			"--demuxer-lavf-analyzeduration=0",
+			"--demuxer-lavf-probesize=32",
+			"--demuxer-lavf-o=fflags=nobuffer+flush_packets",
+			"--title=" + windowTitle,
+			"--autofit=65%x65%",
+			"--keep-open=no",
+		}
+		if len(opt.CustomMpvFlags) > 0 {
+			args = append(args, opt.CustomMpvFlags...)
+		}
+	} else if p, err := FindExecutable("ffplay"); err == nil {
+		binPath = p
+		args = []string{
+			"-loglevel", "quiet",
+			"-flags", "low_delay",
+			"-fflags", "nobuffer+fastseek+flush_packets",
+			"-analyzeduration", "0",
+			"-probesize", "32",
+			"-window_title", windowTitle,
+			"-autoexit",
+			"-i", streamURL,
+		}
+	} else {
+		return nil, errors.New("ekrani izlemek icin sistemde 'mpv' veya 'ffplay' (ffmpeg) bulunamadi")
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(sessionCtx, mpvPath, args...)
-	cmd.Stdout = os.Stdout // Direct kitty pixel stream to terminal stage
-	cmd.Stderr = nil       // Suppress ffmpeg decoding noise from corrupting TUI
+	cmd := exec.CommandContext(sessionCtx, binPath, args...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	setupProcessGroup(cmd)
 
 	s := &Session{
@@ -364,7 +359,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to start mpv screen receiver: %w", err)
+		return nil, fmt.Errorf("failed to start screen receiver (%s): %w", binPath, err)
 	}
 
 	go s.monitor()
@@ -384,7 +379,7 @@ func (s *Session) monitor() {
 	close(s.doneCh)
 }
 
-// Stop terminates the subprocess and cleans up terminal graphics
+// Stop terminates the subprocess
 func (s *Session) Stop() error {
 	s.mu.Lock()
 	if s.stopped {
@@ -395,9 +390,6 @@ func (s *Session) Stop() error {
 	s.mu.Unlock()
 
 	s.cancel()
-
-	// Clean up Kitty terminal graphics immediately
-	_, _ = os.Stdout.WriteString("\x1b_Ga=d,d=A\x1b\\")
 
 	// Terminate process group instantly in background
 	if s.cmd != nil && s.cmd.Process != nil {

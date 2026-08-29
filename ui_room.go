@@ -374,25 +374,29 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 	buf := frame.Buffer
 
 	r.LastStageArea = inner
+	centerY := inner.Y + inner.Height/2
 
-	// 2. Case: We are watching a peer's stream (Rendered directly inside Stage Block via Kitty Protocol)
+	// 2. Case: We are watching a peer's stream (Active in native HD player window)
 	if node.IsWatchingScreen && streamingPeer != nil {
-		// Fill video cells with cell.RuneImage so Limoni's diff engine skips these cells completely
-		for y := inner.Y + 1; y < inner.Y+inner.Height; y++ {
+		for y := inner.Y; y < inner.Y+inner.Height; y++ {
 			for x := inner.X; x < inner.X+inner.Width; x++ {
-				buf.SetCell(x, y, cell.Cell{Content: cell.RuneImage})
+				buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)}})
 			}
 		}
 
-		topBarText := fmt.Sprintf(" 🎬 %s CANLI YAYINI (60 FPS) ", streamingPeer.Nickname)
-		buf.SetString(inner.X+1, inner.Y, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
+		topBarText := fmt.Sprintf(" 🎬 %s CANLI YAYINI ACILDI (HD 60 FPS) ", streamingPeer.Nickname)
+		buf.SetString(inner.X+2, centerY-3, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 
-		btnText := " [⏹️ Esc / W: Kapat] "
-		btnX := inner.X + inner.Width - uint16(len([]rune(btnText))) - 1
+		msg1 := "📺 Canli yayin yuksek performansli HD video penceresinde acildi."
+		msg2 := "Pencereyi kapatmak icin [W] / [Esc] tusuna basin veya asagidaki butona tiklayin."
+		buf.SetString(inner.X+2, centerY-1, msg1, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+		buf.SetString(inner.X+2, centerY+1, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+
+		btnText := "   ⏹️ [W] YAYIN IZLEMEYI DURDUR (Tikla)   "
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0xFF, 0x9F, 0x43), Modifier: cell.ModifierBold}
-		buf.SetString(btnX, inner.Y, btnText, btnStyle)
+		buf.SetString(inner.X+2, centerY+3, btnText, btnStyle)
 
-		frame.RegisterClickHandler(cell.NewRect(btnX, inner.Y, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+2, centerY+3, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
 			_ = node.StopWatchingScreen()
 			r.SetToast("Ekran izleyici kapatildi")
 		})
@@ -404,11 +408,9 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		}
 	}
 
-	centerY := inner.Y + inner.Height/2
-
 	// 1. Case: Local User is Broadcasting
 	if node.IsSharingScreen {
-		msg1 := "🔴 EKRANIN CANLI YAYINDA (60 FPS - 720p HD)"
+		msg1 := "🔴 EKRANIN CANLI YAYINDA (60 FPS - 1080p Full HD)"
 		msg2 := "Odadaki tum katilimcilar ekranini ultra dusuk gecikmeyle izleyebiliyor."
 		btnText := "   ⏹️ [V] YAYINI DURDUR (Tikla)   "
 
@@ -428,7 +430,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 	// 3. Case: A peer is broadcasting and waiting to be watched
 	if streamingPeer != nil {
 		msg1 := fmt.Sprintf("🔴 %s EKRANINI PAYLASIYOR (60 FPS)", streamingPeer.Nickname)
-		msg2 := "Yayini terminalinde 20ms ultra dusuk gecikmeyle izlemek icin asagidaki butona tikla:"
+		msg2 := "Yayini 20ms ultra dusuk gecikmeyle izlemek icin asagidaki butona tikla:"
 		btnText := fmt.Sprintf("   ► [W] %s YAYININI IZLE (Tikla) 📺   ", streamingPeer.Nickname)
 
 		buf.SetString(inner.X+4, centerY-3, msg1, cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
@@ -442,39 +444,20 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			if port <= 0 {
 				port = 50100
 			}
-			opts := CalculateStageVideoBounds(inner)
+			opts := screenshare.ReceiverOptions{
+				WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
+			}
 			err := node.StartWatchingScreen(port, opts)
 			if err != nil {
 				r.SetToast(fmt.Sprintf("Hata: %v", err))
 			} else {
-				r.SetToast(fmt.Sprintf("%s yayini acildi (Kitty 60 FPS)", streamingPeer.Nickname))
+				r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
 			}
 		})
 		return
 	}
 }
 
-// CalculateStageVideoBounds computes the exact inner cell bounds for embedding player directly inside Stage Block
-func CalculateStageVideoBounds(inner cell.Rect) screenshare.ReceiverOptions {
-	cols := int(inner.Width) - 3
-	rows := int(inner.Height) - 3
-	if cols < 10 {
-		cols = 10
-	}
-	if rows < 4 {
-		rows = 4
-	}
-
-	left := int(inner.X) + 2
-	top := int(inner.Y) + 2
-
-	return screenshare.ReceiverOptions{
-		Left: left,
-		Top:  top,
-		Cols: cols,
-		Rows: rows,
-	}
-}
 
 func DrawHorizontalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isSpeaking, isMuted bool) {
 	if area.Width == 0 || area.Height == 0 {
@@ -741,11 +724,14 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 				if port <= 0 {
 					port = 50100
 				}
-				err := node.StartWatchingScreen(port)
+				opts := screenshare.ReceiverOptions{
+					WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", peer.Nickname),
+				}
+				err := node.StartWatchingScreen(port, opts)
 				if err != nil {
 					r.SetToast(fmt.Sprintf("Hata: %v", err))
 				} else {
-					r.SetToast(fmt.Sprintf("%s yayini acildi (Kitty 60 FPS)", peer.Nickname))
+					r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", peer.Nickname))
 				}
 			}
 		})
@@ -984,11 +970,14 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				if port <= 0 {
 					port = 50100
 				}
-				err := node.StartWatchingScreen(port)
+				opts := screenshare.ReceiverOptions{
+					WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
+				}
+				err := node.StartWatchingScreen(port, opts)
 				if err != nil {
 					r.SetToast(fmt.Sprintf("Hata: %v", err))
 				} else {
-					r.SetToast(fmt.Sprintf("%s yayini acildi (Kitty 60 FPS)", streamingPeer.Nickname))
+					r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
 				}
 			} else {
 				r.SetToast("Odada su an ekran paylasan kimse yok")
