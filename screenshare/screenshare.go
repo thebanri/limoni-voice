@@ -444,7 +444,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya PowerShell'de 'winget install Gyan.FFmpeg' calistirin.")
 		}
 		binPath = p
-		scaleOpt := "scale=min(1920\\,trunc(iw/2)*2):-2,format=yuv420p"
+		scaleOpt := "scale=1920:-2:flags=bicubic,format=yuv420p"
 
 		if strings.HasPrefix(opt.WindowID, "hwnd:") {
 			parts := strings.SplitN(strings.TrimPrefix(opt.WindowID, "hwnd:"), ":", 2)

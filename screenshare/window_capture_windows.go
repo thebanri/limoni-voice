@@ -12,29 +12,55 @@ import (
 )
 
 var (
-	moduser32 = syscall.NewLazyDLL("user32.dll")
-	modgdi32  = syscall.NewLazyDLL("gdi32.dll")
+	moduser32  = syscall.NewLazyDLL("user32.dll")
+	modgdi32   = syscall.NewLazyDLL("gdi32.dll")
+	moddwmapi  = syscall.NewLazyDLL("dwmapi.dll")
 
+	procSetProcessDPIAware     = moduser32.NewProc("SetProcessDPIAware")
 	procGetDC                  = moduser32.NewProc("GetDC")
 	procReleaseDC              = moduser32.NewProc("ReleaseDC")
 	procPrintWindow            = moduser32.NewProc("PrintWindow")
 	procGetWindowRect          = moduser32.NewProc("GetWindowRect")
+	procGetClientRect          = moduser32.NewProc("GetClientRect")
+	procClientToScreen         = moduser32.NewProc("ClientToScreen")
+	procGetCursorInfo          = moduser32.NewProc("GetCursorInfo")
+	procDrawIconEx             = moduser32.NewProc("DrawIconEx")
 	procCreateCompatibleDC     = modgdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = modgdi32.NewProc("CreateCompatibleBitmap")
 	procSelectObject           = modgdi32.NewProc("SelectObject")
 	procDeleteObject           = modgdi32.NewProc("DeleteObject")
 	procDeleteDC               = modgdi32.NewProc("DeleteDC")
 	procGetDIBits              = modgdi32.NewProc("GetDIBits")
+	procDwmGetWindowAttribute  = moddwmapi.NewProc("DwmGetWindowAttribute")
 )
 
 const (
-	PW_RENDERFULLCONTENT = 0x00000002
-	DIB_RGB_COLORS       = 0
-	BI_RGB               = 0
+	PW_RENDERFULLCONTENT        = 0x00000002
+	DIB_RGB_COLORS              = 0
+	BI_RGB                      = 0
+	CURSOR_SHOWING              = 0x00000001
+	DI_NORMAL                   = 0x0003
+	DWMWA_EXTENDED_FRAME_BOUNDS = 9
 )
+
+func init() {
+	// Enable Per-Monitor DPI awareness to avoid virtualized coordinate scaling crops
+	procSetProcessDPIAware.Call()
+}
 
 type winRECT struct {
 	Left, Top, Right, Bottom int32
+}
+
+type winPOINT struct {
+	X, Y int32
+}
+
+type winCURSORINFO struct {
+	CbSize      uint32
+	Flags       uint32
+	HCursor     syscall.Handle
+	PtScreenPos winPOINT
 }
 
 type winBITMAPINFOHEADER struct {
@@ -56,26 +82,33 @@ type winBITMAPINFO struct {
 	BmiColors [1]uint32
 }
 
-// GetWindowDimensions returns width and height for a given window handle
+// GetWindowDimensions returns width and height for a given window handle in physical pixels
 func GetWindowDimensions(hwnd uintptr) (int, int) {
 	var r winRECT
-	ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-	if ret == 0 {
-		return 1280, 720
+	// Try DWM extended frame bounds first for exact physical window size
+	ret, _, _ := procDwmGetWindowAttribute.Call(
+		hwnd,
+		uintptr(DWMWA_EXTENDED_FRAME_BOUNDS),
+		uintptr(unsafe.Pointer(&r)),
+		uintptr(unsafe.Sizeof(r)),
+	)
+	if ret != 0 {
+		procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
 	}
+
 	w := int(r.Right - r.Left)
 	h := int(r.Bottom - r.Top)
 	if w <= 100 || h <= 100 {
 		return 1280, 720
 	}
-	// Force even dimensions
+	// Force even dimensions for H.264 encoder
 	w = (w / 2) * 2
 	h = (h / 2) * 2
 	return w, h
 }
 
-// StreamWindowFrames captures hardware-accelerated window frames via PrintWindow PW_RENDERFULLCONTENT
-// and writes raw BGRA frames directly to the stdin pipe of FFmpeg.
+// StreamWindowFrames captures hardware-accelerated window frames via PrintWindow PW_RENDERFULLCONTENT,
+// draws the live mouse cursor, and writes raw BGRA frames directly to the stdin pipe of FFmpeg.
 func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.WriteCloser) error {
 	defer outPipe.Close()
 
@@ -83,20 +116,7 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 		fps = 60
 	}
 
-	var r winRECT
-	ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-	if ret == 0 {
-		return fmt.Errorf("invalid window handle: 0x%x", hwnd)
-	}
-
-	w := int(r.Right - r.Left)
-	h := int(r.Bottom - r.Top)
-	if w <= 0 || h <= 0 {
-		w, h = 1280, 720
-	}
-	// Force even dimensions for H.264
-	w = (w / 2) * 2
-	h = (h / 2) * 2
+	w, h := GetWindowDimensions(hwnd)
 
 	hdcWindow, _, _ := procGetDC.Call(hwnd)
 	if hdcWindow == 0 {
@@ -135,10 +155,25 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// Capture hardware-accelerated DWM frame
+			// 1. Capture hardware-accelerated DWM frame (Spotify, Discord, Chrome, etc.)
 			procPrintWindow.Call(hwnd, hdcMem, uintptr(PW_RENDERFULLCONTENT))
 
-			// Read bits into memory buffer
+			// 2. Draw live mouse cursor overlay
+			var ci winCURSORINFO
+			ci.CbSize = uint32(unsafe.Sizeof(ci))
+			if ret, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); ret != 0 {
+				if ci.Flags == CURSOR_SHOWING {
+					var pt winPOINT
+					procClientToScreen.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
+					mx := ci.PtScreenPos.X - pt.X
+					my := ci.PtScreenPos.Y - pt.Y
+					if mx >= 0 && mx < int32(w) && my >= 0 && my < int32(h) {
+						procDrawIconEx.Call(hdcMem, uintptr(mx), uintptr(my), uintptr(ci.HCursor), 0, 0, 0, 0, DI_NORMAL)
+					}
+				}
+			}
+
+			// 3. Read bits into memory buffer
 			procGetDIBits.Call(
 				hdcMem,
 				hBitmap,
@@ -149,7 +184,7 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 				DIB_RGB_COLORS,
 			)
 
-			// Write to FFmpeg rawvideo pipe
+			// 4. Write to FFmpeg rawvideo pipe
 			if _, err := outPipe.Write(rawBytes); err != nil {
 				return err
 			}
