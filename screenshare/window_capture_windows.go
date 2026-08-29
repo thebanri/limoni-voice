@@ -95,16 +95,6 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 		h = int(r.Bottom - r.Top)
 	}
 
-	// If Windows is running with DPI scaling (125%, 150%), scale to physical pixels
-	if procWinGetDpiForWindow.Find() == nil {
-		dpi, _, _ := procWinGetDpiForWindow.Call(hwnd)
-		if dpi > 0 && dpi != 96 {
-			scale := float64(dpi) / 96.0
-			w = int(float64(w) * scale)
-			h = int(float64(h) * scale)
-		}
-	}
-
 	if w <= 100 || h <= 100 {
 		return 1280, 720
 	}
