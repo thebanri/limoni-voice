@@ -6,10 +6,23 @@ import CoreVideo
 
 _ = Darwin.signal(SIGPIPE, SIG_IGN)
 
+func writeAll(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Bool {
+    var written = 0
+    while written < count {
+        let n = write(fd, buffer.advanced(by: written), count - written)
+        if n <= 0 {
+            if errno == EINTR { continue }
+            return false
+        }
+        written += n
+    }
+    return true
+}
+
 @available(macOS 12.3, *)
 class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var stream: SCStream?
-    let stdoutHandle = FileHandle.standardOutput
+    var isRunning = false
 
     func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil) async {
         do {
@@ -34,13 +47,14 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
             config.pixelFormat = kCVPixelFormatType_32BGRA
             config.showsCursor = true
-            config.queueDepth = 5
+            config.queueDepth = 8
 
             let stream = SCStream(filter: activeFilter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
             try await stream.startCapture()
             self.stream = stream
-            fputs("[SCKIT] ScreenCaptureKit stream running at \(width)x\(height) @ \(fps) FPS\n", stderr)
+            self.isRunning = true
+            fputs("[SCKIT] ScreenCaptureKit stream active at \(width)x\(height) @ \(fps) FPS\n", stderr)
         } catch {
             fputs("Error starting ScreenCaptureKit: \(error)\n", stderr)
             exit(1)
@@ -61,27 +75,27 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let rowBytes = width * 4
 
         if bytesPerRow == rowBytes {
-            let data = Data(bytes: baseAddress, count: rowBytes * height)
-            stdoutHandle.write(data)
+            if !writeAll(fd: STDOUT_FILENO, buffer: baseAddress, count: rowBytes * height) {
+                exit(0)
+            }
         } else {
-            var contiguousData = Data(count: rowBytes * height)
-            contiguousData.withUnsafeMutableBytes { destPtr in
-                guard let destBase = destPtr.baseAddress else { return }
-                for y in 0..<height {
-                    let srcRow = baseAddress.advanced(by: y * bytesPerRow)
-                    let destRow = destBase.advanced(by: y * rowBytes)
-                    memcpy(destRow, srcRow, rowBytes)
+            for y in 0..<height {
+                let rowPtr = baseAddress.advanced(by: y * bytesPerRow)
+                if !writeAll(fd: STDOUT_FILENO, buffer: rowPtr, count: rowBytes) {
+                    exit(0)
                 }
             }
-            stdoutHandle.write(contiguousData)
         }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        fputs("Stream stopped with error: \(error)\n", stderr)
+        fputs("[SCKIT] Stream stopped with error: \(error)\n", stderr)
         exit(1)
     }
 }
+
+// Retain globally to prevent Swift ARC from deallocating the recorder
+var globalRecorder: AnyObject?
 
 if #available(macOS 12.3, *) {
     if CommandLine.arguments.contains("--list") {
@@ -126,6 +140,7 @@ if #available(macOS 12.3, *) {
         }
 
         let recorder = ScreenRecorder()
+        globalRecorder = recorder
         Task {
             await recorder.start(fps: fps, width: width, height: height, targetWindowID: targetWinID)
         }
