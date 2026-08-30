@@ -15,7 +15,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -2079,16 +2078,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		var totalPackets int
 		var totalBytes int64
 
-		if runtime.GOOS == "darwin" {
-			time.AfterFunc(6*time.Second, func() {
-				n.mu.RLock()
-				sharing := n.IsSharingScreen
-				n.mu.RUnlock()
-				if sharing && totalPackets == 0 {
-					n.log("⚠️ [MACOS] FFmpeg ekrandan kare alamıyor! Lütfen 'Sistem Ayarları -> Gizlilik ve Güvenlik -> Ekran Kaydı' altında Terminal'e izin verildiğinden emin olun.")
-				}
-			})
-		}
+
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
