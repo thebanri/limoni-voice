@@ -138,6 +138,9 @@ func main() {
 
 	lobby := NewLobbyView()
 	room := NewRoomView()
+	screenshare.LogCallback = func(msg string) {
+		room.AddLog(msg)
+	}
 	currentScreen := ScreenLobby
 
 	// Modal States & Animations

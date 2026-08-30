@@ -234,21 +234,27 @@ func writeAll(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Bool {
 class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var stream: SCStream?
     var isRunning = false
+    var frameCount = 0
 
     func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil) async {
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            var filter: SCContentFilter?
-
-            if let winID = targetWindowID, let targetWin = content.windows.first(where: { $0.windowID == winID }) {
-                filter = SCContentFilter(desktopIndependentWindow: targetWin)
-            } else if let display = content.displays.first {
-                filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            guard let display = content.displays.first else {
+                fputs("[SCKIT-ERR] No display found\n", stderr)
+                exit(1)
             }
 
-            guard let activeFilter = filter else {
-                fputs("Error: No display or window found\n", stderr)
-                exit(1)
+            var filter: SCContentFilter
+            if let winID = targetWindowID, let targetWin = content.windows.first(where: { $0.windowID == winID }) {
+                fputs("[SCKIT] Found target window: \(targetWin.title ?? "") (id: \(winID))\n", stderr)
+                if #available(macOS 14.0, *) {
+                    filter = SCContentFilter(desktopIndependentWindow: targetWin)
+                } else {
+                    filter = SCContentFilter(display: display, including: [targetWin])
+                }
+            } else {
+                fputs("[SCKIT] Using full display capture (id: \(display.displayID))\n", stderr)
+                filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             }
 
             let config = SCStreamConfiguration()
@@ -260,14 +266,26 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             config.showsCursor = true
             config.queueDepth = 8
 
-            let stream = SCStream(filter: activeFilter, configuration: config, delegate: self)
+            let stream = SCStream(filter: filter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
-            try await stream.startCapture()
-            self.stream = stream
-            self.isRunning = true
-            fputs("[SCKIT] ScreenCaptureKit stream active at \(width)x\(height) @ \(fps) FPS\n", stderr)
+
+            do {
+                try await stream.startCapture()
+                self.stream = stream
+                self.isRunning = true
+                fputs("[SCKIT] Stream running at \(width)x\(height) @ \(fps) FPS\n", stderr)
+            } catch {
+                fputs("[SCKIT-WARN] Window capture failed (\(error)), falling back to display capture...\n", stderr)
+                let fallbackFilter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+                let fallbackStream = SCStream(filter: fallbackFilter, configuration: config, delegate: self)
+                try fallbackStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
+                try await fallbackStream.startCapture()
+                self.stream = fallbackStream
+                self.isRunning = true
+                fputs("[SCKIT] Fallback display stream running at \(width)x\(height) @ \(fps) FPS\n", stderr)
+            }
         } catch {
-            fputs("Error starting ScreenCaptureKit: \(error)\n", stderr)
+            fputs("[SCKIT-ERR] Error initializing ScreenCaptureKit: \(error)\n", stderr)
             exit(1)
         }
     }
@@ -285,6 +303,11 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let rowBytes = width * 4
 
+        self.frameCount += 1
+        if self.frameCount == 1 {
+            fputs("[SCKIT] First Metal video frame generated (\(width)x\(height))\n", stderr)
+        }
+
         if bytesPerRow == rowBytes {
             if !writeAll(fd: STDOUT_FILENO, buffer: baseAddress, count: rowBytes * height) {
                 exit(0)
@@ -300,7 +323,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        fputs("[SCKIT] Stream stopped with error: \(error)\n", stderr)
+        fputs("[SCKIT-ERR] Stream stopped with error: \(error)\n", stderr)
         exit(1)
     }
 }
@@ -312,7 +335,7 @@ if #available(macOS 12.3, *) {
         let sem = DispatchSemaphore(value: 0)
         Task {
             do {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
                 for (i, d) in content.displays.enumerated() {
                     print("SCREEN|\(d.displayID)|Display \(i+1) (\(d.width)x\(d.height))")
                 }
@@ -363,7 +386,7 @@ if #available(macOS 12.3, *) {
 `
 
 func getOrBuildMacCaptureBinary() (string, error) {
-	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v7")
+	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v8")
 	if info, err := os.Stat(binPath); err == nil && info.Size() > 0 {
 		return binPath, nil
 	}
