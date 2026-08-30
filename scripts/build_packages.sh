@@ -33,16 +33,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}"
 # 3. Compile Windows AMD64 & ARM64
 echo "==> Building Windows AMD64 (.exe)..."
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/windows-amd64/limoni-voice.exe .
+cp dist/windows-amd64/limoni-voice.exe release_assets/limoni-voice_${VERSION}_windows_amd64.exe
+cp dist/windows-amd64/limoni-voice.exe release_assets/limoni-voice_windows_amd64.exe
 
 echo "==> Building Windows ARM64 (.exe)..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o dist/windows-arm64/limoni-voice.exe .
+cp dist/windows-arm64/limoni-voice.exe release_assets/limoni-voice_${VERSION}_windows_arm64.exe
+cp dist/windows-arm64/limoni-voice.exe release_assets/limoni-voice_windows_arm64.exe
 
 echo "==> Building Windows Setup Installer (.exe)..."
 cp microphone.obj cmd/installer/microphone.obj
 cp assets/icon.ico cmd/installer/icon.ico
+cp dist/windows-amd64/limoni-voice.exe cmd/installer/limoni-voice.exe
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_amd64.exe ./cmd/installer
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup.exe ./cmd/installer
+
+cp dist/windows-arm64/limoni-voice.exe cmd/installer/limoni-voice.exe
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_arm64.exe ./cmd/installer
+rm -f cmd/installer/limoni-voice.exe
+touch cmd/installer/limoni-voice.exe
 
 # 4. Compile macOS (Darwin) Apple Silicon (ARM64) & Intel (AMD64)
 echo "==> Building macOS Apple Silicon (ARM64)..."

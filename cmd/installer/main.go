@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	_ "embed"
 	"fmt"
 	"io"
@@ -18,6 +19,9 @@ var embeddedMicrophoneObj []byte
 
 //go:embed icon.ico
 var embeddedIconIco []byte
+
+//go:embed limoni-voice.exe
+var embeddedVoiceExe []byte
 
 const (
 	FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
@@ -59,19 +63,28 @@ func main() {
 		_ = os.WriteFile(targetIconIco, embeddedIconIco, 0644)
 	}
 
-	// 3. Install limoni-voice.exe
+	// 3. Install limoni-voice.exe (Standalone Embedded Binary -> Local Copy -> Online Download)
 	targetVoiceExe := filepath.Join(installDir, "limoni-voice.exe")
-	currDirExe := filepath.Join(".", "limoni-voice.exe")
-	if fileExists(currDirExe) {
-		fmt.Println("[+] Copying limoni-voice.exe from local directory...")
-		_ = copyFile(currDirExe, targetVoiceExe)
+	if len(embeddedVoiceExe) > 1024 {
+		fmt.Println("[+] Extracting Limoni Voice executable (embedded bundle)...")
+		_ = os.WriteFile(targetVoiceExe, embeddedVoiceExe, 0755)
 	} else {
-		// Download latest release binary
-		fmt.Println("[*] Downloading limoni-voice.exe from GitHub Releases...")
-		downloadURL := REPO_URL + "/releases/latest/download/limoni-voice_windows_amd64.exe"
-		if err := downloadFileWithProgress(downloadURL, targetVoiceExe, "Limoni Voice"); err != nil {
-			fmt.Printf("[-] Failed to download limoni-voice.exe: %v\n", err)
+		currDirExe := filepath.Join(".", "limoni-voice.exe")
+		if fileExists(currDirExe) {
+			fmt.Println("[+] Copying limoni-voice.exe from local directory...")
+			_ = copyFile(currDirExe, targetVoiceExe)
+		} else {
+			// Download latest release binary
+			fmt.Println("[*] Downloading limoni-voice.exe from GitHub Releases...")
+			downloadURL := REPO_URL + "/releases/latest/download/limoni-voice_windows_amd64.exe"
+			if err := downloadFileWithProgress(downloadURL, targetVoiceExe, "Limoni Voice"); err != nil {
+				fmt.Printf("[-] Failed to download limoni-voice.exe: %v\n", err)
+			}
 		}
+	}
+
+	if !fileExists(targetVoiceExe) {
+		fmt.Println("[!] Warning: limoni-voice.exe could not be verified in target path.")
 	}
 
 	// 4. Install FFmpeg
@@ -115,19 +128,31 @@ func main() {
 	`, binDir)
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psPathScript).Run()
 
-	// 7. Create Desktop Shortcut with Icon
-	fmt.Println("[*] Creating desktop shortcut...")
-	desktopDir := filepath.Join(os.Getenv("USERPROFILE"), "Desktop")
-	shortcutPath := filepath.Join(desktopDir, "Limoni Voice.lnk")
+	// 7. Create Desktop and Start Menu Shortcuts with Icon (Supports OneDrive and International Windows)
+	fmt.Println("[*] Creating desktop and start menu shortcuts...")
 	psShortcutScript := fmt.Sprintf(`
 		$wscript = New-Object -ComObject WScript.Shell
-		$shortcut = $wscript.CreateShortcut('%s')
-		$shortcut.TargetPath = '%s'
-		$shortcut.WorkingDirectory = '%s'
-		$shortcut.IconLocation = '%s,0'
-		$shortcut.Description = 'Limoni Voice - P2P Encrypted Voice & Screen Sharing'
-		$shortcut.Save()
-	`, shortcutPath, targetVoiceExe, installDir, targetIconIco)
+		$desktop = [Environment]::GetFolderPath("Desktop")
+		if ($desktop) {
+			$shortcutPath = Join-Path $desktop "Limoni Voice.lnk"
+			$shortcut = $wscript.CreateShortcut($shortcutPath)
+			$shortcut.TargetPath = '%s'
+			$shortcut.WorkingDirectory = '%s'
+			$shortcut.IconLocation = '%s,0'
+			$shortcut.Description = 'Limoni Voice - P2P Encrypted Voice & Screen Sharing'
+			$shortcut.Save()
+		}
+		$programs = [Environment]::GetFolderPath("Programs")
+		if ($programs) {
+			$smShortcutPath = Join-Path $programs "Limoni Voice.lnk"
+			$smShortcut = $wscript.CreateShortcut($smShortcutPath)
+			$smShortcut.TargetPath = '%s'
+			$smShortcut.WorkingDirectory = '%s'
+			$smShortcut.IconLocation = '%s,0'
+			$smShortcut.Description = 'Limoni Voice - P2P Encrypted Voice & Screen Sharing'
+			$smShortcut.Save()
+		}
+	`, targetVoiceExe, installDir, targetIconIco, targetVoiceExe, installDir, targetIconIco)
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psShortcutScript).Run()
 
 	fmt.Println()
@@ -137,16 +162,16 @@ func main() {
 	fmt.Printf("[✓] Limoni Voice: %s\n", targetVoiceExe)
 	fmt.Printf("[✓] 3D Model: %s\n", targetMicObj)
 	fmt.Printf("[✓] App Icon: %s\n", targetIconIco)
-	fmt.Printf("[✓] Desktop Shortcut: %s\n", shortcutPath)
+	fmt.Println("[✓] Desktop & Start Menu Shortcuts created!")
 	fmt.Println()
-	fmt.Println("Press ENTER to launch the application...")
+	fmt.Println("Press ENTER to launch the application (or close this window)...")
 
-	var input string
-	_, _ = fmt.Scanln(&input)
+	reader := bufio.NewReader(os.Stdin)
+	_, _ = reader.ReadString('\n')
 
-	// Launch
+	// Launch detached in a new independent console window
 	if fileExists(targetVoiceExe) {
-		launchCmd := exec.Command(targetVoiceExe)
+		launchCmd := exec.Command("cmd.exe", "/c", "start", "", targetVoiceExe)
 		launchCmd.Dir = installDir
 		_ = launchCmd.Start()
 	}
