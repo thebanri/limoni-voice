@@ -1,9 +1,10 @@
 import Foundation
+import Darwin
 import ScreenCaptureKit
 import CoreMedia
 import CoreVideo
 
-signal(SIGPIPE, SIG_IGN)
+_ = Darwin.signal(SIGPIPE, SIG_IGN)
 
 @available(macOS 12.3, *)
 class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
@@ -29,6 +30,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             let config = SCStreamConfiguration()
             config.width = width
             config.height = height
+            config.scalesToFit = true
             config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
             config.pixelFormat = kCVPixelFormatType_32BGRA
             config.showsCursor = true
@@ -54,11 +56,25 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
-        let totalBytes = bytesPerRow * height
+        let rowBytes = width * 4
 
-        let data = Data(bytes: baseAddress, count: totalBytes)
-        stdoutHandle.write(data)
+        if bytesPerRow == rowBytes {
+            let data = Data(bytes: baseAddress, count: rowBytes * height)
+            stdoutHandle.write(data)
+        } else {
+            var contiguousData = Data(count: rowBytes * height)
+            contiguousData.withUnsafeMutableBytes { destPtr in
+                guard let destBase = destPtr.baseAddress else { return }
+                for y in 0..<height {
+                    let srcRow = baseAddress.advanced(by: y * bytesPerRow)
+                    let destRow = destBase.advanced(by: y * rowBytes)
+                    memcpy(destRow, srcRow, rowBytes)
+                }
+            }
+            stdoutHandle.write(contiguousData)
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
