@@ -2080,7 +2080,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		var totalBytes int64
 
 		if runtime.GOOS == "darwin" {
-			time.AfterFunc(3*time.Second, func() {
+			time.AfterFunc(6*time.Second, func() {
 				n.mu.RLock()
 				sharing := n.IsSharingScreen
 				n.mu.RUnlock()
