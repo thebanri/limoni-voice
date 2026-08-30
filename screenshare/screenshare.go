@@ -778,10 +778,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
 			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
-			screenDev = devNum + ":none"
+			screenDev = devNum + ":"
 		} else if strings.HasPrefix(opt.WindowID, "mac_screen:") {
-			scrIdx := strings.TrimPrefix(opt.WindowID, "mac_screen:")
-			screenDev = scrIdx + ":none"
+			scrIdxStr := strings.TrimPrefix(opt.WindowID, "mac_screen:")
+			scrIdx, _ := strconv.Atoi(scrIdxStr)
+			screenDev = getMacScreenDeviceIndex(binPath, scrIdx)
 		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
 			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
 			// Get window position and size on macOS
@@ -815,6 +816,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
 			"-framerate", fmt.Sprintf("%d", fps),
+			"-pixel_format", "bgr0",
 			"-i", screenDev,
 			"-vf", scaleFilter,
 			"-c:v", "libx264",
