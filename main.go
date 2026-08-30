@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -215,6 +216,21 @@ func main() {
 			return
 		}
 
+		if runtime.GOOS == "linux" {
+			// On Linux, directly launch gpu-screen-recorder native system portal picker
+			room.SetToast("🎬 Starting screen share...")
+			go func() {
+				err := node.StartScreenShare("", 50100)
+				if err != nil {
+					room.SetToast(fmt.Sprintf("Error: %v", err))
+				} else {
+					room.SetToast("Screen share started (60 FPS)")
+				}
+			}()
+			return
+		}
+
+		// On Windows & macOS, open TUI selection modal
 		screenShareTargets = screenshare.ListWindows()
 		if len(screenShareTargets) == 0 {
 			screenShareTargets = []screenshare.WindowInfo{
