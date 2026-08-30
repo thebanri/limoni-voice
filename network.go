@@ -1981,6 +1981,8 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	if err != nil {
 		return fmt.Errorf("failed to open screen capture port: %w", err)
 	}
+	_ = captureConn.SetReadBuffer(4 * 1024 * 1024)
+	_ = captureConn.SetWriteBuffer(4 * 1024 * 1024)
 	localAssignedPort := captureConn.LocalAddr().(*net.UDPAddr).Port
 
 	opts := screenshare.DefaultBroadcastOptions()
