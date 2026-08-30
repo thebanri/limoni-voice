@@ -451,3 +451,38 @@ func TestSpeechPassesThroughAllModes(t *testing.T) {
 		t.Fatalf("Expected non-zero audible output in Mode 2 (YUKSEK), got rms=%f", rms2)
 	}
 }
+
+func TestVideoDeduplicator(t *testing.T) {
+	dedup := VideoDeduplicator{}
+
+	// First time seeing packet 1 -> true
+	if !dedup.ShouldProcess(1) {
+		t.Fatalf("Expected seq 1 to be processed")
+	}
+
+	// Duplicate packet 1 -> false
+	if dedup.ShouldProcess(1) {
+		t.Fatalf("Expected duplicate seq 1 to be dropped")
+	}
+
+	// Next packet 2 -> true
+	if !dedup.ShouldProcess(2) {
+		t.Fatalf("Expected seq 2 to be processed")
+	}
+
+	// Out of order packet 3 -> true
+	if !dedup.ShouldProcess(3) {
+		t.Fatalf("Expected seq 3 to be processed")
+	}
+
+	// Duplicate packet 2 -> false
+	if dedup.ShouldProcess(2) {
+		t.Fatalf("Expected duplicate seq 2 to be dropped")
+	}
+
+	// Test Reset
+	dedup.Reset()
+	if !dedup.ShouldProcess(1) {
+		t.Fatalf("Expected seq 1 to be processed after Reset")
+	}
+}

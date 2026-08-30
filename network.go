@@ -162,7 +162,46 @@ type P2PNode struct {
 	videoCaptureConn *net.UDPConn
 	videoTCPListener net.Listener
 	videoTCPConn     net.Conn
+	videoDedup       VideoDeduplicator
 	OnScreenShare    func(peerID string, isSharing bool, videoPort int)
+}
+
+// VideoDeduplicator prevents duplicate video packets from being fed to the local player
+// when packets arrive over both direct UDP and WebSocket relay transports.
+type VideoDeduplicator struct {
+	mu     sync.Mutex
+	maxSeq uint32
+	seqs   [4096]uint32
+}
+
+func (d *VideoDeduplicator) ShouldProcess(seq uint32) bool {
+	if seq == 0 {
+		return true
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	idx := seq % 4096
+	if d.seqs[idx] == seq {
+		// Already processed this exact sequence number!
+		return false
+	}
+	// Drop old packets that are too far behind maxSeq (accounting for uint32 wrap-around)
+	if d.maxSeq > 3000 && seq < d.maxSeq-3000 {
+		return false
+	}
+	d.seqs[idx] = seq
+	if seq > d.maxSeq || (d.maxSeq > 0xFFFFFF00 && seq < 0x00000FFF) {
+		d.maxSeq = seq
+	}
+	return true
+}
+
+func (d *VideoDeduplicator) Reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.maxSeq = 0
+	d.seqs = [4096]uint32{}
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
@@ -520,7 +559,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsSendCh := make(chan []byte, 512)
+		wsSendCh := make(chan []byte, 2048)
 		n.mu.Lock()
 		n.wsSendCh = wsSendCh
 		n.mu.Unlock()
@@ -747,6 +786,9 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 
 			// Fast-path: feed video chunks directly to local player without heavy room locks
 			if pkt.Type == PacketScreenShareData {
+				if !n.videoDedup.ShouldProcess(pkt.Seq) {
+					continue
+				}
 				n.mu.RLock()
 				watching := n.IsWatchingScreen
 				tcpConn := n.videoTCPConn
@@ -1435,28 +1477,7 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 		return
 	}
 
-	// For Screen Share Video: send via direct UDP if direct LAN/P2P peers exist,
-	// otherwise forward via WebSocket Relay for remote internet peers.
-	// Never send duplicate video chunks over both transports simultaneously!
-	if pkt.Type == PacketScreenShareData {
-		hasDirectPeers := false
-		for _, peer := range n.Peers {
-			if peer.Addr != nil && n.Conn != nil {
-				hasDirectPeers = true
-				n.Conn.WriteToUDP(data, peer.Addr)
-			}
-		}
-		if !hasDirectPeers && isRelay && wsSendCh != nil {
-			select {
-			case wsSendCh <- data:
-			default:
-			}
-		}
-		n.mu.RUnlock()
-		return
-	}
-
-	// 1. Forward via WebSocket Relay to all members
+	// 1. Forward via WebSocket Relay to all room members over Internet
 	if isRelay && wsSendCh != nil {
 		select {
 		case wsSendCh <- data:
@@ -1497,6 +1518,9 @@ func (n *P2PNode) listenLoop() {
 		}
 
 		if pkt.Type == PacketScreenShareData {
+			if !n.videoDedup.ShouldProcess(pkt.Seq) {
+				continue
+			}
 			n.mu.RLock()
 			watching := n.IsWatchingScreen
 			tcpConn := n.videoTCPConn
@@ -1539,6 +1563,9 @@ func (n *P2PNode) listenBroadcastLoop() {
 		}
 
 		if pkt.Type == PacketScreenShareData {
+			if !n.videoDedup.ShouldProcess(pkt.Seq) {
+				continue
+			}
 			n.mu.RLock()
 			watching := n.IsWatchingScreen
 			tcpConn := n.videoTCPConn
@@ -2040,6 +2067,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	// 2. Read raw MPEG-TS video chunks and broadcast to all room peers over WebSocket Relay (Internet)
 	go func() {
 		buf := make([]byte, 2048)
+		var seq uint32
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
@@ -2055,6 +2083,11 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 				break
 			}
 
+			seq++
+			if seq == 0 {
+				seq = 1
+			}
+
 			chunk := make([]byte, nBytes)
 			copy(chunk, buf[:nBytes])
 
@@ -2063,6 +2096,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 				RoomCode: currentRoom,
 				SenderID: localID,
 				Nickname: nickname,
+				Seq:      seq,
 				Payload:  chunk,
 			}
 			n.broadcastToPeers(&vidPkt)
@@ -2165,6 +2199,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	} else {
 		opt = screenshare.DefaultReceiverOptions()
 	}
+	n.videoDedup.Reset()
 	n.mu.Unlock()
 
 	// 1. Open a local TCP listener on a dynamic free port (127.0.0.1:0)
@@ -2179,6 +2214,11 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		conn, err := tcpLn.Accept()
 		if err != nil {
 			return
+		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetNoDelay(true)
+			_ = tcp.SetWriteBuffer(4 * 1024 * 1024)
+			_ = tcp.SetReadBuffer(4 * 1024 * 1024)
 		}
 		n.mu.Lock()
 		if n.IsWatchingScreen {
