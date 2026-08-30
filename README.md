@@ -129,6 +129,28 @@ limoni-voice/
 
 ## 🚀 Installation
 
+### Pre-requisites for Screen Sharing (FFmpeg & MPV)
+
+> [!IMPORTANT]
+> Voice chat works out of the box with zero dependencies. However, for **Screen Sharing** (broadcasting and viewing live streams), **FFmpeg** and **MPV** are required on your system:
+>
+> - **🍎 macOS (Homebrew)**:
+>   ```bash
+>   brew install ffmpeg mpv
+>   ```
+> - **🪟 Windows (winget)**:
+>   ```powershell
+>   winget install Gyan.FFmpeg mpv.mpv
+>   ```
+>   *(Note: The `Limoni-Voice-Setup_windows_amd64.exe` installer can also configure these automatically).*
+> - **🐧 Linux (Debian / Ubuntu / Arch)**:
+>   ```bash
+>   # Debian / Ubuntu
+>   sudo apt install ffmpeg mpv
+>   # Arch Linux
+>   sudo pacman -S ffmpeg mpv
+>   ```
+
 ### Pre-built Binaries (Recommended)
 
 Download the latest release package from the [**Releases**](https://github.com/thebanri/limoni-voice/releases) page:
@@ -151,7 +173,7 @@ tar xzf limoni-voice_v1.0.0_linux_amd64.tar.gz
 ### Building From Source
 
 ```bash
-# Requirements: Go 1.24+, FFmpeg (optional, for screen sharing)
+# Requirements: Go 1.24+
 git clone https://github.com/thebanri/limoni-voice.git
 cd limoni-voice
 go build -o limoni-voice .

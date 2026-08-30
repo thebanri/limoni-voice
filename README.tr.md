@@ -129,6 +129,28 @@ limoni-voice/
 
 ## 🚀 Kurulum
 
+### Ekran Paylaşımı İçin Ön Gereksinimler (FFmpeg & MPV)
+
+> [!IMPORTANT]
+> Sesli konuşma özelliği tamamen sıfır bağımlılıkla doğrudan çalışır. Ancak **Ekran Paylaşımı** (yayın açma ve canlı yayın izleme) özelliklerini kullanabilmek için sisteminizde **FFmpeg** ve **MPV Player** kurulu olmalıdır:
+>
+> - **🍎 macOS (Homebrew)**:
+>   ```bash
+>   brew install ffmpeg mpv
+>   ```
+> - **🪟 Windows (winget)**:
+>   ```powershell
+>   winget install Gyan.FFmpeg mpv.mpv
+>   ```
+>   *(Not: `Limoni-Voice-Setup_windows_amd64.exe` kurulum sihirbazı bunları sizin için otomatik olarak da kurabilir).*
+> - **🐧 Linux (Debian / Ubuntu / Arch)**:
+>   ```bash
+>   # Debian / Ubuntu
+>   sudo apt install ffmpeg mpv
+>   # Arch Linux
+>   sudo pacman -S ffmpeg mpv
+>   ```
+
 ### Hazır Binary İndirme (Önerilen)
 
 [**Releases**](https://github.com/thebanri/limoni-voice/releases) sayfasından platformunuza uygun paketi indirin:
@@ -151,7 +173,7 @@ tar xzf limoni-voice_v1.0.0_linux_amd64.tar.gz
 ### Kaynaktan Derleme
 
 ```bash
-# Gereksinimler: Go 1.24+, FFmpeg (opsiyonel, ekran paylaşımı için)
+# Gereksinimler: Go 1.24+
 git clone https://github.com/thebanri/limoni-voice.git
 cd limoni-voice
 go build -o limoni-voice .
