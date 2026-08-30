@@ -175,6 +175,112 @@ func getMacScreenDevice(binPath string) string {
 	return "3:none"
 }
 
+const embeddedMacCaptureSwift = `import Foundation
+import ScreenCaptureKit
+import CoreMedia
+import CoreVideo
+
+@available(macOS 12.3, *)
+class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
+    var stream: SCStream?
+    let stdoutHandle = FileHandle.standardOutput
+
+    func start(fps: Int = 60, width: Int = 1920, height: Int = 1080) async {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let display = content.displays.first else {
+                fputs("Error: No display found\n", stderr)
+                exit(1)
+            }
+
+            let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            let config = SCStreamConfiguration()
+            config.width = width
+            config.height = height
+            config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+            config.pixelFormat = kCVPixelFormatType_32BGRA
+            config.showsCursor = true
+            config.queueDepth = 5
+
+            let stream = SCStream(filter: filter, configuration: config, delegate: self)
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
+            try await stream.startCapture()
+            self.stream = stream
+            fputs("[SCKIT] ScreenCaptureKit stream running at \(width)x\(height) @ \(fps) FPS\n", stderr)
+        } catch {
+            fputs("Error starting ScreenCaptureKit: \(error)\n", stderr)
+            exit(1)
+        }
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard sampleBuffer.isValid, type == .screen else { return }
+        guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let totalBytes = bytesPerRow * height
+
+        let data = Data(bytes: baseAddress, count: totalBytes)
+        stdoutHandle.write(data)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        fputs("Stream stopped with error: \(error)\n", stderr)
+        exit(1)
+    }
+}
+
+if #available(macOS 12.3, *) {
+    var width = 1920
+    var height = 1080
+    var fps = 60
+
+    if CommandLine.arguments.count >= 2, let w = Int(CommandLine.arguments[1]) { width = w }
+    if CommandLine.arguments.count >= 3, let h = Int(CommandLine.arguments[2]) { height = h }
+    if CommandLine.arguments.count >= 4, let f = Int(CommandLine.arguments[3]) { fps = f }
+
+    let recorder = ScreenRecorder()
+    Task {
+        await recorder.start(fps: fps, width: width, height: height)
+    }
+    dispatchMain()
+} else {
+    fputs("ScreenCaptureKit requires macOS 12.3+\n", stderr)
+    exit(1)
+}
+`
+
+func getOrBuildMacCaptureBinary() (string, error) {
+	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit")
+	if info, err := os.Stat(binPath); err == nil && info.Size() > 0 {
+		return binPath, nil
+	}
+
+	swiftc, err := FindExecutable("swiftc")
+	if err != nil {
+		return "", errors.New("swiftc not found on macOS")
+	}
+
+	srcFile := filepath.Join(os.TempDir(), "limoni_mac_capture.swift")
+	if err := os.WriteFile(srcFile, []byte(embeddedMacCaptureSwift), 0644); err != nil {
+		return "", err
+	}
+	defer os.Remove(srcFile)
+
+	logMsg("[DARWIN] Compiling native ScreenCaptureKit engine with swiftc...")
+	cmd := exec.Command(swiftc, "-O", "-framework", "ScreenCaptureKit", "-framework", "CoreMedia", "-framework", "CoreVideo", srcFile, "-o", binPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("swiftc compilation failed: %w (output: %s)", err, string(out))
+	}
+	logMsg("[DARWIN] ScreenCaptureKit engine compiled successfully: %s", binPath)
+	return binPath, nil
+}
+
 // DefaultBroadcastOptions returns sensible low-latency defaults
 func DefaultBroadcastOptions() BroadcastOptions {
 	return BroadcastOptions{
@@ -204,6 +310,7 @@ func DefaultReceiverOptions() ReceiverOptions {
 // Session manages the lifecycle of a broadcaster or receiver subprocess
 type Session struct {
 	cmd       *exec.Cmd
+	extraCmd  *exec.Cmd
 	ctx       context.Context
 	cancel    context.CancelFunc
 	errCh     chan error
@@ -443,6 +550,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	var binPath string
 	var args []string
 	var targetHwnd uintptr
+	var macSckitBin string
+	var macWidth, macHeight, macFps int
 
 	switch runtime.GOOS {
 	case "linux":
@@ -598,39 +707,81 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 		binPath = p
 
-		screenDev := getMacScreenDevice(binPath)
-		scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
-		if scaleRes == "" {
-			scaleRes = "1920:1080"
-		}
-
 		fps := opt.FPS
 		if fps <= 0 {
-			fps = 30
+			fps = 60
+		}
+		width := 1920
+		height := 1080
+		if opt.Resolution != "" && strings.Contains(opt.Resolution, "x") {
+			parts := strings.Split(opt.Resolution, "x")
+			if len(parts) == 2 {
+				if w, err := strconv.Atoi(parts[0]); err == nil && w > 0 {
+					width = w
+				}
+				if h, err := strconv.Atoi(parts[1]); err == nil && h > 0 {
+					height = h
+				}
+			}
 		}
 
-		args = []string{
-			"-f", "avfoundation",
-			"-capture_cursor", "1",
-			"-pixel_format", "uyvy422",
-			"-i", screenDev,
-			"-vf", fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes),
-			"-r", fmt.Sprintf("%d", fps),
-			"-c:v", "libx264",
-			"-preset", "ultrafast",
-			"-tune", "zerolatency",
-			"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-			"-crf", "23",
-			"-maxrate", "8M",
-			"-bufsize", "16M",
-			"-pix_fmt", "yuv420p",
-			"-g", "30",
-			"-bf", "0",
-			"-f", "mpegts",
-			"-mpegts_flags", "+pat_pmt_at_frames",
-			"-pcr_period", "20",
-			"-flush_packets", "1",
-			targetURL,
+		macHelper, sckitErr := getOrBuildMacCaptureBinary()
+		if sckitErr == nil {
+			logMsg("[DARWIN] Using native Apple ScreenCaptureKit -> FFmpeg rawvideo pipe")
+			args = []string{
+				"-f", "rawvideo",
+				"-pixel_format", "bgra",
+				"-video_size", fmt.Sprintf("%dx%d", width, height),
+				"-framerate", fmt.Sprintf("%d", fps),
+				"-i", "-",
+				"-vf", "format=yuv420p",
+				"-c:v", "libx264",
+				"-preset", "ultrafast",
+				"-tune", "zerolatency",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "23",
+				"-maxrate", "8M",
+				"-bufsize", "16M",
+				"-pix_fmt", "yuv420p",
+				"-g", "30",
+				"-bf", "0",
+				"-f", "mpegts",
+				"-mpegts_flags", "+pat_pmt_at_frames",
+				"-pcr_period", "20",
+				"-flush_packets", "1",
+				targetURL,
+			}
+			macSckitBin = macHelper
+			macWidth = width
+			macHeight = height
+			macFps = fps
+		} else {
+			logMsg("[DARWIN] ScreenCaptureKit unavailable (%v), falling back to AVFoundation", sckitErr)
+			screenDev := getMacScreenDevice(binPath)
+			scaleRes := fmt.Sprintf("%d:%d", width, height)
+			args = []string{
+				"-f", "avfoundation",
+				"-capture_cursor", "1",
+				"-pixel_format", "uyvy422",
+				"-i", screenDev,
+				"-vf", fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes),
+				"-r", fmt.Sprintf("%d", fps),
+				"-c:v", "libx264",
+				"-preset", "ultrafast",
+				"-tune", "zerolatency",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "23",
+				"-maxrate", "8M",
+				"-bufsize", "16M",
+				"-pix_fmt", "yuv420p",
+				"-g", "30",
+				"-bf", "0",
+				"-f", "mpegts",
+				"-mpegts_flags", "+pat_pmt_at_frames",
+				"-pcr_period", "20",
+				"-flush_packets", "1",
+				targetURL,
+			}
 		}
 
 	default:
@@ -642,6 +793,18 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	setupProcessGroup(cmd)
+
+	var sckitCmd *exec.Cmd
+	if macSckitBin != "" {
+		sckitCmd = exec.CommandContext(sessionCtx, macSckitBin, fmt.Sprintf("%d", macWidth), fmt.Sprintf("%d", macHeight), fmt.Sprintf("%d", macFps))
+		setupProcessGroup(sckitCmd)
+		sckitOut, err := sckitCmd.StdoutPipe()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to open ScreenCaptureKit pipe: %w", err)
+		}
+		cmd.Stdin = sckitOut
+	}
 
 	var stdinPipe io.WriteCloser
 	if targetHwnd != 0 {
@@ -684,6 +847,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	s := &Session{
 		cmd:       cmd,
+		extraCmd:  sckitCmd,
 		ctx:       sessionCtx,
 		cancel:    cancel,
 		errCh:     make(chan error, 1),
@@ -694,8 +858,18 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		stderrBuf: stderrBuf,
 	}
 
+	if sckitCmd != nil {
+		if err := sckitCmd.Start(); err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to start ScreenCaptureKit engine: %w", err)
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
 		cancel()
+		if sckitCmd != nil && sckitCmd.Process != nil {
+			_ = sckitCmd.Process.Kill()
+		}
 		return nil, fmt.Errorf("failed to start screen broadcaster (%s): %w", binPath, err)
 	}
 
@@ -833,6 +1007,10 @@ func (s *Session) monitor() {
 		stderrStr = strings.TrimSpace(s.stderrBuf.String())
 	}
 
+	if s.extraCmd != nil && s.extraCmd.Process != nil {
+		go killProcessGroup(s.extraCmd)
+	}
+
 	if err != nil && s.ctx.Err() == nil {
 		logMsg("[SESSION] Process exited with error: %v\n[STDERR]: %s", err, stderrStr)
 		if stderrStr != "" {
@@ -870,6 +1048,9 @@ func (s *Session) Stop() error {
 	// Terminate process group instantly in background
 	if s.cmd != nil && s.cmd.Process != nil {
 		go killProcessGroup(s.cmd)
+	}
+	if s.extraCmd != nil && s.extraCmd.Process != nil {
+		go killProcessGroup(s.extraCmd)
 	}
 
 	return nil
