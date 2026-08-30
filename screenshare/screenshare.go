@@ -628,7 +628,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-f", fmt.Sprintf("%d", opt.FPS),
 				"-k", "h264",
 				"-q", "high",
-				"-tune", "zerolatency",
+				"-tune", "performance",
 				"-keyint", "15",
 				"-c", "mpegts",
 				"-o", targetURL,
