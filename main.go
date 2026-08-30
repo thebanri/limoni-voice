@@ -631,7 +631,7 @@ func main() {
 							if node.IsWatchingScreen {
 								go func() {
 									_ = node.StopWatchingScreen()
-									room.SetToast("Ekran izleyici kapatildi")
+									room.SetToast("Stream viewer closed")
 								}()
 							} else {
 								var streamingPeer *PeerInfo
@@ -647,19 +647,19 @@ func main() {
 										port = 50100
 									}
 									opts := screenshare.ReceiverOptions{
-										WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
+										WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (60 FPS)", streamingPeer.Nickname),
 									}
-									room.SetToast("🎬 Yayin izleyici baslatiliyor...")
+									room.SetToast("🎬 Starting stream viewer...")
 									go func() {
 										err := node.StartWatchingScreen(port, opts)
 										if err != nil {
-											room.SetToast(fmt.Sprintf("Hata: %v", err))
+											room.SetToast(fmt.Sprintf("Error: %v", err))
 										} else {
-											room.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
+											room.SetToast(fmt.Sprintf("%s stream opened (HD 60 FPS)", streamingPeer.Nickname))
 										}
 									}()
 								} else {
-									room.SetToast("Odada su an ekran paylasan kimse yok")
+									room.SetToast("No active screen share in the room")
 								}
 							}
 

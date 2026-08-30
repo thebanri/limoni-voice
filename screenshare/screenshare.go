@@ -316,7 +316,7 @@ func getMacScreenDevice(binPath string) string {
 			}
 		}
 	}
-	return "Capture screen 0"
+	return "Capture screen 0:"
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -557,6 +557,8 @@ func CheckDependencies() DependencyStatus {
 		status.MissingRecommended = "gpu-screen-recorder veya ffmpeg (ekran paylasmak icin gereklidir)"
 	} else if runtime.GOOS == "windows" && !status.HasFFmpeg {
 		status.MissingRecommended = "ffmpeg (ekran paylasmak icin gereklidir)"
+	} else if runtime.GOOS == "darwin" && !status.HasFFmpeg {
+		status.MissingRecommended = "ffmpeg (ekran paylasmak icin gereklidir)"
 	}
 
 	return status
@@ -609,11 +611,15 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		} else if p, err := FindExecutable("ffmpeg"); err == nil {
 			// Fallback to ffmpeg x11grab on Linux
 			binPath = p
+			scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
+			if scaleRes == "" {
+				scaleRes = "1920:1080"
+			}
 			args = []string{
 				"-f", "x11grab",
 				"-framerate", fmt.Sprintf("%d", opt.FPS),
 				"-i", ":0.0",
-				"-vf", fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution),
+				"-vf", fmt.Sprintf("scale=%s:flags=bicubic", scaleRes),
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
@@ -735,26 +741,30 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 		binPath = p
 
-		screenDev := getMacScreenDevice(binPath)
-		scaleFilter := fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution)
+		scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
+		if scaleRes == "" {
+			scaleRes = "1920:1080"
+		}
+		scaleFilter := fmt.Sprintf("scale=%s:flags=bicubic", scaleRes)
 
+		screenDev := getMacScreenDevice(binPath)
 		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
 			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
 			screenDev = devNum + ":"
 		} else if strings.HasPrefix(opt.WindowID, "mac_screen:") {
 			scrIdx := strings.TrimPrefix(opt.WindowID, "mac_screen:")
-			screenDev = fmt.Sprintf("Capture screen %s", scrIdx)
+			screenDev = fmt.Sprintf("Capture screen %s:", scrIdx)
 		} else if opt.WindowID == "desktop" || opt.WindowID == "" || opt.WindowID == "portal" {
-			screenDev = "Capture screen 0"
+			screenDev = "Capture screen 0:"
 		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
 			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
-			// Get window position and size on macOS
+			// Get window position and size on macOS via AppleScript
 			boundsScript := fmt.Sprintf(`tell application "System Events" to tell process "%s" to get {position, size} of window 1`, appName)
 			ctxB, cancelB := context.WithTimeout(context.Background(), 1*time.Second)
 			outB, errB := exec.CommandContext(ctxB, "osascript", "-e", boundsScript).Output()
 			cancelB()
 
-			screenDev = "Capture screen 0"
+			screenDev = "Capture screen 0:"
 			if errB == nil && len(outB) > 0 {
 				clean := strings.ReplaceAll(strings.ReplaceAll(string(outB), "{", ""), "}", "")
 				parts := strings.Split(clean, ",")
@@ -763,13 +773,19 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 					y, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
 					w, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
 					h, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
-					if w > 50 && h > 50 && x >= 0 && y >= 0 {
+					if x < 0 {
+						x = 0
+					}
+					if y < 0 {
+						y = 0
+					}
+					if w > 50 && h > 50 {
 						// Ensure width, height, x, y are even numbers for yuv420p video format
 						w = (w / 2) * 2
 						h = (h / 2) * 2
 						x = (x / 2) * 2
 						y = (y / 2) * 2
-						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s:flags=bicubic", w, h, x, y, opt.Resolution)
+						scaleFilter = fmt.Sprintf("crop=min(iw\\,%d):min(ih\\,%d):min(iw-%d\\,%d):min(ih-%d\\,%d),scale=%s:flags=bicubic", w, h, w, x, h, y, scaleRes)
 					}
 				}
 			}
@@ -782,6 +798,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 		args = []string{
 			"-fflags", "nobuffer+flush_packets",
+			"-thread_queue_size", "512",
 			"-probesize", "32",
 			"-analyzeduration", "0",
 			"-f", "avfoundation",
@@ -899,9 +916,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--idle=yes",
 			"--keep-open=yes",
 			"--demuxer-lavf-format=mpegts",
-			"--demuxer-lavf-o=fflags=nobuffer+fastseek",
-			"--demuxer-lavf-probesize=32",
-			"--demuxer-lavf-analyzeduration=0",
+			"--demuxer-lavf-o=fflags=nobuffer+fastseek,probesize=32,analyzeduration=0",
 			"--demuxer-readahead-secs=0",
 			"--demuxer-max-bytes=100K",
 			"--demuxer-max-back-bytes=0",
