@@ -317,7 +317,7 @@ func getMacScreenDeviceIndex(binPath string, screenNum int) string {
 				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
 					numStr := strings.TrimSpace(part[idx1+1:])
 					if _, err := strconv.Atoi(numStr); err == nil {
-						return numStr + ":"
+						return numStr + ":none"
 					}
 				}
 			}
@@ -333,15 +333,15 @@ func getMacScreenDeviceIndex(binPath string, screenNum int) string {
 				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
 					numStr := strings.TrimSpace(part[idx1+1:])
 					if _, err := strconv.Atoi(numStr); err == nil {
-						return numStr + ":"
+						return numStr + ":none"
 					}
 				}
 			}
 		}
 	}
 
-	// 3. Fallback to 1:
-	return "1:"
+	// 3. Fallback to 1:none
+	return "1:none"
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -648,13 +648,12 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0",
-				"-crf", "20",
-				"-b:v", "6M",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "23",
 				"-maxrate", "8M",
-				"-bufsize", "2M",
+				"-bufsize", "16M",
 				"-pix_fmt", "yuv420p",
-				"-g", "15",
+				"-g", "30",
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
@@ -695,13 +694,12 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "22",
-				"-b:v", "6M",
-				"-maxrate", "6M",
-				"-bufsize", "6M",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "23",
+				"-maxrate", "8M",
+				"-bufsize", "16M",
 				"-pix_fmt", "yuv420p",
-				"-g", "15",
+				"-g", "30",
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
@@ -748,13 +746,12 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "22",
-				"-b:v", "6M",
-				"-maxrate", "6M",
-				"-bufsize", "6M",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "23",
+				"-maxrate", "8M",
+				"-bufsize", "16M",
 				"-pix_fmt", "yuv420p",
-				"-g", "15",
+				"-g", "30",
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
@@ -775,17 +772,18 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		if scaleRes == "" {
 			scaleRes = "1920:1080"
 		}
-		scaleFilter := fmt.Sprintf("scale=%s:flags=bicubic", scaleRes)
+		scaleFilter := fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes)
 
 		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
 			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
-			screenDev = devNum + ":"
+			screenDev = devNum + ":none"
 		} else if strings.HasPrefix(opt.WindowID, "mac_screen:") {
 			scrIdxStr := strings.TrimPrefix(opt.WindowID, "mac_screen:")
 			scrIdx, _ := strconv.Atoi(scrIdxStr)
 			screenDev = getMacScreenDeviceIndex(binPath, scrIdx)
 		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
 			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
+			screenDev = getMacScreenDeviceIndex(binPath, 0)
 			// Get window position and size on macOS
 			boundsScript := fmt.Sprintf(`tell application "System Events" to tell process "%s" to get {position, size} of window 1`, appName)
 			ctxB, cancelB := context.WithTimeout(context.Background(), 1*time.Second)
@@ -805,7 +803,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 						h = (h / 2) * 2
 						x = (x / 2) * 2
 						y = (y / 2) * 2
-						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s:flags=bicubic", w, h, x, y, scaleRes)
+						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s:flags=bicubic,format=yuv420p", w, h, x, y, scaleRes)
 					}
 				}
 			}
@@ -826,13 +824,12 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-			"-crf", "22",
-			"-b:v", "6M",
-			"-maxrate", "6M",
-			"-bufsize", "6M",
+			"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+			"-crf", "23",
+			"-maxrate", "8M",
+			"-bufsize", "16M",
 			"-pix_fmt", "yuv420p",
-			"-g", "15",
+			"-g", "30",
 			"-bf", "0",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
@@ -928,12 +925,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
-			"--untimed=yes",
 			"--cache=no",
 			"--no-cache",
 			"--hwdec=auto-safe",
 			"--video-sync=desync",
-			"--framedrop=decoder+vo",
+			"--framedrop=vo",
 			"--force-window=yes",
 			"--idle=yes",
 			"--keep-open=yes",
