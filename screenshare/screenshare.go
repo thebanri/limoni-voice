@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // LogCallback is optional hook to receive internal screenshare logs
@@ -138,7 +139,40 @@ func ListWindows() []WindowInfo {
 }
 
 func getMacScreenDevice(binPath string) string {
-	return "Capture screen 0:none"
+	if binPath == "" {
+		binPath = "ffmpeg"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binPath, "-f", "avfoundation", "-list_devices", "true", "-i", "")
+	out, err := cmd.CombinedOutput()
+	outStr := string(out)
+	logMsg("[DARWIN] FFmpeg -list_devices output (err: %v):\n%s", err, outStr)
+
+	lines := strings.Split(outStr, "\n")
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "capture screen") {
+			idxClose := strings.Index(line, "]")
+			rest := line
+			if idxClose != -1 {
+				rest = line[idxClose+1:]
+			}
+			idx2Open := strings.Index(rest, "[")
+			idx2Close := strings.Index(rest, "]")
+			if idx2Open != -1 && idx2Close != -1 && idx2Close > idx2Open {
+				numStr := strings.TrimSpace(rest[idx2Open+1 : idx2Close])
+				if _, err := strconv.Atoi(numStr); err == nil {
+					res := numStr + ":none"
+					logMsg("[DARWIN] Selected screen device index: '%s' from line: %s", res, strings.TrimSpace(line))
+					return res
+				}
+			}
+		}
+	}
+	logMsg("[DARWIN] Fallback to device '3:none'")
+	return "3:none"
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -577,6 +611,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 		args = []string{
 			"-f", "avfoundation",
+			"-capture_cursor", "1",
+			"-pixel_format", "uyvy422",
 			"-i", screenDev,
 			"-vf", fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes),
 			"-r", fmt.Sprintf("%d", fps),
