@@ -1,6 +1,7 @@
 package screenshare
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -611,6 +612,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		args = []string{
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
+			"-framerate", fmt.Sprintf("%d", fps),
+			"-pixel_format", "bgr0",
 			"-i", screenDev,
 			"-vf", fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes),
 			"-r", fmt.Sprintf("%d", fps),
@@ -627,6 +630,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
 			"-mpegts_flags", "+latm+pat_pmt_at_frames",
+			"-pcr_period", "20",
+			"-flush_packets", "1",
 			targetURL,
 		}
 
@@ -662,7 +667,22 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		cmd.Stdout = nil
 	}
 	stderrBuf := &bytes.Buffer{}
-	cmd.Stderr = stderrBuf
+	stderrPipe, errP := cmd.StderrPipe()
+	if errP == nil {
+		go func() {
+			scanner := bufio.NewScanner(stderrPipe)
+			for scanner.Scan() {
+				text := scanner.Text()
+				stderrBuf.WriteString(text + "\n")
+				trimmed := strings.TrimSpace(text)
+				if trimmed != "" {
+					logMsg("[FFMPEG-LIVE] %s", trimmed)
+				}
+			}
+		}()
+	} else {
+		cmd.Stderr = stderrBuf
+	}
 
 	s := &Session{
 		cmd:       cmd,
@@ -767,7 +787,22 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	cmd.Stdout = nil
 	stderrBuf := &bytes.Buffer{}
-	cmd.Stderr = stderrBuf
+	stderrPipe, errP := cmd.StderrPipe()
+	if errP == nil {
+		go func() {
+			scanner := bufio.NewScanner(stderrPipe)
+			for scanner.Scan() {
+				text := scanner.Text()
+				stderrBuf.WriteString(text + "\n")
+				trimmed := strings.TrimSpace(text)
+				if trimmed != "" {
+					logMsg("[MPV-LIVE] %s", trimmed)
+				}
+			}
+		}()
+	} else {
+		cmd.Stderr = stderrBuf
+	}
 	setupProcessGroup(cmd)
 
 	s := &Session{
