@@ -92,13 +92,13 @@ func main() {
 	targetMpv := filepath.Join(binDir, "mpv.exe")
 	if !fileExists(targetMpv) && !commandExists("mpv.exe") {
 		fmt.Println("[*] Checking MPV Player (for stream viewing)...")
-		cmd := exec.Command("winget", "install", "mpv.mpv", "--accept-source-agreements", "--accept-package-agreements")
+		cmd := exec.Command("winget", "install", "-e", "--id", "shinchiro.mpv", "--accept-source-agreements", "--accept-package-agreements")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Println("[-] Failed to install MPV via winget. Opening alternative installer...")
-		} else {
-			fmt.Println("[✓] MPV installed successfully.")
+			// Fallback to mpv.net if shinchiro is unavailable
+			cmdFallback := exec.Command("winget", "install", "-e", "--id", "mpv.net", "--accept-source-agreements", "--accept-package-agreements")
+			_ = cmdFallback.Run()
 		}
 	} else {
 		fmt.Println("[✓] MPV Player already installed.")

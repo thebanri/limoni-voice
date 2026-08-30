@@ -138,9 +138,17 @@ limoni-voice/
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
-> - **🪟 Windows (winget)**:
+> - **🪟 Windows (winget / choco / scoop)**:
 >   ```powershell
->   winget install Gyan.FFmpeg mpv.mpv
+>   # winget ile
+>   winget install -e --id Gyan.FFmpeg
+>   winget install -e --id shinchiro.mpv
+>
+>   # veya Chocolatey ile
+>   choco install ffmpeg mpv
+>
+>   # veya Scoop ile
+>   scoop install ffmpeg mpv
 >   ```
 >   *(Not: `Limoni-Voice-Setup_windows_amd64.exe` kurulum sihirbazı bunları sizin için otomatik olarak da kurabilir).*
 > - **🐧 Linux (Debian / Ubuntu / Arch)**:
@@ -187,13 +195,45 @@ go build -o limoni-voice .
 irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
 ```
 
-### Docker ile Relay Sunucusu
+### Docker ile Kendi Relay Sunucunuzu Barındırma
 
 ```bash
-# Kendi relay sunucunuzu barındırmak için
+# 1. Kendi WebSocket relay sunucusu konteynerinizi başlatın
 docker build -t limoni-relay .
-docker run -p 8080:8080 limoni-relay
+docker run -d --name limoni-relay -p 8080:8080 limoni-relay
+
+# 2. İstemcileri kendi sunucunuza bağlayın
+./limoni-voice --relay ws://192.168.1.100:8080/ws
+
+# Alternatif olarak ortam değişkeniyle tanımlayın:
+export LIMONI_RELAY_URL="ws://192.168.1.100:8080/ws"
+./limoni-voice
 ```
+
+### LAN Modu (Çevrimdışı / İnternetsiz Yerel Ağ)
+
+Limoni Voice'u internet erişimi olmayan izole yerel ağlarda çalıştırmak için:
+
+```bash
+# Doğrudan LAN P2P modunda başlat (Relay sunucusu devre dışı bırakılır)
+./limoni-voice --lan
+
+# Veya ortam değişkeniyle:
+export LIMONI_LAN_ONLY=1
+./limoni-voice
+```
+
+---
+
+## ⚙️ Komut Satırı Parametreleri & Konfigürasyon
+
+| Parametre | Ortam Değişkeni | Varsayılan | Açıklama |
+|-----------|-----------------|------------|----------|
+| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Kendi relay sunucunuzun WebSocket adresi |
+| `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Sadece yerel ağ modunu zorlar (internet relay'i kapatır) |
+| `--offline` | `LIMONI_OFFLINE` | `false` | `--lan` parametresinin takma adı |
+| `--version` | - | - | Sürüm bilgisini gösterir |
+| `--help`, `-h` | - | - | Yardım ve kullanım parametrelerini listeler |
 
 ---
 

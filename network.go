@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,19 +50,20 @@ const (
 )
 
 type P2PPacket struct {
-	Type       PacketType
-	RoomCode   string
-	SenderID   string
-	Nickname   string
-	IsMuted    bool
-	IsDeafened bool
-	Speaking   bool
-	RMS        float64
-	Seq        uint32
-	Timestamp  int64
+	Type            PacketType
+	RoomCode        string
+	SenderID        string
+	Nickname        string
+	IsMuted         bool
+	IsDeafened      bool
+	Speaking        bool
+	RMS             float64
+	Seq             uint32
+	Timestamp       int64
 	Payload         []byte
 	IsSharingScreen bool
 	VideoPort       int           // Port used for UDP screen streaming
+	LocalPort       int           // Local listening UDP port of the sender
 	Peers           []PeerSummary // for Welcome message
 }
 
@@ -69,6 +71,7 @@ type PeerSummary struct {
 	ID              string
 	Nickname        string
 	AddrStr         string
+	LocalPort       int
 	IsMuted         bool
 	IsDeafened      bool
 	IsSharingScreen bool
@@ -79,6 +82,7 @@ type PeerInfo struct {
 	ID              string
 	Nickname        string
 	Addr            *net.UDPAddr
+	LocalPort       int
 	PingMs          int64
 	LastSeen        time.Time
 	IsMuted         bool
@@ -139,6 +143,7 @@ type P2PNode struct {
 	bcastSendConn *net.UDPConn
 	// WebSocket Relay for internet-wide P2P forwarding
 	RelayURL         string
+	LanOnly          bool
 	wsConn           *websocket.Conn
 	wsSendCh         chan []byte
 	wsMu             sync.Mutex
@@ -162,12 +167,20 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 	if relayURL == "" {
 		relayURL = DefaultRelayURL
 	}
+	lanOnly := false
+	if val := strings.ToLower(os.Getenv("LIMONI_LAN_ONLY")); val == "1" || val == "true" || val == "yes" {
+		lanOnly = true
+	}
+	if val := strings.ToLower(os.Getenv("LIMONI_OFFLINE")); val == "1" || val == "true" || val == "yes" {
+		lanOnly = true
+	}
 	// Create a dedicated UDP socket for sending broadcasts (avoids SO_BROADCAST issues on Windows)
 	bcastConn, _ := net.ListenUDP("udp4", &net.UDPAddr{Port: 0})
 	return &P2PNode{
 		LocalID:       localID,
 		Nickname:      nickname,
 		RelayURL:      relayURL,
+		LanOnly:       lanOnly,
 		Peers:         make(map[string]*PeerInfo),
 		audio:         audio,
 		stopChan:      make(chan struct{}),
@@ -257,7 +270,11 @@ func (n *P2PNode) HostRoom(roomCode string) {
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
 
-	n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | E2EE Secure)", n.RoomCode, n.Port))
+	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
+		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | LAN Mode)", n.RoomCode, n.Port))
+	} else {
+		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | E2EE Secure)", n.RoomCode, n.Port))
+	}
 	n.broadcastHello()
 	n.connectRelay("host", n.RoomCode)
 }
@@ -299,7 +316,11 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.OnJoinFailed = onFailed
 	n.mu.Unlock()
 
-	n.log(fmt.Sprintf("[⏳] Searching room '%s' and verifying host...", cleanCode))
+	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
+		n.log(fmt.Sprintf("[⏳] Searching room '%s' on local network (LAN)...", cleanCode))
+	} else {
+		n.log(fmt.Sprintf("[⏳] Searching room '%s' and verifying host...", cleanCode))
+	}
 
 	// Connect to internet relay server for cross-network join
 	n.connectRelay("join", cleanCode)
@@ -424,7 +445,7 @@ func (n *P2PNode) LeaveRoom() {
 func (n *P2PNode) connectRelay(action string, roomCode string) {
 	n.mu.Lock()
 	relayURL := n.RelayURL
-	if relayURL == "" {
+	if n.LanOnly || relayURL == "" || strings.EqualFold(relayURL, "none") || strings.EqualFold(relayURL, "off") {
 		n.mu.Unlock()
 		return
 	}
@@ -1043,6 +1064,7 @@ func (n *P2PNode) SendScreenShareState(isSharing bool, videoPort int) {
 		RoomCode:        room,
 		SenderID:        n.LocalID,
 		Nickname:        n.Nickname,
+		LocalPort:       n.Port,
 		IsSharingScreen: isSharing,
 		VideoPort:       videoPort,
 		Timestamp:       time.Now().UnixMilli(),
@@ -1054,6 +1076,7 @@ func (n *P2PNode) broadcastJoinRequest() {
 	n.mu.RLock()
 	room := n.ConnectTargetRoom
 	isConnecting := n.Connecting
+	localPort := n.Port
 	n.mu.RUnlock()
 
 	if !isConnecting || room == "" {
@@ -1065,6 +1088,7 @@ func (n *P2PNode) broadcastJoinRequest() {
 		RoomCode:   room,
 		SenderID:   n.LocalID,
 		Nickname:   n.Nickname,
+		LocalPort:  localPort,
 		IsMuted:    n.audio.Muted,
 		IsDeafened: n.audio.Deafened,
 		Timestamp:  time.Now().UnixMilli(),
@@ -1075,13 +1099,13 @@ func (n *P2PNode) broadcastJoinRequest() {
 		if p != n.Port {
 			raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", p))
 			if err == nil {
-				n.sendPacketTo(raddr, &pkt)
+				n.sendDirectUDPPacket(raddr, &pkt)
 			}
 		}
 	}
 
 	// 2. Send via LAN broadcast 255.255.255.255 to common ports
-	for p := 50000; p <= 50010; p++ {
+	for p := 50000; p <= 50020; p++ {
 		n.sendBroadcastPacket(&pkt, p)
 	}
 	n.sendBroadcastPacket(&pkt, 45454)
@@ -1111,11 +1135,15 @@ func (n *P2PNode) broadcastJoinRequest() {
 						ip[2]|^mask[2],
 						ip[3]|^mask[3],
 					)
-					for p := 50000; p <= 50005; p++ {
+					for p := 50000; p <= 50020; p++ {
 						baddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", bcast.String(), p))
 						if err == nil {
-							n.sendPacketTo(baddr, &pkt)
+							n.sendDirectUDPPacket(baddr, &pkt)
 						}
+					}
+					baddr45454, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", bcast.String(), 45454))
+					if err == nil {
+						n.sendDirectUDPPacket(baddr45454, &pkt)
 					}
 				}
 			}
@@ -1127,6 +1155,7 @@ func (n *P2PNode) broadcastHello() {
 	n.mu.RLock()
 	room := n.RoomCode
 	isConnected := n.IsConnected
+	localPort := n.Port
 	n.mu.RUnlock()
 
 	if !isConnected || room == "" {
@@ -1138,6 +1167,7 @@ func (n *P2PNode) broadcastHello() {
 		RoomCode:   room,
 		SenderID:   n.LocalID,
 		Nickname:   n.Nickname,
+		LocalPort:  localPort,
 		IsMuted:    n.audio.Muted,
 		IsDeafened: n.audio.Deafened,
 		Timestamp:  time.Now().UnixMilli(),
@@ -1148,13 +1178,13 @@ func (n *P2PNode) broadcastHello() {
 		if p != n.Port {
 			raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", p))
 			if err == nil {
-				n.sendPacketTo(raddr, &pkt)
+				n.sendDirectUDPPacket(raddr, &pkt)
 			}
 		}
 	}
 
 	// 2. Send via LAN broadcast 255.255.255.255 to common ports (best-effort)
-	for p := 50000; p <= 50010; p++ {
+	for p := 50000; p <= 50020; p++ {
 		n.sendBroadcastPacket(&pkt, p)
 	}
 	n.sendBroadcastPacket(&pkt, 45454)
@@ -1184,11 +1214,15 @@ func (n *P2PNode) broadcastHello() {
 						ip[2]|^mask[2],
 						ip[3]|^mask[3],
 					)
-					for p := 50000; p <= 50005; p++ {
+					for p := 50000; p <= 50020; p++ {
 						baddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", bcast.String(), p))
 						if err == nil {
-							n.sendPacketTo(baddr, &pkt)
+							n.sendDirectUDPPacket(baddr, &pkt)
 						}
+					}
+					baddr45454, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", bcast.String(), 45454))
+					if err == nil {
+						n.sendDirectUDPPacket(baddr45454, &pkt)
 					}
 				}
 			}
@@ -1199,6 +1233,9 @@ func (n *P2PNode) broadcastHello() {
 func (n *P2PNode) sendBroadcastPacket(pkt *P2PPacket, port int) {
 	n.mu.RLock()
 	aead := n.aead
+	if pkt.LocalPort == 0 {
+		pkt.LocalPort = n.Port
+	}
 	n.mu.RUnlock()
 
 	if aead == nil || n.Conn == nil {
@@ -1228,6 +1265,9 @@ func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
 	aead := n.aead
 	wsSendCh := n.wsSendCh
 	isRelay := n.isRelayConnected
+	if pkt.LocalPort == 0 {
+		pkt.LocalPort = n.Port
+	}
 	n.mu.RUnlock()
 
 	if aead == nil {
@@ -1258,6 +1298,9 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 	aead := n.aead
 	wsSendCh := n.wsSendCh
 	isRelay := n.isRelayConnected
+	if pkt.LocalPort == 0 {
+		pkt.LocalPort = n.Port
+	}
 	if aead == nil || (len(n.Peers) == 0 && !isRelay) {
 		n.mu.RUnlock()
 		return
@@ -1386,6 +1429,15 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		return
 	}
 
+	var peerAddr *net.UDPAddr
+	if raddr != nil {
+		peerPort := raddr.Port
+		if pkt.LocalPort > 0 {
+			peerPort = pkt.LocalPort
+		}
+		peerAddr = &net.UDPAddr{IP: raddr.IP, Port: peerPort}
+	}
+
 	// Auto-register or refresh peer on any valid authenticated packet from this room
 	if pkt.Type != PacketJoinRequest && pkt.Type != PacketRoomFull && pkt.Type != PacketLeave {
 		if n.IsConnected {
@@ -1399,7 +1451,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					peer = &PeerInfo{
 						ID:         pkt.SenderID,
 						Nickname:   nick,
-						Addr:       raddr,
+						Addr:       peerAddr,
+						LocalPort:  pkt.LocalPort,
 						LastSeen:   time.Now(),
 						IsMuted:    pkt.IsMuted,
 						IsDeafened: pkt.IsDeafened,
@@ -1411,12 +1464,15 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					}
 				}
 			} else {
-				if raddr != nil {
-					peer.Addr = raddr
+				if peerAddr != nil {
+					peer.Addr = peerAddr
 				}
 				peer.LastSeen = time.Now()
 				if pkt.Nickname != "" {
 					peer.Nickname = pkt.Nickname
+				}
+				if pkt.LocalPort > 0 {
+					peer.LocalPort = pkt.LocalPort
 				}
 				peer.IsMuted = pkt.IsMuted
 				peer.IsDeafened = pkt.IsDeafened
@@ -1438,9 +1494,12 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				RoomCode:  n.RoomCode,
 				SenderID:  n.LocalID,
 				Nickname:  n.Nickname,
+				LocalPort: n.Port,
 				Timestamp: time.Now().UnixMilli(),
 			}
-			go n.sendPacketTo(raddr, &fullPkt)
+			if peerAddr != nil {
+				go n.sendDirectUDPPacket(peerAddr, &fullPkt)
+			}
 			return
 		}
 
@@ -1449,7 +1508,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			peer = &PeerInfo{
 				ID:         pkt.SenderID,
 				Nickname:   pkt.Nickname,
-				Addr:       raddr,
+				Addr:       peerAddr,
+				LocalPort:  pkt.LocalPort,
 				LastSeen:   time.Now(),
 				IsMuted:    pkt.IsMuted,
 				IsDeafened: pkt.IsDeafened,
@@ -1460,11 +1520,14 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				go n.OnPeerEvent("join", peer)
 			}
 		} else {
-			if raddr != nil {
-				peer.Addr = raddr
+			if peerAddr != nil {
+				peer.Addr = peerAddr
 			}
 			peer.LastSeen = time.Now()
 			peer.Nickname = pkt.Nickname
+			if pkt.LocalPort > 0 {
+				peer.LocalPort = pkt.LocalPort
+			}
 			peer.IsMuted = pkt.IsMuted
 			peer.IsDeafened = pkt.IsDeafened
 		}
@@ -1481,6 +1544,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					ID:         p.ID,
 					Nickname:   p.Nickname,
 					AddrStr:    addrStr,
+					LocalPort:  p.LocalPort,
 					IsMuted:    p.IsMuted,
 					IsDeafened: p.IsDeafened,
 				})
@@ -1492,12 +1556,15 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			RoomCode:   n.RoomCode,
 			SenderID:   n.LocalID,
 			Nickname:   n.Nickname,
+			LocalPort:  n.Port,
 			IsMuted:    n.audio.Muted,
 			IsDeafened: n.audio.Deafened,
 			Peers:      summaries,
 			Timestamp:  time.Now().UnixMilli(),
 		}
-		go n.sendPacketTo(raddr, &welcomePkt)
+		if peerAddr != nil {
+			go n.sendDirectUDPPacket(peerAddr, &welcomePkt)
+		}
 
 	case PacketHello:
 		// If we're a Joiner still searching and we see a Hello from an active host
@@ -1510,11 +1577,14 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					RoomCode:   room,
 					SenderID:   n.LocalID,
 					Nickname:   n.Nickname,
+					LocalPort:  n.Port,
 					IsMuted:    n.audio.Muted,
 					IsDeafened: n.audio.Deafened,
 					Timestamp:  time.Now().UnixMilli(),
 				}
-				go n.sendPacketTo(raddr, &joinPkt)
+				if peerAddr != nil {
+					go n.sendDirectUDPPacket(peerAddr, &joinPkt)
+				}
 			}
 			return
 		}
@@ -1534,6 +1604,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					ID:         p.ID,
 					Nickname:   p.Nickname,
 					AddrStr:    addrStr,
+					LocalPort:  p.LocalPort,
 					IsMuted:    p.IsMuted,
 					IsDeafened: p.IsDeafened,
 				})
@@ -1545,12 +1616,15 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			RoomCode:   n.RoomCode,
 			SenderID:   n.LocalID,
 			Nickname:   n.Nickname,
+			LocalPort:  n.Port,
 			IsMuted:    n.audio.Muted,
 			IsDeafened: n.audio.Deafened,
 			Peers:      summaries,
 			Timestamp:  time.Now().UnixMilli(),
 		}
-		go n.sendPacketTo(raddr, &welcomePkt)
+		if peerAddr != nil {
+			go n.sendDirectUDPPacket(peerAddr, &welcomePkt)
+		}
 
 	case PacketWelcome:
 		// If client was waiting to connect to an open room:
@@ -1569,7 +1643,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			hostPeer := &PeerInfo{
 				ID:         pkt.SenderID,
 				Nickname:   pkt.Nickname,
-				Addr:       raddr,
+				Addr:       peerAddr,
+				LocalPort:  pkt.LocalPort,
 				LastSeen:   time.Now(),
 				IsMuted:    pkt.IsMuted,
 				IsDeafened: pkt.IsDeafened,
@@ -1583,11 +1658,14 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					var pAddr *net.UDPAddr
 					if pSum.AddrStr != "" {
 						pAddr, _ = net.ResolveUDPAddr("udp4", pSum.AddrStr)
+					} else if peerAddr != nil && pSum.LocalPort > 0 {
+						pAddr = &net.UDPAddr{IP: peerAddr.IP, Port: pSum.LocalPort}
 					}
 					newPeer := &PeerInfo{
 						ID:         pSum.ID,
 						Nickname:   pSum.Nickname,
 						Addr:       pAddr,
+						LocalPort:  pSum.LocalPort,
 						LastSeen:   time.Now(),
 						IsMuted:    pSum.IsMuted,
 						IsDeafened: pSum.IsDeafened,
@@ -1599,11 +1677,12 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 							RoomCode:   n.RoomCode,
 							SenderID:   n.LocalID,
 							Nickname:   n.Nickname,
+							LocalPort:  n.Port,
 							IsMuted:    n.audio.Muted,
 							IsDeafened: n.audio.Deafened,
 							Timestamp:  time.Now().UnixMilli(),
 						}
-						go n.sendPacketTo(pAddr, &helloPkt)
+						go n.sendDirectUDPPacket(pAddr, &helloPkt)
 					}
 				}
 			}

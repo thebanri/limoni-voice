@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/rand"
+	"errors"
+	"flag"
 	"fmt"
 	"math/big"
 	"os"
@@ -22,7 +24,65 @@ const (
 	ScreenRoom
 )
 
+func printUsage() {
+	fmt.Println(`🍋 Limoni Voice - Terminal-Native P2P Voice Chat & Screen Sharing
+
+Usage:
+  limoni-voice [flags]
+
+Flags:
+  --relay <url>       Custom WebSocket relay URL for self-hosted servers
+                      Example: --relay ws://192.168.1.100:8080/ws
+                      (Set to 'none' or 'off' to disable relay)
+  --lan, --lan-only   Force LAN-only offline mode (disables relay, direct P2P on local network)
+  --offline           Alias for --lan
+  --version           Show version information
+  --help, -h          Show this help message
+
+Environment Variables:
+  LIMONI_RELAY_URL    Override default WebSocket relay URL
+  LIMONI_LAN_ONLY     Set to 1 / true to enable LAN-only mode by default
+  LIMONI_OFFLINE      Set to 1 / true to enable offline mode
+
+Examples:
+  # Standard launch (connects to default public relay + LAN auto-discovery):
+  limoni-voice
+
+  # Connect using your self-hosted Docker relay server:
+  limoni-voice --relay ws://192.168.1.100:8080/ws
+
+  # Force LAN-only direct P2P communication without internet access:
+  limoni-voice --lan`)
+}
+
 func main() {
+	var (
+		flagRelay   = flag.String("relay", "", "Custom WebSocket relay URL (e.g. ws://192.168.1.100:8080/ws, or 'none' for LAN only)")
+		flagLAN     = flag.Bool("lan", false, "Force LAN-only offline mode (disables relay connection)")
+		flagLANOnly = flag.Bool("lan-only", false, "Alias for -lan")
+		flagOffline = flag.Bool("offline", false, "Alias for -lan")
+		flagHelp    = flag.Bool("help", false, "Show help and usage instructions")
+		flagVersion = flag.Bool("version", false, "Show version information")
+	)
+	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
+	flag.CommandLine.SetOutput(os.Stdout)
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+
+	if *flagHelp {
+		printUsage()
+		os.Exit(0)
+	}
+
+	if *flagVersion {
+		fmt.Println("Limoni Voice v1.0.0 (Go 1.24+ | E2EE AES-256-GCM | P2P Full-Mesh)")
+		os.Exit(0)
+	}
+
 	b := backend.NewBackend(os.Stdin, os.Stdout)
 	if err := b.Setup(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing terminal backend: %v\n", err)
@@ -46,6 +106,18 @@ func main() {
 
 	audio := NewAudioEngine()
 	node := NewP2PNode(localID, "User", audio)
+	if *flagLAN || *flagLANOnly || *flagOffline {
+		node.LanOnly = true
+		node.RelayURL = ""
+	} else if *flagRelay != "" {
+		if strings.EqualFold(*flagRelay, "none") || strings.EqualFold(*flagRelay, "off") {
+			node.LanOnly = true
+			node.RelayURL = ""
+		} else {
+			node.RelayURL = *flagRelay
+		}
+	}
+
 	if err := node.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting P2P node: %v\n", err)
 		os.Exit(1)
@@ -185,7 +257,7 @@ func main() {
 		node.Nickname = nick
 		lobby.IsConnecting = true
 		lobby.ConnectingTarget = cleanCode
-		lobby.SetToast(fmt.Sprintf("'%s' odasi araniyor ve host dogrulaniyor...", cleanCode))
+		lobby.SetToast(fmt.Sprintf("Searching for room '%s' and verifying host...", cleanCode))
 
 		node.RequestJoinRoom(cleanCode, 8*time.Second,
 			func(hostNick string) {

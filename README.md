@@ -138,9 +138,17 @@ limoni-voice/
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
-> - **🪟 Windows (winget)**:
+> - **🪟 Windows (winget / choco / scoop)**:
 >   ```powershell
->   winget install Gyan.FFmpeg mpv.mpv
+>   # via winget
+>   winget install -e --id Gyan.FFmpeg
+>   winget install -e --id shinchiro.mpv
+>
+>   # or via Chocolatey
+>   choco install ffmpeg mpv
+>
+>   # or via Scoop
+>   scoop install ffmpeg mpv
 >   ```
 >   *(Note: The `Limoni-Voice-Setup_windows_amd64.exe` installer can also configure these automatically).*
 > - **🐧 Linux (Debian / Ubuntu / Arch)**:
@@ -190,10 +198,42 @@ irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install
 ### Self-Hosted Relay Server (Docker)
 
 ```bash
-# Host your own WebSocket relay server
+# 1. Run your own WebSocket relay server container
 docker build -t limoni-relay .
-docker run -p 8080:8080 limoni-relay
+docker run -d --name limoni-relay -p 8080:8080 limoni-relay
+
+# 2. Connect clients to your custom relay server
+./limoni-voice --relay ws://192.168.1.100:8080/ws
+
+# Alternatively, set the environment variable:
+export LIMONI_RELAY_URL="ws://192.168.1.100:8080/ws"
+./limoni-voice
 ```
+
+### LAN-Only / Offline Mode
+
+To use Limoni Voice on an isolated local network (no internet connection required):
+
+```bash
+# Force LAN-only direct peer-to-peer mode
+./limoni-voice --lan
+
+# Or via environment variable:
+export LIMONI_LAN_ONLY=1
+./limoni-voice
+```
+
+---
+
+## ⚙️ CLI Flags & Configuration
+
+| Flag | Env Variable | Default | Description |
+|------|--------------|---------|-------------|
+| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Custom WebSocket relay URL for self-hosted servers |
+| `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Force LAN-only offline mode (disables internet relay) |
+| `--offline` | `LIMONI_OFFLINE` | `false` | Alias for `--lan` |
+| `--version` | - | - | Print version information and exit |
+| `--help`, `-h` | - | - | Show help message and usage instructions |
 
 ---
 

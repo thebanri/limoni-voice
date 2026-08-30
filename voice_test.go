@@ -238,6 +238,64 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	}
 }
 
+func TestP2PLANOnlyModeDirectDiscovery(t *testing.T) {
+	audio1 := NewAudioEngine()
+	node1 := NewP2PNode("lan_node_1", "HostAlice", audio1)
+	node1.LanOnly = true
+	node1.RelayURL = ""
+	if err := node1.Start(); err != nil {
+		t.Fatalf("Node1 start failed: %v", err)
+	}
+	defer func() {
+		if node1.Conn != nil {
+			node1.Conn.Close()
+		}
+	}()
+
+	audio2 := NewAudioEngine()
+	node2 := NewP2PNode("lan_node_2", "JoinerBob", audio2)
+	node2.LanOnly = true
+	node2.RelayURL = ""
+	if err := node2.Start(); err != nil {
+		t.Fatalf("Node2 start failed: %v", err)
+	}
+	defer func() {
+		if node2.Conn != nil {
+			node2.Conn.Close()
+		}
+	}()
+
+	room := "9912-silent-falcon"
+	node1.HostRoom(room)
+
+	joinedSuccess := false
+	var joinedHost string
+	node2.RequestJoinRoom(room, 2*time.Second, func(hostNick string) {
+		joinedSuccess = true
+		joinedHost = hostNick
+	}, func(reason string) {
+		t.Errorf("Unexpected LAN join failure: %s", reason)
+	})
+
+	deadline := time.Now().Add(1 * time.Second)
+	connected := false
+	for time.Now().Before(deadline) {
+		if len(node1.GetPeersList()) > 0 && len(node2.GetPeersList()) > 0 && joinedSuccess {
+			connected = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !connected {
+		t.Fatalf("LAN nodes failed to discover each other! node1 peers: %d, node2 peers: %d, joinedSuccess: %v",
+			len(node1.GetPeersList()), len(node2.GetPeersList()), joinedSuccess)
+	}
+	if joinedHost != "HostAlice" {
+		t.Fatalf("Expected HostAlice, got %s", joinedHost)
+	}
+}
+
 func TestJoinClosedRoomFails(t *testing.T) {
 	audio := NewAudioEngine()
 	node := NewP2PNode("lonely_node", "Charlie", audio)
