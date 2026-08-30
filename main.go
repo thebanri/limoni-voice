@@ -216,8 +216,8 @@ func main() {
 			return
 		}
 
-		if runtime.GOOS == "linux" {
-			// On Linux, directly launch gpu-screen-recorder native system portal picker
+		if runtime.GOOS != "windows" {
+			// On Linux & macOS, directly launch screen broadcasting
 			room.SetToast("🎬 Starting screen share...")
 			go func() {
 				err := node.StartScreenShare("", 50100)
@@ -230,7 +230,7 @@ func main() {
 			return
 		}
 
-		// On Windows & macOS, open TUI selection modal
+		// On Windows, open TUI selection modal
 		screenShareTargets = screenshare.ListWindows()
 		if len(screenShareTargets) == 0 {
 			screenShareTargets = []screenshare.WindowInfo{
