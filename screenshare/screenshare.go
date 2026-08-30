@@ -606,7 +606,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	targetURL := "-"
 	if !usePipe {
-		targetURL = fmt.Sprintf("udp://%s:%d?pkt_size=1316", targetIP, port)
+		targetURL = fmt.Sprintf("udp://%s:%d?pkt_size=940&buffer_size=4194304", targetIP, port)
 	}
 
 	var binPath string
@@ -930,7 +930,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--demuxer-max-bytes=100K",
 			"--demuxer-max-back-bytes=0",
 			"--demuxer-lavf-format=mpegts",
-			"--demuxer-lavf-o=fflags=nobuffer+flush_packets",
+			"--demuxer-lavf-o=fflags=nobuffer+flush_packets,probesize=32,analyzeduration=0",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
 		}
