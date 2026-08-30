@@ -131,7 +131,7 @@ func getMacScreenDevice(binPath string) string {
 	if binPath == "" {
 		binPath = "ffmpeg"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binPath, "-f", "avfoundation", "-list_devices", "true", "-i", "")
@@ -141,15 +141,19 @@ func getMacScreenDevice(binPath string) string {
 	lines := strings.Split(outStr, "\n")
 	for _, line := range lines {
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "capture screen") || (strings.Contains(lower, "screen") && strings.Contains(line, "[")) {
+		if strings.Contains(lower, "capture screen") {
 			// Extract device number e.g. "[AVFoundation indev @ ...] [1] Capture screen 0"
-			parts := strings.Split(line, "]")
-			for _, part := range parts {
-				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
-					numStr := strings.TrimSpace(part[idx1+1:])
-					if _, err := strconv.Atoi(numStr); err == nil {
-						return numStr + ":none"
-					}
+			idxClose := strings.Index(line, "]")
+			rest := line
+			if idxClose != -1 {
+				rest = line[idxClose+1:]
+			}
+			idx2Open := strings.Index(rest, "[")
+			idx2Close := strings.Index(rest, "]")
+			if idx2Open != -1 && idx2Close != -1 && idx2Close > idx2Open {
+				numStr := strings.TrimSpace(rest[idx2Open+1 : idx2Close])
+				if _, err := strconv.Atoi(numStr); err == nil {
+					return numStr + ":none"
 				}
 			}
 		}
@@ -419,7 +423,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	targetURL := "-"
 	if !usePipe {
-		targetURL = fmt.Sprintf("udp://%s:%d?pkt_size=940&buffer_size=4194304", targetIP, port)
+		targetURL = fmt.Sprintf("udp://%s:%d?pkt_size=940", targetIP, port)
 	}
 
 	var binPath string
@@ -576,14 +580,14 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	case "darwin":
 		p, err := FindExecutable("ffmpeg")
 		if err != nil {
-			return nil, errors.New("'ffmpeg' is required on macOS for screen sharing (avfoundation)")
+			return nil, errors.New("'ffmpeg' is required on macOS for screen sharing (brew install ffmpeg)")
 		}
 		binPath = p
 
 		screenDev := getMacScreenDevice(binPath)
-		scaleFilter := fmt.Sprintf("scale=%s", opt.Resolution)
-		if scaleFilter == "scale=" {
-			scaleFilter = "scale=1920:1080"
+		scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
+		if scaleRes == "" {
+			scaleRes = "1920:1080"
 		}
 
 		fps := opt.FPS
@@ -592,12 +596,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 
 		args = []string{
-			"-fflags", "nobuffer+flush_packets",
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
-			"-framerate", fmt.Sprintf("%d", fps),
 			"-i", screenDev,
-			"-vf", scaleFilter,
+			"-vf", fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes),
+			"-r", fmt.Sprintf("%d", fps),
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",

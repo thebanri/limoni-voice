@@ -245,6 +245,10 @@ func main() {
 		room.AddLog(msg)
 		if currentScreen == ScreenLobby {
 			lobby.SetToast(msg)
+		} else {
+			if strings.HasPrefix(msg, "⚠️") || strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "📺") || strings.HasPrefix(msg, "⏹️") || strings.HasPrefix(msg, "🎬") {
+				room.SetToast(msg)
+			}
 		}
 	}
 
