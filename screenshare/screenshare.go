@@ -42,7 +42,7 @@ type WindowInfo struct {
 // ListWindows returns active shareable screen and monitor targets
 func ListWindows() []WindowInfo {
 	targets := []WindowInfo{
-		{ID: "desktop", Title: "🖥️  Ekran 1 (Ana Ekran - Tam Gorunum)"},
+		{ID: "desktop", Title: "🖥️  Screen 1 (Primary - Full View)"},
 	}
 
 	if runtime.GOOS == "windows" {
@@ -51,12 +51,12 @@ func ListWindows() []WindowInfo {
 		$screens = [System.Windows.Forms.Screen]::AllScreens
 		$idx = 1
 		foreach ($s in $screens) {
-			$p = if ($s.Primary) {" (Ana Ekran)"} else {""}
-			"SCREEN|$($s.Bounds.X)|$($s.Bounds.Y)|$($s.Bounds.Width)|$($s.Bounds.Height)|Ekran $idx$p ($($s.Bounds.Width)x$($s.Bounds.Height))"
+			$p = if ($s.Primary) {" (Primary)"} else {""}
+			"SCREEN|$($s.Bounds.X)|$($s.Bounds.Y)|$($s.Bounds.Width)|$($s.Bounds.Height)|Screen $idx$p ($($s.Bounds.Width)x$($s.Bounds.Height))"
 			$idx++
 		}
 		if ($screens.Count -gt 1) {
-			"ALL|0|0|0|0|Tum Ekranlar (Genisletilmis Masaustu)"
+			"ALL|0|0|0|0|All Screens (Extended Desktop)"
 		}
 		Get-Process | Where-Object {$_.MainWindowTitle -ne '' -and $_.MainWindowHandle -ne 0} | ForEach-Object {
 			"WIN|$($_.MainWindowHandle)|$($_.MainWindowTitle)"
@@ -142,9 +142,9 @@ func ListWindows() []WindowInfo {
 						if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
 							numStr := strings.TrimSpace(part[idx1+1:])
 							if num, err := strconv.Atoi(numStr); err == nil {
-								scrName := fmt.Sprintf("Ekran %d", num+1)
+								scrName := fmt.Sprintf("Screen %d", num+1)
 								if num == 0 {
-									scrName += " (Ana Ekran)"
+									scrName += " (Primary)"
 								}
 								screenTargets = append(screenTargets, WindowInfo{
 									ID:    fmt.Sprintf("mac_screen:%d", num),
@@ -160,7 +160,7 @@ func ListWindows() []WindowInfo {
 		if len(screenTargets) == 0 {
 			screenTargets = append(screenTargets, WindowInfo{
 				ID:    "desktop",
-				Title: "🖥️  Ekran 1 (Ana Ekran - Tam Gorunum)",
+				Title: "🖥️  Screen 1 (Primary - Full View)",
 			})
 		}
 
@@ -275,7 +275,7 @@ type ReceiverOptions struct {
 // DefaultReceiverOptions returns ultra-low-latency receiver defaults
 func DefaultReceiverOptions() ReceiverOptions {
 	return ReceiverOptions{
-		WindowTitle: "Limoni Voice - Canli Ekran Yayini (HD 60 FPS)",
+		WindowTitle: "Limoni Voice - Live Screen Stream (HD 60 FPS)",
 		KeepAspect:  true,
 	}
 }
@@ -790,7 +790,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	windowTitle := opt.WindowTitle
 	if windowTitle == "" {
-		windowTitle = "Limoni Voice - Canli Ekran Yayini (HD 60 FPS)"
+		windowTitle = "Limoni Voice - Live Screen Stream (HD 60 FPS)"
 	}
 
 	streamURL := fmt.Sprintf("tcp://127.0.0.1:%d", port)

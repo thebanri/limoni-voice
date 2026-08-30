@@ -240,13 +240,13 @@ func (a *AudioEngine) SuppressionModeString() string {
 	defer a.mu.RUnlock()
 	switch a.SuppressionMode {
 	case 0:
-		return "KAPALI"
+		return "OFF"
 	case 1:
-		return "ACIK"
+		return "ON"
 	case 2:
-		return "YUKSEK"
+		return "HIGH"
 	default:
-		return "ACIK"
+		return "ON"
 	}
 }
 

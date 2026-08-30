@@ -320,7 +320,7 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 
 func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	mainBlock := widgets.Block{
-		Title:         " P2P ODA VE BAGLANTI (CROC ENGINE) ",
+		Title:         " P2P ROOM & CONNECTION (CROC ENGINE) ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)},
@@ -356,11 +356,11 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	// 1. Nickname Block
 	isNickFocused := (l.ActiveInput == 0)
-	nickTitle := " [1] KULLANICI ADINIZ "
+	nickTitle := " [1] YOUR NICKNAME "
 	nickBorderStyle := unfocusedBorder
 	nickBgStyle := unfocusedBg
 	if isNickFocused {
-		nickTitle = " ► [1] KULLANICI ADINIZ (ODAKLI) ◄ "
+		nickTitle = " ► [1] YOUR NICKNAME (FOCUSED) ◄ "
 		nickBorderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Modifier: cell.ModifierBold,
@@ -387,7 +387,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	nickInput := widgets.TextInput{
 		ID:          "nickname_input",
 		State:       l.NickState,
-		Placeholder: "Takma adinizi girin...",
+		Placeholder: "Enter your nickname...",
 	}
 	frame.RenderWidget(nickInput, nickInner)
 
@@ -397,7 +397,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	// 2. Host Room Block
 	isHostFocused := (l.ActiveInput == 2)
-	hostTitle := " [2] ODA OLUSTUR (SEN HOST OL) "
+	hostTitle := " [2] CREATE ROOM (YOU HOST) "
 	hostBorderStyle := unfocusedBorder
 	hostBgStyle := unfocusedBg
 	keyStyle := cell.Style{
@@ -410,7 +410,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	if isHostFocused {
-		hostTitle = " ► [2] ODA OLUSTUR (SEN HOST OL) [SECILI] ◄ "
+		hostTitle = " ► [2] CREATE ROOM (YOU HOST) [SELECTED] ◄ "
 		hostBorderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
 			Modifier: cell.ModifierBold,
@@ -444,7 +444,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 
-	codeLabel := "Oda Anahtariniz (Arkadasina Gonder):"
+	codeLabel := "Your Room Key (Share with Friends):"
 	codeLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: hostBgStyle.Bg}
 	if isHostFocused {
 		codeLabelStyle = cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: hostBgStyle.Bg}
@@ -461,7 +461,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	})
 
-	hostBtns := "[Enter] Bu Odayi Ac   •   [F2] Kodu Kopyala   •   [F3] Yeni Kod"
+	hostBtns := "[Enter] Open This Room   •   [F2] Copy Code   •   [F3] New Code"
 	buf.SetString(hostInner.X, hostInner.Y+3, hostBtns, hostBtnStyle)
 
 	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, 19, 1), func(_ backend.MouseEvent) {
@@ -489,7 +489,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	// 3. Join Room Block
 	isJoinFocused := (l.ActiveInput == 1)
-	joinTitle := " [3] MEVCUT ODAYA KATIL "
+	joinTitle := " [3] JOIN EXISTING ROOM "
 	joinBorderStyle := unfocusedBorder
 	joinBgStyle := unfocusedBg
 	joinBtnStyle := cell.Style{
@@ -498,7 +498,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	if l.IsConnecting {
-		joinTitle = fmt.Sprintf(" ► [3] ODAYA BAGLANILIYOR (Host Dogrulaniyor: %s) ◄ ", l.ConnectingTarget)
+		joinTitle = fmt.Sprintf(" ► [3] CONNECTING TO ROOM (Verifying Host: %s) ◄ ", l.ConnectingTarget)
 		joinBorderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
 			Modifier: cell.ModifierBold,
@@ -510,7 +510,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Modifier: cell.ModifierBold,
 		}
 	} else if isJoinFocused {
-		joinTitle = " ► [3] MEVCUT ODAYA KATIL (ODAKLI - Yapistirmak icin Ctrl+V) ◄ "
+		joinTitle = " ► [3] JOIN EXISTING ROOM (FOCUSED - Paste with Ctrl+V) ◄ "
 		joinBorderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Modifier: cell.ModifierBold,
@@ -539,9 +539,9 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 
-	joinLabel := "Arkadasinin Gonderdigi Anahtari Yapistir (Ctrl+V):"
+	joinLabel := "Paste the Room Key from Your Friend (Ctrl+V):"
 	if l.IsConnecting {
-		joinLabel = "Oda dogrulaniyor, host aranıyor ve E2EE baglantisi kuruluyor..."
+		joinLabel = "Verifying room, searching host and establishing E2EE connection..."
 	}
 	joinLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: joinBgStyle.Bg}
 	if isJoinFocused || l.IsConnecting {
@@ -559,13 +559,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	codeInput := widgets.TextInput{
 		ID:          "roomcode_input",
 		State:       l.CodeState,
-		Placeholder: "orn: 7492-neon-falcon",
+		Placeholder: "e.g. 7492-neon-falcon",
 	}
 	frame.RenderWidget(codeInput, joinInputRect)
 
-	joinBtns := "[Enter] Girilen Odaya Baglan (Maks: 4 Kisi)"
+	joinBtns := "[Enter] Connect to Room (Max: 4 Members)"
 	if l.IsConnecting {
-		joinBtns = "⏳ [Bekleyin] Host ile baglanti kuruluyor...   •   [Esc] Iptal Et"
+		joinBtns = "⏳ [Wait] Connecting to host...   •   [Esc] Cancel"
 	}
 	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
 
@@ -583,7 +583,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 				l.OnJoinRoom(cleanCode)
 			}
 		} else {
-			l.SetToast("Lutfen baglanmak icin bir oda anahtari girin")
+			l.SetToast("Please enter a room key to connect")
 		}
 	})
 
@@ -594,7 +594,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	// 4. Info and Help Block
 	bottomArea := vSplits[3]
 	botBlock := widgets.Block{
-		Title:         " BILGI VE KISAYOLLAR ",
+		Title:         " INFO & SHORTCUTS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x3B, 0x42, 0x52)},
@@ -617,7 +617,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 		buf.SetString(botInner.X+1, botInner.Y, "  "+l.ToastMsg+"  ", toastStyle)
 	} else {
-		testBtn := "[T] Mikrofon & Ses Test Paneli (Yanki / Giris Testi)"
+		testBtn := "[T] Microphone & Sound Test Panel (Echo / Input Test)"
 		buf.SetString(botInner.X+1, botInner.Y, testBtn, cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
@@ -630,11 +630,11 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		})
 
 		helpLines := []string{
-			"• [T] veya [F4] Mikrofon test panelini ac (Kendi sesini dinle)",
-			"• [Fare] Istediginiz bolume veya butona tiklayarak odaklanin",
-			"• [Tab] veya [Shift+Tab] Alanlar arasinda gecis yap",
-			"• [Ctrl+V] veya [Shift+Insert] Panodan anahtar yapistir",
-			"• [F2] / [C] Kopyala • [F3] / [G] Yeni anahtar • [Esc] Cikis",
+			"• [T] or [F4] Open microphone test panel (hear your own voice)",
+			"• [Mouse] Click any section or button to focus",
+			"• [Tab] or [Shift+Tab] Navigate between fields",
+			"• [Ctrl+V] or [Shift+Insert] Paste key from clipboard",
+			"• [F2] / [C] Copy • [F3] / [G] New key • [Esc] Exit",
 		}
 		for i, h := range helpLines {
 			if uint16(i+1) < botInner.Height {

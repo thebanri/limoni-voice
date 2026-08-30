@@ -108,15 +108,15 @@ func main() {
 
 	startSelectedScreenShare := func(target screenshare.WindowInfo) {
 		closeScreenShareModal()
-		room.SetToast(fmt.Sprintf("🎬 %s yayini baslatiliyor...", target.Title))
+		room.SetToast(fmt.Sprintf("🎬 Starting %s stream...", target.Title))
 		go func() {
 			opts := screenshare.DefaultBroadcastOptions()
 			opts.WindowID = target.ID
 			err := node.StartScreenShare("", 50100, opts)
 			if err != nil {
-				room.SetToast(fmt.Sprintf("Hata: %v", err))
+				room.SetToast(fmt.Sprintf("Error: %v", err))
 			} else {
-				room.SetToast(fmt.Sprintf("%s paylasimi baslatildi (60 FPS)", target.Title))
+				room.SetToast(fmt.Sprintf("%s sharing started (60 FPS)", target.Title))
 			}
 		}()
 	}
@@ -125,7 +125,7 @@ func main() {
 		if node.IsSharingScreen {
 			go func() {
 				_ = node.StopScreenShare()
-				room.SetToast("Ekran paylasimi durduruldu")
+				room.SetToast("Screen share stopped")
 			}()
 			return
 		}
@@ -137,13 +137,13 @@ func main() {
 			screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 		} else {
 			// On Linux / macOS start directly with native system portal picker
-			room.SetToast("🎬 Ekran paylasimi baslatiliyor...")
+			room.SetToast("🎬 Starting screen share...")
 			go func() {
 				err := node.StartScreenShare("", 50100)
 				if err != nil {
-					room.SetToast(fmt.Sprintf("Hata: %v", err))
+					room.SetToast(fmt.Sprintf("Error: %v", err))
 				} else {
-					room.SetToast("Ekran paylasimi baslatildi (60 FPS)")
+					room.SetToast("Screen share started (60 FPS)")
 				}
 			}()
 		}
@@ -175,7 +175,7 @@ func main() {
 	joinRoom := func(code string) {
 		cleanCode := NormalizeCode(code)
 		if cleanCode == "" {
-			lobby.SetToast("Lutfen gecerli bir oda anahtari girin")
+			lobby.SetToast("Please enter a valid room key")
 			return
 		}
 		nick := strings.TrimSpace(lobby.NickState.Value())
@@ -192,8 +192,8 @@ func main() {
 				lobby.IsConnecting = false
 				room = NewRoomView()
 				currentScreen = ScreenRoom
-				room.AddLog(fmt.Sprintf("[+] %s odasina basariyla katildiniz! (Host: %s)", cleanCode, hostNick))
-				room.SetToast(fmt.Sprintf("Odaya Katilindi! Host: %s", hostNick))
+			room.AddLog(fmt.Sprintf("[+] Successfully joined room %s! (Host: %s)", cleanCode, hostNick))
+				room.SetToast(fmt.Sprintf("Joined Room! Host: %s", hostNick))
 			},
 			func(reason string) {
 				lobby.IsConnecting = false
@@ -205,7 +205,7 @@ func main() {
 	cancelJoin := func() {
 		node.CancelJoin()
 		lobby.IsConnecting = false
-		lobby.SetToast("Oda arama iptal edildi.")
+		lobby.SetToast("Room search cancelled.")
 	}
 
 	leaveRoom := func() {
@@ -221,11 +221,11 @@ func main() {
 	lobby.OnCancelJoin = cancelJoin
 	lobby.OnCopyCode = func(code string) {
 		CopyToClipboard(code)
-		lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", code))
+		lobby.SetToast(fmt.Sprintf("Room key copied: %s", code))
 	}
 	lobby.OnNewCode = func() {
 		lobby.CurrentCode = GenerateRoomCode()
-		lobby.SetToast("Yeni oda anahtari uretildi!")
+		lobby.SetToast("New room key generated!")
 	}
 	lobby.OnOpenTestModal = openTestModal
 
@@ -252,10 +252,10 @@ func main() {
 				if currentScreen == ScreenLobby && pasted != "" && !showTestModal && !showExitModal {
 					if lobby.ActiveInput == 0 {
 						lobby.NickState.SetValue(pasted)
-						lobby.SetToast("Kullanici adi yapistirildi")
+						lobby.SetToast("Username pasted")
 					} else if lobby.ActiveInput == 1 {
 						lobby.CodeState.SetValue(NormalizeCode(pasted))
-						lobby.SetToast(fmt.Sprintf("Oda anahtari yapistirildi: %s", NormalizeCode(pasted)))
+						lobby.SetToast(fmt.Sprintf("Room key pasted: %s", NormalizeCode(pasted)))
 					}
 				}
 
@@ -405,12 +405,12 @@ func main() {
 				if currentScreen == ScreenLobby {
 					if e.Type == backend.KeyF2 {
 						CopyToClipboard(lobby.CurrentCode)
-						lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", lobby.CurrentCode))
+						lobby.SetToast(fmt.Sprintf("Room key copied: %s", lobby.CurrentCode))
 						continue
 					}
 					if e.Type == backend.KeyF3 {
 						lobby.CurrentCode = GenerateRoomCode()
-						lobby.SetToast(fmt.Sprintf("Yeni oda anahtari uretildi: %s", lobby.CurrentCode))
+						lobby.SetToast(fmt.Sprintf("New room key generated: %s", lobby.CurrentCode))
 						continue
 					}
 
@@ -420,14 +420,14 @@ func main() {
 						if clipText != "" {
 							if lobby.ActiveInput == 0 {
 								lobby.NickState.SetValue(clipText)
-								lobby.SetToast("Kullanici adi yapistirildi")
+								lobby.SetToast("Username pasted")
 							} else if lobby.ActiveInput == 1 {
 								cleanCode := NormalizeCode(clipText)
 								lobby.CodeState.SetValue(cleanCode)
-								lobby.SetToast(fmt.Sprintf("Oda anahtari yapistirildi: %s", cleanCode))
+								lobby.SetToast(fmt.Sprintf("Room key pasted: %s", cleanCode))
 							}
 						} else {
-							lobby.SetToast("Pano bos veya okunamadi")
+							lobby.SetToast("Clipboard empty or unreadable")
 						}
 						continue
 					}
@@ -489,10 +489,10 @@ func main() {
 								lobby.ActiveInput = 1
 							case 'c', 'C':
 								CopyToClipboard(lobby.CurrentCode)
-								lobby.SetToast(fmt.Sprintf("Oda anahtari kopyalandi: %s", lobby.CurrentCode))
+								lobby.SetToast(fmt.Sprintf("Room key copied: %s", lobby.CurrentCode))
 							case 'g', 'G':
 								lobby.CurrentCode = GenerateRoomCode()
-								lobby.SetToast("Yeni oda anahtari uretildi!")
+								lobby.SetToast("New room key generated!")
 							case 't', 'T':
 								openTestModal()
 							case 'q', 'Q':
@@ -507,17 +507,17 @@ func main() {
 					case backend.KeyEsc:
 						if node.IsWatchingScreen {
 							_ = node.StopWatchingScreen()
-							room.SetToast("Ekran izleyici kapatildi")
+							room.SetToast("Screen viewer closed")
 						} else if node.IsSharingScreen {
 							_ = node.StopScreenShare()
-							room.SetToast("Ekran paylasimi durduruldu")
+							room.SetToast("Screen share stopped")
 						} else {
 							openLeaveModal()
 						}
 
 					case backend.KeyF2:
 						CopyToClipboard(node.RoomCode)
-						room.SetToast(fmt.Sprintf("Oda kodu kopyalandi: %s", node.RoomCode))
+						room.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 
 					case backend.KeyRune:
 						switch e.Ch {
@@ -526,15 +526,15 @@ func main() {
 
 						case 'n', 'N':
 							audio.CycleSuppressionMode()
-							room.SetToast(fmt.Sprintf("Gurultu Filtresi: %s", audio.SuppressionModeString()))
+							room.SetToast(fmt.Sprintf("Noise Filter: %s", audio.SuppressionModeString()))
 
 						case 'm', 'M':
 							isMuted := audio.ToggleMute()
 							node.SendMuteState(isMuted)
 							if isMuted {
-								room.SetToast("Mikrofon Kapatildi (Muted)")
+								room.SetToast("Microphone Off (Muted)")
 							} else {
-								room.SetToast("Mikrofon Acildi")
+								room.SetToast("Microphone On")
 							}
 
 						case 'd', 'D':
@@ -542,9 +542,9 @@ func main() {
 							node.SendDeafenState(isDeaf)
 							node.SendMuteState(audio.Muted)
 							if isDeaf {
-								room.SetToast("Kulaklik Kapatildi (Sagir)")
+								room.SetToast("Audio Off (Deafened)")
 							} else {
-								room.SetToast("Kulaklik Acildi")
+								room.SetToast("Audio On")
 							}
 
 						case 'v', 'V':
@@ -588,15 +588,15 @@ func main() {
 
 						case '+', '=':
 							gain := audio.AdjustGain(0.1)
-							room.SetToast(fmt.Sprintf("Mikrofon Sesi: %.0f%%", gain*100))
+							room.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", gain*100))
 
 						case '-', '_':
 							gain := audio.AdjustGain(-0.1)
-							room.SetToast(fmt.Sprintf("Mikrofon Sesi: %.0f%%", gain*100))
+							room.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", gain*100))
 
 						case 'c', 'C':
 							CopyToClipboard(node.RoomCode)
-							room.SetToast(fmt.Sprintf("Oda Kodu Kopyalandi: %s", node.RoomCode))
+							room.SetToast(fmt.Sprintf("Room Code Copied: %s", node.RoomCode))
 
 						case 'q', 'Q':
 							openLeaveModal()

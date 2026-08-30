@@ -122,7 +122,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	frame.RegisterModal("sound_test_modal", modalArea, onClose)
 
 	mainBlock := widgets.Block{
-		Title:          " MIKROFON VE SES TEST PANELI ",
+		Title:          " MICROPHONE & SOUND TEST PANEL ",
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
@@ -141,17 +141,17 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 
 	// 1. Status Indicator
-	statusText := "[BEKLENIYOR (SESSIZ)]"
+	statusText := "[IDLE (SILENT)]"
 	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
 	if audio.Muted {
-		statusText = "[MIKROFON KAPALI (MUTED)]"
+		statusText = "[MIC OFF (MUTED)]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
 	} else if audio.IsSpeaking {
-		statusText = "[KONUSUYOR (SES AKTIF...)]"
+		statusText = "[SPEAKING (AUDIO ACTIVE...)]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Durum: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
 	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
 
 	// 2. Vertical VU Level Meter
@@ -161,14 +161,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Width:  inner.Width - 2,
 		Height: 3,
 	}
-	DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "MIKROFON GIRIS SEVIYESI")
+	DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "MICROPHONE INPUT LEVEL")
 
 	// 3. Loopback / Echo test toggle
 	loopbackY := inner.Y + 5
-	loopBox := "[ ] Kendi Sesimi Duy (Loopback Testi) [Bosluk]"
+	loopBox := "[ ] Hear My Own Voice (Loopback Test) [Space]"
 	loopStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
 	if audio.Loopback {
-		loopBox = "[X] Kendi Sesimi Duy (Loopback AKTIF) [Bosluk]"
+		loopBox = "[X] Hear My Own Voice (Loopback ACTIVE) [Space]"
 		loopStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
@@ -182,14 +182,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 4. Suppression Mode Toggle Buttons [N]
 	noiseY := inner.Y + 7
-	buf.SetString(inner.X+1, noiseY, "Gurultu Engelleme [N]:", cell.Style{
+	buf.SetString(inner.X+1, noiseY, "Noise Suppression [N]:", cell.Style{
 		Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4),
 		Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
 	})
 
-	optOff := " [ KAPALI ] "
-	optStd := " [ ACIK (Standart) ] "
-	optHi := " [ YUKSEK ] "
+	optOff := " [ OFF ] "
+	optStd := " [ ON (Standard) ] "
+	optHi := " [ HIGH ] "
 
 	curMode := audio.SuppressionMode
 	styleOff := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
@@ -233,7 +233,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 5. Volume Slider (Limoni widgets.Slider)
 	gainY := inner.Y + 9
 	gainPct := int(math.Round(audio.Gain * 100))
-	gainLabel := fmt.Sprintf("Mikrofon Sesi: [ %3d%% ]", gainPct)
+	gainLabel := fmt.Sprintf("Mic Volume:    [ %3d%% ]", gainPct)
 	buf.SetString(inner.X+1, gainY, gainLabel, cell.Style{
 		Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
 		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
@@ -290,7 +290,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 6. Sensitivity / VAD Threshold Slider (Limoni widgets.Slider)
 	vadY := inner.Y + 11
 	vadVal := int(math.Round(audio.VADThreshold * 1000))
-	vadLabel := fmt.Sprintf("Hassasiyet:    [ %3d ]", vadVal)
+	vadLabel := fmt.Sprintf("Sensitivity:   [ %3d ]", vadVal)
 	buf.SetString(inner.X+1, vadY, vadLabel, cell.Style{
 		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
 		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
@@ -342,14 +342,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 7. Action Buttons (Mute, Close)
 	btnY := inner.Y + 13
-	muteBtn := "[M] Mikrofon Kapat"
+	muteBtn := "[M] Mute Mic"
 	muteBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 		Bg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
 		Modifier: cell.ModifierBold,
 	}
 	if audio.Muted {
-		muteBtn = "[M] Mikrofon AC"
+		muteBtn = "[M] Unmute Mic"
 		muteBtnStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
@@ -364,7 +364,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		}
 	})
 
-	closeBtn := "[ Kapat (Esc) ]"
+	closeBtn := "[ Close (Esc) ]"
 	closeBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
 		Bg:       cell.NewColorRGB(0x6C, 0x5C, 0xE7),
@@ -397,9 +397,9 @@ func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float6
 
 	leaveDialog := widgets.Dialog{
 		ID:          "leave_room_dialog",
-		Title:       " ODADAN AYRIL ",
-		Message:     "Mevcut ses odasindan ayrilmak istiyor musunuz?",
-		SubMessage:  "Diger katilimcilarla olan ses baglantiniz kesilecektir.",
+		Title:       " LEAVE ROOM ",
+		Message:     "Do you want to leave the current voice room?",
+		SubMessage:  "Your voice connection with other participants will be terminated.",
 		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
 		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: cell.NewColorRGB(235, 94, 40)},
 		BorderStyle: cell.Style{Fg: cell.NewColorRGB(235, 94, 40)},
@@ -412,11 +412,11 @@ func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float6
 		Shadow: true,
 		Buttons: []widgets.DialogButton{
 			{
-				Text:    "Evet, Ayril",
+				Text:    "Yes, Leave",
 				Handler: onConfirm,
 			},
 			{
-				Text:    "Hayir, Kal",
+				Text:    "No, Stay",
 				Handler: onCancel,
 			},
 		},
@@ -444,9 +444,9 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 
 	exitDialog := widgets.Dialog{
 		ID:          "exit_app_dialog",
-		Title:       " SISTEMDEN CIKIS ",
-		Message:     "Limoni Voice uygulamasindan cikmak istiyor musunuz?",
-		SubMessage:  "Mevcut oturum ve ses baglantisi sonlandirilacaktir.",
+		Title:       " EXIT APPLICATION ",
+		Message:     "Do you want to exit Limoni Voice?",
+		SubMessage:  "Your current session and voice connection will be terminated.",
 		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
 		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: cell.NewColorRGB(220, 60, 60)},
 		BorderStyle: cell.Style{Fg: cell.NewColorRGB(220, 60, 60)},
@@ -459,11 +459,11 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 		Shadow: true,
 		Buttons: []widgets.DialogButton{
 			{
-				Text:    "Evet, Cik",
+				Text:    "Yes, Exit",
 				Handler: onConfirm,
 			},
 			{
-				Text:    "Hayir, Devam",
+				Text:    "No, Continue",
 				Handler: onCancel,
 			},
 		},
@@ -491,7 +491,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 
 	// Draw dialog backdrop and block
 	block := widgets.Block{
-		Title:       " 📺 EKRAN VEYA PENCERE SECIN ",
+		Title:       " 📺 SELECT SCREEN OR WINDOW ",
 		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
 		BorderStyle: cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Modifier: cell.ModifierBold},
 	}
@@ -508,7 +508,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 	}
 
 	buf := frame.Buffer
-	headerText := "Paylasmak istediginiz ekrani veya pencereyi secin:"
+	headerText := "Select the screen or window you want to share:"
 	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{Fg: cell.NewColorRGB(150, 160, 180)})
 
 	// List targets
@@ -552,6 +552,6 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 	}
 
 	// Bottom Cancel Guide
-	guideText := "[ENTER / TIKLA] Sec  [ESC] Iptal"
+	guideText := "[ENTER / CLICK] Select  [ESC] Cancel"
 	buf.SetString(inner.X+1, inner.Y+inner.Height-1, guideText, cell.Style{Fg: cell.NewColorRGB(120, 130, 150)})
 }

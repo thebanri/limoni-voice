@@ -106,7 +106,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		Modifier: cell.ModifierBold,
 	})
 
-	codeBadge := fmt.Sprintf(" Oda: %s ", node.RoomCode)
+	codeBadge := fmt.Sprintf(" Room: %s ", node.RoomCode)
 	codeX := inner.X + 22
 	buf.SetString(codeX, inner.Y, codeBadge, cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
@@ -115,13 +115,13 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	})
 	frame.RegisterClickHandler(cell.NewRect(codeX, inner.Y, uint16(len([]rune(codeBadge))), 1), func(_ backend.MouseEvent) {
 		CopyToClipboard(node.RoomCode)
-		r.SetToast(fmt.Sprintf("Oda kodu kopyalandi: %s", node.RoomCode))
+		r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 	})
 
 	var roleBadge string
 	var roleStyle cell.Style
 	if node.IsHost {
-		roleBadge = " 👑 HOST (SEN) "
+		roleBadge = " 👑 HOST (YOU) "
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
@@ -132,7 +132,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		if hostName == "" {
 			hostName = "Host"
 		}
-		roleBadge = fmt.Sprintf(" 👤 UYE (Host: %s) ", hostName)
+		roleBadge = fmt.Sprintf(" 👤 MEMBER (Host: %s) ", hostName)
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
@@ -143,7 +143,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	roleX := codeX + uint16(len([]rune(codeBadge))) + 2
 	buf.SetString(roleX, inner.Y, roleBadge, roleStyle)
 
-	countStr := fmt.Sprintf("Katilimci: %d/4", totalCount)
+	countStr := fmt.Sprintf("Members: %d/4", totalCount)
 	countX := roleX + uint16(len([]rune(roleBadge))) + 2
 	if countX+14 <= inner.X+inner.Width {
 		buf.SetString(countX, inner.Y, countStr, cell.Style{
@@ -162,7 +162,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		})
 	}
 
-	durStr := fmt.Sprintf("Süre: %s", duration)
+	durStr := fmt.Sprintf("Duration: %s", duration)
 	if inner.Width > uint16(len([]rune(durStr)))+2 {
 		buf.SetString(inner.X+inner.Width-uint16(len([]rune(durStr)))-2, inner.Y, durStr, cell.Style{
 			Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9),
@@ -253,7 +253,7 @@ func (r *RoomView) renderClassicGrid(frame *terminal.Frame, area cell.Rect, node
 
 func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine, peers []*PeerInfo) {
 	block := widgets.Block{
-		Title:         " SES KANALI UYELERI ",
+		Title:         " VOICE CHANNEL MEMBERS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)},
@@ -280,7 +280,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 
 	// 1. Self Slot
 	selfCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
-	r.renderMemberMiniCard(frame, selfCard, node.Nickname+" (SEN)", audio.LocalRMS, audio.IsSpeaking, audio.Muted, audio.Deafened, node.IsSharingScreen, 0, true)
+	r.renderMemberMiniCard(frame, selfCard, node.Nickname+" (YOU)", audio.LocalRMS, audio.IsSpeaking, audio.Muted, audio.Deafened, node.IsSharingScreen, 0, true)
 	currY += uint16(slotHeight)
 
 	// 2. Peers Slots
@@ -321,7 +321,7 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 
 	titleText := fmt.Sprintf("%s %s", icon, name)
 	if isSharing {
-		titleText += " 📺 [CANLI]"
+		titleText += " 📺 [LIVE]"
 	}
 	buf.SetString(area.X+1, area.Y, titleText, nameStyle)
 
@@ -329,16 +329,16 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	statusStr := ""
 	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A)}
 	if isDeafened {
-		statusStr = "[Sagir]"
+		statusStr = "[Deafened]"
 		statusStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
 	} else if isMuted {
-		statusStr = "[Mute]"
+		statusStr = "[Muted]"
 		statusStyle.Fg = cell.NewColorRGB(0xFF, 0x76, 0x75)
 	} else if isSpeaking {
-		statusStr = "[Konusuyor]"
+		statusStr = "[Speaking]"
 		statusStyle.Fg = cell.NewColorRGB(0x00, 0xFF, 0x88)
 	} else {
-		statusStr = "[Bagli]"
+		statusStr = "[Connected]"
 	}
 
 	if pingMs > 0 {
@@ -357,7 +357,7 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 }
 
 func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeer *PeerInfo, node *P2PNode) {
-	stageTitle := " 🔴 CANLI YAYIN SAHNESI (STREAM STAGE) "
+	stageTitle := " 🔴 LIVE STREAM STAGE "
 	borderCol := cell.NewColorRGB(0x00, 0xFF, 0x88)
 	if !node.IsWatchingScreen && !node.IsSharingScreen {
 		borderCol = cell.NewColorRGB(0x6C, 0x5C, 0xE7)
@@ -385,21 +385,21 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			}
 		}
 
-		topBarText := fmt.Sprintf(" 🎬 %s CANLI YAYINI ACILDI (HD 60 FPS) ", streamingPeer.Nickname)
+		topBarText := fmt.Sprintf(" 🎬 %s LIVE STREAM OPENED (HD 60 FPS) ", streamingPeer.Nickname)
 		buf.SetString(inner.X+2, centerY-3, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 
-		msg1 := "📺 Canli yayin yuksek performansli HD video penceresinde acildi."
-		msg2 := "Pencereyi kapatmak icin [W] / [Esc] tusuna basin veya asagidaki butona tiklayin."
+		msg1 := "📺 Live stream is playing in a high-performance HD video window."
+		msg2 := "Press [W] / [Esc] to close the window, or click the button below."
 		buf.SetString(inner.X+2, centerY-1, msg1, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
 		buf.SetString(inner.X+2, centerY+1, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
 
-		btnText := "   ⏹️ [W] YAYIN IZLEMEYI DURDUR (Tikla)   "
+		btnText := "   ⏹️ [W] STOP WATCHING (Click)   "
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0xFF, 0x9F, 0x43), Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+2, centerY+3, btnText, btnStyle)
 
 		frame.RegisterClickHandler(cell.NewRect(inner.X+2, centerY+3, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
 			_ = node.StopWatchingScreen()
-			r.SetToast("Ekran izleyici kapatildi")
+			r.SetToast("Screen viewer closed")
 		})
 		return
 	}
@@ -411,9 +411,9 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 	// 1. Case: Local User is Broadcasting
 	if node.IsSharingScreen {
-		msg1 := "🔴 EKRANIN CANLI YAYINDA (60 FPS - 1080p Full HD)"
-		msg2 := "Odadaki tum katilimcilar ekranini ultra dusuk gecikmeyle izleyebiliyor."
-		btnText := "   ⏹️ [V] YAYINI DURDUR (Tikla)   "
+		msg1 := "🔴 YOUR SCREEN IS LIVE (60 FPS - 1080p Full HD)"
+		msg2 := "All room participants can watch your screen with ultra-low latency."
+		btnText := "   ⏹️ [V] STOP BROADCAST (Click)   "
 
 		buf.SetString(inner.X+4, centerY-3, msg1, cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 		buf.SetString(inner.X+4, centerY-1, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
@@ -423,16 +423,16 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 		frame.RegisterClickHandler(cell.NewRect(inner.X+4, centerY+2, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
 			_ = node.StopScreenShare()
-			r.SetToast("Ekran paylasimi durduruldu")
+			r.SetToast("Screen share stopped")
 		})
 		return
 	}
 
 	// 3. Case: A peer is broadcasting and waiting to be watched
 	if streamingPeer != nil {
-		msg1 := fmt.Sprintf("🔴 %s EKRANINI PAYLASIYOR (60 FPS)", streamingPeer.Nickname)
-		msg2 := "Yayini 20ms ultra dusuk gecikmeyle izlemek icin asagidaki butona tikla:"
-		btnText := fmt.Sprintf("   ► [W] %s YAYININI IZLE (Tikla) 📺   ", streamingPeer.Nickname)
+		msg1 := fmt.Sprintf("🔴 %s IS SHARING SCREEN (60 FPS)", streamingPeer.Nickname)
+		msg2 := "Click the button below to watch with 20ms ultra-low latency:"
+		btnText := fmt.Sprintf("   ► [W] WATCH %s STREAM (Click) 📺   ", streamingPeer.Nickname)
 
 		buf.SetString(inner.X+4, centerY-3, msg1, cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 		buf.SetString(inner.X+4, centerY-1, msg2, cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
@@ -446,15 +446,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				port = 50100
 			}
 			opts := screenshare.ReceiverOptions{
-				WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
+				WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (60 FPS)", streamingPeer.Nickname),
 			}
-			r.SetToast("🎬 Yayin izleyici baslatiliyor...")
+			r.SetToast("🎬 Starting stream viewer...")
 			go func() {
 				err := node.StartWatchingScreen(port, opts)
 				if err != nil {
-					r.SetToast(fmt.Sprintf("Hata: %v", err))
+					r.SetToast(fmt.Sprintf("Error: %v", err))
 				} else {
-					r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
+					r.SetToast(fmt.Sprintf("%s stream opened (HD 60 FPS)", streamingPeer.Nickname))
 				}
 			}()
 		})
@@ -493,23 +493,23 @@ func DrawHorizontalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, i
 
 func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
 	borderStyle := cell.Style{Fg: cell.NewColorRGB(0x4E, 0xCD, 0xC4)}
-	statusText := "[DINLIYOR]"
+	statusText := "[LISTENING]"
 	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
 
 	if audio.Deafened {
 		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E)}
-		statusText = "[SAGIRLASTIRILDI]"
+		statusText = "[DEAFENED]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
 	} else if audio.Muted {
 		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75)}
-		statusText = "[MIKROFON KAPALI]"
+		statusText = "[MIC OFF]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
 	} else if audio.IsSpeaking {
 		borderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Modifier: cell.ModifierBold,
 		}
-		statusText = "[KONUSUYOR...]"
+		statusText = "[SPEAKING...]"
 		statusStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
@@ -517,7 +517,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		}
 	}
 
-	title := fmt.Sprintf(" [1] %s (SEN) ", node.Nickname)
+	title := fmt.Sprintf(" [1] %s (YOU) ", node.Nickname)
 	block := widgets.Block{
 		Title:         title,
 		Borders:       widgets.BorderAll,
@@ -536,10 +536,10 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Durum: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
 	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
 
-	gainStr := fmt.Sprintf("Ses: %.0f%%", audio.Gain*100)
+	gainStr := fmt.Sprintf("Vol: %.0f%%", audio.Gain*100)
 	if inner.Width > uint16(len([]rune(gainStr)))+1 {
 		buf.SetString(inner.X+inner.Width-uint16(len([]rune(gainStr)))-1, inner.Y, gainStr, cell.Style{Fg: cell.NewColorRGB(0x74, 0xB9, 0xFF), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
 	}
@@ -556,7 +556,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			Width:  inner.Width - 2,
 			Height: meterHeight,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "SES SEVIYESI")
+		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "AUDIO LEVEL")
 
 		// Broadcast Banner
 		bannerY := inner.Y + meterHeight + 1
@@ -571,13 +571,13 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			buf.SetCell(inner.X+1+bx, bannerY+1, cell.Cell{Content: ' ', Style: bannerStyle})
 		}
 
-		bTitle := " 🔴 CANLI: Ekranini Paylasiyorsun (60 FPS) "
+		bTitle := " 🔴 LIVE: Sharing Your Screen (60 FPS) "
 		if uint16(len([]rune(bTitle))) > bannerW {
-			bTitle = " 🔴 CANLI YAYINDASIN "
+			bTitle = " 🔴 LIVE STREAMING "
 		}
 		buf.SetString(inner.X+2, bannerY, bTitle, bannerStyle)
 
-		bAction := "   ⏹️ [V] Yayini Durdur (Tikla)   "
+		bAction := "   ⏹️ [V] Stop Broadcast (Click)   "
 		bActionStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
@@ -587,7 +587,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 
 		frame.RegisterClickHandler(cell.NewRect(inner.X+1, bannerY, bannerW, 2), func(_ backend.MouseEvent) {
 			_ = node.StopScreenShare()
-			r.SetToast("Ekran paylasimi durduruldu")
+			r.SetToast("Screen share stopped")
 		})
 
 	} else if inner.Height >= 2 && inner.Width >= 4 {
@@ -597,13 +597,13 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			Width:  inner.Width - 2,
 			Height: inner.Height - 1,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "SES SEVIYESI")
+		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "AUDIO LEVEL")
 	}
 }
 
 func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *PeerInfo, node *P2PNode, audio *AudioEngine, slotNum int) {
 	borderStyle := cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)}
-	statusText := "[DINLIYOR]"
+	statusText := "[LISTENING]"
 	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
 
 	if peer.IsSharingScreen {
@@ -615,18 +615,18 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 
 	if peer.IsDeafened {
 		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E)}
-		statusText = "[SAGIRLASTIRILDI]"
+		statusText = "[DEAFENED]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
 	} else if peer.IsMuted {
 		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75)}
-		statusText = "[MIKROFON KAPALI]"
+		statusText = "[MIC OFF]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
 	} else if peer.Speaking {
 		borderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Modifier: cell.ModifierBold,
 		}
-		statusText = "[KONUSUYOR...]"
+		statusText = "[SPEAKING...]"
 		statusStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
@@ -636,7 +636,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 
 	title := fmt.Sprintf(" [%d] %s ", slotNum, peer.Nickname)
 	if peer.IsSharingScreen {
-		title = fmt.Sprintf(" [%d] %s 🔴 [CANLI YAYINDA] ", slotNum, peer.Nickname)
+		title = fmt.Sprintf(" [%d] %s 🔴 [LIVE STREAMING] ", slotNum, peer.Nickname)
 	}
 
 	block := widgets.Block{
@@ -657,7 +657,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Durum: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
 	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
 
 	pingStr := fmt.Sprintf("PING: %dms", peer.PingMs)
@@ -677,7 +677,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			Width:  inner.Width - 2,
 			Height: meterHeight,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, "SES SEVIYESI")
+		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, "AUDIO LEVEL")
 
 		// Stream Preview Card Box
 		bannerY := inner.Y + meterHeight + 1
@@ -694,14 +694,14 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			buf.SetCell(inner.X+1+bx, bannerY+1, cell.Cell{Content: ' ', Style: bannerBg})
 		}
 
-		bTitle := fmt.Sprintf(" 🔴 %s Ekranini Paylasiyor (60 FPS)", peer.Nickname)
+		bTitle := fmt.Sprintf(" 🔴 %s Sharing Screen (60 FPS)", peer.Nickname)
 		if uint16(len([]rune(bTitle))) > bannerW {
-			bTitle = fmt.Sprintf(" 🔴 %s CANLI YAYIN", peer.Nickname)
+			bTitle = fmt.Sprintf(" 🔴 %s LIVE STREAM", peer.Nickname)
 		}
 		buf.SetString(inner.X+2, bannerY, bTitle, bannerBg)
 
 		if node.IsWatchingScreen {
-			bBtnText := "   ⏹️ [W] Izlemeyi Kapat (Tikla)   "
+			bBtnText := "   ⏹️ [W] Stop Watching (Click)   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
@@ -709,7 +709,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
 		} else {
-			bBtnText := "   ► [W] YAYINI IZLE (Tikla) 📺   "
+			bBtnText := "   ► [W] WATCH STREAM (Click) 📺   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
@@ -723,7 +723,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			if node.IsWatchingScreen {
 				go func() {
 					_ = node.StopWatchingScreen()
-					r.SetToast("Ekran izleyici kapatildi")
+					r.SetToast("Screen viewer closed")
 				}()
 			} else {
 				port := peer.VideoPort
@@ -731,15 +731,15 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 					port = 50100
 				}
 				opts := screenshare.ReceiverOptions{
-					WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", peer.Nickname),
+					WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (60 FPS)", peer.Nickname),
 				}
-				r.SetToast("🎬 Yayin izleyici baslatiliyor...")
+				r.SetToast("🎬 Starting stream viewer...")
 				go func() {
 					err := node.StartWatchingScreen(port, opts)
 					if err != nil {
-						r.SetToast(fmt.Sprintf("Hata: %v", err))
+						r.SetToast(fmt.Sprintf("Error: %v", err))
 					} else {
-						r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", peer.Nickname))
+						r.SetToast(fmt.Sprintf("%s stream opened (HD 60 FPS)", peer.Nickname))
 					}
 				}()
 			}
@@ -752,13 +752,13 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			Width:  inner.Width - 2,
 			Height: inner.Height - 1,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, "SES SEVIYESI")
+		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, "AUDIO LEVEL")
 	}
 }
 
 func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCode string, slotNum int) {
 	block := widgets.Block{
-		Title:         fmt.Sprintf(" [%d] BOS YER (BEKLENIYOR) ", slotNum),
+		Title:         fmt.Sprintf(" [%d] EMPTY SLOT (WAITING) ", slotNum),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x4A, 0x4B, 0x6E)},
@@ -775,13 +775,13 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 		}
 	}
 
-	txt1 := "Arkadasini Davet Et:"
-	txt2 := fmt.Sprintf("Oda Kodu: %s", roomCode)
-	txt3 := "[C] tusuna basarak kodu kopyala"
+	txt1 := "Invite Your Friend:"
+	txt2 := fmt.Sprintf("Room Code: %s", roomCode)
+	txt3 := "Press [C] to copy the code"
 
 	frame.RegisterClickHandler(area, func(_ backend.MouseEvent) {
 		CopyToClipboard(roomCode)
-		r.SetToast(fmt.Sprintf("Oda Kodu Kopyalandi: %s", roomCode))
+		r.SetToast(fmt.Sprintf("Room Code Copied: %s", roomCode))
 	})
 
 	yCenter := inner.Y + inner.Height/2
@@ -813,7 +813,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	// 1. Controls Panel
 	ctrlBlock := widgets.Block{
-		Title:         " KONTROLLER ",
+		Title:         " CONTROLS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)},
@@ -837,10 +837,10 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	// --- ROW 1: Audio Toggles & Noise Filter ---
 	// Mute Button
-	muteLabel := "[M] Mikrofon Kapat"
+	muteLabel := "[M] Mute Mic"
 	muteStyle := cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
 	if audio.Muted {
-		muteLabel = "[M] Mikrofon AC"
+		muteLabel = "[M] Unmute Mic"
 		muteStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
@@ -854,17 +854,17 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		isMuted := audio.ToggleMute()
 		node.SendMuteState(isMuted)
 		if isMuted {
-			r.SetToast("Mikrofon Kapatildi (Muted)")
+			r.SetToast("Microphone Off (Muted)")
 		} else {
-			r.SetToast("Mikrofon Acildi")
+			r.SetToast("Microphone On")
 		}
 	})
 
 	// Deafen Button
-	deafenLabel := "[D] Kulaklik Kapat"
+	deafenLabel := "[D] Deafen"
 	deafenStyle := cell.Style{Fg: cell.NewColorRGB(0x74, 0xB9, 0xFF), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
 	if audio.Deafened {
-		deafenLabel = "[D] Kulaklik AC"
+		deafenLabel = "[D] Undeafen"
 		deafenStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
@@ -880,16 +880,16 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			node.SendDeafenState(isDeaf)
 			node.SendMuteState(audio.Muted)
 			if isDeaf {
-				r.SetToast("Kulaklik Kapatildi (Sagir)")
+				r.SetToast("Audio Off (Deafened)")
 			} else {
-				r.SetToast("Kulaklik Acildi")
+				r.SetToast("Audio On")
 			}
 		})
 	}
 
 	// Noise Suppression Button [N]
 	noiseStr := audio.SuppressionModeString()
-	noiseLabel := fmt.Sprintf("[N] Gurultu: %s", noiseStr)
+	noiseLabel := fmt.Sprintf("[N] Noise: %s", noiseStr)
 	noiseStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
 	if audio.SuppressionMode > 0 {
 		noiseStyle = cell.Style{
@@ -904,15 +904,15 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		buf.SetString(noiseX, row1Y, noiseLabel, noiseStyle)
 		frame.RegisterClickHandler(cell.NewRect(noiseX, row1Y, noiseLen, 1), func(_ backend.MouseEvent) {
 			audio.CycleSuppressionMode()
-			r.SetToast(fmt.Sprintf("Gurultu Filtresi: %s", audio.SuppressionModeString()))
+			r.SetToast(fmt.Sprintf("Noise Filter: %s", audio.SuppressionModeString()))
 		})
 	}
 
 	// Screen Share Button [V]
-	screenLabel := "[V] Ekran Paylas"
+	screenLabel := "[V] Share Screen"
 	screenStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
 	if node.IsSharingScreen {
-		screenLabel = "[V] Yayini Durdur"
+		screenLabel = "[V] Stop Sharing"
 		screenStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
@@ -926,16 +926,16 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		frame.RegisterClickHandler(cell.NewRect(screenX, row1Y, screenLen, 1), func(_ backend.MouseEvent) {
 			if node.IsSharingScreen {
 				_ = node.StopScreenShare()
-				r.SetToast("Ekran paylasimi durduruldu")
+				r.SetToast("Screen share stopped")
 			} else if r.OnOpenScreenShareModal != nil {
 				r.OnOpenScreenShareModal()
 			} else {
 				go func() {
 					err := node.StartScreenShare("", 50100)
 					if err != nil {
-						r.SetToast(fmt.Sprintf("Hata: %v", err))
+						r.SetToast(fmt.Sprintf("Error: %v", err))
 					} else {
-						r.SetToast("Ekran paylasimi baslatildi (60 FPS)")
+						r.SetToast("Screen share started (60 FPS)")
 					}
 				}()
 			}
@@ -953,17 +953,17 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			}
 		}
 
-		watchLabel := "[W] Ekran Izle"
+		watchLabel := "[W] Watch Screen"
 		watchStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
 		if node.IsWatchingScreen {
-			watchLabel = "[W] Izlemeyi Kapat"
+			watchLabel = "[W] Stop Watching"
 			watchStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
 				Modifier: cell.ModifierBold,
 			}
 		} else if streamingPeer != nil {
-			watchLabel = fmt.Sprintf("[W] %s Izle 🔴", streamingPeer.Nickname)
+			watchLabel = fmt.Sprintf("[W] Watch %s 🔴", streamingPeer.Nickname)
 			watchStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
@@ -978,7 +978,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			if node.IsWatchingScreen {
 				go func() {
 					_ = node.StopWatchingScreen()
-					r.SetToast("Ekran izleyici kapatildi")
+					r.SetToast("Screen viewer closed")
 				}()
 			} else if streamingPeer != nil {
 				port := streamingPeer.VideoPort
@@ -986,19 +986,19 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 					port = 50100
 				}
 				opts := screenshare.ReceiverOptions{
-					WindowTitle: fmt.Sprintf("Limoni Voice - %s Canli Yayini (60 FPS)", streamingPeer.Nickname),
+					WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (60 FPS)", streamingPeer.Nickname),
 				}
-				r.SetToast("🎬 Yayin izleyici baslatiliyor...")
+				r.SetToast("🎬 Starting stream viewer...")
 				go func() {
 					err := node.StartWatchingScreen(port, opts)
 					if err != nil {
-						r.SetToast(fmt.Sprintf("Hata: %v", err))
+						r.SetToast(fmt.Sprintf("Error: %v", err))
 					} else {
-						r.SetToast(fmt.Sprintf("%s yayini acildi (HD 60 FPS)", streamingPeer.Nickname))
+						r.SetToast(fmt.Sprintf("%s stream opened (HD 60 FPS)", streamingPeer.Nickname))
 					}
 				}()
 			} else {
-				r.SetToast("Odada su an ekran paylasan kimse yok")
+				r.SetToast("No one is sharing screen in this room")
 			}
 		})
 
@@ -1021,7 +1021,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 
 		// Volume Controls [+/-]
-		gainText := fmt.Sprintf("[+/-] Ses: %.0f%%", audio.Gain*100)
+		gainText := fmt.Sprintf("[+/-] Vol: %.0f%%", audio.Gain*100)
 		gainX := testX + testLen + 2
 		gainLen := uint16(len([]rune(gainText)))
 		if gainX+gainLen <= ctrlInner.X+ctrlInner.Width {
@@ -1031,24 +1031,24 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				if gain > 2.0 {
 					audio.AdjustGain(-1.5)
 				}
-				r.SetToast(fmt.Sprintf("Mikrofon Sesi: %.0f%%", audio.Gain*100))
+				r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.Gain*100))
 			})
 		}
 
 		// Copy Code [C]
-		copyText := "[C] Kopyala"
+		copyText := "[C] Copy"
 		copyX := gainX + gainLen + 2
 		copyLen := uint16(len([]rune(copyText)))
 		if copyX+copyLen <= ctrlInner.X+ctrlInner.Width {
 			buf.SetString(copyX, row2Y, copyText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
 			frame.RegisterClickHandler(cell.NewRect(copyX, row2Y, copyLen, 1), func(_ backend.MouseEvent) {
 				CopyToClipboard(node.RoomCode)
-				r.SetToast(fmt.Sprintf("Oda Kodu Kopyalandi: %s", node.RoomCode))
+				r.SetToast(fmt.Sprintf("Room Code Copied: %s", node.RoomCode))
 			})
 		}
 
 		// Leave Room [Esc]
-		leaveText := "[Esc] Ayril"
+		leaveText := "[Esc] Leave"
 		leaveLen := uint16(len([]rune(leaveText)))
 		leaveX := copyX + copyLen + 2
 		if ctrlInner.Width >= leaveX-ctrlInner.X+leaveLen {
@@ -1066,7 +1066,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	// 2. Logs & Toast Area
 	logBlock := widgets.Block{
-		Title:         " ODA GUNLUGU VE ETKINLIKLER ",
+		Title:         " ROOM LOG & EVENTS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72)},
@@ -1117,7 +1117,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			}
 		}
 	} else {
-		placeholder := truncate("Baglanti bekleniyor... Arkadasiniz odaya katildiginda burada gorunecek.", maxW)
+		placeholder := truncate("Waiting for connections... Events will appear here when your friend joins.", maxW)
 		buf.SetString(logInner.X+1, logInner.Y, placeholder, cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
 	}
 }

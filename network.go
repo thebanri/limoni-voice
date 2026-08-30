@@ -257,7 +257,7 @@ func (n *P2PNode) HostRoom(roomCode string) {
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
 
-	n.log(fmt.Sprintf("[👑] Oda acildi (HOST): %s (Port: %d | E2EE Guvenli)", n.RoomCode, n.Port))
+	n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | E2EE Secure)", n.RoomCode, n.Port))
 	n.broadcastHello()
 	n.connectRelay("host", n.RoomCode)
 }
@@ -267,7 +267,7 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	cleanCode := NormalizeCode(roomCode)
 	if cleanCode == "" {
 		if onFailed != nil {
-			onFailed("Gecersiz oda anahtari")
+			onFailed("Invalid room key")
 		}
 		return
 	}
@@ -299,7 +299,7 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.OnJoinFailed = onFailed
 	n.mu.Unlock()
 
-	n.log(fmt.Sprintf("[⏳] '%s' odasi araniyor ve host dogrulaniyor...", cleanCode))
+	n.log(fmt.Sprintf("[⏳] Searching room '%s' and verifying host...", cleanCode))
 
 	// Connect to internet relay server for cross-network join
 	n.connectRelay("join", cleanCode)
@@ -340,9 +340,9 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 					failedCb := n.OnJoinFailed
 					n.mu.Unlock()
 
-					n.log(fmt.Sprintf("❌ '%s' odasi bulunamadi (Host cevrimdisi veya oda acilmamis).", cleanCode))
+					n.log(fmt.Sprintf("❌ Room '%s' not found (Host offline or room not created).", cleanCode))
 					if failedCb != nil {
-						failedCb("Bu oda su anda acik degil! Arkadasinizin [2] ODA OLUSTUR butonuna basarak odayi actigindan emin olun.")
+						failedCb("This room is not currently open! Make sure your friend has opened the room by clicking [2] CREATE ROOM.")
 					}
 				} else {
 					n.mu.Unlock()
@@ -365,7 +365,7 @@ func (n *P2PNode) CancelJoin() {
 		n.Connecting = false
 		n.aead = nil
 		n.RoomCode = ""
-		n.log("Odaya baglanti istegi iptal edildi.")
+		n.log("Room join request cancelled.")
 	}
 }
 
@@ -413,9 +413,9 @@ func (n *P2PNode) LeaveRoom() {
 	n.mu.Unlock()
 
 	if wasHost {
-		n.log("Odayi kapattiniz (Host ayrildi).")
+		n.log("Closed room (Host left).")
 	} else {
-		n.log("Odadan ayrildiniz.")
+		n.log("Left the room.")
 	}
 }
 
@@ -464,7 +464,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		conn, _, err := dialer.Dial(relayURL, nil)
 		if err != nil {
 			if firstConnect {
-				n.log(fmt.Sprintf("[☁️] Relay sunucusuna baglanilamadi (%v). LAN modu devrede.", err))
+				n.log(fmt.Sprintf("[☁️] Failed to connect to relay server (%v). LAN mode active.", err))
 				firstConnect = false
 			}
 			// Wait before retry
@@ -493,10 +493,10 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		if firstConnect {
-			n.log(fmt.Sprintf("[☁️] Relay sunucusuna baglanildi (%s | Internet Aktif)", relayURL))
+			n.log(fmt.Sprintf("[☁️] Connected to relay server (%s | Internet Active)", relayURL))
 			firstConnect = false
 		} else {
-			n.log("[☁️] Relay baglantisi otomatik olarak yeniden kuruldu.")
+			n.log("[☁️] Relay connection automatically re-established.")
 		}
 
 		connCancel := make(chan struct{})
@@ -753,7 +753,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 
 	switch msg.Type {
 	case "room_created":
-		n.log(fmt.Sprintf("[☁️] Relay uzerinde '%s' odasi acildi (Internet E2EE)", msg.RoomCode))
+		n.log(fmt.Sprintf("[☁️] Room '%s' created on relay (Internet E2EE)", msg.RoomCode))
 
 	case "welcome":
 		if n.Connecting && !n.IsConnected {
@@ -804,7 +804,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				}
 			}
 
-			n.log(fmt.Sprintf("[☁️] %s odasina baglanildi! (Host: %s | Internet E2EE)", n.RoomCode, msg.Nickname))
+			n.log(fmt.Sprintf("[☁️] Connected to room %s! (Host: %s | Internet E2EE)", n.RoomCode, msg.Nickname))
 			successCb := n.OnJoinSuccess
 			if successCb != nil {
 				go successCb(msg.Nickname)
@@ -830,7 +830,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 					LastSeen: time.Now(),
 				}
 				n.Peers[msg.SenderID] = peer
-				n.log(fmt.Sprintf("[+] %s odaya katildi! (Internet E2EE)", msg.Nickname))
+				n.log(fmt.Sprintf("[+] %s joined the room! (Internet E2EE)", msg.Nickname))
 				if n.OnPeerEvent != nil {
 					go n.OnPeerEvent("join", peer)
 				}
@@ -851,7 +851,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 	case "peer_left":
 		if peer, exists := n.Peers[msg.SenderID]; exists {
 			delete(n.Peers, msg.SenderID)
-			n.log(fmt.Sprintf("[-] %s ayrildi.", peer.Nickname))
+			n.log(fmt.Sprintf("[-] %s left.", peer.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
 			}
@@ -862,16 +862,16 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 		n.HostNick = msg.Nickname
 		if msg.SenderID == n.LocalID {
 			n.IsHost = true
-			n.log("👑 Eski yonetici ayrildi, yeni oda yoneticisi (HOST) sen oldun!")
+			n.log("👑 Former host left, you are now the room HOST!")
 		} else {
 			n.IsHost = false
-			n.log(fmt.Sprintf("👑 Yeni oda yoneticisi (HOST): %s", msg.Nickname))
+			n.log(fmt.Sprintf("👑 New room HOST: %s", msg.Nickname))
 		}
 
 	case "host_left":
 		// Only close if no new host was elected
 		if n.HostID == msg.SenderID && !n.IsHost {
-			n.log("❌ Host ayrildi, oda kapandi.")
+			n.log("❌ Host left, room closed.")
 			if n.OnPeerEvent != nil {
 				if host, ok := n.Peers[n.HostID]; ok {
 					go n.OnPeerEvent("leave", host)
@@ -889,9 +889,9 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			n.aead = nil
 			n.RoomCode = ""
 			failedCb := n.OnJoinFailed
-			n.log("❌ Odaya katilim reddedildi: Oda dolu (Maks 4 kisi).")
+			n.log("❌ Room join rejected: Room full (Max 4 people).")
 			if failedCb != nil {
-				go failedCb("Bu oda dolu! (Maksimum 4 kisi)")
+				go failedCb("This room is full! (Maximum 4 people)")
 			}
 		}
 
@@ -907,9 +907,9 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			failedCb := n.OnJoinFailed
 			msgText := msg.Message
 			if msgText == "" {
-				msgText = "Bu oda su anda acik degil! Arkadasinizin [2] ODA OLUSTUR butonuna basarak odayi actigindan emin olun."
+				msgText = "This room is not currently open! Make sure your friend has opened the room by clicking [2] CREATE ROOM."
 			}
-			n.log(fmt.Sprintf("❌ Odaya katilim basarisiz: %s", msgText))
+			n.log(fmt.Sprintf("❌ Failed to join room: %s", msgText))
 			if failedCb != nil {
 				go failedCb(msgText)
 			}
@@ -927,9 +927,9 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			failedCb := n.OnJoinFailed
 			msgText := msg.Message
 			if msgText == "" {
-				msgText = "Sunucu baglanti hatasi olustu."
+				msgText = "Server connection error occurred."
 			}
-			n.log(fmt.Sprintf("❌ Sunucu hatasi: %s", msgText))
+			n.log(fmt.Sprintf("❌ Server error: %s", msgText))
 			if failedCb != nil {
 				go failedCb(msgText)
 			}
@@ -1405,7 +1405,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 						IsDeafened: pkt.IsDeafened,
 					}
 					n.Peers[pkt.SenderID] = peer
-					n.log(fmt.Sprintf("[+] %s ile baglanti kuruldu. (E2EE Guvenli)", nick))
+					n.log(fmt.Sprintf("[+] Established connection with %s. (E2EE Secure)", nick))
 					if n.OnPeerEvent != nil {
 						go n.OnPeerEvent("join", peer)
 					}
@@ -1455,7 +1455,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				IsDeafened: pkt.IsDeafened,
 			}
 			n.Peers[pkt.SenderID] = peer
-			n.log(fmt.Sprintf("[+] %s odaya katildi! (E2EE Guvenli)", pkt.Nickname))
+			n.log(fmt.Sprintf("[+] %s joined the room! (E2EE Secure)", pkt.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("join", peer)
 			}
@@ -1575,7 +1575,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				IsDeafened: pkt.IsDeafened,
 			}
 			n.Peers[pkt.SenderID] = hostPeer
-			n.log(fmt.Sprintf("[+] %s odasina baglanildi (Host: %s | E2EE Guvenli)", n.RoomCode, pkt.Nickname))
+			n.log(fmt.Sprintf("[+] Connected to room %s (Host: %s | E2EE Secure)", n.RoomCode, pkt.Nickname))
 
 			// Connect to other peers reported in Welcome packet (mesh topology)
 			for _, pSum := range pkt.Peers {
@@ -1660,9 +1660,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			n.aead = nil
 			n.RoomCode = ""
 			failedCb := n.OnJoinFailed
-			n.log("❌ Odaya katilim reddedildi: Oda dolu (Maks 4 kisi).")
+			n.log("❌ Room join rejected: Room full (Max 4 people).")
 			if failedCb != nil {
-				go failedCb("Bu oda dolu! (Maksimum 4 kisi)")
+				go failedCb("This room is full! (Maximum 4 people)")
 			}
 		}
 
@@ -1714,7 +1714,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = true
 			peer.VideoPort = pkt.VideoPort
-			n.log(fmt.Sprintf("📺 %s ekran paylasimi baslatti (Port: %d)", peer.Nickname, pkt.VideoPort))
+			n.log(fmt.Sprintf("📺 %s started screen sharing (Port: %d)", peer.Nickname, pkt.VideoPort))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, true, pkt.VideoPort)
 			}
@@ -1724,7 +1724,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = false
 			peer.VideoPort = 0
-			n.log(fmt.Sprintf("⏹️ %s ekran paylasimini durdurdu.", peer.Nickname))
+			n.log(fmt.Sprintf("⏹️ %s stopped screen sharing.", peer.Nickname))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, false, 0)
 			}
@@ -1744,7 +1744,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			wasSharing := peer.IsSharingScreen
 			delete(n.Peers, pkt.SenderID)
-			n.log(fmt.Sprintf("[-] %s odadan ayrildi.", peer.Nickname))
+			n.log(fmt.Sprintf("[-] %s left the room.", peer.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
 			}
@@ -1777,7 +1777,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	}
 	captureConn, err := net.ListenUDP("udp4", captureAddr)
 	if err != nil {
-		return fmt.Errorf("ekran yakalama portu acilamadi: %w", err)
+		return fmt.Errorf("failed to open screen capture port: %w", err)
 	}
 	localAssignedPort := captureConn.LocalAddr().(*net.UDPAddr).Port
 
@@ -1810,7 +1810,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		VideoPort:       localAssignedPort,
 	}
 	n.broadcastToPeers(&startPkt)
-	n.log("📺 Ekran paylasimi baslatildi (1080p 60 FPS - Internet)")
+	n.log("📺 Screen share started (1080p 60 FPS - Internet)")
 
 	// 2. Read raw MPEG-TS video chunks and broadcast to all room peers over WebSocket Relay (Internet)
 	go func() {
@@ -1848,9 +1848,9 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	go func() {
 		select {
 		case err := <-session.Err():
-			n.log(fmt.Sprintf("⚠️ Ekran yayini kapandi: %v", err))
+			n.log(fmt.Sprintf("⚠️ Screen stream closed: %v", err))
 		case <-session.Done():
-			n.log("ℹ️ Ekran yayini sonlandi.")
+			n.log("ℹ️ Screen stream ended.")
 		}
 
 		_ = captureConn.Close()
@@ -1909,7 +1909,7 @@ func (n *P2PNode) StopScreenShare() error {
 		VideoPort:       0,
 	}
 	n.broadcastToPeers(&stopPkt)
-	n.log("⏹️ Ekran paylasimi durduruldu.")
+	n.log("⏹️ Screen share stopped.")
 	return nil
 }
 
@@ -1945,7 +1945,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	// 1. Open a local TCP listener on a dynamic free port (127.0.0.1:0)
 	tcpLn, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		return fmt.Errorf("yerel TCP oynatici soketi acilamadi: %w", err)
+		return fmt.Errorf("failed to open local TCP player socket: %w", err)
 	}
 	assignedTCPPort := tcpLn.Addr().(*net.TCPAddr).Port
 
@@ -1977,15 +1977,15 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	n.IsWatchingScreen = true
 	n.mu.Unlock()
 
-	n.log("🎬 Canli ekran yayini izleyici penceresi acildi (HD 60 FPS).")
+	n.log("🎬 Live screen stream viewer window opened (HD 60 FPS).")
 
 	// 4. Monitor receiver session lifecycle
 	go func() {
 		select {
 		case err := <-session.Err():
-			n.log(fmt.Sprintf("⚠️ Ekran izleyici kapandi/hata: %v", err))
+			n.log(fmt.Sprintf("⚠️ Screen viewer closed/error: %v", err))
 		case <-session.Done():
-			n.log("ℹ️ Ekran izleyici penceresi kapandi.")
+			n.log("ℹ️ Screen viewer window closed.")
 		}
 
 		n.mu.Lock()
@@ -2051,7 +2051,7 @@ func (n *P2PNode) heartbeatLoop() {
 		for id, peer := range n.Peers {
 			if now.Sub(peer.LastSeen) > 45*time.Second {
 				delete(n.Peers, id)
-				n.log(fmt.Sprintf("[-] %s zaman asimina ugradi.", peer.Nickname))
+				n.log(fmt.Sprintf("[-] %s timed out.", peer.Nickname))
 				if n.OnPeerEvent != nil {
 					go n.OnPeerEvent("leave", peer)
 				}
