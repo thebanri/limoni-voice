@@ -811,7 +811,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 						h = (h / 2) * 2
 						x = (x / 2) * 2
 						y = (y / 2) * 2
-						scaleFilter = fmt.Sprintf("crop=min(iw\\,%d):min(ih\\,%d):min(iw-%d\\,%d):min(ih-%d\\,%d),scale=%s:flags=bicubic", w, h, w, x, h, y, scaleRes)
+						scaleFilter = fmt.Sprintf("crop=w=min(iw\\,%d):h=min(ih\\,%d):x=min(max(0\\,iw-out_w)\\,%d):y=min(max(0\\,ih-out_h)\\,%d),scale=%s:flags=bicubic", w, h, x, y, scaleRes)
 					}
 				}
 			}
@@ -1004,7 +1004,17 @@ func (s *Session) monitor() {
 
 	if err != nil && s.ctx.Err() == nil {
 		if s.stderrBuf != nil && s.stderrBuf.Len() > 0 {
-			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(s.stderrBuf.String()))
+			lines := strings.Split(strings.TrimSpace(s.stderrBuf.String()), "\n")
+			var errLines []string
+			for i := len(lines) - 1; i >= 0 && len(errLines) < 3; i-- {
+				trimmed := strings.TrimSpace(lines[i])
+				if trimmed != "" && !strings.HasPrefix(trimmed, "frame=") && !strings.HasPrefix(trimmed, "size=") {
+					errLines = append([]string{trimmed}, errLines...)
+				}
+			}
+			if len(errLines) > 0 {
+				err = fmt.Errorf("%w: %s", err, strings.Join(errLines, " | "))
+			}
 		}
 		s.errCh <- err
 	}
