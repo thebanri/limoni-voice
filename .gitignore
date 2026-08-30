@@ -1,6 +1,7 @@
 # Binaries
 limoni-voice
 *.exe
+!cmd/installer/limoni-voice.exe
 *.test
 
 # Build Artifacts

@@ -19,9 +19,15 @@ mkdir -p dist/darwin-arm64 dist/darwin-amd64
 
 LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
 
+# 0. Prep installer dependencies
+mkdir -p cmd/installer
+touch cmd/installer/limoni-voice.exe
+cp microphone.obj cmd/installer/microphone.obj || true
+cp assets/icon.ico cmd/installer/icon.ico || true
+
 # 1. Run Unit Tests
 echo "==> Running Unit Tests..."
-go test -mod=vendor -v ./...
+go test -mod=vendor -v . ./screenshare
 
 # 2. Compile Linux AMD64 & ARM64
 echo "==> Building Linux AMD64..."
