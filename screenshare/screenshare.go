@@ -16,6 +16,16 @@ import (
 	"time"
 )
 
+// LogCallback is optional hook to receive internal screenshare logs
+var LogCallback func(string)
+
+func logMsg(format string, a ...interface{}) {
+	msg := fmt.Sprintf(format, a...)
+	if LogCallback != nil {
+		LogCallback(msg)
+	}
+}
+
 // DependencyStatus contains the availability of required external CLI tools
 type DependencyStatus struct {
 	HasMPV               bool   `json:"has_mpv"`
@@ -135,14 +145,14 @@ func getMacScreenDevice(binPath string) string {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binPath, "-f", "avfoundation", "-list_devices", "true", "-i", "")
-	out, _ := cmd.CombinedOutput()
-
+	out, err := cmd.CombinedOutput()
 	outStr := string(out)
+	logMsg("[DARWIN] FFmpeg -list_devices output (err: %v):\n%s", err, outStr)
+
 	lines := strings.Split(outStr, "\n")
 	for _, line := range lines {
 		lower := strings.ToLower(line)
 		if strings.Contains(lower, "capture screen") {
-			// Extract device number e.g. "[AVFoundation indev @ ...] [1] Capture screen 0"
 			idxClose := strings.Index(line, "]")
 			rest := line
 			if idxClose != -1 {
@@ -153,11 +163,14 @@ func getMacScreenDevice(binPath string) string {
 			if idx2Open != -1 && idx2Close != -1 && idx2Close > idx2Open {
 				numStr := strings.TrimSpace(rest[idx2Open+1 : idx2Close])
 				if _, err := strconv.Atoi(numStr); err == nil {
-					return numStr + ":none"
+					res := numStr + ":none"
+					logMsg("[DARWIN] Selected screen device: '%s' from line: %s", res, strings.TrimSpace(line))
+					return res
 				}
 			}
 		}
 	}
+	logMsg("[DARWIN] Fallback to device 'Capture screen 0:none'")
 	return "Capture screen 0:none"
 }
 
@@ -621,6 +634,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		return nil, fmt.Errorf("unsupported platform for screen broadcasting: %s", runtime.GOOS)
 	}
 
+	logMsg("[BROADCAST] Starting command: %s %s", binPath, strings.Join(args, " "))
+
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	setupProcessGroup(cmd)
@@ -746,6 +761,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		return nil, errors.New("ekrani izlemek icin sistemde 'mpv' veya 'ffplay' (ffmpeg) bulunamadi. Lutfen 'mpv' yukleyin (ornek: sudo apt install mpv / brew install mpv).")
 	}
 
+	logMsg("[RECEIVER] Starting command: %s %s", binPath, strings.Join(args, " "))
+
 	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	cmd.Stdout = nil
@@ -780,11 +797,17 @@ func (s *Session) monitor() {
 	s.stopped = true
 	s.mu.Unlock()
 
+	stderrStr := ""
+	if s.stderrBuf != nil {
+		stderrStr = strings.TrimSpace(s.stderrBuf.String())
+	}
+
 	if err != nil && s.ctx.Err() == nil {
-		if s.stderrBuf != nil && s.stderrBuf.Len() > 0 {
-			lines := strings.Split(strings.TrimSpace(s.stderrBuf.String()), "\n")
+		logMsg("[SESSION] Process exited with error: %v\n[STDERR]: %s", err, stderrStr)
+		if stderrStr != "" {
+			lines := strings.Split(stderrStr, "\n")
 			var errLines []string
-			for i := len(lines) - 1; i >= 0 && len(errLines) < 3; i-- {
+			for i := len(lines) - 1; i >= 0 && len(errLines) < 5; i-- {
 				trimmed := strings.TrimSpace(lines[i])
 				if trimmed != "" && !strings.HasPrefix(trimmed, "frame=") && !strings.HasPrefix(trimmed, "size=") {
 					errLines = append([]string{trimmed}, errLines...)
@@ -795,6 +818,8 @@ func (s *Session) monitor() {
 			}
 		}
 		s.errCh <- err
+	} else {
+		logMsg("[SESSION] Process terminated cleanly.")
 	}
 	close(s.doneCh)
 }

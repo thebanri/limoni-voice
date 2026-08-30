@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"sort"
@@ -310,6 +311,8 @@ func (n *P2PNode) Start() error {
 			go n.listenBroadcastLoop()
 		}
 	}
+
+	screenshare.LogCallback = n.log
 
 	go n.listenLoop()
 	go n.heartbeatLoop()
@@ -795,7 +798,12 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 				n.mu.RUnlock()
 
 				if watching && tcpConn != nil && len(pkt.Payload) > 0 {
-					_, _ = tcpConn.Write(pkt.Payload)
+					if pkt.Seq%120 == 1 {
+						n.log(fmt.Sprintf("🎬 [WATCH] Receiving stream from %s: packet #%d (%d bytes) -> forwarding to MPV", pkt.Nickname, pkt.Seq, len(pkt.Payload)))
+					}
+					if _, err := tcpConn.Write(pkt.Payload); err != nil {
+						n.log(fmt.Sprintf("⚠️ [WATCH] MPV TCP write error: %v", err))
+					}
 				}
 				continue
 			}
@@ -2068,9 +2076,12 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	go func() {
 		buf := make([]byte, 2048)
 		var seq uint32
+		var totalPackets int
+		var totalBytes int64
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
+				n.log(fmt.Sprintf("⚠️ [SHARE] UDP capture read ended: %v", err))
 				break
 			}
 
@@ -2086,6 +2097,14 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 			seq++
 			if seq == 0 {
 				seq = 1
+			}
+
+			totalPackets++
+			totalBytes += int64(nBytes)
+			if totalPackets == 1 {
+				n.log(fmt.Sprintf("📺 [SHARE] First video chunk captured from FFmpeg (%d bytes)! Broadcasting...", nBytes))
+			} else if totalPackets%120 == 0 {
+				n.log(fmt.Sprintf("📺 [SHARE] Stream active: %d chunks (%d KB) sent", totalPackets, totalBytes/1024))
 			}
 
 			chunk := make([]byte, nBytes)
@@ -2213,8 +2232,10 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	go func() {
 		conn, err := tcpLn.Accept()
 		if err != nil {
+			n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP accept error: %v", err))
 			return
 		}
+		n.log(fmt.Sprintf("🎬 [WATCH] MPV connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
 			_ = tcp.SetWriteBuffer(4 * 1024 * 1024)
@@ -2356,6 +2377,11 @@ func (n *P2PNode) GetPeersList() []*PeerInfo {
 }
 
 func (n *P2PNode) log(msg string) {
+	log.Println("[P2P]", msg)
+	if f, err := os.OpenFile("limoni-voice.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		_, _ = f.WriteString(time.Now().Format("15:04:05.000 ") + msg + "\n")
+		_ = f.Close()
+	}
 	if n.OnLog != nil {
 		n.OnLog(msg)
 	}

@@ -11,4 +11,4 @@ deb_pkg_*/
 # OS Files
 .DS_Store
 Thumbs.db
-
+*.log
