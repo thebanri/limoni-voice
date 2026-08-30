@@ -821,7 +821,6 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
 			"-framerate", fmt.Sprintf("%d", fps),
-			"-pixel_format", "bgr0",
 			"-i", screenDev,
 			"-vf", scaleFilter,
 			"-c:v", "libx264",
