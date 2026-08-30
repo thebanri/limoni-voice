@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="#-features">English</a> • <a href="#-t%C3%BCrk%C3%A7e-dok%C3%BCmantasyon">Türkçe</a>
+  <b>English</b> • <a href="README.tr.md">Türkçe</a>
 </p>
 
 <p align="center">
@@ -122,7 +122,7 @@ limoni-voice/
 ├── scripts/             # Build & packaging scripts
 ├── release_assets/      # Compiled release assets & installers
 ├── dist/                # Target distribution packages
-└── assets/              # Logo, icons
+└── assets/              # Logo, icons, demo preview
 ```
 
 ---
@@ -272,81 +272,26 @@ cd relay-server && go test -v ./...
 
 ---
 
-<br/>
+## 🤝 Contributing
+
+Contributions are always welcome! To get started:
+
+1. **Fork** this repository
+2. Create a feature branch (`git checkout -b feature/awesome-feature`)
+3. Commit your changes (`git commit -m 'feat: add awesome feature'`)
+4. Push to your branch (`git push origin feature/awesome-feature`)
+5. Open a **Pull Request**
 
 ---
 
-# 🇹🇷 Türkçe Dokümantasyon
+## 📄 License
 
-## ✨ Özellikler
+This project is licensed under the [MIT License](LICENSE).
 
-### 🎙️ Sesli Konuşma
-- **Full-Mesh P2P**: 4 kişilik oda, doğrudan peer-to-peer UDP
-- **AES-256-GCM Şifreleme**: Tüm ses ve kontrol paketleri uçtan uca şifreli
-- **VAD (Voice Activity Detection)**: Konuşan kişi anlık olarak tespit edilir
-- **Gürültü Bastırma**: Çok kademeli filtre sistemi (KAPALI / AÇIK / YÜKSEK)
-- **Canlı VU-Meter**: Her katılımcının ses seviyesi gerçek zamanlı görselleştirilir
-
-### 🖥️ Ekran Paylaşımı
-- **60 FPS GPU hızlandırmalı** ekran yakalama
-- **Linux**: GPU Screen Recorder + FFmpeg pipeline
-- **Windows**: Pencere ve ekran bazlı seçim ile GDI/DXGI capture
-- **macOS**: Yerel sistem portalı ile entegrasyon
-- **MPV Player** ile ultra düşük gecikmeli izleme deneyimi
-
-### 🌐 Ağ Mimarisi
-- **LAN Otomatik Keşif**: Broadcast paketleri ile yerel ağda sıfır-konfigürasyon
-- **İnternet P2P**: WebSocket relay sunucusu ile NAT geçişi ve hole-punching
-- **Relay Sunucusu**: Railway üzerinde barındırılan ultra hafif Go sunucusu (~7 MB Docker image)
-- **HMAC-SHA256**: Paket bütünlük doğrulaması
-
----
-
-## 🎮 Kullanım ve Kısayollar
-
-### Lobi Ekranı
-
-| Tuş | Aksiyon |
-|-----|---------|
-| `Tab` / `Shift+Tab` | Alanlar arası geçiş |
-| `Enter` | Odayı başlat veya katıl |
-| `C` / `F2` | Oda anahtarını panoya kopyala |
-| `G` / `F3` | Yeni oda anahtarı üret |
-| `T` / `F4` | Ses test modalını aç |
-| `Esc` | Çıkış onayı |
-| `Ctrl+V` | Panodan yapıştır |
-| `🖱️ Sürükle` | 3D mikrofonu döndür |
-| `🖱️ Scroll` | Yakınlaştır / Uzaklaştır |
-
-### Oda Ekranı
-
-| Tuş | Aksiyon |
-|-----|---------|
-| `M` | 🎙️ Mikrofon Aç / Kapat |
-| `D` | 🔇 Kulaklık Kapat (Sağırlaştır) |
-| `N` | 🔊 Gürültü filtresi modunu değiştir |
-| `V` | 🖥️ Ekran paylaşımını başlat / durdur |
-| `W` | 👁️ Ekran yayınını izle |
-| `C` / `F2` | 📋 Oda kodunu kopyala |
-| `+` / `-` | 🔉 Mikrofon ses seviyesini ayarla |
-| `T` | 🧪 Ses test modalı |
-| `Esc` | Odadan ayrıl |
-
----
-
-## 🤝 Katkıda Bulunma
-
-1. Bu repoyu **fork** edin
-2. Feature branch oluşturun (`git checkout -b feature/harika-ozellik`)
-3. Değişikliklerinizi commit edin (`git commit -m 'feat: harika özellik eklendi'`)
-4. Branch'inizi push edin (`git push origin feature/harika-ozellik`)
-5. **Pull Request** açın
-
----
-
-## 📄 Lisans
-
-Bu proje [MIT Lisansı](LICENSE) altında lisanslanmıştır.
+Third-party dependencies:
+- **FFmpeg** — LGPL 2.1+ / GPL 2+
+- **MPV** — GPL 2+ / LGPL 2.1+
+- **GPU Screen Recorder** — GPL 3
 
 ---
 
