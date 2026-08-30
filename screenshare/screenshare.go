@@ -317,7 +317,7 @@ func getMacScreenDeviceIndex(binPath string, screenNum int) string {
 				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
 					numStr := strings.TrimSpace(part[idx1+1:])
 					if _, err := strconv.Atoi(numStr); err == nil {
-						return numStr + ":none"
+						return numStr + ":"
 					}
 				}
 			}
@@ -333,15 +333,15 @@ func getMacScreenDeviceIndex(binPath string, screenNum int) string {
 				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
 					numStr := strings.TrimSpace(part[idx1+1:])
 					if _, err := strconv.Atoi(numStr); err == nil {
-						return numStr + ":none"
+						return numStr + ":"
 					}
 				}
 			}
 		}
 	}
 
-	// 3. Fallback to 1:none
-	return "1:none"
+	// 3. Fallback to 1:
+	return "1:"
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -766,21 +766,44 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 		binPath = p
 
+		screenDev := getMacScreenDevice(binPath)
+		scaleFilter := fmt.Sprintf("scale=%s", opt.Resolution)
+		if scaleFilter == "scale=" {
+			scaleFilter = "scale=1920:1080"
+		}
+
+		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
+			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
+			screenDev = devNum + ":none"
+		} else if strings.HasPrefix(opt.WindowID, "mac_screen:") {
+			scrIdx := strings.TrimPrefix(opt.WindowID, "mac_screen:")
+			screenDev = scrIdx + ":none"
+		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
+			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
+			// Get window position and size on macOS
+			boundsScript := fmt.Sprintf(`tell application "System Events" to tell process "%s" to get {position, size} of window 1`, appName)
+			ctxB, cancelB := context.WithTimeout(context.Background(), 1*time.Second)
+			outB, errB := exec.CommandContext(ctxB, "osascript", "-e", boundsScript).Output()
+			cancelB()
+
+			if errB == nil && len(outB) > 0 {
+				clean := strings.ReplaceAll(strings.ReplaceAll(string(outB), "{", ""), "}", "")
+				parts := strings.Split(clean, ",")
+				if len(parts) >= 4 {
+					x, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+					y, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+					w, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
+					h, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
+					if w > 100 && h > 100 && x >= 0 && y >= 0 {
+						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s", w, h, x, y, opt.Resolution)
+					}
+				}
+			}
+		}
+
 		fps := opt.FPS
 		if fps <= 0 {
 			fps = 30
-		}
-
-		scaleOpt := "scale=1920:1080:flags=bicubic"
-		if opt.Resolution != "" {
-			scaleOpt = fmt.Sprintf("scale=%s:flags=bicubic", strings.ReplaceAll(opt.Resolution, "x", ":"))
-		}
-
-		screenDev := getMacScreenDeviceIndex(binPath, 0)
-		if strings.HasPrefix(opt.WindowID, "mac_screen:") {
-			scrIdxStr := strings.TrimPrefix(opt.WindowID, "mac_screen:")
-			scrIdx, _ := strconv.Atoi(scrIdxStr)
-			screenDev = getMacScreenDeviceIndex(binPath, scrIdx)
 		}
 
 		args = []string{
@@ -789,7 +812,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-capture_cursor", "1",
 			"-framerate", fmt.Sprintf("%d", fps),
 			"-i", screenDev,
-			"-vf", scaleOpt,
+			"-vf", scaleFilter,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
