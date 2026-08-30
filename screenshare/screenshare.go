@@ -291,6 +291,10 @@ func ListWindows() []WindowInfo {
 }
 
 func getMacScreenDevice(binPath string) string {
+	return getMacScreenDeviceIndex(binPath, 0)
+}
+
+func getMacScreenDeviceIndex(binPath string, screenNum int) string {
 	if binPath == "" {
 		binPath = "ffmpeg"
 	}
@@ -302,6 +306,25 @@ func getMacScreenDevice(binPath string) string {
 
 	outStr := string(out)
 	lines := strings.Split(outStr, "\n")
+	targetLabel := fmt.Sprintf("capture screen %d", screenNum)
+
+	// 1. Look for specific screen index
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, targetLabel) {
+			parts := strings.Split(line, "]")
+			for _, part := range parts {
+				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
+					numStr := strings.TrimSpace(part[idx1+1:])
+					if _, err := strconv.Atoi(numStr); err == nil {
+						return numStr + ":none"
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Fallback to any capture screen
 	for _, line := range lines {
 		lower := strings.ToLower(line)
 		if strings.Contains(lower, "capture screen") {
@@ -310,13 +333,15 @@ func getMacScreenDevice(binPath string) string {
 				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
 					numStr := strings.TrimSpace(part[idx1+1:])
 					if _, err := strconv.Atoi(numStr); err == nil {
-						return numStr + ":"
+						return numStr + ":none"
 					}
 				}
 			}
 		}
 	}
-	return "Capture screen 0:"
+
+	// 3. Fallback to 1:none
+	return "1:none"
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -747,15 +772,16 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 		scaleFilter := fmt.Sprintf("scale=%s:flags=bicubic", scaleRes)
 
-		screenDev := getMacScreenDevice(binPath)
+		screenDev := getMacScreenDeviceIndex(binPath, 0)
 		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
 			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
-			screenDev = devNum + ":"
+			screenDev = devNum + ":none"
 		} else if strings.HasPrefix(opt.WindowID, "mac_screen:") {
-			scrIdx := strings.TrimPrefix(opt.WindowID, "mac_screen:")
-			screenDev = fmt.Sprintf("Capture screen %s:", scrIdx)
+			scrIdxStr := strings.TrimPrefix(opt.WindowID, "mac_screen:")
+			scrIdx, _ := strconv.Atoi(scrIdxStr)
+			screenDev = getMacScreenDeviceIndex(binPath, scrIdx)
 		} else if opt.WindowID == "desktop" || opt.WindowID == "" || opt.WindowID == "portal" {
-			screenDev = "Capture screen 0:"
+			screenDev = getMacScreenDeviceIndex(binPath, 0)
 		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
 			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
 			// Get window position and size on macOS via AppleScript
@@ -764,7 +790,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			outB, errB := exec.CommandContext(ctxB, "osascript", "-e", boundsScript).Output()
 			cancelB()
 
-			screenDev = "Capture screen 0:"
+			screenDev = getMacScreenDeviceIndex(binPath, 0)
 			if errB == nil && len(outB) > 0 {
 				clean := strings.ReplaceAll(strings.ReplaceAll(string(outB), "{", ""), "}", "")
 				parts := strings.Split(clean, ",")
@@ -799,13 +825,10 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		args = []string{
 			"-fflags", "nobuffer+flush_packets",
 			"-thread_queue_size", "512",
-			"-probesize", "32",
-			"-analyzeduration", "0",
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
 			"-framerate", fmt.Sprintf("%d", fps),
 			"-i", screenDev,
-			"-an",
 			"-vf", scaleFilter,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
