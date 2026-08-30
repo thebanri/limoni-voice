@@ -374,10 +374,20 @@ func (s *RelayServer) removeClient(client *Client) {
 	isEmpty := len(room.Members) == 0
 
 	if isEmpty {
-		s.mu.Lock()
-		delete(s.rooms, room.Code)
-		s.mu.Unlock()
-		log.Printf("[-] Room %s closed (empty)", room.Code)
+		roomCode := room.Code
+		go func() {
+			time.Sleep(30 * time.Second)
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if r, ok := s.rooms[roomCode]; ok {
+				r.mu.Lock()
+				if len(r.Members) == 0 {
+					delete(s.rooms, roomCode)
+					log.Printf("[-] Room %s closed after grace period (empty)", roomCode)
+				}
+				r.mu.Unlock()
+			}
+		}()
 		return
 	}
 

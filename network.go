@@ -698,7 +698,7 @@ func (n *P2PNode) sendRelayControlLocked(msg RelayControlMessage) {
 }
 
 func (n *P2PNode) relayWritePump(conn *websocket.Conn, sendCh chan []byte, cancel chan struct{}) {
-	ticker := time.NewTicker(20 * time.Second)
+	ticker := time.NewTicker(8 * time.Second)
 	defer func() {
 		ticker.Stop()
 		conn.Close()
@@ -927,6 +927,24 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			}
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("join", hostPeer)
+			}
+		} else if n.IsConnected {
+			for _, p := range msg.Peers {
+				if p.SenderID != n.LocalID && n.Peers[p.SenderID] == nil {
+					var pAddr *net.UDPAddr
+					if p.PublicIP != "" && p.LocalPort > 0 {
+						pAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", p.PublicIP, p.LocalPort))
+					}
+					n.Peers[p.SenderID] = &PeerInfo{
+						ID:       p.SenderID,
+						Nickname: p.Nickname,
+						Addr:     pAddr,
+						LastSeen: time.Now(),
+					}
+					if p.PublicIP != "" {
+						go n.punchPeerUDP(p.PublicIP, p.LocalPort)
+					}
+				}
 			}
 		}
 

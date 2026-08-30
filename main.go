@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -211,34 +210,20 @@ func main() {
 		if node.IsSharingScreen {
 			go func() {
 				_ = node.StopScreenShare()
-				room.SetToast("Screen share stopped")
+				room.SetToast("⏹️ Screen share stopped")
 			}()
 			return
 		}
 
-		if runtime.GOOS == "windows" {
-			screenShareTargets = screenshare.ListWindows()
-			if len(screenShareTargets) == 0 {
-				screenShareTargets = []screenshare.WindowInfo{
-					{ID: "desktop", Title: "🖥️  Screen 1 (Primary - Full View)"},
-				}
+		screenShareTargets = screenshare.ListWindows()
+		if len(screenShareTargets) == 0 {
+			screenShareTargets = []screenshare.WindowInfo{
+				{ID: "desktop", Title: "🖥️  Entire Screen (Primary View)"},
 			}
-			selectedScreenShareIdx = 0
-			showScreenShareModal = true
-			screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
-		} else {
-			// On Linux / macOS start directly with native system / direct screen capture
-			room.SetToast("🎬 Starting screen share...")
-			go func() {
-				err := node.StartScreenShare("", 50100)
-				if err != nil {
-					room.SetToast(fmt.Sprintf("Error: %v", err))
-				} else {
-					room.SetToast("Screen share started (60 FPS)")
-				}
-			}()
-			return
 		}
+		selectedScreenShareIdx = 0
+		showScreenShareModal = true
+		screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 
 	node.OnLog = func(msg string) {

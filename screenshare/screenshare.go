@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // LogCallback is optional hook to receive internal screenshare logs
@@ -56,7 +55,8 @@ func ListWindows() []WindowInfo {
 		{ID: "desktop", Title: "🖥️  Screen 1 (Primary - Full View)"},
 	}
 
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		psScript := `
 		Add-Type -AssemblyName System.Windows.Forms
 		$screens = [System.Windows.Forms.Screen]::AllScreens
@@ -134,44 +134,74 @@ func ListWindows() []WindowInfo {
 				targets = append(targets, winTargets...)
 			}
 		}
+
+	case "darwin":
+		targets = append(targets, WindowInfo{
+			ID:    "desktop",
+			Title: "🖥️  Entire Screen (Primary Display)",
+		})
+		if binPath, err := getOrBuildMacCaptureBinary(); err == nil {
+			cmd := exec.Command(binPath, "--list")
+			if out, err := cmd.Output(); err == nil {
+				lines := strings.Split(string(out), "\n")
+				seen := make(map[string]bool)
+				for _, line := range lines {
+					trimmed := strings.TrimSpace(line)
+					if trimmed == "" {
+						continue
+					}
+					parts := strings.SplitN(trimmed, "|", 3)
+					if len(parts) == 3 && parts[0] == "WIN" {
+						winID := parts[1]
+						title := parts[2]
+						if !seen[title] && !strings.Contains(title, "Item-0") && !strings.Contains(title, "WindowServer") {
+							seen[title] = true
+							targets = append(targets, WindowInfo{
+								ID:    winID,
+								Title: "🪟  " + title,
+							})
+						}
+					}
+				}
+			}
+		}
+
+	case "linux":
+		targets = append(targets, WindowInfo{
+			ID:    "desktop",
+			Title: "🖥️  Entire Screen (Primary Display)",
+		})
+		// Try wmctrl -l
+		if p, err := FindExecutable("wmctrl"); err == nil {
+			cmd := exec.Command(p, "-l")
+			if out, err := cmd.Output(); err == nil {
+				lines := strings.Split(string(out), "\n")
+				seen := make(map[string]bool)
+				for _, line := range lines {
+					trimmed := strings.TrimSpace(line)
+					if trimmed == "" {
+						continue
+					}
+					fields := strings.Fields(trimmed)
+					if len(fields) >= 4 {
+						winID := fields[0]
+						title := strings.Join(fields[3:], " ")
+						if !seen[title] && !strings.EqualFold(title, "Desktop") {
+							seen[title] = true
+							targets = append(targets, WindowInfo{
+								ID:    winID,
+								Title: "🪟  " + title,
+							})
+						}
+					}
+				}
+			}
+		}
 	}
 	return targets
 }
 
 func getMacScreenDevice(binPath string) string {
-	if binPath == "" {
-		binPath = "ffmpeg"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, binPath, "-f", "avfoundation", "-list_devices", "true", "-i", "")
-	out, err := cmd.CombinedOutput()
-	outStr := string(out)
-	logMsg("[DARWIN] FFmpeg -list_devices output (err: %v):\n%s", err, outStr)
-
-	lines := strings.Split(outStr, "\n")
-	for _, line := range lines {
-		lower := strings.ToLower(line)
-		if strings.Contains(lower, "capture screen") {
-			idxClose := strings.Index(line, "]")
-			rest := line
-			if idxClose != -1 {
-				rest = line[idxClose+1:]
-			}
-			idx2Open := strings.Index(rest, "[")
-			idx2Close := strings.Index(rest, "]")
-			if idx2Open != -1 && idx2Close != -1 && idx2Close > idx2Open {
-				numStr := strings.TrimSpace(rest[idx2Open+1 : idx2Close])
-				if _, err := strconv.Atoi(numStr); err == nil {
-					res := numStr + ":none"
-					logMsg("[DARWIN] Selected screen device index: '%s' from line: %s", res, strings.TrimSpace(line))
-					return res
-				}
-			}
-		}
-	}
-	logMsg("[DARWIN] Fallback to device '3:none'")
 	return "3:none"
 }
 
@@ -185,15 +215,22 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var stream: SCStream?
     let stdoutHandle = FileHandle.standardOutput
 
-    func start(fps: Int = 60, width: Int = 1920, height: Int = 1080) async {
+    func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil) async {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let display = content.displays.first else {
-                fputs("Error: No display found\n", stderr)
+            var filter: SCContentFilter?
+
+            if let winID = targetWindowID, let targetWin = content.windows.first(where: { $0.windowID == winID }) {
+                filter = SCContentFilter(desktopIndependentWindow: targetWin)
+            } else if let display = content.displays.first {
+                filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            }
+
+            guard let activeFilter = filter else {
+                fputs("Error: No display or window found\n", stderr)
                 exit(1)
             }
 
-            let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             let config = SCStreamConfiguration()
             config.width = width
             config.height = height
@@ -202,7 +239,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             config.showsCursor = true
             config.queueDepth = 5
 
-            let stream = SCStream(filter: filter, configuration: config, delegate: self)
+            let stream = SCStream(filter: activeFilter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
             try await stream.startCapture()
             self.stream = stream
@@ -236,19 +273,51 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 }
 
 if #available(macOS 12.3, *) {
-    var width = 1920
-    var height = 1080
-    var fps = 60
+    if CommandLine.arguments.contains("--list") {
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                for (i, d) in content.displays.enumerated() {
+                    print("SCREEN|\(d.displayID)|Display \(i+1) (\(d.width)x\(d.height))")
+                }
+                var seenTitles = Set<String>()
+                for w in content.windows {
+                    if let title = w.title, !title.isEmpty, w.frame.width > 50, w.frame.height > 50 {
+                        let app = w.owningApplication?.applicationName ?? ""
+                        let name = app.isEmpty ? title : "\(app) - \(title)"
+                        if !seenTitles.contains(name) {
+                            seenTitles.insert(name)
+                            print("WIN|\(w.windowID)|\(name)")
+                        }
+                    }
+                }
+            } catch {
+                print("SCREEN|desktop|Primary Display")
+            }
+            exit(0)
+        }
+        dispatchMain()
+    } else {
+        var width = 1920
+        var height = 1080
+        var fps = 60
+        var targetWinID: CGWindowID? = nil
 
-    if CommandLine.arguments.count >= 2, let w = Int(CommandLine.arguments[1]) { width = w }
-    if CommandLine.arguments.count >= 3, let h = Int(CommandLine.arguments[2]) { height = h }
-    if CommandLine.arguments.count >= 4, let f = Int(CommandLine.arguments[3]) { fps = f }
+        if CommandLine.arguments.count >= 2, let w = Int(CommandLine.arguments[1]) { width = w }
+        if CommandLine.arguments.count >= 3, let h = Int(CommandLine.arguments[2]) { height = h }
+        if CommandLine.arguments.count >= 4, let f = Int(CommandLine.arguments[3]) { fps = f }
+        if CommandLine.arguments.count >= 5, let winStr = CommandLine.arguments[4] as String?, !winStr.isEmpty && winStr != "desktop" && winStr != "portal" {
+            if let winNum = UInt32(winStr) {
+                targetWinID = CGWindowID(winNum)
+            }
+        }
 
-    let recorder = ScreenRecorder()
-    Task {
-        await recorder.start(fps: fps, width: width, height: height)
+        let recorder = ScreenRecorder()
+        Task {
+            await recorder.start(fps: fps, width: width, height: height, targetWindowID: targetWinID)
+        }
+        dispatchMain()
     }
-    dispatchMain()
 } else {
     fputs("ScreenCaptureKit requires macOS 12.3+\n", stderr)
     exit(1)
@@ -796,7 +865,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	var sckitCmd *exec.Cmd
 	if macSckitBin != "" {
-		sckitCmd = exec.CommandContext(sessionCtx, macSckitBin, fmt.Sprintf("%d", macWidth), fmt.Sprintf("%d", macHeight), fmt.Sprintf("%d", macFps))
+		sckitCmd = exec.CommandContext(sessionCtx, macSckitBin, fmt.Sprintf("%d", macWidth), fmt.Sprintf("%d", macHeight), fmt.Sprintf("%d", macFps), opt.WindowID)
 		setupProcessGroup(sckitCmd)
 		sckitOut, err := sckitCmd.StdoutPipe()
 		if err != nil {
