@@ -24,6 +24,10 @@
   <a href="#-features">English</a> • <a href="#-t%C3%BCrk%C3%A7e-dok%C3%BCmantasyon">Türkçe</a>
 </p>
 
+<p align="center">
+  <img src="assets/screenshot.gif" alt="Limoni Voice Demo Preview" width="85%" />
+</p>
+
 ---
 
 ## ✨ Features
