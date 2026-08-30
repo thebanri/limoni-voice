@@ -304,20 +304,19 @@ func getMacScreenDevice(binPath string) string {
 	lines := strings.Split(outStr, "\n")
 	for _, line := range lines {
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "capture screen") || (strings.Contains(lower, "screen") && strings.Contains(line, "[")) {
-			// Extract device number e.g. "[AVFoundation indev @ ...] [1] Capture screen 0"
+		if strings.Contains(lower, "capture screen") {
 			parts := strings.Split(line, "]")
 			for _, part := range parts {
 				if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
 					numStr := strings.TrimSpace(part[idx1+1:])
 					if _, err := strconv.Atoi(numStr); err == nil {
-						return numStr + ":none"
+						return numStr + ":"
 					}
 				}
 			}
 		}
 	}
-	return "Capture screen 0:none"
+	return "Capture screen 0"
 }
 
 // DefaultBroadcastOptions returns sensible low-latency defaults
@@ -737,16 +736,16 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		binPath = p
 
 		screenDev := getMacScreenDevice(binPath)
-		scaleFilter := fmt.Sprintf("scale=%s", opt.Resolution)
+		scaleFilter := fmt.Sprintf("scale=%s:flags=bicubic", opt.Resolution)
 
 		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
 			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
-			screenDev = devNum + ":none"
+			screenDev = devNum + ":"
 		} else if strings.HasPrefix(opt.WindowID, "mac_screen:") {
 			scrIdx := strings.TrimPrefix(opt.WindowID, "mac_screen:")
-			screenDev = fmt.Sprintf("Capture screen %s:none", scrIdx)
+			screenDev = fmt.Sprintf("Capture screen %s", scrIdx)
 		} else if opt.WindowID == "desktop" || opt.WindowID == "" || opt.WindowID == "portal" {
-			screenDev = "Capture screen 0:none"
+			screenDev = "Capture screen 0"
 		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
 			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
 			// Get window position and size on macOS
@@ -755,6 +754,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			outB, errB := exec.CommandContext(ctxB, "osascript", "-e", boundsScript).Output()
 			cancelB()
 
+			screenDev = "Capture screen 0"
 			if errB == nil && len(outB) > 0 {
 				clean := strings.ReplaceAll(strings.ReplaceAll(string(outB), "{", ""), "}", "")
 				parts := strings.Split(clean, ",")
@@ -763,19 +763,32 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 					y, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
 					w, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
 					h, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
-					if w > 100 && h > 100 && x >= 0 && y >= 0 {
-						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s", w, h, x, y, opt.Resolution)
+					if w > 50 && h > 50 && x >= 0 && y >= 0 {
+						// Ensure width, height, x, y are even numbers for yuv420p video format
+						w = (w / 2) * 2
+						h = (h / 2) * 2
+						x = (x / 2) * 2
+						y = (y / 2) * 2
+						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s:flags=bicubic", w, h, x, y, opt.Resolution)
 					}
 				}
 			}
 		}
 
+		fps := opt.FPS
+		if fps <= 0 {
+			fps = 30
+		}
+
 		args = []string{
 			"-fflags", "nobuffer+flush_packets",
+			"-probesize", "32",
+			"-analyzeduration", "0",
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
-			"-framerate", fmt.Sprintf("%d", opt.FPS),
+			"-framerate", fmt.Sprintf("%d", fps),
 			"-i", screenDev,
+			"-an",
 			"-vf", scaleFilter,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
@@ -882,11 +895,16 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--hwdec=auto-safe",
 			"--video-sync=desync",
 			"--framedrop=decoder+vo",
+			"--force-window=yes",
+			"--idle=yes",
+			"--keep-open=yes",
+			"--demuxer-lavf-format=mpegts",
+			"--demuxer-lavf-o=fflags=nobuffer+fastseek",
+			"--demuxer-lavf-probesize=32",
+			"--demuxer-lavf-analyzeduration=0",
 			"--demuxer-readahead-secs=0",
 			"--demuxer-max-bytes=100K",
 			"--demuxer-max-back-bytes=0",
-			"--demuxer-lavf-format=mpegts",
-			"--demuxer-lavf-o=fflags=nobuffer+flush_packets",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
 		}
@@ -898,7 +916,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		args = []string{
 			"-loglevel", "quiet",
 			"-flags", "low_delay",
-			"-fflags", "nobuffer+fastseek+flush_packets",
+			"-fflags", "nobuffer+fastseek",
+			"-probesize", "32",
 			"-analyzeduration", "0",
 			"-window_title", windowTitle,
 			"-autoexit",
