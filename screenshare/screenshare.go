@@ -771,10 +771,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		binPath = p
 
 		screenDev := getMacScreenDevice(binPath)
-		scaleFilter := fmt.Sprintf("scale=%s", opt.Resolution)
-		if scaleFilter == "scale=" {
-			scaleFilter = "scale=1920:1080"
+		scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
+		if scaleRes == "" {
+			scaleRes = "1920:1080"
 		}
+		scaleFilter := fmt.Sprintf("scale=%s:flags=bicubic", scaleRes)
 
 		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
 			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
@@ -800,7 +801,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 					w, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
 					h, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
 					if w > 100 && h > 100 && x >= 0 && y >= 0 {
-						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s", w, h, x, y, opt.Resolution)
+						w = (w / 2) * 2
+						h = (h / 2) * 2
+						x = (x / 2) * 2
+						y = (y / 2) * 2
+						scaleFilter = fmt.Sprintf("crop=%d:%d:%d:%d,scale=%s:flags=bicubic", w, h, x, y, scaleRes)
 					}
 				}
 			}
@@ -822,9 +827,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", "repeat-headers=1:keyint=15:min-keyint=15:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+			"-x264-params", "repeat-headers=1:keyint=60:min-keyint=60:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+			"-crf", "22",
+			"-b:v", "6M",
+			"-maxrate", "6M",
+			"-bufsize", "6M",
 			"-pix_fmt", "yuv420p",
-			"-g", "15",
+			"-g", "60",
 			"-bf", "0",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
