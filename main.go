@@ -246,7 +246,8 @@ func main() {
 		if currentScreen == ScreenLobby {
 			lobby.SetToast(msg)
 		} else {
-			if strings.HasPrefix(msg, "⚠️") || strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "📺") || strings.HasPrefix(msg, "⏹️") || strings.HasPrefix(msg, "🎬") {
+			if (strings.HasPrefix(msg, "⚠️") || strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "📺") || strings.HasPrefix(msg, "⏹️") || strings.HasPrefix(msg, "🎬")) &&
+				!strings.Contains(msg, "[FFMPEG") && !strings.Contains(msg, "[MPV") && !strings.Contains(msg, "[WATCH]") && !strings.Contains(msg, "[SHARE]") && !strings.Contains(msg, "[BROADCAST]") && !strings.Contains(msg, "[DARWIN]") {
 				room.SetToast(msg)
 			}
 		}

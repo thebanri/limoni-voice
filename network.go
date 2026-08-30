@@ -13,9 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -2078,6 +2078,17 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		var seq uint32
 		var totalPackets int
 		var totalBytes int64
+
+		if runtime.GOOS == "darwin" {
+			time.AfterFunc(3*time.Second, func() {
+				n.mu.RLock()
+				sharing := n.IsSharingScreen
+				n.mu.RUnlock()
+				if sharing && totalPackets == 0 {
+					n.log("⚠️ [MACOS] FFmpeg ekrandan kare alamıyor! Lütfen 'Sistem Ayarları -> Gizlilik ve Güvenlik -> Ekran Kaydı' altında Terminal'e izin verildiğinden emin olun.")
+				}
+			})
+		}
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
@@ -2377,7 +2388,6 @@ func (n *P2PNode) GetPeersList() []*PeerInfo {
 }
 
 func (n *P2PNode) log(msg string) {
-	log.Println("[P2P]", msg)
 	if f, err := os.OpenFile("limoni-voice.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 		_, _ = f.WriteString(time.Now().Format("15:04:05.000 ") + msg + "\n")
 		_ = f.Close()
