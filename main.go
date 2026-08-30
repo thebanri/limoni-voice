@@ -160,6 +160,7 @@ func main() {
 	closeTestModal := func() {
 		audio.LeaveTestMode()
 		showTestModal = false
+		t.ForceFullRedraw()
 	}
 
 	openExitModal := func() {
@@ -169,6 +170,7 @@ func main() {
 	}
 
 	closeExitModal := func() {
+		showExitModal = false
 		exitDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
 		t.FocusManager().SetFocused("")
 		t.ForceFullRedraw()
@@ -181,12 +183,14 @@ func main() {
 	}
 
 	closeLeaveModal := func() {
+		showLeaveModal = false
 		leaveDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
 		t.FocusManager().SetFocused("")
 		t.ForceFullRedraw()
 	}
 
 	closeScreenShareModal := func() {
+		showScreenShareModal = false
 		screenShareDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
 		t.ForceFullRedraw()
 	}

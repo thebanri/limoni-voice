@@ -3,6 +3,8 @@ import ScreenCaptureKit
 import CoreMedia
 import CoreVideo
 
+signal(SIGPIPE, SIG_IGN)
+
 @available(macOS 12.3, *)
 class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var stream: SCStream?

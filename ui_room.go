@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/thebanri/limoni/core/backend"
@@ -14,6 +15,7 @@ import (
 )
 
 type RoomView struct {
+	mu                     sync.Mutex
 	StartTime              time.Time
 	ToastMsg               string
 	ToastTimer             int
@@ -32,6 +34,8 @@ func NewRoomView() *RoomView {
 }
 
 func (r *RoomView) AddLog(msg string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	// Format log message with timestamp
 	ts := time.Now().Format("15:04:05")
 	r.Logs = append(r.Logs, fmt.Sprintf("[%s] %s", ts, msg))
@@ -41,11 +45,15 @@ func (r *RoomView) AddLog(msg string) {
 }
 
 func (r *RoomView) SetToast(msg string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.ToastMsg = msg
 	r.ToastTimer = 90 // ~3 seconds at 30 FPS
 }
 
 func (r *RoomView) Update() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.ToastTimer > 0 {
 		r.ToastTimer--
 		if r.ToastTimer == 0 {
@@ -1097,20 +1105,26 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		return string(runes[:limit-1]) + "…"
 	}
 
-	if r.ToastMsg != "" {
+	r.mu.Lock()
+	toastMsg := r.ToastMsg
+	logsCopy := make([]string, len(r.Logs))
+	copy(logsCopy, r.Logs)
+	r.mu.Unlock()
+
+	if toastMsg != "" {
 		toastStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Modifier: cell.ModifierBold,
 		}
-		toastText := truncate("  "+r.ToastMsg+"  ", maxW)
+		toastText := truncate("  "+toastMsg+"  ", maxW)
 		buf.SetString(logInner.X+1, logInner.Y, toastText, toastStyle)
-	} else if len(r.Logs) > 0 {
+	} else if len(logsCopy) > 0 {
 		startIdx := 0
-		if len(r.Logs) > int(logInner.Height) {
-			startIdx = len(r.Logs) - int(logInner.Height)
+		if len(logsCopy) > int(logInner.Height) {
+			startIdx = len(logsCopy) - int(logInner.Height)
 		}
-		for i, line := range r.Logs[startIdx:] {
+		for i, line := range logsCopy[startIdx:] {
 			if uint16(i) < logInner.Height {
 				safeLine := truncate(line, maxW)
 				buf.SetString(logInner.X+1, logInner.Y+uint16(i), safeLine, cell.Style{Fg: cell.NewColorRGB(0xB2, 0xBE, 0xC3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})

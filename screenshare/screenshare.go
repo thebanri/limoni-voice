@@ -214,6 +214,8 @@ import ScreenCaptureKit
 import CoreMedia
 import CoreVideo
 
+signal(SIGPIPE, SIG_IGN)
+
 @available(macOS 12.3, *)
 class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var stream: SCStream?
@@ -331,7 +333,7 @@ if #available(macOS 12.3, *) {
 `
 
 func getOrBuildMacCaptureBinary() (string, error) {
-	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v4")
+	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v5")
 	if info, err := os.Stat(binPath); err == nil && info.Size() > 0 {
 		return binPath, nil
 	}
@@ -879,6 +881,18 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, fmt.Errorf("failed to open ScreenCaptureKit pipe: %w", err)
 		}
 		cmd.Stdin = sckitOut
+
+		if sckitErrPipe, errP := sckitCmd.StderrPipe(); errP == nil {
+			go func() {
+				scanner := bufio.NewScanner(sckitErrPipe)
+				for scanner.Scan() {
+					trimmed := strings.TrimSpace(scanner.Text())
+					if trimmed != "" {
+						logMsg("[SCKIT-LIVE] %s", trimmed)
+					}
+				}
+			}()
+		}
 	}
 
 	var stdinPipe io.WriteCloser
