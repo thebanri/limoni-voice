@@ -217,6 +217,21 @@ import CoreVideo
 
 _ = Darwin.signal(SIGPIPE, SIG_IGN)
 
+let logFilePath = "/tmp/limoni_mac_sckit.log"
+func logToFile(_ msg: String) {
+    let line = "[\(Date())] \(msg)\n"
+    if let data = line.data(using: .utf8) {
+        if let handle = FileHandle(forWritingAtPath: logFilePath) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            handle.closeFile()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: logFilePath))
+        }
+    }
+    fputs(line, stderr)
+}
+
 func writeAll(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Bool {
     var written = 0
     while written < count {
@@ -237,23 +252,21 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var frameCount = 0
 
     func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil) async {
+        logToFile("[START] Initializing ScreenCaptureKit capture: \(width)x\(height) @ \(fps) FPS, targetWindowID=\(String(describing: targetWindowID))")
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             guard let display = content.displays.first else {
-                fputs("[SCKIT-ERR] No display found\n", stderr)
+                logToFile("[ERR] No display found in SCShareableContent")
                 exit(1)
             }
+            logToFile("[INFO] Found \(content.displays.count) displays and \(content.windows.count) windows")
 
             var filter: SCContentFilter
             if let winID = targetWindowID, let targetWin = content.windows.first(where: { $0.windowID == winID }) {
-                fputs("[SCKIT] Found target window: \(targetWin.title ?? "") (id: \(winID))\n", stderr)
-                if #available(macOS 14.0, *) {
-                    filter = SCContentFilter(desktopIndependentWindow: targetWin)
-                } else {
-                    filter = SCContentFilter(display: display, including: [targetWin])
-                }
+                logToFile("[INFO] Target window found: '\(targetWin.title ?? "")' (app: '\(targetWin.owningApplication?.applicationName ?? "")', id: \(winID), frame: \(targetWin.frame))")
+                filter = SCContentFilter(display: display, including: [targetWin])
             } else {
-                fputs("[SCKIT] Using full display capture (id: \(display.displayID))\n", stderr)
+                logToFile("[INFO] Using full display capture (Display ID: \(display.displayID), resolution: \(display.width)x\(display.height))")
                 filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             }
 
@@ -273,19 +286,19 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 try await stream.startCapture()
                 self.stream = stream
                 self.isRunning = true
-                fputs("[SCKIT] Stream running at \(width)x\(height) @ \(fps) FPS\n", stderr)
+                logToFile("[OK] Stream started successfully at \(width)x\(height) @ \(fps) FPS")
             } catch {
-                fputs("[SCKIT-WARN] Window capture failed (\(error)), falling back to display capture...\n", stderr)
+                logToFile("[WARN] Filter startCapture failed (\(error)), trying fallback full display filter...")
                 let fallbackFilter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
                 let fallbackStream = SCStream(filter: fallbackFilter, configuration: config, delegate: self)
                 try fallbackStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
                 try await fallbackStream.startCapture()
                 self.stream = fallbackStream
                 self.isRunning = true
-                fputs("[SCKIT] Fallback display stream running at \(width)x\(height) @ \(fps) FPS\n", stderr)
+                logToFile("[OK] Fallback display stream running at \(width)x\(height) @ \(fps) FPS")
             }
         } catch {
-            fputs("[SCKIT-ERR] Error initializing ScreenCaptureKit: \(error)\n", stderr)
+            logToFile("[FATAL] Error initializing ScreenCaptureKit: \(error)")
             exit(1)
         }
     }
@@ -305,17 +318,21 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         self.frameCount += 1
         if self.frameCount == 1 {
-            fputs("[SCKIT] First Metal video frame generated (\(width)x\(height))\n", stderr)
+            logToFile("[FRAME] First Metal video frame received: \(width)x\(height), bytesPerRow=\(bytesPerRow), expectedRowBytes=\(rowBytes)")
+        } else if self.frameCount % 300 == 0 {
+            logToFile("[STATS] \(self.frameCount) frames delivered to FFmpeg")
         }
 
         if bytesPerRow == rowBytes {
             if !writeAll(fd: STDOUT_FILENO, buffer: baseAddress, count: rowBytes * height) {
+                logToFile("[PIPE] STDOUT pipe closed by consumer (writeAll failed)")
                 exit(0)
             }
         } else {
             for y in 0..<height {
                 let rowPtr = baseAddress.advanced(by: y * bytesPerRow)
                 if !writeAll(fd: STDOUT_FILENO, buffer: rowPtr, count: rowBytes) {
+                    logToFile("[PIPE] STDOUT pipe closed by consumer (row write failed)")
                     exit(0)
                 }
             }
@@ -323,7 +340,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        fputs("[SCKIT-ERR] Stream stopped with error: \(error)\n", stderr)
+        logToFile("[STOP] Stream stopped with error: \(error)")
         exit(1)
     }
 }
@@ -380,13 +397,13 @@ if #available(macOS 12.3, *) {
         dispatchMain()
     }
 } else {
-    fputs("ScreenCaptureKit requires macOS 12.3+\n", stderr)
+    logToFile("[ERR] ScreenCaptureKit requires macOS 12.3+")
     exit(1)
 }
 `
 
 func getOrBuildMacCaptureBinary() (string, error) {
-	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v8")
+	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v9")
 	if info, err := os.Stat(binPath); err == nil && info.Size() > 0 {
 		return binPath, nil
 	}
