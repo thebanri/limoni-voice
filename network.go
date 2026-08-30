@@ -143,6 +143,7 @@ type P2PNode struct {
 	bcastSendConn *net.UDPConn
 	// Optional direct LAN target peer address
 	TargetPeerAddr *net.UDPAddr
+	lastSweepTime  time.Time
 	// WebSocket Relay for internet-wide P2P forwarding
 	RelayURL         string
 	LanOnly          bool
@@ -254,6 +255,9 @@ func (n *P2PNode) Start() error {
 		conn = c
 		chosenPort = conn.LocalAddr().(*net.UDPAddr).Port
 	}
+
+	_ = conn.SetReadBuffer(4 * 1024 * 1024)
+	_ = conn.SetWriteBuffer(4 * 1024 * 1024)
 
 	n.Conn = conn
 	n.Port = chosenPort
@@ -1115,6 +1119,33 @@ func (n *P2PNode) SendScreenShareState(isSharing bool, videoPort int) {
 }
 
 func (n *P2PNode) sweepSubnets(pkt *P2PPacket) {
+	n.mu.Lock()
+	if n.IsConnected || !n.Connecting {
+		n.mu.Unlock()
+		return
+	}
+	if time.Since(n.lastSweepTime) < 2500*time.Millisecond {
+		n.mu.Unlock()
+		return
+	}
+	n.lastSweepTime = time.Now()
+	aead := n.aead
+	conn := n.Conn
+	if pkt.LocalPort == 0 {
+		pkt.LocalPort = n.Port
+	}
+	n.mu.Unlock()
+
+	if aead == nil || conn == nil {
+		return
+	}
+
+	// Pre-encrypt packet ONCE for the entire sweep
+	data, err := encodeAndEncryptPacket(pkt, aead)
+	if err != nil {
+		return
+	}
+
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return
@@ -1134,16 +1165,16 @@ func (n *P2PNode) sweepSubnets(pkt *P2PPacket) {
 				continue
 			}
 			ip := ipnet.IP.To4()
-			// Unicast sweep across local /24 subnet (1..254) on standard Limoni ports
+			// Unicast sweep across local /24 subnet on primary Limoni ports (50000 & 50001)
 			for host := 1; host <= 254; host++ {
 				if byte(host) == ip[3] {
 					continue // skip self
 				}
 				targetIP := net.IPv4(ip[0], ip[1], ip[2], byte(host))
-				for p := 50000; p <= 50005; p++ {
-					uaddr := &net.UDPAddr{IP: targetIP, Port: p}
-					n.sendDirectUDPPacket(uaddr, pkt)
-				}
+				uaddr1 := &net.UDPAddr{IP: targetIP, Port: 50000}
+				conn.WriteToUDP(data, uaddr1)
+				uaddr2 := &net.UDPAddr{IP: targetIP, Port: 50001}
+				conn.WriteToUDP(data, uaddr2)
 			}
 		}
 	}
@@ -1177,8 +1208,8 @@ func (n *P2PNode) broadcastJoinRequest() {
 		n.sendDirectUDPPacket(targetPeer, &pkt)
 	}
 
-	// 2. Send via local port range 50000-50050 on loopback (instant multi-instance discovery)
-	for p := 50000; p <= 50050; p++ {
+	// 2. Send via local port range 50000-50010 on loopback (instant multi-instance discovery)
+	for p := 50000; p <= 50010; p++ {
 		if p != n.Port {
 			raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", p))
 			if err == nil {
@@ -1188,7 +1219,7 @@ func (n *P2PNode) broadcastJoinRequest() {
 	}
 
 	// 3. Send via LAN broadcast 255.255.255.255 to common ports
-	for p := 50000; p <= 50020; p++ {
+	for p := 50000; p <= 50005; p++ {
 		n.sendBroadcastPacket(&pkt, p)
 	}
 	n.sendBroadcastPacket(&pkt, 45454)
@@ -1218,7 +1249,7 @@ func (n *P2PNode) broadcastJoinRequest() {
 						ip[2]|^mask[2],
 						ip[3]|^mask[3],
 					)
-					for p := 50000; p <= 50020; p++ {
+					for p := 50000; p <= 50005; p++ {
 						baddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", bcast.String(), p))
 						if err == nil {
 							n.sendDirectUDPPacket(baddr, &pkt)
@@ -1233,7 +1264,7 @@ func (n *P2PNode) broadcastJoinRequest() {
 		}
 	}
 
-	// 5. Active Subnet Unicast Sweep (guaranteed delivery across Wi-Fi / AP isolation / switches)
+	// 5. Active Subnet Unicast Sweep (guaranteed delivery, rate-limited and pre-encrypted)
 	go n.sweepSubnets(&pkt)
 }
 
@@ -1265,8 +1296,8 @@ func (n *P2PNode) broadcastHello() {
 		n.sendDirectUDPPacket(targetPeer, &pkt)
 	}
 
-	// 2. Send via local port range 50000-50050 on loopback (instant multi-instance discovery)
-	for p := 50000; p <= 50050; p++ {
+	// 2. Send via local port range 50000-50010 on loopback (instant multi-instance discovery)
+	for p := 50000; p <= 50010; p++ {
 		if p != n.Port {
 			raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", p))
 			if err == nil {
@@ -1276,7 +1307,7 @@ func (n *P2PNode) broadcastHello() {
 	}
 
 	// 3. Send via LAN broadcast 255.255.255.255 to common ports (best-effort)
-	for p := 50000; p <= 50020; p++ {
+	for p := 50000; p <= 50005; p++ {
 		n.sendBroadcastPacket(&pkt, p)
 	}
 	n.sendBroadcastPacket(&pkt, 45454)
@@ -1306,7 +1337,7 @@ func (n *P2PNode) broadcastHello() {
 						ip[2]|^mask[2],
 						ip[3]|^mask[3],
 					)
-					for p := 50000; p <= 50020; p++ {
+					for p := 50000; p <= 50005; p++ {
 						baddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", bcast.String(), p))
 						if err == nil {
 							n.sendDirectUDPPacket(baddr, &pkt)
@@ -1320,9 +1351,6 @@ func (n *P2PNode) broadcastHello() {
 			}
 		}
 	}
-
-	// 5. Active Subnet Unicast Sweep
-	go n.sweepSubnets(&pkt)
 }
 
 func (n *P2PNode) sendBroadcastPacket(pkt *P2PPacket, port int) {
