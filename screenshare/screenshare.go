@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // LogCallback is optional hook to receive internal screenshare logs
@@ -141,8 +142,11 @@ func ListWindows() []WindowInfo {
 			Title: "🖥️  Entire Screen (Primary Display)",
 		})
 		if binPath, err := getOrBuildMacCaptureBinary(); err == nil {
-			cmd := exec.Command(binPath, "--list")
-			if out, err := cmd.Output(); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			cmd := exec.CommandContext(ctx, binPath, "--list")
+			out, err := cmd.Output()
+			cancel()
+			if err == nil {
 				lines := strings.Split(string(out), "\n")
 				seen := make(map[string]bool)
 				for _, line := range lines {
@@ -274,6 +278,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 if #available(macOS 12.3, *) {
     if CommandLine.arguments.contains("--list") {
+        let sem = DispatchSemaphore(value: 0)
         Task {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -294,9 +299,10 @@ if #available(macOS 12.3, *) {
             } catch {
                 print("SCREEN|desktop|Primary Display")
             }
-            exit(0)
+            sem.signal()
         }
-        dispatchMain()
+        _ = sem.wait(timeout: .now() + 2.0)
+        exit(0)
     } else {
         var width = 1920
         var height = 1080
@@ -325,7 +331,7 @@ if #available(macOS 12.3, *) {
 `
 
 func getOrBuildMacCaptureBinary() (string, error) {
-	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit")
+	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v4")
 	if info, err := os.Stat(binPath); err == nil && info.Size() > 0 {
 		return binPath, nil
 	}

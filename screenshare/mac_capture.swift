@@ -67,6 +67,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 if #available(macOS 12.3, *) {
     if CommandLine.arguments.contains("--list") {
+        let sem = DispatchSemaphore(value: 0)
         Task {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -87,9 +88,10 @@ if #available(macOS 12.3, *) {
             } catch {
                 print("SCREEN|desktop|Primary Display")
             }
-            exit(0)
+            sem.signal()
         }
-        dispatchMain()
+        _ = sem.wait(timeout: .now() + 2.0)
+        exit(0)
     } else {
         var width = 1920
         var height = 1080
