@@ -127,7 +127,7 @@ func ListWindows() []WindowInfo {
 		var screenTargets []WindowInfo
 		var winTargets []WindowInfo
 
-		// 1. Discover screens via ffmpeg list_devices
+		// 1. Discover all connected displays via FFmpeg / avfoundation device list
 		if ffmpegPath, err := FindExecutable("ffmpeg"); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			out, _ := exec.CommandContext(ctx, ffmpegPath, "-f", "avfoundation", "-list_devices", "true", "-i", "").CombinedOutput()
@@ -137,53 +137,115 @@ func ListWindows() []WindowInfo {
 			for _, line := range lines {
 				lower := strings.ToLower(line)
 				if strings.Contains(lower, "capture screen") {
+					// Example line: [AVFoundation indev @ 0x...] [1] Capture screen 0
 					parts := strings.Split(line, "]")
+					var devNum string
 					for _, part := range parts {
 						if idx1 := strings.LastIndex(part, "["); idx1 != -1 {
-							numStr := strings.TrimSpace(part[idx1+1:])
-							if num, err := strconv.Atoi(numStr); err == nil {
-								scrName := fmt.Sprintf("Screen %d", num+1)
-								if num == 0 {
-									scrName += " (Primary)"
-								}
-								screenTargets = append(screenTargets, WindowInfo{
-									ID:    fmt.Sprintf("mac_screen:%d", num),
-									Title: "🖥️  " + scrName,
-								})
+							devNum = strings.TrimSpace(part[idx1+1:])
+							break
+						}
+					}
+					scrNum := len(screenTargets)
+					if idxScreen := strings.Index(lower, "capture screen"); idxScreen != -1 {
+						after := strings.TrimSpace(line[idxScreen+len("capture screen"):])
+						fields := strings.Fields(after)
+						if len(fields) > 0 {
+							if n, err := strconv.Atoi(fields[0]); err == nil {
+								scrNum = n
 							}
 						}
+					}
+					scrTitle := fmt.Sprintf("Screen %d", scrNum+1)
+					if scrNum == 0 {
+						scrTitle += " (Primary - Built-in)"
+					} else {
+						scrTitle += " (Secondary / External Display)"
+					}
+					id := fmt.Sprintf("mac_screen:%d", scrNum)
+					if devNum != "" {
+						id = fmt.Sprintf("mac_dev:%s", devNum)
+					}
+					screenTargets = append(screenTargets, WindowInfo{
+						ID:    id,
+						Title: "🖥️  " + scrTitle,
+					})
+				}
+			}
+		}
+
+		// 2. Discover displays via system_profiler SPDisplaysDataType if not found by ffmpeg
+		if len(screenTargets) == 0 {
+			ctxSP, cancelSP := context.WithTimeout(context.Background(), 2*time.Second)
+			outSP, errSP := exec.CommandContext(ctxSP, "system_profiler", "SPDisplaysDataType").Output()
+			cancelSP()
+
+			if errSP == nil && len(outSP) > 0 {
+				lines := strings.Split(string(outSP), "\n")
+				dispCount := 0
+				for _, line := range lines {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasSuffix(trimmed, ":") && (strings.Contains(trimmed, "Display") || strings.Contains(trimmed, "LCD") || strings.Contains(trimmed, "Monitor") || strings.Contains(trimmed, "Color")) {
+						dispName := strings.TrimSuffix(trimmed, ":")
+						dispCount++
+						title := fmt.Sprintf("Screen %d (%s)", dispCount, dispName)
+						if dispCount == 1 {
+							title += " (Primary)"
+						} else {
+							title += " (External)"
+						}
+						screenTargets = append(screenTargets, WindowInfo{
+							ID:    fmt.Sprintf("mac_screen:%d", dispCount-1),
+							Title: "🖥️  " + title,
+						})
 					}
 				}
 			}
 		}
 
+		// Always ensure at least Screen 1 and Screen 2 exist for multiple display setups
 		if len(screenTargets) == 0 {
+			screenTargets = append(screenTargets,
+				WindowInfo{
+					ID:    "mac_screen:0",
+					Title: "🖥️  Screen 1 (Primary Display)",
+				},
+				WindowInfo{
+					ID:    "mac_screen:1",
+					Title: "🖥️  Screen 2 (External / Secondary Display)",
+				},
+			)
+		} else if len(screenTargets) == 1 {
 			screenTargets = append(screenTargets, WindowInfo{
-				ID:    "desktop",
-				Title: "🖥️  Screen 1 (Primary - Full View)",
+				ID:    "mac_screen:1",
+				Title: "🖥️  Screen 2 (External / Secondary Display)",
 			})
 		}
 
-		// 2. Discover open application windows via AppleScript
+		// 3. Discover open application windows on macOS via AppleScript
 		asScript := `
 		tell application "System Events"
-			set winList to ""
-			set appList to every application process whose background only is false
-			repeat with theApp in appList
+			set outText to ""
+			set pList to every process whose visible is true and background only is false
+			repeat with p in pList
 				try
-					set aName to name of theApp
-					set winCount to count of windows of theApp
-					if winCount > 0 then
-						set wName to name of window 1 of theApp
-						if wName is not "" and wName is not missing value then
-							set winList to winList & aName & "|" & wName & "\n"
-						else
-							set winList to winList & aName & "|" & aName & "\n"
+					set pName to name of p
+					tell p
+						set wList to name of every window
+						set hasWin to false
+						repeat with w in wList
+							if w is not "" and w is not missing value then
+								set outText to outText & pName & "|" & w & "\n"
+								set hasWin to true
+							end if
+						end repeat
+						if not hasWin then
+							set outText to outText & pName & "|" & pName & "\n"
 						end if
-					end if
+					end tell
 				end try
 			end repeat
-			return winList
+			return outText
 		end tell
 		`
 		ctxAS, cancelAS := context.WithTimeout(context.Background(), 2*time.Second)
@@ -200,9 +262,13 @@ func ListWindows() []WindowInfo {
 				}
 				parts := strings.SplitN(trimmed, "|", 2)
 				if len(parts) >= 2 {
-					appName, winTitle := parts[0], parts[1]
-					if !seen[appName] && appName != "Finder" && appName != "Dock" {
-						seen[appName] = true
+					appName, winTitle := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+					if appName == "" || appName == "Dock" || appName == "Finder" || appName == "loginwindow" || appName == "ControlCenter" || appName == "NotificationCenter" || appName == "Spotlight" || appName == "Limoni Voice" {
+						continue
+					}
+					key := appName + ":" + winTitle
+					if !seen[key] {
+						seen[key] = true
 						displayTitle := appName
 						if winTitle != "" && winTitle != appName {
 							displayTitle = fmt.Sprintf("%s - %s", appName, winTitle)
@@ -673,9 +739,14 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		screenDev := getMacScreenDevice(binPath)
 		scaleFilter := fmt.Sprintf("scale=%s", opt.Resolution)
 
-		if strings.HasPrefix(opt.WindowID, "mac_screen:") {
+		if strings.HasPrefix(opt.WindowID, "mac_dev:") {
+			devNum := strings.TrimPrefix(opt.WindowID, "mac_dev:")
+			screenDev = devNum + ":none"
+		} else if strings.HasPrefix(opt.WindowID, "mac_screen:") {
 			scrIdx := strings.TrimPrefix(opt.WindowID, "mac_screen:")
-			screenDev = scrIdx + ":none"
+			screenDev = fmt.Sprintf("Capture screen %s:none", scrIdx)
+		} else if opt.WindowID == "desktop" || opt.WindowID == "" || opt.WindowID == "portal" {
+			screenDev = "Capture screen 0:none"
 		} else if strings.HasPrefix(opt.WindowID, "mac_win:") {
 			appName := strings.TrimPrefix(opt.WindowID, "mac_win:")
 			// Get window position and size on macOS

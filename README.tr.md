@@ -232,6 +232,8 @@ export LIMONI_LAN_ONLY=1
 | `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Kendi relay sunucunuzun WebSocket adresi |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Sadece yerel ağ modunu zorlar (internet relay'i kapatır) |
 | `--offline` | `LIMONI_OFFLINE` | `false` | `--lan` parametresinin takma adı |
+| `--peer <ip:port>` | `LIMONI_PEER` | `""` | Farklı alt ağlar veya VPN için doğrudan hedef eş IP/adresi |
+| `--connect <ip:port>` | `LIMONI_PEER` | `""` | `--peer` parametresinin takma adı |
 | `--version` | - | - | Sürüm bilgisini gösterir |
 | `--help`, `-h` | - | - | Yardım ve kullanım parametrelerini listeler |
 

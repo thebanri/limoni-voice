@@ -232,6 +232,8 @@ export LIMONI_LAN_ONLY=1
 | `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Custom WebSocket relay URL for self-hosted servers |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Force LAN-only offline mode (disables internet relay) |
 | `--offline` | `LIMONI_OFFLINE` | `false` | Alias for `--lan` |
+| `--peer <ip:port>` | `LIMONI_PEER` | `""` | Direct target peer IP/host for cross-subnet or VPN LAN P2P |
+| `--connect <ip:port>` | `LIMONI_PEER` | `""` | Alias for `--peer` |
 | `--version` | - | - | Print version information and exit |
 | `--help`, `-h` | - | - | Show help message and usage instructions |
 

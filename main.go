@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -36,6 +35,8 @@ Flags:
                       (Set to 'none' or 'off' to disable relay)
   --lan, --lan-only   Force LAN-only offline mode (disables relay, direct P2P on local network)
   --offline           Alias for --lan
+  --peer, --connect   Direct target peer IP/host for cross-subnet or VPN LAN P2P
+                      Example: --peer 192.168.1.50:50000
   --version           Show version information
   --help, -h          Show this help message
 
@@ -43,16 +44,20 @@ Environment Variables:
   LIMONI_RELAY_URL    Override default WebSocket relay URL
   LIMONI_LAN_ONLY     Set to 1 / true to enable LAN-only mode by default
   LIMONI_OFFLINE      Set to 1 / true to enable offline mode
+  LIMONI_PEER         Set direct target peer IP/host
 
 Examples:
   # Standard launch (connects to default public relay + LAN auto-discovery):
   limoni-voice
 
-  # Connect using your self-hosted Docker relay server:
-  limoni-voice --relay ws://192.168.1.100:8080/ws
+  # Force LAN-only direct P2P communication on local Wi-Fi / Ethernet:
+  limoni-voice --lan
 
-  # Force LAN-only direct P2P communication without internet access:
-  limoni-voice --lan`)
+  # Connect directly to a specific LAN peer IP:
+  limoni-voice --lan --peer 192.168.1.50
+
+  # Connect using your self-hosted Docker relay server:
+  limoni-voice --relay ws://192.168.1.100:8080/ws`)
 }
 
 func main() {
@@ -61,6 +66,8 @@ func main() {
 		flagLAN     = flag.Bool("lan", false, "Force LAN-only offline mode (disables relay connection)")
 		flagLANOnly = flag.Bool("lan-only", false, "Alias for -lan")
 		flagOffline = flag.Bool("offline", false, "Alias for -lan")
+		flagPeer    = flag.String("peer", "", "Direct target peer IP / host for LAN / VPN P2P (e.g. 192.168.1.50)")
+		flagConnect = flag.String("connect", "", "Alias for -peer")
 		flagHelp    = flag.Bool("help", false, "Show help and usage instructions")
 		flagVersion = flag.Bool("version", false, "Show version information")
 	)
@@ -116,6 +123,12 @@ func main() {
 		} else {
 			node.RelayURL = *flagRelay
 		}
+	}
+
+	if *flagPeer != "" {
+		node.SetTargetPeer(*flagPeer)
+	} else if *flagConnect != "" {
+		node.SetTargetPeer(*flagConnect)
 	}
 
 	if err := node.Start(); err != nil {
@@ -202,23 +215,15 @@ func main() {
 			return
 		}
 
-		if runtime.GOOS == "windows" {
-			screenShareTargets = screenshare.ListWindows()
-			selectedScreenShareIdx = 0
-			showScreenShareModal = true
-			screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
-		} else {
-			// On Linux / macOS start directly with native system portal picker
-			room.SetToast("🎬 Starting screen share...")
-			go func() {
-				err := node.StartScreenShare("", 50100)
-				if err != nil {
-					room.SetToast(fmt.Sprintf("Error: %v", err))
-				} else {
-					room.SetToast("Screen share started (60 FPS)")
-				}
-			}()
+		screenShareTargets = screenshare.ListWindows()
+		if len(screenShareTargets) == 0 {
+			screenShareTargets = []screenshare.WindowInfo{
+				{ID: "desktop", Title: "🖥️  Screen 1 (Primary - Full View)"},
+			}
 		}
+		selectedScreenShareIdx = 0
+		showScreenShareModal = true
+		screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 
 	node.OnLog = func(msg string) {

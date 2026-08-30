@@ -479,7 +479,14 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		return
 	}
 
-	modalW, modalH := uint16(56), uint16(14)
+	modalW, modalH := uint16(66), uint16(16)
+	if screenArea.Width < modalW+2 {
+		modalW = screenArea.Width - 2
+	}
+	if screenArea.Height < modalH+2 {
+		modalH = screenArea.Height - 2
+	}
+
 	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
 	animatedArea := terminal.ScaleRect(modalArea, progress)
 
@@ -503,24 +510,33 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		Width:  animatedArea.Width - 2,
 		Height: animatedArea.Height - 2,
 	}
-	if inner.Height < 2 || inner.Width < 2 {
+	if inner.Height < 3 || inner.Width < 4 {
 		return
 	}
 
 	buf := frame.Buffer
-	headerText := "Select the screen or window you want to share:"
-	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{Fg: cell.NewColorRGB(150, 160, 180)})
+	headerText := fmt.Sprintf("Select target to broadcast (%d available):", len(targets))
+	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{Fg: cell.NewColorRGB(150, 160, 180), Modifier: cell.ModifierBold})
 
-	// List targets
+	// List targets with scrolling window around selectedIdx
 	listY := inner.Y + 2
 	maxDisplay := int(inner.Height - 3)
 	if maxDisplay < 1 {
 		maxDisplay = 1
 	}
 
-	for i := 0; i < len(targets) && i < maxDisplay; i++ {
+	startIdx := 0
+	if selectedIdx >= maxDisplay {
+		startIdx = selectedIdx - maxDisplay + 1
+	}
+	endIdx := startIdx + maxDisplay
+	if endIdx > len(targets) {
+		endIdx = len(targets)
+	}
+
+	for i := startIdx; i < endIdx; i++ {
 		t := targets[i]
-		rowY := listY + uint16(i)
+		rowY := listY + uint16(i-startIdx)
 		isSel := (i == selectedIdx)
 
 		itemStyle := cell.Style{Fg: cell.NewColorRGB(200, 210, 225), Bg: cell.NewColorRGB(26, 30, 40)}
@@ -551,7 +567,10 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		})
 	}
 
-	// Bottom Cancel Guide
-	guideText := "[ENTER / CLICK] Select  [ESC] Cancel"
+	// Bottom Guide
+	guideText := "[ENTER/CLICK] Select  [↑/↓] Navigate  [ESC] Cancel"
+	if len(targets) > maxDisplay {
+		guideText = fmt.Sprintf("[%d/%d]  %s", selectedIdx+1, len(targets), guideText)
+	}
 	buf.SetString(inner.X+1, inner.Y+inner.Height-1, guideText, cell.Style{Fg: cell.NewColorRGB(120, 130, 150)})
 }
