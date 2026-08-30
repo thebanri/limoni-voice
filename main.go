@@ -216,8 +216,18 @@ func main() {
 			return
 		}
 
-		if runtime.GOOS == "linux" {
-			// On Linux, directly launch gpu-screen-recorder native system portal picker
+		if runtime.GOOS == "windows" {
+			screenShareTargets = screenshare.ListWindows()
+			if len(screenShareTargets) == 0 {
+				screenShareTargets = []screenshare.WindowInfo{
+					{ID: "desktop", Title: "🖥️  Screen 1 (Primary - Full View)"},
+				}
+			}
+			selectedScreenShareIdx = 0
+			showScreenShareModal = true
+			screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
+		} else {
+			// On Linux / macOS start directly with native system / direct screen capture
 			room.SetToast("🎬 Starting screen share...")
 			go func() {
 				err := node.StartScreenShare("", 50100)
@@ -229,17 +239,6 @@ func main() {
 			}()
 			return
 		}
-
-		// On Windows & macOS, open TUI selection modal
-		screenShareTargets = screenshare.ListWindows()
-		if len(screenShareTargets) == 0 {
-			screenShareTargets = []screenshare.WindowInfo{
-				{ID: "desktop", Title: "🖥️  Screen 1 (Primary - Full View)"},
-			}
-		}
-		selectedScreenShareIdx = 0
-		showScreenShareModal = true
-		screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 
 	node.OnLog = func(msg string) {
