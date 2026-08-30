@@ -612,6 +612,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		args = []string{
 			"-f", "avfoundation",
 			"-capture_cursor", "1",
+			"-pixel_format", "nv12",
+			"-framerate", fmt.Sprintf("%d", fps),
 			"-i", screenDev,
 			"-vf", fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes),
 			"-r", fmt.Sprintf("%d", fps),
