@@ -1435,6 +1435,27 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 		return
 	}
 
+	// For Screen Share Video: send via direct UDP if direct LAN/P2P peers exist,
+	// otherwise forward via WebSocket Relay for remote internet peers.
+	// Never send duplicate video chunks over both transports simultaneously!
+	if pkt.Type == PacketScreenShareData {
+		hasDirectPeers := false
+		for _, peer := range n.Peers {
+			if peer.Addr != nil && n.Conn != nil {
+				hasDirectPeers = true
+				n.Conn.WriteToUDP(data, peer.Addr)
+			}
+		}
+		if !hasDirectPeers && isRelay && wsSendCh != nil {
+			select {
+			case wsSendCh <- data:
+			default:
+			}
+		}
+		n.mu.RUnlock()
+		return
+	}
+
 	// 1. Forward via WebSocket Relay to all members
 	if isRelay && wsSendCh != nil {
 		select {
