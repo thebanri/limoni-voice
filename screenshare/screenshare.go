@@ -1055,15 +1055,18 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 	if isMutterAvailable() {
 		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 			connector := ""
+			isWindow := false
 			if strings.HasPrefix(targetID, "monitor:") {
 				parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
 				if len(parts) > 0 && parts[0] != "" {
 					connector = parts[0]
 				}
+			} else if targetID == "focused" || strings.HasPrefix(targetID, "app:") || strings.HasPrefix(targetID, "win:") {
+				isWindow = true
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			nodeID, cleanup, errMutter := RequestMutterScreenCast(ctx, connector)
+			nodeID, cleanup, errMutter := RequestMutterScreenCast(ctx, connector, isWindow)
 			if errMutter == nil && nodeID != 0 {
 				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
 				if errGst == nil {

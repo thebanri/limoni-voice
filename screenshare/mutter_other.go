@@ -8,7 +8,7 @@ import (
 	"errors"
 )
 
-func RequestMutterScreenCast(ctx context.Context, connector string) (uint32, func(), error) {
+func RequestMutterScreenCast(ctx context.Context, connector string, isWindow bool) (uint32, func(), error) {
 	return 0, nil, errors.New("mutter screencast is only supported on Linux")
 }
 

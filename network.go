@@ -2088,43 +2088,39 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 
 	// 2. Read raw MPEG-TS video chunks and broadcast to all room peers over WebSocket Relay (Internet)
 	go func() {
-		buf := make([]byte, 2048)
+		aggBuf := make([]byte, 0, 4096)
+		buf := make([]byte, 4096)
 		var seq uint32
 		var totalPackets int
 		var totalBytes int64
 
-
-		for {
-			nBytes, _, err := captureConn.ReadFromUDP(buf)
-			if err != nil || nBytes <= 0 {
-				n.log(fmt.Sprintf("⚠️ [SHARE] UDP capture read ended: %v", err))
-				break
+		flushAgg := func() {
+			if len(aggBuf) == 0 {
+				return
 			}
-
 			n.mu.RLock()
 			sharing := n.IsSharingScreen
 			currentRoom := n.RoomCode
 			n.mu.RUnlock()
-
 			if !sharing {
-				break
+				return
 			}
 
 			seq++
 			if seq == 0 {
 				seq = 1
 			}
-
 			totalPackets++
-			totalBytes += int64(nBytes)
+			totalBytes += int64(len(aggBuf))
 			if totalPackets == 1 {
-				n.log(fmt.Sprintf("📺 [SHARE] First video chunk captured from FFmpeg (%d bytes)! Broadcasting...", nBytes))
-			} else if totalPackets%120 == 0 {
+				n.log(fmt.Sprintf("📺 [SHARE] First video chunk captured (%d bytes)! Broadcasting...", len(aggBuf)))
+			} else if totalPackets%60 == 0 {
 				n.log(fmt.Sprintf("📺 [SHARE] Stream active: %d chunks (%d KB) sent", totalPackets, totalBytes/1024))
 			}
 
-			chunk := make([]byte, nBytes)
-			copy(chunk, buf[:nBytes])
+			chunk := make([]byte, len(aggBuf))
+			copy(chunk, aggBuf)
+			aggBuf = aggBuf[:0]
 
 			vidPkt := P2PPacket{
 				Type:     PacketScreenShareData,
@@ -2135,6 +2131,32 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 				Payload:  chunk,
 			}
 			n.broadcastToPeers(&vidPkt)
+		}
+
+		for {
+			_ = captureConn.SetReadDeadline(time.Now().Add(4 * time.Millisecond))
+			nBytes, _, err := captureConn.ReadFromUDP(buf)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					flushAgg()
+					n.mu.RLock()
+					sharing := n.IsSharingScreen
+					n.mu.RUnlock()
+					if !sharing {
+						break
+					}
+					continue
+				}
+				n.log(fmt.Sprintf("⚠️ [SHARE] UDP capture read ended: %v", err))
+				break
+			}
+
+			if nBytes > 0 {
+				aggBuf = append(aggBuf, buf[:nBytes]...)
+				if len(aggBuf) >= 1316 {
+					flushAgg()
+				}
+			}
 		}
 	}()
 
