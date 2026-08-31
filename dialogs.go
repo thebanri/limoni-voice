@@ -496,10 +496,20 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 
 	frame.RegisterModal("screenshare_select_dialog", animatedArea, onCancel)
 
-	// Draw dialog backdrop and block
+	dialogBg := cell.NewColorRGB(20, 22, 28)
+	buf := frame.Buffer
+
+	// 1. Clear full dialog area with solid dark background so background VU meters never poke through
+	for y := animatedArea.Y; y < animatedArea.Y+animatedArea.Height; y++ {
+		for x := animatedArea.X; x < animatedArea.X+animatedArea.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
+		}
+	}
+
+	// 2. Draw dialog backdrop and block
 	block := widgets.Block{
 		Title:       " 📺 SELECT SCREEN OR WINDOW ",
-		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
+		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: dialogBg},
 		BorderStyle: cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Modifier: cell.ModifierBold},
 	}
 	frame.RenderWidget(block, animatedArea)
@@ -514,11 +524,10 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		return
 	}
 
-	buf := frame.Buffer
 	headerText := fmt.Sprintf("Select target to broadcast (%d available):", len(targets))
-	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{Fg: cell.NewColorRGB(150, 160, 180), Modifier: cell.ModifierBold})
+	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{Fg: cell.NewColorRGB(150, 160, 180), Bg: dialogBg, Modifier: cell.ModifierBold})
 
-	// List targets with scrolling window around selectedIdx
+	// 3. List targets with scrolling window around selectedIdx
 	listY := inner.Y + 2
 	maxDisplay := int(inner.Height - 3)
 	if maxDisplay < 1 {
@@ -532,6 +541,12 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 	endIdx := startIdx + maxDisplay
 	if endIdx > len(targets) {
 		endIdx = len(targets)
+	}
+
+	itemWidth := inner.Width - 2
+	hasScrollbar := len(targets) > maxDisplay && inner.Width > 6
+	if hasScrollbar {
+		itemWidth = inner.Width - 3 // Leave 1 column for scrollbar
 	}
 
 	for i := startIdx; i < endIdx; i++ {
@@ -551,26 +566,59 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		}
 
 		itemText := fmt.Sprintf("%s%s", prefix, t.Title)
-		if len([]rune(itemText)) > int(inner.Width-2) {
-			itemText = string([]rune(itemText)[:inner.Width-5]) + "..."
+		maxChars := int(itemWidth - 1)
+		if maxChars > 3 && len([]rune(itemText)) > maxChars {
+			itemText = string([]rune(itemText)[:maxChars-3]) + "..."
 		}
 
-		// Clear row
-		for x := inner.X + 1; x < inner.X+inner.Width-1; x++ {
+		// Clear row full width and draw text
+		for x := inner.X + 1; x < inner.X+1+itemWidth; x++ {
 			buf.SetCell(x, rowY, cell.Cell{Content: ' ', Style: itemStyle})
 		}
 		buf.SetString(inner.X+1, rowY, itemText, itemStyle)
 
 		targetItem := t
-		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, inner.Width-2, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, itemWidth, 1), func(_ backend.MouseEvent) {
 			onSelect(targetItem)
 		})
 	}
 
-	// Bottom Guide
+	// 4. Draw Vertical Scrollbar
+	if hasScrollbar {
+		scrollX := inner.X + inner.Width - 2
+		trackHeight := maxDisplay
+		thumbHeight := int(math.Max(1, math.Round(float64(trackHeight*trackHeight)/float64(len(targets)))))
+		if thumbHeight >= trackHeight {
+			thumbHeight = trackHeight - 1
+		}
+		maxScroll := len(targets) - maxDisplay
+		thumbY := 0
+		if maxScroll > 0 {
+			thumbY = int(math.Round(float64(startIdx) / float64(maxScroll) * float64(trackHeight-thumbHeight)))
+		}
+
+		for r := 0; r < trackHeight; r++ {
+			curY := listY + uint16(r)
+			if r >= thumbY && r < thumbY+thumbHeight {
+				// Scrollbar Thumb (Cyan glowing bar)
+				buf.SetCell(scrollX, curY, cell.Cell{
+					Content: '█',
+					Style:   cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Bg: cell.NewColorRGB(26, 30, 40)},
+				})
+			} else {
+				// Scrollbar Track
+				buf.SetCell(scrollX, curY, cell.Cell{
+					Content: '│',
+					Style:   cell.Style{Fg: cell.NewColorRGB(60, 70, 90), Bg: dialogBg},
+				})
+			}
+		}
+	}
+
+	// 5. Bottom Guide
 	guideText := "[ENTER/CLICK] Select  [↑/↓] Navigate  [ESC] Cancel"
 	if len(targets) > maxDisplay {
 		guideText = fmt.Sprintf("[%d/%d]  %s", selectedIdx+1, len(targets), guideText)
 	}
-	buf.SetString(inner.X+1, inner.Y+inner.Height-1, guideText, cell.Style{Fg: cell.NewColorRGB(120, 130, 150)})
+	buf.SetString(inner.X+1, inner.Y+inner.Height-1, guideText, cell.Style{Fg: cell.NewColorRGB(120, 130, 150), Bg: dialogBg})
 }
