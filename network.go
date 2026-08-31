@@ -2012,7 +2012,7 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 	n.mu.Lock()
 	watching := n.IsWatchingScreen
 	tcpConn := n.videoTCPConn
-	if len(n.videoPreBuf) < 8 {
+	if len(n.videoPreBuf) < 24 {
 		n.videoPreBuf = append(n.videoPreBuf, payload)
 	} else {
 		n.videoPreBuf = append(n.videoPreBuf[1:], payload)
