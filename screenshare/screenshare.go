@@ -1039,7 +1039,7 @@ func CheckDependencies() DependencyStatus {
 	return status
 }
 
-func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string, []string, func(), error) {
+func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string, []string, *os.File, func(), error) {
 	targetID := strings.TrimSpace(opt.WindowID)
 	scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
 	if scaleRes == "" {
@@ -1050,8 +1050,30 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 		fps = 60
 	}
 
-	// 1. If GNOME Mutter compositor is available (GNOME Wayland/X11):
-	// Direct, popup-less, 100% full desktop capture with embedded cursor via PipeWire + GStreamer
+	// 1. If user selected a specific Window / App on Wayland -> use Desktop Portal Window Cast
+	if targetID == "portal:window" || targetID == "portal" || strings.HasPrefix(targetID, "app:") || strings.HasPrefix(targetID, "win:") || targetID == "focused" {
+		if isWayland() {
+			if _, err := FindExecutable("gst-launch-1.0"); err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
+				defer cancel()
+				nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 2) // 2 = Window Only
+				if errPortal == nil && nodeID != 0 {
+					bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
+					if errGst == nil {
+						return bin, args, pwFile, cleanup, nil
+					}
+					if cleanup != nil {
+						cleanup()
+					}
+				} else if errPortal != nil {
+					logMsg("[PORTAL] Window selection failed or cancelled: %v", errPortal)
+					return "", nil, nil, nil, errPortal
+				}
+			}
+		}
+	}
+
+	// 2. If GNOME Mutter compositor is available (for Screen 1 / Monitors) -> direct popup-less full monitor capture
 	if isMutterAvailable() {
 		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 			connector := ""
@@ -1067,7 +1089,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			if errMutter == nil && nodeID != 0 {
 				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
 				if errGst == nil {
-					return bin, args, cleanup, nil
+					return bin, args, nil, cleanup, nil
 				}
 				if cleanup != nil {
 					cleanup()
@@ -1076,7 +1098,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 		}
 	}
 
-	// 2. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS)
+	// 3. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS)
 	if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
 		gsrTarget := "screen"
 		if targetID == "focused" {
@@ -1109,10 +1131,10 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			"-c", "mpegts",
 			"-o", targetURL,
 		}
-		return p, args, nil, nil
+		return p, args, nil, nil, nil
 	}
 
-	// 3. Try wf-recorder on Wayland / wlroots (Sway, Hyprland, Wayfire)
+	// 4. Try wf-recorder on Wayland / wlroots (Sway, Hyprland, Wayfire)
 	if isWayland() {
 		if p, err := FindExecutable("wf-recorder"); err == nil {
 			var wfArgs []string
@@ -1132,11 +1154,11 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 				"-r", fmt.Sprintf("%d", fps),
 				"-f", targetURL,
 			)
-			return p, wfArgs, nil, nil
+			return p, wfArgs, nil, nil, nil
 		}
 	}
 
-	// 4. Universal direct FFmpeg capture across all X11 Linux distributions (GNOME, KDE, XFCE, Cinnamon, MATE, i3, etc.)
+	// 5. Universal direct FFmpeg capture across all X11 Linux distributions (GNOME, KDE, XFCE, Cinnamon, MATE, i3, etc.)
 	if p, err := FindExecutable("ffmpeg"); err == nil {
 		display := getLinuxDisplay()
 		vf := fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes)
@@ -1201,10 +1223,10 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			"-mpegts_flags", "+latm+pat_pmt_at_frames",
 			targetURL,
 		)
-		return p, args, nil, nil
+		return p, args, nil, nil, nil
 	}
 
-	return "", nil, nil, errors.New("sistemde ekran paylasimi icin gerekli araclar ('gpu-screen-recorder', 'gst-launch-1.0' veya 'ffmpeg') bulunamadi")
+	return "", nil, nil, nil, errors.New("sistemde ekran paylasimi icin gerekli araclar ('gpu-screen-recorder', 'gst-launch-1.0' veya 'ffmpeg') bulunamadi")
 }
 
 // StartBroadcasting starts hardware-accelerated screen capture and streams over pipe or UDP
@@ -1238,9 +1260,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	switch runtime.GOOS {
 	case "linux":
 		var err error
-		binPath, args, cleanupFunc, err = buildLinuxBroadcastCommand(opt, targetURL)
+		var pwFile *os.File
+		binPath, args, pwFile, cleanupFunc, err = buildLinuxBroadcastCommand(opt, targetURL)
 		if err != nil {
 			return nil, err
+		}
+		if pwFile != nil {
+			extraFiles = append(extraFiles, pwFile)
 		}
 
 	case "windows":
