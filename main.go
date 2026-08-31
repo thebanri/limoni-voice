@@ -86,7 +86,7 @@ func main() {
 	}
 
 	if *flagVersion {
-		fmt.Println("Limoni Voice v1.0.0 (Go 1.24+ | E2EE AES-256-GCM | P2P Full-Mesh)")
+		fmt.Printf("Limoni Voice %s (Go 1.24+ | E2EE AES-256-GCM | P2P Full-Mesh)\n", AppVersion)
 		os.Exit(0)
 	}
 
@@ -142,6 +142,16 @@ func main() {
 		room.AddLog(msg)
 	}
 	currentScreen := ScreenLobby
+
+	// Background auto-updater check
+	go CheckAndUpdateAsync(func(msg string) {
+		if currentScreen == ScreenLobby {
+			lobby.SetToast(msg)
+		} else {
+			room.SetToast(msg)
+		}
+		room.AddLog(fmt.Sprintf("[UPDATE] %s", msg))
+	})
 
 	// Modal States & Animations
 	showTestModal := false
