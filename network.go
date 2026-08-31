@@ -562,7 +562,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsSendCh := make(chan []byte, 2048)
+		wsSendCh := make(chan []byte, 4096)
 		n.mu.Lock()
 		n.wsSendCh = wsSendCh
 		n.mu.Unlock()
