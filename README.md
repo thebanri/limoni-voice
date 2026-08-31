@@ -132,6 +132,22 @@ limoni-voice/
 
 ## 🚀 Installation
 
+### 🐧 Linux & 🍎 macOS 1-Line Install (Recommended)
+
+Install Limoni Voice with a single command in your terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thebanri/limoni-voice/main/install.sh | bash
+```
+
+### 🪟 Windows 1-Line Install (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
+```
+
+---
+
 ### Pre-requisites for Screen Sharing (FFmpeg & MPV)
 
 > [!IMPORTANT]
@@ -153,31 +169,33 @@ limoni-voice/
 >   # or via Scoop
 >   scoop install ffmpeg mpv
 >   ```
->   *(Note: The `Limoni-Voice-Setup_windows_amd64.exe` installer can also configure these automatically).*
-> - **🐧 Linux (Debian / Ubuntu / Arch)**:
+>   *(Note: The `Limoni-Voice-Setup.exe` installer can also configure these automatically).*
+> - **🐧 Linux (Debian / Ubuntu / Arch / Fedora)**:
 >   ```bash
 >   # Debian / Ubuntu
 >   sudo apt install ffmpeg mpv
 >   # Arch Linux
 >   sudo pacman -S ffmpeg mpv
+>   # Fedora
+>   sudo dnf install ffmpeg mpv
 >   ```
 
-### Pre-built Binaries (Recommended)
+### Pre-built Binaries (Manual Download)
 
 Download the latest release package from the [**Releases**](https://github.com/thebanri/limoni-voice/releases) page:
 
 | Platform | Architecture | File |
 |----------|--------------|------|
-| 🐧 Linux | amd64 | `limoni-voice_v1.0.0_linux_amd64.tar.gz` |
-| 🐧 Linux | arm64 | `limoni-voice_v1.0.0_linux_arm64.tar.gz` |
-| 🍎 macOS | Apple Silicon | `Limoni-Voice_v1.0.0_macOS_arm64.app.zip` |
-| 🍎 macOS | Intel | `Limoni-Voice_v1.0.0_macOS_amd64.app.zip` |
-| 🪟 Windows | amd64 | `Limoni-Voice-Setup_windows_amd64.exe` |
+| 🐧 Linux | amd64 | `limoni-voice_v1.4.0_linux_amd64.tar.gz` / `.deb` |
+| 🐧 Linux | arm64 | `limoni-voice_v1.4.0_linux_arm64.tar.gz` / `.deb` |
+| 🍎 macOS | Apple Silicon | `Limoni-Voice_v1.4.0_macOS_arm64.app.zip` |
+| 🍎 macOS | Intel | `Limoni-Voice_v1.4.0_macOS_amd64.app.zip` |
+| 🪟 Windows | amd64 | `Limoni-Voice-Setup.exe` |
 | 🪟 Windows | arm64 | `Limoni-Voice-Setup_windows_arm64.exe` |
 
 ```bash
 # Linux / macOS
-tar xzf limoni-voice_v1.0.0_linux_amd64.tar.gz
+tar xzf limoni-voice_v1.4.0_linux_amd64.tar.gz
 ./limoni-voice
 ```
 
@@ -189,13 +207,6 @@ git clone https://github.com/thebanri/limoni-voice.git
 cd limoni-voice
 go build -o limoni-voice .
 ./limoni-voice
-```
-
-### Windows Automatic Installer
-
-```powershell
-# Install with one command via PowerShell
-irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
 ```
 
 ### Self-Hosted Relay Server (Docker)

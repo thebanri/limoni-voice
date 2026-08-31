@@ -132,6 +132,22 @@ limoni-voice/
 
 ## 🚀 Kurulum
 
+### 🐧 Linux & 🍎 macOS Tek Komutla Kurulum (Önerilen)
+
+Terminalinizde tek bir komut çalıştırarak Limoni Voice'u doğrudan kurabilirsiniz:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thebanri/limoni-voice/main/install.sh | bash
+```
+
+### 🪟 Windows Tek Komutla Kurulum (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
+```
+
+---
+
 ### Ekran Paylaşımı İçin Ön Gereksinimler (FFmpeg & MPV)
 
 > [!IMPORTANT]
@@ -153,31 +169,33 @@ limoni-voice/
 >   # veya Scoop ile
 >   scoop install ffmpeg mpv
 >   ```
->   *(Not: `Limoni-Voice-Setup_windows_amd64.exe` kurulum sihirbazı bunları sizin için otomatik olarak da kurabilir).*
-> - **🐧 Linux (Debian / Ubuntu / Arch)**:
+>   *(Not: `Limoni-Voice-Setup.exe` kurulum sihirbazı bunları sizin için otomatik olarak da kurabilir).*
+> - **🐧 Linux (Debian / Ubuntu / Arch / Fedora)**:
 >   ```bash
 >   # Debian / Ubuntu
 >   sudo apt install ffmpeg mpv
 >   # Arch Linux
 >   sudo pacman -S ffmpeg mpv
+>   # Fedora
+>   sudo dnf install ffmpeg mpv
 >   ```
 
-### Hazır Binary İndirme (Önerilen)
+### Hazır Paketler (Manuel İndirme)
 
 [**Releases**](https://github.com/thebanri/limoni-voice/releases) sayfasından platformunuza uygun paketi indirin:
 
 | Platform | Mimari | Dosya |
 |----------|--------|-------|
-| 🐧 Linux | amd64 | `limoni-voice_v1.0.0_linux_amd64.tar.gz` |
-| 🐧 Linux | arm64 | `limoni-voice_v1.0.0_linux_arm64.tar.gz` |
-| 🍎 macOS | Apple Silicon | `Limoni-Voice_v1.0.0_macOS_arm64.app.zip` |
-| 🍎 macOS | Intel | `Limoni-Voice_v1.0.0_macOS_amd64.app.zip` |
-| 🪟 Windows | amd64 | `Limoni-Voice-Setup_windows_amd64.exe` |
+| 🐧 Linux | amd64 | `limoni-voice_v1.4.0_linux_amd64.tar.gz` / `.deb` |
+| 🐧 Linux | arm64 | `limoni-voice_v1.4.0_linux_arm64.tar.gz` / `.deb` |
+| 🍎 macOS | Apple Silicon | `Limoni-Voice_v1.4.0_macOS_arm64.app.zip` |
+| 🍎 macOS | Intel | `Limoni-Voice_v1.4.0_macOS_amd64.app.zip` |
+| 🪟 Windows | amd64 | `Limoni-Voice-Setup.exe` |
 | 🪟 Windows | arm64 | `Limoni-Voice-Setup_windows_arm64.exe` |
 
 ```bash
 # Linux / macOS
-tar xzf limoni-voice_v1.0.0_linux_amd64.tar.gz
+tar xzf limoni-voice_v1.4.0_linux_amd64.tar.gz
 ./limoni-voice
 ```
 
@@ -189,13 +207,6 @@ git clone https://github.com/thebanri/limoni-voice.git
 cd limoni-voice
 go build -o limoni-voice .
 ./limoni-voice
-```
-
-### Windows Otomatik Kurulum
-
-```powershell
-# PowerShell ile tek komutla kurulum
-irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
 ```
 
 ### Docker ile Kendi Relay Sunucunuzu Barındırma
