@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	modWinUser32 = syscall.NewLazyDLL("user32.dll")
-	modWinGdi32  = syscall.NewLazyDLL("gdi32.dll")
+	modWinUser32  = syscall.NewLazyDLL("user32.dll")
+	modWinGdi32   = syscall.NewLazyDLL("gdi32.dll")
+	modWinDwmapi  = syscall.NewLazyDLL("dwmapi.dll")
 
 	procWinGetDC                  = modWinUser32.NewProc("GetDC")
 	procWinReleaseDC              = modWinUser32.NewProc("ReleaseDC")
@@ -25,12 +26,19 @@ var (
 	procWinDrawIconEx             = modWinUser32.NewProc("DrawIconEx")
 	procWinGetDpiForWindow        = modWinUser32.NewProc("GetDpiForWindow")
 	procWinSetDpiAwarenessContext = modWinUser32.NewProc("SetProcessDpiAwarenessContext")
+	procWinIsIconic               = modWinUser32.NewProc("IsIconic")
+	procWinShowWindow             = modWinUser32.NewProc("ShowWindow")
+	procWinIsWindow               = modWinUser32.NewProc("IsWindow")
+
 	procWinCreateCompatibleDC     = modWinGdi32.NewProc("CreateCompatibleDC")
 	procWinCreateCompatibleBitmap = modWinGdi32.NewProc("CreateCompatibleBitmap")
 	procWinSelectObject           = modWinGdi32.NewProc("SelectObject")
 	procWinDeleteObject           = modWinGdi32.NewProc("DeleteObject")
 	procWinDeleteDC               = modWinGdi32.NewProc("DeleteDC")
 	procWinGetDIBits              = modWinGdi32.NewProc("GetDIBits")
+	procWinBitBlt                 = modWinGdi32.NewProc("BitBlt")
+
+	procWinDwmGetWindowAttribute  = modWinDwmapi.NewProc("DwmGetWindowAttribute")
 )
 
 const (
@@ -41,6 +49,9 @@ const (
 	CURSOR_SHOWING                             = 0x00000001
 	DI_NORMAL                                  = 0x0003
 	DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ^uintptr(3) // -4
+	DWMWA_EXTENDED_FRAME_BOUNDS                = 9
+	SW_RESTORE                                 = 9
+	SRCCOPY                                    = 0x00CC0020
 )
 
 func init() {
@@ -85,14 +96,54 @@ type winBITMAPINFO struct {
 
 // GetWindowDimensions returns the true uncropped physical dimensions of the window
 func GetWindowDimensions(hwnd uintptr) (int, int) {
+	if procWinIsWindow.Find() == nil {
+		if ret, _, _ := procWinIsWindow.Call(hwnd); ret == 0 {
+			return 1280, 720
+		}
+	}
+
+	// If minimized, restore it so that DWM renders it and dimensions are valid
+	if procWinIsIconic.Find() == nil {
+		if ret, _, _ := procWinIsIconic.Call(hwnd); ret != 0 {
+			if procWinShowWindow.Find() == nil {
+				procWinShowWindow.Call(hwnd, uintptr(SW_RESTORE))
+				time.Sleep(60 * time.Millisecond)
+			}
+		}
+	}
+
 	var r winRECT
-	ret, _, _ := procWinGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-	w := int(r.Right)
-	h := int(r.Bottom)
-	if ret == 0 || w <= 0 || h <= 0 {
-		procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	gotBounds := false
+
+	// Try DwmGetWindowAttribute first for exact visible window frame (excluding invisible drop shadow margins)
+	if procWinDwmGetWindowAttribute.Find() == nil {
+		hr, _, _ := procWinDwmGetWindowAttribute.Call(
+			hwnd,
+			uintptr(DWMWA_EXTENDED_FRAME_BOUNDS),
+			uintptr(unsafe.Pointer(&r)),
+			uintptr(unsafe.Sizeof(r)),
+		)
+		if hr == 0 && (r.Right-r.Left) > 50 && (r.Bottom-r.Top) > 50 {
+			gotBounds = true
+		}
+	}
+
+	if !gotBounds {
+		ret, _, _ := procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+		if ret != 0 && (r.Right-r.Left) > 50 && (r.Bottom-r.Top) > 50 {
+			gotBounds = true
+		}
+	}
+
+	var w, h int
+	if gotBounds {
 		w = int(r.Right - r.Left)
 		h = int(r.Bottom - r.Top)
+	} else {
+		// Fallback to client rect
+		procWinGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+		w = int(r.Right)
+		h = int(r.Bottom)
 	}
 
 	if w <= 100 || h <= 100 {
@@ -111,6 +162,16 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 
 	if fps <= 0 || fps > 60 {
 		fps = 60
+	}
+
+	// If minimized at start, restore so window has valid bounds and DWM renders it
+	if procWinIsIconic.Find() == nil {
+		if ret, _, _ := procWinIsIconic.Call(hwnd); ret != 0 {
+			if procWinShowWindow.Find() == nil {
+				procWinShowWindow.Call(hwnd, uintptr(SW_RESTORE))
+				time.Sleep(60 * time.Millisecond)
+			}
+		}
 	}
 
 	w, h := GetWindowDimensions(hwnd)
@@ -145,6 +206,9 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 
 	frameSize := w * h * 4
 	rawBytes := make([]byte, frameSize)
+	lastGoodFrame := make([]byte, frameSize)
+	hasValidFrame := false
+
 	ticker := time.NewTicker(time.Second / time.Duration(fps))
 	defer ticker.Stop()
 
@@ -153,20 +217,61 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			// Check if window is still alive
+			if procWinIsWindow.Find() == nil {
+				if ret, _, _ := procWinIsWindow.Call(hwnd); ret == 0 {
+					if hasValidFrame {
+						_, _ = outPipe.Write(lastGoodFrame)
+					} else {
+						_, _ = outPipe.Write(rawBytes)
+					}
+					continue
+				}
+			}
+
+			// Check if window is minimized (Iconic)
+			isIconic := false
+			if procWinIsIconic.Find() == nil {
+				ret, _, _ := procWinIsIconic.Call(hwnd)
+				isIconic = (ret != 0)
+			}
+
+			if isIconic {
+				// Window is minimized - preserve and send the last valid frame
+				// so viewers never get a black void!
+				if hasValidFrame {
+					if _, err := outPipe.Write(lastGoodFrame); err != nil {
+						return err
+					}
+				} else {
+					if _, err := outPipe.Write(rawBytes); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+
 			// 1. Get window screen coordinates for mouse position
-			var pt winPOINT
-			procWinClientToScreen.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
+			var winRect winRECT
+			procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&winRect)))
 
-			// 2. Capture isolated window surface directly via PrintWindow (ignores overlapping foreground windows)
-			procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_RENDERFULLCONTENT))
+			// 2. Capture isolated window surface directly via PrintWindow (PW_RENDERFULLCONTENT)
+			pwRet, _, _ := procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_RENDERFULLCONTENT))
+			if pwRet == 0 {
+				// Fallback: try PrintWindow with 0 or BitBlt
+				pwRet2, _, _ := procWinPrintWindow.Call(hwnd, hdcMem, 0)
+				if pwRet2 == 0 && procWinBitBlt.Find() == nil {
+					procWinBitBlt.Call(hdcMem, 0, 0, uintptr(w), uintptr(h), hdcWindow, 0, 0, uintptr(SRCCOPY))
+				}
+			}
 
-			// 3. Draw live mouse cursor overlay
+			// 3. Draw live mouse cursor overlay relative to window top-left
 			var ci winCURSORINFO
 			ci.CbSize = uint32(unsafe.Sizeof(ci))
 			if ret, _, _ := procWinGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); ret != 0 {
 				if ci.Flags == CURSOR_SHOWING {
-					mx := ci.PtScreenPos.X - pt.X
-					my := ci.PtScreenPos.Y - pt.Y
+					mx := ci.PtScreenPos.X - winRect.Left
+					my := ci.PtScreenPos.Y - winRect.Top
 					if mx >= 0 && mx < int32(w) && my >= 0 && my < int32(h) {
 						procWinDrawIconEx.Call(hdcMem, uintptr(mx), uintptr(my), uintptr(ci.HCursor), 0, 0, 0, 0, DI_NORMAL)
 					}
@@ -183,6 +288,10 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 				uintptr(unsafe.Pointer(&bmi)),
 				DIB_RGB_COLORS,
 			)
+
+			// Update last good frame
+			copy(lastGoodFrame, rawBytes)
+			hasValidFrame = true
 
 			// 5. Write to FFmpeg rawvideo pipe
 			if _, err := outPipe.Write(rawBytes); err != nil {

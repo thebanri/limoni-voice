@@ -2088,7 +2088,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 
 	// 2. Read raw MPEG-TS video chunks and broadcast to all room peers over WebSocket Relay (Internet)
 	go func() {
-		buf := make([]byte, 2048)
+		buf := make([]byte, 65535)
 		var seq uint32
 		var totalPackets int
 		var totalBytes int64

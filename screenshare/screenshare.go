@@ -1058,7 +1058,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 				defer cancel()
 				nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 2) // 2 = Window Only
 				if errPortal == nil && nodeID != 0 {
-					bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
+					bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt)
 					if errGst == nil {
 						return bin, args, pwFile, cleanup, nil
 					}
@@ -1087,7 +1087,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			defer cancel()
 			nodeID, cleanup, errMutter := RequestMutterScreenCast(ctx, connector)
 			if errMutter == nil && nodeID != 0 {
-				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
+				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt)
 				if errGst == nil {
 					return bin, args, nil, cleanup, nil
 				}
@@ -1103,7 +1103,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			defer cancel()
 			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 3) // 3 = Screen or Window
 			if errPortal == nil && nodeID != 0 {
-				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
+				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt)
 				if errGst == nil {
 					return bin, args, pwFile, cleanup, nil
 				}
@@ -1214,7 +1214,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 
 		args := []string{
 			"-fflags", "nobuffer+flush_packets",
-			"-thread_queue_size", "2",
+			"-thread_queue_size", "512",
 			"-probesize", "32",
 			"-analyzeduration", "0",
 			"-f", "x11grab",
@@ -1330,7 +1330,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		} else {
 			inputArgs := []string{
 				"-fflags", "nobuffer+flush_packets",
-				"-thread_queue_size", "2",
+				"-thread_queue_size", "512",
 				"-probesize", "32",
 				"-analyzeduration", "0",
 				"-f", "gdigrab",
@@ -1614,7 +1614,6 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--hwdec=auto-safe",
 			"--video-sync=desync",
 			"--framedrop=vo",
-			"--untimed=yes",
 			"--no-osc",
 			"--osc=no",
 			"--no-osd-bar",

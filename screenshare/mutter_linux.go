@@ -6,6 +6,7 @@ package screenshare
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,14 +116,31 @@ func isMutterAvailable() bool {
 }
 
 // buildGstreamerPipewireCommand builds a GStreamer command line using PipeWire source to stream MPEG-TS UDP or stdout
-func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, fps int) (string, []string, error) {
+func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt BroadcastOptions) (string, []string, error) {
 	gstBin, err := FindExecutable("gst-launch-1.0")
 	if err != nil {
 		return "", nil, fmt.Errorf("gst-launch-1.0 not found: %w", err)
 	}
 
+	fps := opt.FPS
 	if fps <= 0 {
 		fps = 60
+	}
+
+	bitrateKbps := 6000
+	if opt.Bitrate != "" {
+		bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))
+		if strings.HasSuffix(bStr, "M") {
+			if val, err := strconv.Atoi(strings.TrimSuffix(bStr, "M")); err == nil && val > 0 {
+				bitrateKbps = val * 1000
+			}
+		} else if strings.HasSuffix(bStr, "K") {
+			if val, err := strconv.Atoi(strings.TrimSuffix(bStr, "K")); err == nil && val > 0 {
+				bitrateKbps = val
+			}
+		} else if val, err := strconv.Atoi(bStr); err == nil && val > 0 {
+			bitrateKbps = val
+		}
 	}
 
 	usePipe := (targetURL == "-")
@@ -147,19 +165,24 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, fps int) (st
 		"do-timestamp=true",
 		"keepalive-time=1000",
 		"!", "videoconvert",
+		"!", "videoscale",
 		"!", "video/x-raw,format=I420",
 		"!", "x264enc",
 		"speed-preset=ultrafast",
 		"tune=zerolatency",
-		"bitrate=3500",
+		"pass=cbr",
+		fmt.Sprintf("bitrate=%d", bitrateKbps),
 		"key-int-max=30",
 		"bframes=0",
 		"byte-stream=true",
-		"!", "video/x-h264,profile=baseline,stream-format=byte-stream",
+		"sliced-threads=true",
+		"option-string=repeat-headers=1:scenecut=0:sync-lookahead=0:rc-lookahead=0",
+		"insert-vui=true",
+		"!", "video/x-h264,profile=main,stream-format=byte-stream",
 		"!", "mpegtsmux",
-		"alignment=7",
-		"pat-interval=10",
-		"pcr-interval=10",
+		"alignment=5",
+		"pat-interval=5",
+		"pcr-interval=5",
 	}
 
 	if usePipe {
