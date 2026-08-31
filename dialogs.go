@@ -511,7 +511,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 
 	// 3. Draw dialog Block with rounded borders and centered title
 	block := widgets.Block{
-		Title:          " 📺 SELECT SCREEN OR WINDOW ",
+		Title:          " SELECT SCREEN OR WINDOW TO BROADCAST ",
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,

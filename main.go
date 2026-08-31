@@ -225,7 +225,7 @@ func main() {
 		screenShareTargets = screenshare.ListWindows()
 		if len(screenShareTargets) == 0 {
 			screenShareTargets = []screenshare.WindowInfo{
-				{ID: "desktop", Title: "[▣] Entire Screen (Primary View)"},
+				{ID: "desktop", Title: "[Desktop] Entire Screen (Primary View)"},
 			}
 		}
 		selectedScreenShareIdx = 0
