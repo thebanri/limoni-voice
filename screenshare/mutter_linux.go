@@ -14,7 +14,7 @@ import (
 
 // RequestMutterScreenCast creates a direct, popup-less screencast session with GNOME Mutter compositor.
 // Returns the PipeWire Node ID and a cleanup function to stop the screencast session.
-func RequestMutterScreenCast(ctx context.Context, connector string, isWindow bool) (uint32, func(), error) {
+func RequestMutterScreenCast(ctx context.Context, connector string) (uint32, func(), error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to connect to session bus: %w", err)
@@ -51,33 +51,19 @@ func RequestMutterScreenCast(ctx context.Context, connector string, isWindow boo
 		_ = conn.Close()
 	}
 
+	// 2. RecordMonitor (connector can be "" for primary monitor, or specific display like "eDP-1")
 	var streamPath dbus.ObjectPath
 	streamProps := map[string]dbus.Variant{
 		"cursor-mode": dbus.MakeVariant(uint32(2)), // 2 = Embedded cursor
 	}
-
-	if isWindow {
-		// Record selected/focused application window
-		callRecord := sessObj.Call("org.gnome.Mutter.ScreenCast.Session.RecordWindow", 0, streamProps)
-		if callRecord.Err != nil {
-			cleanup()
-			return 0, nil, fmt.Errorf("Mutter RecordWindow failed: %w", callRecord.Err)
-		}
-		if err := callRecord.Store(&streamPath); err != nil {
-			cleanup()
-			return 0, nil, fmt.Errorf("failed to decode stream path: %w", err)
-		}
-	} else {
-		// Record monitor
-		callRecord := sessObj.Call("org.gnome.Mutter.ScreenCast.Session.RecordMonitor", 0, connector, streamProps)
-		if callRecord.Err != nil {
-			cleanup()
-			return 0, nil, fmt.Errorf("Mutter RecordMonitor failed: %w", callRecord.Err)
-		}
-		if err := callRecord.Store(&streamPath); err != nil {
-			cleanup()
-			return 0, nil, fmt.Errorf("failed to decode stream path: %w", err)
-		}
+	callRecord := sessObj.Call("org.gnome.Mutter.ScreenCast.Session.RecordMonitor", 0, connector, streamProps)
+	if callRecord.Err != nil {
+		cleanup()
+		return 0, nil, fmt.Errorf("Mutter RecordMonitor failed: %w", callRecord.Err)
+	}
+	if err := callRecord.Store(&streamPath); err != nil {
+		cleanup()
+		return 0, nil, fmt.Errorf("failed to decode stream path: %w", err)
 	}
 
 	// 3. Start
