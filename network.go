@@ -2135,7 +2135,9 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 	n.mu.Lock()
 	watching := n.IsWatchingScreen
 	tcpConn := n.videoTCPConn
-	if len(n.videoPreBuf) < 24 {
+
+	// Ring buffer of recent video chunks (~90 chunks = ~85KB) so when player starts, it receives keyframe headers
+	if len(n.videoPreBuf) < 90 {
 		n.videoPreBuf = append(n.videoPreBuf, payload)
 	} else {
 		n.videoPreBuf = append(n.videoPreBuf[1:], payload)
@@ -2147,7 +2149,13 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 			n.log(fmt.Sprintf("🎬 [WATCH] Receiving stream from %s: packet #%d (%d bytes) -> playing", nickname, seq, len(payload)))
 		}
 		if _, err := tcpConn.Write(payload); err != nil {
-			n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP write error: %v", err))
+			n.mu.Lock()
+			if n.videoTCPConn == tcpConn {
+				n.videoTCPConn = nil
+				_ = tcpConn.Close()
+				n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP disconnected: %v", err))
+			}
+			n.mu.Unlock()
 		}
 	}
 }

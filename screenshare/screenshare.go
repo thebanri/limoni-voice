@@ -1625,23 +1625,27 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
-			"--cache=no",
-			"--no-cache",
+			"--untimed",
+			"--framedrop=vo",
 			"--hwdec=auto-safe",
 			"--video-sync=desync",
-			"--framedrop=vo",
+			"--force-window=immediate", // Open window immediately without waiting for first parsed frame
+			"--ontop=yes",              // Bring viewer window to the foreground
+			"--focus-on=open",          // Focus window immediately when created
+			"--keep-open=yes",          // Keep window open through stream transitions
+			"--idle=yes",               // Idle mode so player doesn't quit on brief gaps
 			"--no-osc",
 			"--osc=no",
 			"--no-osd-bar",
 			"--osd-bar=no",
 			"--osd-level=0",
 			"--cursor-autohide=1000",
-			"--demuxer-readahead-secs=0",
-			"--demuxer-max-bytes=200K",
-			"--demuxer-max-back-bytes=0",
 			"--demuxer-lavf-format=mpegts",
-			"--demuxer-lavf-analyzeduration=0.1",
-			"--demuxer-lavf-probesize=32768",
+			"--demuxer-lavf-analyzeduration=0.5",
+			"--demuxer-lavf-probesize=262144", // 256KB probe: reliably captures SPS/PPS keyframe headers
+			"--demuxer-readahead-secs=0.5",
+			"--demuxer-max-bytes=4M",
+			"--demuxer-max-back-bytes=0",
 			"--demuxer-lavf-o=fflags=+nobuffer+flush_packets",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
@@ -1657,9 +1661,10 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-fflags", "nobuffer+flush_packets",
 			"-framedrop",
 			"-sync", "ext",
-			"-probesize", "32768",
-			"-analyzeduration", "100000",
+			"-probesize", "262144",
+			"-analyzeduration", "500000",
 			"-f", "mpegts",
+			"-alwaysontop",
 			"-window_title", windowTitle,
 			"-i", streamURL,
 		}
