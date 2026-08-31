@@ -157,17 +157,18 @@ type P2PNode struct {
 	// Screen Sharing State & Subprocesses
 	IsSharingScreen  bool
 	IsWatchingScreen bool
-	ScreenSharePort  int
-	screenSession    *screenshare.Session
-	receiverSession  *screenshare.Session
-	videoCaptureConn *net.UDPConn
-	videoTCPListener net.Listener
-	videoTCPConn     net.Conn
-	videoPreBuf      [][]byte
-	videoDedup       VideoDeduplicator
-	audioDedup       AudioDeduplicator
-	silenceHangover  int
-	OnScreenShare    func(peerID string, isSharing bool, videoPort int)
+	ScreenSharePort    int
+	screenSession      *screenshare.Session
+	receiverSession    *screenshare.Session
+	videoCaptureConn   *net.UDPConn
+	videoTCPListener   net.Listener
+	videoTCPConn       net.Conn
+	videoPreBuf        [][]byte
+	videoDedup         VideoDeduplicator
+	audioDedup         AudioDeduplicator
+	silenceHangover    int
+	lastVideoChunkTime time.Time
+	OnScreenShare      func(peerID string, isSharing bool, videoPort int)
 }
 
 // AudioDeduplicator prevents duplicate audio packets from being played
@@ -1058,10 +1059,16 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 
 	case "peer_left":
 		if peer, exists := n.Peers[msg.SenderID]; exists {
+			wasSharing := peer.IsSharingScreen
 			delete(n.Peers, msg.SenderID)
 			n.log(fmt.Sprintf("[-] %s left.", peer.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
+			}
+			if (wasSharing || len(n.Peers) == 0) && n.IsWatchingScreen {
+				go func() {
+					_ = n.StopWatchingScreen()
+				}()
 			}
 		}
 
@@ -1080,6 +1087,11 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 		// Only close if no new host was elected
 		if n.HostID == msg.SenderID && !n.IsHost {
 			n.log("❌ Host left, room closed.")
+			if n.IsWatchingScreen {
+				go func() {
+					_ = n.StopWatchingScreen()
+				}()
+			}
 			if n.OnPeerEvent != nil {
 				if host, ok := n.Peers[n.HostID]; ok {
 					go n.OnPeerEvent("leave", host)
@@ -2133,6 +2145,7 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 		return
 	}
 	n.mu.Lock()
+	n.lastVideoChunkTime = time.Now()
 	watching := n.IsWatchingScreen
 	tcpConn := n.videoTCPConn
 
@@ -2413,6 +2426,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	n.receiverSession = session
 	n.videoTCPListener = tcpLn
 	n.IsWatchingScreen = true
+	n.lastVideoChunkTime = time.Now()
 	n.mu.Unlock()
 
 	n.log("🎬 Live screen stream viewer window opened (HD 60 FPS).")
@@ -2453,6 +2467,7 @@ func (n *P2PNode) StopWatchingScreen() error {
 	n.videoTCPConn = nil
 	n.videoTCPListener = nil
 	n.IsWatchingScreen = false
+	n.lastVideoChunkTime = time.Time{}
 	n.mu.Unlock()
 
 	if conn != nil {
@@ -2488,10 +2503,16 @@ func (n *P2PNode) heartbeatLoop() {
 		// Check timeouts & send pings (45s timeout for resilient internet connections)
 		for id, peer := range n.Peers {
 			if now.Sub(peer.LastSeen) > 45*time.Second {
+				wasSharing := peer.IsSharingScreen
 				delete(n.Peers, id)
 				n.log(fmt.Sprintf("[-] %s timed out.", peer.Nickname))
 				if n.OnPeerEvent != nil {
 					go n.OnPeerEvent("leave", peer)
+				}
+				if (wasSharing || len(n.Peers) == 0) && n.IsWatchingScreen {
+					go func() {
+						_ = n.StopWatchingScreen()
+					}()
 				}
 				continue
 			}
@@ -2508,6 +2529,22 @@ func (n *P2PNode) heartbeatLoop() {
 				Timestamp:       now.UnixMilli(),
 			}
 			go n.sendPacketTo(peer.Addr, &pingPkt)
+		}
+
+		// If user is watching screen, check if ANY peer is still sharing screen or if stream died (>10s gap)
+		if n.IsWatchingScreen {
+			anySharing := false
+			for _, p := range n.Peers {
+				if p.IsSharingScreen {
+					anySharing = true
+					break
+				}
+			}
+			if !anySharing || (len(n.Peers) > 0 && !n.lastVideoChunkTime.IsZero() && now.Sub(n.lastVideoChunkTime) > 10*time.Second) {
+				go func() {
+					_ = n.StopWatchingScreen()
+				}()
+			}
 		}
 		n.mu.Unlock()
 	}
