@@ -165,7 +165,62 @@ type P2PNode struct {
 	videoTCPConn     net.Conn
 	videoPreBuf      [][]byte
 	videoDedup       VideoDeduplicator
+	audioDedup       AudioDeduplicator
+	silenceHangover  int
 	OnScreenShare    func(peerID string, isSharing bool, videoPort int)
+}
+
+// AudioDeduplicator prevents duplicate audio packets from being played
+// when packets arrive over both direct UDP and WebSocket relay transports.
+type AudioDeduplicator struct {
+	mu    sync.Mutex
+	peers map[string]*audioSeqTracker
+}
+
+type audioSeqTracker struct {
+	maxSeq uint32
+	seqs   [2048]uint32
+}
+
+func (d *AudioDeduplicator) ShouldProcess(senderID string, seq uint32) bool {
+	if seq == 0 || senderID == "" {
+		return true
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.peers == nil {
+		d.peers = make(map[string]*audioSeqTracker)
+	}
+
+	tracker, exists := d.peers[senderID]
+	if !exists {
+		tracker = &audioSeqTracker{}
+		d.peers[senderID] = tracker
+	}
+
+	idx := seq % 2048
+	if tracker.seqs[idx] == seq {
+		// Already processed this exact sequence number!
+		return false
+	}
+	// Drop old packets that are too far behind maxSeq (accounting for uint32 wrap-around)
+	if tracker.maxSeq > 1500 && seq < tracker.maxSeq-1500 {
+		return false
+	}
+	tracker.seqs[idx] = seq
+	if seq > tracker.maxSeq || (tracker.maxSeq > 0xFFFFFF00 && seq < 0x00000FFF) {
+		tracker.maxSeq = seq
+	}
+	return true
+}
+
+func (d *AudioDeduplicator) Reset(senderID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.peers != nil {
+		delete(d.peers, senderID)
+	}
 }
 
 // VideoDeduplicator prevents duplicate video packets from being fed to the local player
@@ -1090,33 +1145,30 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 	}
 }
 
-var (
-	silenceHangover int
-)
-
 func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
-	n.mu.RLock()
+	n.mu.Lock()
 	if !n.IsConnected || len(n.Peers) == 0 {
-		n.mu.RUnlock()
+		n.mu.Unlock()
 		return
 	}
 	room := n.RoomCode
 	n.seqCounter++
 	seq := n.seqCounter
-	n.mu.RUnlock()
 
-	// DTX (Discontinuous Transmission): Do not flood network with 50 pkts/sec when silent.
-	// Allow 5 hangover frames (~100ms) to ensure natural word endings, then pause audio transmission.
+	// DTX (Discontinuous Transmission): Do not flood network when completely silent.
+	// Allow 25 hangover frames (~500ms) to ensure natural speech pauses, breath spaces,
+	// and word endings are never chopped off.
 	if speaking {
-		silenceHangover = 5
+		n.silenceHangover = 25
 	} else {
-		if silenceHangover > 0 {
-			silenceHangover--
+		if n.silenceHangover > 0 {
+			n.silenceHangover--
 		} else {
-			// Silent and hangover expired: do not transmit empty 700-byte packets to prevent bufferbloat
+			n.mu.Unlock()
 			return
 		}
 	}
+	n.mu.Unlock()
 
 	pkt := P2PPacket{
 		Type:       PacketAudio,
@@ -2019,6 +2071,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketAudio:
+		if !n.audioDedup.ShouldProcess(pkt.SenderID, pkt.Seq) {
+			return // Ignore duplicate packet received over redundant transport
+		}
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.Speaking = pkt.Speaking
 			peer.RMS = pkt.RMS

@@ -104,6 +104,61 @@ func (f *biquad) process(x float64) float64 {
 // butterworthQ is the standard maximally-flat Q for a single-stage 2nd order filter.
 const butterworthQ = 0.70710678
 
+// PeerJitterBuffer maintains a smooth, jitter-free FIFO audio chunk queue for each peer.
+// It absorbs network timing variance with a 2-chunk (40ms) pre-buffering cushion,
+// eliminating audio underflow pops, micro-dropouts, and robotic stutter.
+type PeerJitterBuffer struct {
+	chunks    [][]byte
+	isPlaying bool
+	prebuffer int
+}
+
+func newPeerJitterBuffer(prebuffer int) *PeerJitterBuffer {
+	if prebuffer < 1 {
+		prebuffer = 1
+	}
+	return &PeerJitterBuffer{
+		chunks:    make([][]byte, 0, 8),
+		isPlaying: false,
+		prebuffer: prebuffer,
+	}
+}
+
+func (jb *PeerJitterBuffer) Push(chunk []byte) {
+	if len(chunk) != AudioChunkSize {
+		padded := make([]byte, AudioChunkSize)
+		copy(padded, chunk)
+		chunk = padded
+	}
+	// Bound queue to max 6 chunks (~120ms) to ensure low latency while absorbing jitter
+	if len(jb.chunks) >= 6 {
+		jb.chunks = jb.chunks[1:]
+	}
+	jb.chunks = append(jb.chunks, chunk)
+
+	if !jb.isPlaying && len(jb.chunks) >= jb.prebuffer {
+		jb.isPlaying = true
+	}
+}
+
+func (jb *PeerJitterBuffer) Pop() ([]byte, bool) {
+	if !jb.isPlaying || len(jb.chunks) == 0 {
+		jb.isPlaying = false
+		return nil, false
+	}
+	chunk := jb.chunks[0]
+	jb.chunks = jb.chunks[1:]
+	if len(jb.chunks) == 0 {
+		jb.isPlaying = false
+	}
+	return chunk, true
+}
+
+func (jb *PeerJitterBuffer) Reset() {
+	jb.chunks = jb.chunks[:0]
+	jb.isPlaying = false
+}
+
 type AudioEngine struct {
 	mu           sync.RWMutex
 	Muted        bool
@@ -115,7 +170,7 @@ type AudioEngine struct {
 
 	// Suppression mode: 0 = KAPALI, 1 = ACIK (Standart), 2 = YUKSEK
 	SuppressionMode int
-	Gain            float64 // 0.0 to 2.0 (1.0 = 100%)
+	Gain            float64 // 0.0 to 3.0 (1.0 = 100%, up to 300%)
 	GainSliderState *widgets.SliderState
 	VADSliderState  *widgets.SliderState
 	IsSpeaking      bool
@@ -154,29 +209,29 @@ type AudioEngine struct {
 	playbackCmd  *exec.Cmd
 	playbackPipe io.WriteCloser
 
-	// Mixing buffer for incoming peer streams
-	peerBuffers map[string][]byte
-	mixChan     chan []byte
-	stopChan    chan struct{}
-	running     bool
+	// Mixing buffer for incoming peer streams with jitter compensation
+	peerJitterBuffers map[string]*PeerJitterBuffer
+	mixChan           chan []byte
+	stopChan          chan struct{}
+	running           bool
 }
 
 func NewAudioEngine() *AudioEngine {
 	engine := &AudioEngine{
-		Muted:           false,
-		Deafened:        false,
-		Loopback:        false,
-		InTestMode:      false,
-		SuppressionMode: 1, // Default: ACIK (Standart)
-		Gain:            1.0,
-		GainSliderState: widgets.NewSliderState(100),
-		VADSliderState:  widgets.NewSliderState(6),
-		VADThreshold:    0.006, // Balanced: natural voice detection without laptop speaker echo
-		LocalWave:       make([]float64, 40),
-		PeerWaves:       make(map[string][]float64),
-		peerBuffers:     make(map[string][]byte),
-		mixChan:         make(chan []byte, 64),
-		stopChan:        make(chan struct{}),
+		Muted:             false,
+		Deafened:          false,
+		Loopback:          false,
+		InTestMode:        false,
+		SuppressionMode:   1, // Default: ACIK (Standart)
+		Gain:              1.0,
+		GainSliderState:   widgets.NewSliderState(100),
+		VADSliderState:    widgets.NewSliderState(6),
+		VADThreshold:      0.006, // Balanced: natural voice detection without laptop speaker echo
+		LocalWave:         make([]float64, 40),
+		PeerWaves:         make(map[string][]float64),
+		peerJitterBuffers: make(map[string]*PeerJitterBuffer),
+		mixChan:           make(chan []byte, 64),
+		stopChan:          make(chan struct{}),
 
 		lpLow:  newLowpass(AudioSampleRate, 150.0, butterworthQ),
 		hpMid:  newHighpass(AudioSampleRate, 150.0, butterworthQ),
@@ -202,7 +257,7 @@ func (a *AudioEngine) EnterTestMode() {
 	a.Muted = false
 	a.Deafened = true
 	a.Loopback = true
-	delete(a.peerBuffers, "local_loopback")
+	delete(a.peerJitterBuffers, "local_loopback")
 }
 
 // LeaveTestMode restores prior room audio state and disables loopback.
@@ -213,7 +268,7 @@ func (a *AudioEngine) LeaveTestMode() {
 	a.Muted = a.PrevMuted
 	a.Deafened = a.PrevDeafened
 	a.Loopback = false
-	delete(a.peerBuffers, "local_loopback")
+	delete(a.peerJitterBuffers, "local_loopback")
 }
 
 func (a *AudioEngine) CycleSuppressionMode() int {
@@ -537,7 +592,7 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 
 	speaking := false
 	if isSpeech {
-		a.speechHangover = 18 // ~360ms hangover to retain word endings and breathing pauses
+		a.speechHangover = 25 // ~500ms hangover to retain word endings and natural pauses
 		speaking = true
 	} else {
 		if a.speechHangover > 0 {
@@ -551,10 +606,10 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	// 6. Target Gains Per Band
 	var targetLow, targetMid, targetHigh float64
 	if speaking {
-		// When speaking: pass vocal warmth (low), core voice (mid), and crisp consonants (high)
-		targetLow = 0.90
+		// When speaking: pass vocal warmth (low), core voice (mid), and crisp consonants (high) with 100% fidelity
+		targetLow = 1.0
 		targetMid = 1.0
-		targetHigh = 0.90
+		targetHigh = 1.0
 	} else {
 		// When silent: suppress room hum, ambient noise, and fan hiss
 		if mode == 1 { // ACIK (Standart): gentle attenuation
@@ -622,9 +677,9 @@ func adaptNoiseFloor(floor, rms float64) float64 {
 // smoothGain applies an exponential attack/release envelope to avoid
 // clicking or pumping when a band's gate opens or closes.
 func smoothGain(current, target float64) float64 {
-	alpha := 0.60 // Fast attack (~10-20ms) so speech is immediately audible
+	alpha := 0.70 // Fast attack (~10ms) so speech is immediately audible
 	if target < current {
-		alpha = 0.15 // Smooth release (~150-200ms) to avoid clicking or unnatural pumping
+		alpha = 0.12 // Smooth release (~180ms) to avoid clicking or unnatural pumping
 	}
 	return current + (target-current)*alpha
 }
@@ -728,6 +783,8 @@ func (a *AudioEngine) playbackMixerLoop() {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
+	var silenceFramesLeft int
+
 	for {
 		select {
 		case <-a.stopChan:
@@ -742,25 +799,17 @@ func (a *AudioEngine) playbackMixerLoop() {
 
 			// In test mode: only play local_loopback stream
 			if a.InTestMode {
-				buf := a.peerBuffers["local_loopback"]
-				if !a.Loopback || len(buf) == 0 {
+				jb := a.peerJitterBuffers["local_loopback"]
+				if !a.Loopback || jb == nil {
 					a.mu.Unlock()
 					continue
 				}
-				var streams [][]byte
-				if len(buf) >= AudioChunkSize {
-					streams = append(streams, buf[:AudioChunkSize])
-					a.peerBuffers["local_loopback"] = buf[AudioChunkSize:]
-				} else if len(buf) > 0 {
-					streams = append(streams, buf)
-					delete(a.peerBuffers, "local_loopback")
-				}
+				chunk, ok := jb.Pop()
 				pipe := a.playbackPipe
 				a.mu.Unlock()
 
-				if len(streams) > 0 && pipe != nil {
-					mixed := mixPCM(streams, AudioChunkSize/2)
-					if _, err := pipe.Write(mixed); err != nil {
+				if ok && pipe != nil {
+					if _, err := pipe.Write(chunk); err != nil {
 						a.mu.Lock()
 						if a.playbackPipe == pipe {
 							a.playbackPipe = nil
@@ -773,29 +822,26 @@ func (a *AudioEngine) playbackMixerLoop() {
 			}
 
 			// Normal room mode: check deafened
-			if a.Deafened || len(a.peerBuffers) == 0 {
+			if a.Deafened {
 				a.mu.Unlock()
 				continue
 			}
 
 			var streams [][]byte
-			for id, buf := range a.peerBuffers {
+			for id, jb := range a.peerJitterBuffers {
 				if id == "local_loopback" {
-					delete(a.peerBuffers, id)
+					delete(a.peerJitterBuffers, id)
 					continue
 				}
-				if len(buf) >= AudioChunkSize {
-					streams = append(streams, buf[:AudioChunkSize])
-					a.peerBuffers[id] = buf[AudioChunkSize:]
-				} else if len(buf) > 0 {
-					streams = append(streams, buf)
-					delete(a.peerBuffers, id)
+				if chunk, ok := jb.Pop(); ok {
+					streams = append(streams, chunk)
 				}
 			}
 			pipe := a.playbackPipe
 			a.mu.Unlock()
 
 			if len(streams) > 0 && pipe != nil {
+				silenceFramesLeft = 3 // keep 3 frames of comfort silence after active speech ends
 				mixed := mixPCM(streams, AudioChunkSize/2)
 				var playEnergy float64
 				for i := 0; i < len(mixed)/2; i++ {
@@ -815,6 +861,10 @@ func (a *AudioEngine) playbackMixerLoop() {
 					a.mu.Unlock()
 					a.startPlayback()
 				}
+			} else if silenceFramesLeft > 0 && pipe != nil {
+				silenceFramesLeft--
+				silenceFrame := make([]byte, AudioChunkSize)
+				_, _ = pipe.Write(silenceFrame)
 			}
 		}
 	}
@@ -823,11 +873,12 @@ func (a *AudioEngine) playbackMixerLoop() {
 func (a *AudioEngine) queueLoopbackPCM(pcm []byte, rms float64, speaking bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	cur := a.peerBuffers["local_loopback"]
-	if len(cur) > 4096 {
-		cur = cur[len(cur)-2048:]
+	jb, exists := a.peerJitterBuffers["local_loopback"]
+	if !exists {
+		jb = newPeerJitterBuffer(1) // 1 chunk (20ms) for instant local mic test response
+		a.peerJitterBuffers["local_loopback"] = jb
 	}
-	a.peerBuffers["local_loopback"] = append(cur, pcm...)
+	jb.Push(pcm)
 }
 
 // PlayPeerPCM queues incoming audio data from a peer for real-time mixing and playback.
@@ -852,11 +903,12 @@ func (a *AudioEngine) PlayPeerPCM(peerID string, pcm []byte, rms float64, speaki
 		return
 	}
 
-	cur := a.peerBuffers[peerID]
-	if len(cur) > 4096 {
-		cur = cur[len(cur)-2048:]
+	jb, exists := a.peerJitterBuffers[peerID]
+	if !exists {
+		jb = newPeerJitterBuffer(2) // 2 chunks (40ms) jitter cushion to eliminate pops and stutter
+		a.peerJitterBuffers[peerID] = jb
 	}
-	a.peerBuffers[peerID] = append(cur, pcm...)
+	jb.Push(pcm)
 }
 
 func (a *AudioEngine) ToggleMute() bool {
@@ -886,7 +938,7 @@ func (a *AudioEngine) ToggleLoopback() bool {
 	defer a.mu.Unlock()
 	a.Loopback = !a.Loopback
 	if !a.Loopback {
-		delete(a.peerBuffers, "local_loopback")
+		delete(a.peerJitterBuffers, "local_loopback")
 	}
 	return a.Loopback
 }
@@ -896,7 +948,7 @@ func (a *AudioEngine) SetLoopback(val bool) {
 	defer a.mu.Unlock()
 	a.Loopback = val
 	if !a.Loopback {
-		delete(a.peerBuffers, "local_loopback")
+		delete(a.peerJitterBuffers, "local_loopback")
 	}
 }
 
@@ -907,11 +959,11 @@ func (a *AudioEngine) AdjustGain(delta float64) float64 {
 	if a.Gain < 0.0 {
 		a.Gain = 0.0
 	}
-	if a.Gain > 2.0 {
-		a.Gain = 2.0
+	if a.Gain > 3.0 {
+		a.Gain = 3.0
 	}
 	if a.GainSliderState != nil {
-		a.GainSliderState.Set(int(math.Round(a.Gain*100)), 0, 200)
+		a.GainSliderState.Set(int(math.Round(a.Gain*100)), 0, 300)
 	}
 	return a.Gain
 }
@@ -985,6 +1037,12 @@ func applyGain(pcm []byte, gain float64) []byte {
 	for i := 0; i < sampleCount; i++ {
 		s := int16(binary.LittleEndian.Uint16(pcm[i*2 : i*2+2]))
 		amplified := float64(s) * gain
+		// Soft-knee saturation above 24000 to prevent harsh digital clipping when boosted up to 300%
+		if amplified > 24000.0 {
+			amplified = 24000.0 + (amplified-24000.0)*0.45
+		} else if amplified < -24000.0 {
+			amplified = -24000.0 + (amplified+24000.0)*0.45
+		}
 		if amplified > 32767 {
 			amplified = 32767
 		} else if amplified < -32768 {
@@ -998,12 +1056,18 @@ func applyGain(pcm []byte, gain float64) []byte {
 func mixPCM(streams [][]byte, numSamples int) []byte {
 	out := make([]byte, numSamples*2)
 	for i := 0; i < numSamples; i++ {
-		var sum int32
+		var sum float64
 		for _, stream := range streams {
 			if len(stream) >= (i+1)*2 {
 				s := int16(binary.LittleEndian.Uint16(stream[i*2 : i*2+2]))
-				sum += int32(s)
+				sum += float64(s)
 			}
+		}
+		// Soft saturation for multi-speaker mix
+		if sum > 28000.0 {
+			sum = 28000.0 + (sum-28000.0)*0.35
+		} else if sum < -28000.0 {
+			sum = -28000.0 + (sum+28000.0)*0.35
 		}
 		if sum > 32767 {
 			sum = 32767

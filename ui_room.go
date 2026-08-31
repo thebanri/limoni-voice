@@ -1036,8 +1036,8 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			buf.SetString(gainX, row2Y, gainText, cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
 			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, gainLen, 1), func(_ backend.MouseEvent) {
 				gain := audio.AdjustGain(0.1)
-				if gain > 2.0 {
-					audio.AdjustGain(-1.5)
+				if gain > 3.0 {
+					audio.AdjustGain(-2.5) // loop back from 300% to 50%
 				}
 				r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.Gain*100))
 			})

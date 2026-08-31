@@ -243,7 +243,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	if audio.GainSliderState == nil {
 		audio.GainSliderState = widgets.NewSliderState(gainPct)
 	} else {
-		audio.GainSliderState.Set(gainPct, 0, 200)
+		audio.GainSliderState.Set(gainPct, 0, 300)
 	}
 
 	sliderWidth := uint16(26)
@@ -260,7 +260,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		ID:    "mic_gain_slider",
 		State: audio.GainSliderState,
 		Min:   0,
-		Max:   200,
+		Max:   300,
 		TrackStyle: cell.Style{
 			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
 			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),

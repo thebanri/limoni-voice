@@ -493,3 +493,85 @@ func TestVideoDeduplicator(t *testing.T) {
 		t.Fatalf("Expected seq 1 to be processed after Reset")
 	}
 }
+
+func TestAudioDeduplicator(t *testing.T) {
+	dedup := AudioDeduplicator{}
+
+	if !dedup.ShouldProcess("peer1", 1) {
+		t.Fatalf("Expected peer1 seq 1 to be processed")
+	}
+	if dedup.ShouldProcess("peer1", 1) {
+		t.Fatalf("Expected duplicate peer1 seq 1 to be dropped")
+	}
+	if !dedup.ShouldProcess("peer2", 1) {
+		t.Fatalf("Expected peer2 seq 1 to be processed independently")
+	}
+	if !dedup.ShouldProcess("peer1", 2) {
+		t.Fatalf("Expected peer1 seq 2 to be processed")
+	}
+	if dedup.ShouldProcess("peer1", 2) {
+		t.Fatalf("Expected duplicate peer1 seq 2 to be dropped")
+	}
+
+	dedup.Reset("peer1")
+	if !dedup.ShouldProcess("peer1", 1) {
+		t.Fatalf("Expected peer1 seq 1 to be processed after Reset")
+	}
+}
+
+func TestPeerJitterBuffer(t *testing.T) {
+	jb := newPeerJitterBuffer(2) // 2-chunk prebuffer
+	chunk1 := make([]byte, AudioChunkSize)
+	chunk2 := make([]byte, AudioChunkSize)
+	chunk1[0] = 0x11
+	chunk2[0] = 0x22
+
+	// Push 1st chunk: should not be playable yet (cushion building)
+	jb.Push(chunk1)
+	if _, ok := jb.Pop(); ok {
+		t.Fatalf("Expected Pop to return false before prebuffer is full")
+	}
+
+	// Push 2nd chunk: now prebuffer target reached -> playable!
+	jb.Push(chunk2)
+	c, ok := jb.Pop()
+	if !ok || c[0] != 0x11 {
+		t.Fatalf("Expected Pop to return chunk1 (0x11)")
+	}
+
+	c, ok = jb.Pop()
+	if !ok || c[0] != 0x22 {
+		t.Fatalf("Expected Pop to return chunk2 (0x22)")
+	}
+
+	// Now starved: Pop should return false
+	if _, ok = jb.Pop(); ok {
+		t.Fatalf("Expected Pop to return false on starved buffer")
+	}
+}
+
+func TestGainRange300(t *testing.T) {
+	engine := NewAudioEngine()
+	engine.Gain = 1.0
+
+	// Boost beyond 200% up to 300%
+	engine.AdjustGain(1.5) // 1.0 + 1.5 = 2.5 (250%)
+	if engine.Gain != 2.5 {
+		t.Fatalf("Expected gain 2.5, got %f", engine.Gain)
+	}
+
+	engine.AdjustGain(1.0) // 2.5 + 1.0 = 3.5 -> clamped to 3.0 (300%)
+	if engine.Gain != 3.0 {
+		t.Fatalf("Expected gain 3.0, got %f", engine.Gain)
+	}
+
+	testPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < len(testPCM)/2; i++ {
+		binary.LittleEndian.PutUint16(testPCM[i*2:i*2+2], 10000)
+	}
+	boosted := applyGain(testPCM, 3.0)
+	val := int16(binary.LittleEndian.Uint16(boosted[0:2]))
+	if val <= 10000 || val > 32767 {
+		t.Fatalf("Expected soft-boosted sample between 10000 and 32767, got %d", val)
+	}
+}
