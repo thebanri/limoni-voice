@@ -473,8 +473,12 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 	frame.RenderWidget(exitDialog, animatedArea)
 }
 
-// DrawScreenShareModal renders the screen and window selection modal with instant solid rendering and drop shadow
-func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, selectedIdx int, targets []screenshare.WindowInfo, onSelect func(target screenshare.WindowInfo), onCancel func()) {
+// DrawScreenShareModal renders the screen and window selection modal with opening/closing scale animation and drop shadow
+func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, selectedIdx int, targets []screenshare.WindowInfo, onSelect func(target screenshare.WindowInfo), onCancel func()) {
+	if progress <= 0.001 {
+		return
+	}
+
 	modalW, modalH := uint16(64), uint16(15)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
@@ -484,21 +488,23 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, selectedI
 	}
 
 	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
-	if modalArea.Width < 8 || modalArea.Height < 5 {
+	animatedArea := terminal.ScaleRect(modalArea, progress)
+
+	if animatedArea.Width < 8 || animatedArea.Height < 5 {
 		return
 	}
 
 	// 1. Draw Drop Shadow behind the dialog
-	widgets.DrawShadow(frame.Buffer, modalArea, 2, 1)
+	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
 
-	frame.RegisterModal("screenshare_select_dialog", modalArea, onCancel)
+	frame.RegisterModal("screenshare_select_dialog", animatedArea, onCancel)
 
 	dialogBg := cell.NewColorRGB(0x13, 0x17, 0x22)
 	buf := frame.Buffer
 
 	// 2. Clear entire dialog area with solid dark background
-	for y := modalArea.Y; y < modalArea.Y+modalArea.Height; y++ {
-		for x := modalArea.X; x < modalArea.X+modalArea.Width; x++ {
+	for y := animatedArea.Y; y < animatedArea.Y+animatedArea.Height; y++ {
+		for x := animatedArea.X; x < animatedArea.X+animatedArea.Width; x++ {
 			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
 		}
 	}
@@ -512,9 +518,9 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, selectedI
 		BorderStyle:    cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Modifier: cell.ModifierBold},
 		Style:          cell.Style{Bg: dialogBg},
 	}
-	frame.RenderWidget(block, modalArea)
+	frame.RenderWidget(block, animatedArea)
 
-	inner := block.Inner(modalArea)
+	inner := block.Inner(animatedArea)
 	if inner.Height < 3 || inner.Width < 4 {
 		return
 	}

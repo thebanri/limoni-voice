@@ -153,6 +153,7 @@ func main() {
 
 	exitDialogAnim := animation.NewFloat(0.0)
 	leaveDialogAnim := animation.NewFloat(0.0)
+	screenShareDialogAnim := animation.NewFloat(0.0)
 
 	openTestModal := func() {
 		audio.EnterTestMode()
@@ -193,6 +194,7 @@ func main() {
 
 	closeScreenShareModal := func() {
 		showScreenShareModal = false
+		screenShareDialogAnim.AnimateTo(0.0, 160*time.Millisecond, animation.EaseInCubic)
 		t.ForceFullRedraw()
 	}
 
@@ -228,6 +230,7 @@ func main() {
 		}
 		selectedScreenShareIdx = 0
 		showScreenShareModal = true
+		screenShareDialogAnim.AnimateTo(1.0, 200*time.Millisecond, animation.EaseOutCubic)
 	}
 
 	node.OnLog = func(msg string) {
@@ -727,6 +730,7 @@ func main() {
 
 			exitDialogAnim.Update(now)
 			leaveDialogAnim.Update(now)
+			screenShareDialogAnim.Update(now)
 
 			exitProg := exitDialogAnim.Value()
 			if exitProg <= 0.001 && !exitDialogAnim.IsAnimating() {
@@ -736,6 +740,11 @@ func main() {
 			leaveProg := leaveDialogAnim.Value()
 			if leaveProg <= 0.001 && !leaveDialogAnim.IsAnimating() {
 				showLeaveModal = false
+			}
+
+			screenShareProg := screenShareDialogAnim.Value()
+			if screenShareProg <= 0.001 && !screenShareDialogAnim.IsAnimating() {
+				showScreenShareModal = false
 			}
 
 			if currentScreen == ScreenLobby {
@@ -782,8 +791,8 @@ func main() {
 						}, func() {
 							closeLeaveModal()
 						})
-					} else if showScreenShareModal {
-						DrawScreenShareModal(f, f.Area(), selectedScreenShareIdx, screenShareTargets, func(target screenshare.WindowInfo) {
+					} else if showScreenShareModal || screenShareProg > 0.001 {
+						DrawScreenShareModal(f, f.Area(), screenShareProg, selectedScreenShareIdx, screenShareTargets, func(target screenshare.WindowInfo) {
 							startSelectedScreenShare(target)
 						}, func() {
 							closeScreenShareModal()

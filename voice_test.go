@@ -372,7 +372,7 @@ func TestVerticalMeterAndDialogs(t *testing.T) {
 	_ = closed
 	DrawLeaveModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
 	DrawExitModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
-	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), 0, []screenshare.WindowInfo{
+	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, 0, []screenshare.WindowInfo{
 		{ID: "desktop", Title: "[▣] Entire Screen (Primary View)"},
 	}, func(_ screenshare.WindowInfo) {}, func() {})
 }
