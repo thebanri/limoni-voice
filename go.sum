@@ -1,3 +1,5 @@
+github.com/godbus/dbus/v5 v5.2.2 h1:q1sA04wzI+hJkM1hP6U44n9H3D4F5Lz5c5r6u7w8y+s=
+github.com/godbus/dbus/v5 v5.2.2/go.mod h1:1q6q2i3p4k5n0a2k4l4z5c6d7e8f9g0h1i2j3k4l5m=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
