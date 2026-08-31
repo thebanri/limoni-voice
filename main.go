@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -219,22 +218,6 @@ func main() {
 			go func() {
 				_ = node.StopScreenShare()
 				room.SetToast("⏹️ Screen share stopped")
-			}()
-			return
-		}
-
-		if runtime.GOOS == "linux" {
-			// On Linux, gpu-screen-recorder natively opens the OS GUI Desktop Portal (GNOME/KDE/Wayland window picker)
-			room.SetToast("🎬 Starting screen share...")
-			go func() {
-				opts := screenshare.DefaultBroadcastOptions()
-				opts.WindowID = "portal"
-				err := node.StartScreenShare("", 50100, opts)
-				if err != nil {
-					room.SetToast(fmt.Sprintf("Error: %v", err))
-				} else {
-					room.SetToast("Screen share started (60 FPS)")
-				}
 			}()
 			return
 		}

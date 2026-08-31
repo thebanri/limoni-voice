@@ -253,12 +253,6 @@ func listLinuxTargets() []WindowInfo {
 	var windowTargets []WindowInfo
 	seenWins := make(map[string]bool)
 
-	// 0. Native Portal Screen & Window Picker
-	targets = append(targets, WindowInfo{
-		ID:    "portal",
-		Title: "✨ Select Screen or Window (Native Dialog)",
-	})
-
 	// 1. Focused Window option (Always captures whichever window is active)
 	targets = append(targets, WindowInfo{
 		ID:    "focused",
@@ -954,7 +948,7 @@ func CheckDependencies() DependencyStatus {
 	return status
 }
 
-func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string, []string, *os.File, func(), error) {
+func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string, []string, error) {
 	targetID := strings.TrimSpace(opt.WindowID)
 	scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
 	if scaleRes == "" {
@@ -965,35 +959,10 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 		fps = 60
 	}
 
-	// 1. Try Native Desktop Portal (PipeWire + GStreamer) if requested or on Wayland
-	// This works universally across GNOME (Wayland/X11), KDE Plasma (Wayland/X11), Sway, Hyprland, COSMIC, etc.
-	if targetID == "portal" || isWayland() {
-		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
-			defer cancel()
-			nodeID, pwFile, portalCleanup, errPortal := RequestPortalScreenCast(ctx)
-			if errPortal == nil && nodeID != 0 {
-				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
-				if errGst == nil {
-					return bin, args, pwFile, portalCleanup, nil
-				}
-				if portalCleanup != nil {
-					portalCleanup()
-				}
-				return "", nil, nil, nil, fmt.Errorf("GStreamer PipeWire pipeline baslatilamadi: %w", errGst)
-			} else if errPortal != nil {
-				logMsg("[PORTAL] RequestPortalScreenCast failed or cancelled: %v", errPortal)
-				return "", nil, nil, nil, errPortal
-			}
-		}
-	}
-
-	// 2. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS)
+	// 1. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS)
 	if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
 		gsrTarget := "screen"
-		if targetID == "portal" {
-			gsrTarget = "portal"
-		} else if targetID == "focused" {
+		if targetID == "focused" {
 			gsrTarget = "focused"
 		} else if strings.HasPrefix(targetID, "monitor:") {
 			parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
@@ -1006,11 +975,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 				gsrTarget = parts[0]
 			}
 		} else if targetID == "desktop" || targetID == "screen" || targetID == "" {
-			if isWayland() {
-				gsrTarget = "portal"
-			} else {
-				gsrTarget = "screen"
-			}
+			gsrTarget = "screen"
 		} else {
 			gsrTarget = targetID
 		}
@@ -1027,10 +992,10 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			"-c", "mpegts",
 			"-o", targetURL,
 		}
-		return p, args, nil, nil, nil
+		return p, args, nil
 	}
 
-	// 3. Try wf-recorder on Wayland / wlroots (Sway, Hyprland, Wayfire)
+	// 2. Try wf-recorder on Wayland / wlroots (Sway, Hyprland, Wayfire)
 	if isWayland() {
 		if p, err := FindExecutable("wf-recorder"); err == nil {
 			var wfArgs []string
@@ -1050,85 +1015,79 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 				"-r", fmt.Sprintf("%d", fps),
 				"-f", targetURL,
 			)
-			return p, wfArgs, nil, nil, nil
+			return p, wfArgs, nil
 		}
 	}
 
-	// 4. Try FFmpeg on pure X11 sessions (GNOME X11, KDE X11, XFCE, Cinnamon, MATE, i3, etc.)
-	// Note: On Wayland, x11grab captures Xwayland and produces a black screen, so we only use x11grab on pure X11
-	if !isWayland() {
-		if p, err := FindExecutable("ffmpeg"); err == nil {
-			display := getLinuxDisplay()
-			vf := fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes)
+	// 3. Universal direct FFmpeg capture across all Linux distributions (GNOME, KDE, XFCE, Cinnamon, MATE, i3, etc.)
+	if p, err := FindExecutable("ffmpeg"); err == nil {
+		display := getLinuxDisplay()
+		vf := fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes)
 
-			var inputArgs []string
-			if strings.HasPrefix(targetID, "monitor:") {
-				parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
-				if len(parts) >= 5 && parts[1] != "" && parts[2] != "" {
-					w, h, x, y := parts[1], parts[2], parts[3], parts[4]
-					inputArgs = append(inputArgs,
-						"-video_size", fmt.Sprintf("%sx%s", w, h),
-						"-i", fmt.Sprintf("%s+%s,%s", display, x, y),
-					)
-				} else {
-					inputArgs = append(inputArgs, "-i", display)
-				}
-			} else if targetID == "focused" {
-				winID := getActiveWindowIDX11()
-				if winID != "" {
-					inputArgs = append(inputArgs, "-window_id", winID, "-i", display)
-				} else {
-					inputArgs = append(inputArgs, "-i", display)
-				}
-			} else if strings.HasPrefix(targetID, "win:") {
-				parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
-				if len(parts) > 0 && parts[0] != "" {
-					inputArgs = append(inputArgs,
-						"-window_id", parts[0],
-						"-i", display,
-					)
-				} else {
-					inputArgs = append(inputArgs, "-i", display)
-				}
+		var inputArgs []string
+		if strings.HasPrefix(targetID, "monitor:") {
+			parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
+			if len(parts) >= 5 && parts[1] != "" && parts[2] != "" {
+				w, h, x, y := parts[1], parts[2], parts[3], parts[4]
+				inputArgs = append(inputArgs,
+					"-video_size", fmt.Sprintf("%sx%s", w, h),
+					"-i", fmt.Sprintf("%s+%s,%s", display, x, y),
+				)
 			} else {
 				inputArgs = append(inputArgs, "-i", display)
 			}
-
-			args := []string{
-				"-fflags", "nobuffer+flush_packets",
-				"-thread_queue_size", "2",
-				"-probesize", "32",
-				"-analyzeduration", "0",
-				"-f", "x11grab",
-				"-framerate", fmt.Sprintf("%d", fps),
-				"-draw_mouse", "1",
+		} else if targetID == "focused" {
+			winID := getActiveWindowIDX11()
+			if winID != "" {
+				inputArgs = append(inputArgs, "-window_id", winID, "-i", display)
+			} else {
+				inputArgs = append(inputArgs, "-i", display)
 			}
-			args = append(args, inputArgs...)
-			args = append(args,
-				"-vf", vf,
-				"-c:v", "libx264",
-				"-preset", "ultrafast",
-				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "23",
-				"-maxrate", "8M",
-				"-bufsize", "16M",
-				"-pix_fmt", "yuv420p",
-				"-g", "30",
-				"-bf", "0",
-				"-bsf:v", "dump_extra",
-				"-f", "mpegts",
-				"-mpegts_flags", "+latm+pat_pmt_at_frames",
-				targetURL,
-			)
-			return p, args, nil, nil, nil
+		} else if strings.HasPrefix(targetID, "win:") {
+			parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
+			if len(parts) > 0 && parts[0] != "" {
+				inputArgs = append(inputArgs,
+					"-window_id", parts[0],
+					"-i", display,
+				)
+			} else {
+				inputArgs = append(inputArgs, "-i", display)
+			}
+		} else {
+			inputArgs = append(inputArgs, "-i", display)
 		}
+
+		args := []string{
+			"-fflags", "nobuffer+flush_packets",
+			"-thread_queue_size", "2",
+			"-probesize", "32",
+			"-analyzeduration", "0",
+			"-f", "x11grab",
+			"-framerate", fmt.Sprintf("%d", fps),
+			"-draw_mouse", "1",
+		}
+		args = append(args, inputArgs...)
+		args = append(args,
+			"-vf", vf,
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-tune", "zerolatency",
+			"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+			"-crf", "23",
+			"-maxrate", "8M",
+			"-bufsize", "16M",
+			"-pix_fmt", "yuv420p",
+			"-g", "30",
+			"-bf", "0",
+			"-bsf:v", "dump_extra",
+			"-f", "mpegts",
+			"-mpegts_flags", "+latm+pat_pmt_at_frames",
+			targetURL,
+		)
+		return p, args, nil
 	}
 
-	if isWayland() {
-		return "", nil, nil, nil, errors.New("Wayland ortaminda ekran paylasimi icin 'gst-launch-1.0' (pipewire eklentisi) veya 'gpu-screen-recorder' gereklidir.")
-	}
-	return "", nil, nil, nil, errors.New("sistemde ekran paylasimi icin gerekli araclar ('gpu-screen-recorder', 'gst-launch-1.0' veya 'ffmpeg') bulunamadi")
+	return "", nil, errors.New("sistemde ekran paylasimi icin gerekli araclar ('gpu-screen-recorder', 'wf-recorder' veya 'ffmpeg') bulunamadi")
 }
 
 // StartBroadcasting starts hardware-accelerated screen capture and streams over pipe or UDP
@@ -1162,13 +1121,9 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	switch runtime.GOOS {
 	case "linux":
 		var err error
-		var pwFile *os.File
-		binPath, args, pwFile, cleanupFunc, err = buildLinuxBroadcastCommand(opt, targetURL)
+		binPath, args, err = buildLinuxBroadcastCommand(opt, targetURL)
 		if err != nil {
 			return nil, err
-		}
-		if pwFile != nil {
-			extraFiles = append(extraFiles, pwFile)
 		}
 
 	case "windows":
@@ -1523,14 +1478,13 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	} else if p, err := FindExecutable("ffplay"); err == nil {
 		binPath = p
 		args = []string{
-			"-loglevel", "quiet",
+			"-loglevel", "warning",
 			"-flags", "low_delay",
-			"-fflags", "nobuffer+flush_packets",
-			"-probesize", "1024",
-			"-analyzeduration", "0",
+			"-fflags", "nobuffer+flush_packets+discardcorrupt",
+			"-probesize", "32768",
+			"-analyzeduration", "500000",
 			"-f", "mpegts",
 			"-window_title", windowTitle,
-			"-autoexit",
 			"-i", streamURL,
 		}
 	} else {

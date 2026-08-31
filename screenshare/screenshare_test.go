@@ -104,38 +104,21 @@ func TestListWindowsLinuxTargets(t *testing.T) {
 	}
 }
 
-func TestBuildGstreamerPipewireCommand(t *testing.T) {
-	bin, args, err := buildGstreamerPipewireCommand(42, "udp://127.0.0.1:50100?pkt_size=940", 60)
+func TestBuildLinuxBroadcastCommand(t *testing.T) {
+	opts := BroadcastOptions{
+		Resolution: "1920x1080",
+		FPS:        60,
+		Bitrate:    "6M",
+	}
+
+	opts.WindowID = "desktop"
+	bin, args, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
 	if err != nil {
-		t.Fatalf("buildGstreamerPipewireCommand failed: %v", err)
+		t.Fatalf("buildLinuxBroadcastCommand desktop failed: %v", err)
 	}
 	if bin == "" || len(args) == 0 {
-		t.Fatal("expected non-empty gst bin and args")
+		t.Fatal("expected non-empty bin and args")
 	}
-	t.Logf("Built GStreamer PipeWire command: %s %v", bin, args)
-
-	// Pipe / stdout mode test
-	binPipe, argsPipe, errPipe := buildGstreamerPipewireCommand(42, "-", 60)
-	if errPipe != nil {
-		t.Fatalf("buildGstreamerPipewireCommand pipe failed: %v", errPipe)
-	}
-	if binPipe == "" || len(argsPipe) == 0 {
-		t.Fatal("expected non-empty gst bin and args in pipe mode")
-	}
-}
-
-func TestParsePipewireNodeID(t *testing.T) {
-	// Direct uint32
-	if id := parsePipewireNodeID(uint32(100)); id != 100 {
-		t.Fatalf("expected 100, got %d", id)
-	}
-
-	// Slice of 2-element tuples
-	streamTuple := [][2]interface{}{
-		{uint32(200), map[string]interface{}{}},
-	}
-	if id := parsePipewireNodeID(streamTuple); id != 200 {
-		t.Fatalf("expected 200, got %d", id)
-	}
+	t.Logf("Built desktop broadcast command: %s %v", bin, args)
 }
 
