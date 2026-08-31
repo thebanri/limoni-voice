@@ -288,7 +288,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 
 	// 1. Self Slot
 	selfCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
-	r.renderMemberMiniCard(frame, selfCard, node.Nickname+" (YOU)", audio.LocalRMS, audio.IsSpeaking, audio.Muted, audio.Deafened, node.IsSharingScreen, 0, true)
+	r.renderMemberMiniCard(frame, selfCard, node.Nickname+" (YOU)", audio.LocalRMS, audio.IsSpeaking, audio.Muted, audio.Deafened, node.IsSharingScreen, 0, false, true)
 	currY += uint16(slotHeight)
 
 	// 2. Peers Slots
@@ -297,12 +297,13 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 			break
 		}
 		peerCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
-		r.renderMemberMiniCard(frame, peerCard, peer.Nickname, peer.RMS, peer.Speaking, peer.IsMuted, peer.IsDeafened, peer.IsSharingScreen, peer.PingMs, false)
+		isReconnecting := time.Since(peer.LastSeen) > 3500*time.Millisecond
+		r.renderMemberMiniCard(frame, peerCard, peer.Nickname, peer.RMS, peer.Speaking, peer.IsMuted, peer.IsDeafened, peer.IsSharingScreen, peer.PingMs, isReconnecting, false)
 		currY += uint16(slotHeight)
 	}
 }
 
-func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, name string, rms float64, isSpeaking, isMuted, isDeafened, isSharing bool, pingMs int64, isSelf bool) {
+func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, name string, rms float64, isSpeaking, isMuted, isDeafened, isSharing bool, pingMs int64, isReconnecting bool, isSelf bool) {
 	buf := frame.Buffer
 
 	// Icon & Color
@@ -313,7 +314,10 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 		nameStyle.Fg = cell.NewColorRGB(0x00, 0xD2, 0xD3)
 	}
 
-	if isSharing {
+	if isReconnecting {
+		icon = "🟡"
+		nameStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+	} else if isSharing {
 		icon = "🔴"
 		nameStyle.Fg = cell.NewColorRGB(0x00, 0xFF, 0x88)
 	} else if isSpeaking {
@@ -336,7 +340,10 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	// Status Line / Ping
 	statusStr := ""
 	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A)}
-	if isDeafened {
+	if isReconnecting {
+		statusStr = "[Reconnecting...]"
+		statusStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+	} else if isDeafened {
 		statusStr = "[Deafened]"
 		statusStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
 	} else if isMuted {
@@ -621,7 +628,15 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		}
 	}
 
-	if peer.IsDeafened {
+	if time.Since(peer.LastSeen) > 3500*time.Millisecond {
+		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E)}
+		statusText = "[RECONNECTING...]"
+		statusStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
+			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			Modifier: cell.ModifierBold,
+		}
+	} else if peer.IsDeafened {
 		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E)}
 		statusText = "[DEAFENED]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}

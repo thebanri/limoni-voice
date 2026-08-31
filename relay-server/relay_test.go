@@ -162,6 +162,80 @@ func TestEmptyRoomLeaveNoDeadlock(t *testing.T) {
 	}
 }
 
+func TestGracePeriodReconnect(t *testing.T) {
+	server := NewRelayServer()
+	s := httptest.NewServer(server.upgraderHandler())
+	defer s.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
+
+	// 1. Host creates room
+	hostConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect host: %v", err)
+	}
+	defer hostConn.Close()
+
+	hostMsg := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "GRACE-1234",
+		SenderID: "host_alice",
+		Nickname: "Alice",
+	}
+	hostData, _ := json.Marshal(hostMsg)
+	_ = hostConn.WriteMessage(websocket.TextMessage, hostData)
+	_, _, _ = hostConn.ReadMessage() // room_created
+
+	// 2. Joiner connects and joins
+	joinConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect joiner: %v", err)
+	}
+
+	joinMsg := ControlMessage{
+		Type:     "join_room",
+		RoomCode: "GRACE-1234",
+		SenderID: "joiner_bob",
+		Nickname: "Bob",
+	}
+	joinData, _ := json.Marshal(joinMsg)
+	_ = joinConn.WriteMessage(websocket.TextMessage, joinData)
+	_, _, _ = joinConn.ReadMessage() // welcome
+	_, _, _ = hostConn.ReadMessage() // peer_joined
+
+	// 3. Joiner suddenly loses internet connection (closes socket unexpectedly)
+	joinConn.Close()
+
+	// 4. Joiner reconnects 100ms later with new connection (within 10s grace window)
+	reconnectJoinConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to reconnect joiner: %v", err)
+	}
+	defer reconnectJoinConn.Close()
+
+	_ = reconnectJoinConn.WriteMessage(websocket.TextMessage, joinData)
+	_, welcomeResp, err := reconnectJoinConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read welcome on reconnected joiner: %v", err)
+	}
+	var reWelcome ControlMessage
+	json.Unmarshal(welcomeResp, &reWelcome)
+	if reWelcome.Type != "welcome" {
+		t.Fatalf("Expected welcome on reconnected joiner, got %s", reWelcome.Type)
+	}
+
+	// 5. Host should receive updated peer_joined and NOT peer_left
+	_, updateResp, err := hostConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read host update: %v", err)
+	}
+	var updateMsg ControlMessage
+	json.Unmarshal(updateResp, &updateMsg)
+	if updateMsg.Type != "peer_joined" {
+		t.Fatalf("Expected peer_joined on reconnect, got %s", updateMsg.Type)
+	}
+}
+
 func (s *RelayServer) upgraderHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)

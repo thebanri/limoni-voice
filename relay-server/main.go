@@ -38,15 +38,18 @@ type PeerInfo struct {
 }
 
 type Client struct {
-	conn       *websocket.Conn
-	senderID   string
-	nickname   string
-	localPort  int
-	publicIP   string
-	publicPort int
-	room       *Room
-	sendCh     chan []byte // buffered channel for outgoing messages
-	mu         sync.Mutex
+	conn            *websocket.Conn
+	senderID        string
+	nickname        string
+	localPort       int
+	publicIP        string
+	publicPort      int
+	room            *Room
+	sendCh          chan []byte // buffered channel for outgoing messages
+	mu              sync.Mutex
+	explicitLeave   bool
+	isDisconnected  bool
+	disconnectTimer *time.Timer
 }
 
 type Room struct {
@@ -114,7 +117,11 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		log.Printf("[🔌] Connection closed for %s (%s)", client.nickname, remoteAddr)
-		s.removeClient(client)
+		if client.explicitLeave {
+			s.removeClientImmediate(client)
+		} else {
+			s.handleDisconnect(client)
+		}
 		conn.Close()
 	}()
 
@@ -171,7 +178,8 @@ func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 	case "join_room":
 		s.handleJoinRoom(client, msg)
 	case "leave":
-		s.removeClient(client)
+		client.explicitLeave = true
+		s.removeClientImmediate(client)
 	case "ping":
 		sendControlMessage(client, ControlMessage{Type: "pong"})
 	}
@@ -200,6 +208,11 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 		// Allow reclaiming if same host reconnecting or room is empty
 		if existingHostID == msg.SenderID || memberCount == 0 {
+			if oldClient, ok := existing.Members[msg.SenderID]; ok {
+				if oldClient.disconnectTimer != nil {
+					oldClient.disconnectTimer.Stop()
+				}
+			}
 			existing.HostID = msg.SenderID
 			existing.Members[msg.SenderID] = client
 			client.room = existing
@@ -283,6 +296,13 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		}
 	}
 
+	// Cancel any active grace disconnect timer for reconnecting member
+	if oldClient, ok := room.Members[msg.SenderID]; ok {
+		if oldClient.disconnectTimer != nil {
+			oldClient.disconnectTimer.Stop()
+		}
+	}
+
 	room.Members[msg.SenderID] = client
 	client.room = room
 	hostID := room.HostID
@@ -335,7 +355,7 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 	defer room.mu.RUnlock()
 
 	for id, member := range room.Members {
-		if id != sender.senderID {
+		if id != sender.senderID && !member.isDisconnected {
 			// Non-blocking send via buffered channel
 			select {
 			case member.sendCh <- data:
@@ -346,7 +366,41 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 	}
 }
 
+// handleDisconnect is invoked when a client connection drops unexpectedly (e.g. WiFi/internet glitch).
+// It starts a 10-second grace timer to give the client a chance to reconnect before dropping them.
+func (s *RelayServer) handleDisconnect(client *Client) {
+	if client.room == nil {
+		return
+	}
+
+	room := client.room
+	senderID := client.senderID
+	nickname := client.nickname
+
+	room.mu.Lock()
+	if room.Members[senderID] != client {
+		room.mu.Unlock()
+		return
+	}
+
+	client.isDisconnected = true
+	log.Printf("[⏳] Connection lost for %s (%s) in room %s. Waiting 10s grace period...", nickname, senderID, room.Code)
+
+	if client.disconnectTimer != nil {
+		client.disconnectTimer.Stop()
+	}
+
+	client.disconnectTimer = time.AfterFunc(10*time.Second, func() {
+		s.removeClientImmediate(client)
+	})
+	room.mu.Unlock()
+}
+
 func (s *RelayServer) removeClient(client *Client) {
+	s.removeClientImmediate(client)
+}
+
+func (s *RelayServer) removeClientImmediate(client *Client) {
 	if client.room == nil {
 		return
 	}
@@ -357,11 +411,14 @@ func (s *RelayServer) removeClient(client *Client) {
 	client.room = nil
 
 	room.mu.Lock()
-	// CRITICAL FIX: Only remove from room if THIS client instance is the currently registered one.
-	// If the user already reconnected with a newer connection, do NOT delete the new connection!
+	// Only remove from room if THIS client instance is the currently registered one.
 	if room.Members[senderID] != client {
 		room.mu.Unlock()
 		return
+	}
+
+	if client.disconnectTimer != nil {
+		client.disconnectTimer.Stop()
 	}
 
 	isHostLeaving := (room.HostID == senderID)
@@ -369,7 +426,9 @@ func (s *RelayServer) removeClient(client *Client) {
 	delete(room.Members, senderID)
 	remainingMembers := make([]*Client, 0, len(room.Members))
 	for _, m := range room.Members {
-		remainingMembers = append(remainingMembers, m)
+		if !m.isDisconnected {
+			remainingMembers = append(remainingMembers, m)
+		}
 	}
 	isEmpty := len(room.Members) == 0
 
