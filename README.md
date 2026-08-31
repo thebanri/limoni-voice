@@ -48,12 +48,12 @@
 
 ### 🖥️ Screen Sharing
 - **60 FPS Hardware-Accelerated** screen capture (1080p, ultra-low-latency)
-- **Linux Compositor & Desktop Support**:
-  - **GNOME (Wayland & X11)**: ✅ **Fully Tested & Working** (Direct Mutter PipeWire capture & Portal window selector)
-  - **KDE Plasma (Wayland & X11)**: ✅ **Fully Tested & Working** (XDG Desktop Portal PipeWire capture)
-  - **Other Linux DEs (Hyprland, Sway, XFCE, etc.)**: ⚠️ *Untested / Experimental* (Fallback to GPU Screen Recorder / FFmpeg)
-- **Windows**: Window & monitor selector with GDI/DXGI capture
-- **macOS**: Native system portal integration
+- **Native Platform API Support**:
+  - **🪟 Windows**: ✅ **Fully Tested & Working** (Native Windows Graphics Capture / Win32 GDI & DXGI APIs with window & monitor selector)
+  - **🍎 macOS**: ✅ **Fully Tested & Working** (Native ScreenCaptureKit & CoreMedia APIs with system permission integration)
+  - **🐧 Linux (GNOME)**: ✅ **Fully Tested & Working** (Direct Mutter PipeWire zero-popup monitor capture & Portal window selector)
+  - **🐧 Linux (KDE Plasma)**: ✅ **Fully Tested & Working** (XDG Desktop Portal PipeWire capture)
+  - **🐧 Other Linux DEs (Hyprland, Sway, XFCE, etc.)**: ⚠️ *Untested / Experimental* (Fallback to GPU Screen Recorder / FFmpeg)
 - **MPV / FFplay**: Ultra-low-latency viewer experience
 
 </td>
