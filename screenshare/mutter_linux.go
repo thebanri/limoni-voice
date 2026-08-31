@@ -151,7 +151,6 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, fps int) (st
 		"!", "x264enc",
 		"speed-preset=superfast",
 		"tune=zerolatency",
-		"profile=high",
 		"bitrate=6000",
 		"pass=cbr",
 		"key-int-max=30",
