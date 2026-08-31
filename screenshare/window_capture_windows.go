@@ -4,6 +4,7 @@ package screenshare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"syscall"
