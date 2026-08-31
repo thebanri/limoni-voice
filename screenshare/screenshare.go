@@ -796,7 +796,7 @@ func DefaultBroadcastOptions() BroadcastOptions {
 	return BroadcastOptions{
 		Resolution: "1920x1080",
 		FPS:        60,
-		Bitrate:    "6M",
+		Bitrate:    "4M",
 		WindowID:   "portal",
 		Quality:    "high",
 	}
@@ -1625,7 +1625,6 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
-			"--untimed",
 			"--framedrop=vo",
 			"--hwdec=auto-safe",
 			"--video-sync=desync",

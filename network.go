@@ -2224,11 +2224,6 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		var totalPackets int
 		var totalBytes int64
 
-		// Rate limiter: max ~500 video packets/sec to leave breathing room for audio goroutines.
-		// This prevents video from monopolizing CPU (encrypt) and WebSocket write bandwidth.
-		minInterval := 2 * time.Millisecond
-		lastSend := time.Now()
-
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
@@ -2243,11 +2238,6 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 
 			if !sharing {
 				break
-			}
-
-			// Rate limit: yield CPU to audio goroutines between video packets
-			if elapsed := time.Since(lastSend); elapsed < minInterval {
-				time.Sleep(minInterval - elapsed)
 			}
 
 			seq++
@@ -2275,7 +2265,6 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 				Payload:  chunk,
 			}
 			n.broadcastToPeers(&vidPkt)
-			lastSend = time.Now()
 		}
 	}()
 
