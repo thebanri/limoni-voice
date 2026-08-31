@@ -153,7 +153,6 @@ func main() {
 
 	exitDialogAnim := animation.NewFloat(0.0)
 	leaveDialogAnim := animation.NewFloat(0.0)
-	screenShareDialogAnim := animation.NewFloat(0.0)
 
 	openTestModal := func() {
 		audio.EnterTestMode()
@@ -728,7 +727,6 @@ func main() {
 
 			exitDialogAnim.Update(now)
 			leaveDialogAnim.Update(now)
-			screenShareDialogAnim.Update(now)
 
 			exitProg := exitDialogAnim.Value()
 			if exitProg <= 0.001 && !exitDialogAnim.IsAnimating() {
@@ -738,11 +736,6 @@ func main() {
 			leaveProg := leaveDialogAnim.Value()
 			if leaveProg <= 0.001 && !leaveDialogAnim.IsAnimating() {
 				showLeaveModal = false
-			}
-
-			screenShareProg := screenShareDialogAnim.Value()
-			if screenShareProg <= 0.001 && !screenShareDialogAnim.IsAnimating() {
-				showScreenShareModal = false
 			}
 
 			if currentScreen == ScreenLobby {
