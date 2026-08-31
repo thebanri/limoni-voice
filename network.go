@@ -162,6 +162,7 @@ type P2PNode struct {
 	videoCaptureConn *net.UDPConn
 	videoTCPListener net.Listener
 	videoTCPConn     net.Conn
+	videoPreBuf      [][]byte
 	videoDedup       VideoDeduplicator
 	OnScreenShare    func(peerID string, isSharing bool, videoPort int)
 }
@@ -791,19 +792,7 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 				if !n.videoDedup.ShouldProcess(pkt.Seq) {
 					continue
 				}
-				n.mu.RLock()
-				watching := n.IsWatchingScreen
-				tcpConn := n.videoTCPConn
-				n.mu.RUnlock()
-
-				if watching && tcpConn != nil && len(pkt.Payload) > 0 {
-					if pkt.Seq%120 == 1 {
-						n.log(fmt.Sprintf("🎬 [WATCH] Receiving stream from %s: packet #%d (%d bytes) -> forwarding to MPV", pkt.Nickname, pkt.Seq, len(pkt.Payload)))
-					}
-					if _, err := tcpConn.Write(pkt.Payload); err != nil {
-						n.log(fmt.Sprintf("⚠️ [WATCH] MPV TCP write error: %v", err))
-					}
-				}
+				n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
 				continue
 			}
 
@@ -1546,14 +1535,7 @@ func (n *P2PNode) listenLoop() {
 			if !n.videoDedup.ShouldProcess(pkt.Seq) {
 				continue
 			}
-			n.mu.RLock()
-			watching := n.IsWatchingScreen
-			tcpConn := n.videoTCPConn
-			n.mu.RUnlock()
-
-			if watching && tcpConn != nil && len(pkt.Payload) > 0 {
-				_, _ = tcpConn.Write(pkt.Payload)
-			}
+			n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
 			continue
 		}
 
@@ -1591,14 +1573,7 @@ func (n *P2PNode) listenBroadcastLoop() {
 			if !n.videoDedup.ShouldProcess(pkt.Seq) {
 				continue
 			}
-			n.mu.RLock()
-			watching := n.IsWatchingScreen
-			tcpConn := n.videoTCPConn
-			n.mu.RUnlock()
-
-			if watching && tcpConn != nil && len(pkt.Payload) > 0 {
-				_, _ = tcpConn.Write(pkt.Payload)
-			}
+			n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
 			continue
 		}
 
@@ -2011,9 +1986,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketScreenShareData:
-		if n.IsWatchingScreen && n.videoTCPConn != nil && len(pkt.Payload) > 0 {
-			_, _ = n.videoTCPConn.Write(pkt.Payload)
-		}
+		n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
 
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
@@ -2028,6 +2001,30 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					_ = n.StopWatchingScreen()
 				}()
 			}
+		}
+	}
+}
+
+func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string) {
+	if len(payload) == 0 {
+		return
+	}
+	n.mu.Lock()
+	watching := n.IsWatchingScreen
+	tcpConn := n.videoTCPConn
+	if len(n.videoPreBuf) < 8 {
+		n.videoPreBuf = append(n.videoPreBuf, payload)
+	} else {
+		n.videoPreBuf = append(n.videoPreBuf[1:], payload)
+	}
+	n.mu.Unlock()
+
+	if watching && tcpConn != nil {
+		if seq%120 == 1 && nickname != "" {
+			n.log(fmt.Sprintf("🎬 [WATCH] Receiving stream from %s: packet #%d (%d bytes) -> playing", nickname, seq, len(payload)))
+		}
+		if _, err := tcpConn.Write(payload); err != nil {
+			n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP write error: %v", err))
 		}
 	}
 }
@@ -2247,14 +2244,14 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	}
 	assignedTCPPort := tcpLn.Addr().(*net.TCPAddr).Port
 
-	// 2. Start accepting incoming TCP connection from MPV in background immediately
+	// 2. Start accepting incoming TCP connection from player in background immediately
 	go func() {
 		conn, err := tcpLn.Accept()
 		if err != nil {
 			n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP accept error: %v", err))
 			return
 		}
-		n.log(fmt.Sprintf("🎬 [WATCH] MPV connected to internal TCP port %d", assignedTCPPort))
+		n.log(fmt.Sprintf("🎬 [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
 			_ = tcp.SetWriteBuffer(4 * 1024 * 1024)
@@ -2263,6 +2260,12 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		n.mu.Lock()
 		if n.IsWatchingScreen {
 			n.videoTCPConn = conn
+			// Immediately flush pre-buffered MPEG-TS chunks so player receives sync frame instantly
+			for _, chunk := range n.videoPreBuf {
+				if len(chunk) > 0 {
+					_, _ = conn.Write(chunk)
+				}
+			}
 		} else {
 			_ = conn.Close()
 		}

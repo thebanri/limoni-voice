@@ -157,6 +157,9 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, fps int) (st
 		"byte-stream=true",
 		"!", "video/x-h264,profile=baseline,stream-format=byte-stream",
 		"!", "mpegtsmux",
+		"alignment=7",
+		"pat-interval=10",
+		"pcr-interval=10",
 	}
 
 	if usePipe {
