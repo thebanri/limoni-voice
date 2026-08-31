@@ -14,6 +14,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 func TestRoomCode(t *testing.T) {
@@ -371,6 +372,9 @@ func TestVerticalMeterAndDialogs(t *testing.T) {
 	_ = closed
 	DrawLeaveModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
 	DrawExitModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
+	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), 0, []screenshare.WindowInfo{
+		{ID: "desktop", Title: "[▣] Entire Screen (Primary View)"},
+	}, func(_ screenshare.WindowInfo) {}, func() {})
 }
 
 func TestNoiseSuppressionAndTestMode(t *testing.T) {

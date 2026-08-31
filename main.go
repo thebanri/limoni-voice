@@ -194,7 +194,6 @@ func main() {
 
 	closeScreenShareModal := func() {
 		showScreenShareModal = false
-		screenShareDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
 		t.ForceFullRedraw()
 	}
 
@@ -225,12 +224,11 @@ func main() {
 		screenShareTargets = screenshare.ListWindows()
 		if len(screenShareTargets) == 0 {
 			screenShareTargets = []screenshare.WindowInfo{
-				{ID: "desktop", Title: "🖥️  Entire Screen (Primary View)"},
+				{ID: "desktop", Title: "[▣] Entire Screen (Primary View)"},
 			}
 		}
 		selectedScreenShareIdx = 0
 		showScreenShareModal = true
-		screenShareDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 
 	node.OnLog = func(msg string) {
@@ -791,8 +789,8 @@ func main() {
 						}, func() {
 							closeLeaveModal()
 						})
-					} else if showScreenShareModal || screenShareProg > 0.001 {
-						DrawScreenShareModal(f, f.Area(), screenShareProg, selectedScreenShareIdx, screenShareTargets, func(target screenshare.WindowInfo) {
+					} else if showScreenShareModal {
+						DrawScreenShareModal(f, f.Area(), selectedScreenShareIdx, screenShareTargets, func(target screenshare.WindowInfo) {
 							startSelectedScreenShare(target)
 						}, func() {
 							closeScreenShareModal()
