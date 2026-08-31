@@ -112,9 +112,12 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 	}
 
 	opts.WindowID = "desktop"
-	bin, args, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+	bin, args, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
 	if err != nil {
 		t.Fatalf("buildLinuxBroadcastCommand desktop failed: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	if bin == "" || len(args) == 0 {
 		t.Fatal("expected non-empty bin and args")
