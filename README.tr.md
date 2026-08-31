@@ -47,11 +47,14 @@
 <td width="50%">
 
 ### 🖥️ Ekran Paylaşımı
-- **60 FPS GPU hızlandırmalı** ekran yakalama
-- **Linux**: GPU Screen Recorder + FFmpeg pipeline
+- **60 FPS Donanım Hızlandırmalı** ekran yakalama (1080p, ultra düşük gecikme)
+- **Linux Masaüstü Ortamı Desteği**:
+  - **GNOME (Wayland & X11)**: ✅ **Test Edildi & Düzgün Çalışıyor** (Doğrudan Mutter PipeWire & Portal pencere seçici)
+  - **KDE Plasma (Wayland & X11)**: ✅ **Test Edildi & Düzgün Çalışıyor** (XDG Desktop Portal PipeWire yakalama)
+  - **Diğer Ortamlar (Hyprland, Sway, XFCE vb.)**: ⚠️ *Deneysel / Henüz Test Edilmedi* (GPU Screen Recorder / FFmpeg fallback)
 - **Windows**: Pencere ve ekran bazlı seçim ile GDI/DXGI capture
 - **macOS**: Yerel sistem portalı ile entegrasyon
-- **MPV Player** ile ultra düşük gecikmeli izleme deneyimi
+- **MPV / FFplay** ile ultra düşük gecikmeli izleme deneyimi
 
 </td>
 </tr>
