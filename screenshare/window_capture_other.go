@@ -14,7 +14,7 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 }
 
 // StreamWindowFrames is a stub on non-Windows platforms
-func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.WriteCloser) error {
+func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int, outHeight int, outPipe io.WriteCloser) error {
 	defer outPipe.Close()
 	return errors.New("StreamWindowFrames is only supported on Windows")
 }

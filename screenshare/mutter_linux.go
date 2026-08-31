@@ -158,6 +158,22 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		}
 	}
 
+	outWidth := 1920
+	outHeight := 1080
+	if opt.Resolution != "" && strings.Contains(opt.Resolution, "x") {
+		parts := strings.Split(opt.Resolution, "x")
+		if len(parts) == 2 {
+			if w, err := strconv.Atoi(parts[0]); err == nil && w > 0 {
+				outWidth = w
+			}
+			if h, err := strconv.Atoi(parts[1]); err == nil && h > 0 {
+				outHeight = h
+			}
+		}
+	}
+	outWidth = (outWidth / 2) * 2
+	outHeight = (outHeight / 2) * 2
+
 	args := []string{
 		"-q",
 		"pipewiresrc",
@@ -166,7 +182,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"keepalive-time=1000",
 		"!", "videoconvert",
 		"!", "videoscale",
-		"!", "video/x-raw,format=I420",
+		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,format=I420", outWidth, outHeight),
 		"!", "x264enc",
 		"speed-preset=ultrafast",
 		"tune=zerolatency",

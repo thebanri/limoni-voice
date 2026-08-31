@@ -37,6 +37,10 @@ var (
 	procWinDeleteDC               = modWinGdi32.NewProc("DeleteDC")
 	procWinGetDIBits              = modWinGdi32.NewProc("GetDIBits")
 	procWinBitBlt                 = modWinGdi32.NewProc("BitBlt")
+	procWinStretchBlt             = modWinGdi32.NewProc("StretchBlt")
+	procWinSetStretchBltMode      = modWinGdi32.NewProc("SetStretchBltMode")
+	procWinPatBlt                 = modWinGdi32.NewProc("PatBlt")
+	procWinSetBrushOrgEx          = modWinGdi32.NewProc("SetBrushOrgEx")
 
 	procWinDwmGetWindowAttribute  = modWinDwmapi.NewProc("DwmGetWindowAttribute")
 )
@@ -52,6 +56,8 @@ const (
 	DWMWA_EXTENDED_FRAME_BOUNDS                = 9
 	SW_RESTORE                                 = 9
 	SRCCOPY                                    = 0x00CC0020
+	BLACKNESS                                  = 0x00000042
+	HALFTONE                                   = 4
 )
 
 func init() {
@@ -156,13 +162,23 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 }
 
 // StreamWindowFrames captures isolated application windows via PrintWindow PW_RENDERFULLCONTENT,
-// overlays the live mouse cursor, and writes raw BGRA frames directly to the stdin pipe of FFmpeg.
-func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.WriteCloser) error {
+// dynamically adapts to window resizing with high-quality aspect-fit scaling, overlays the live mouse cursor,
+// and writes raw BGRA frames directly to the stdin pipe of FFmpeg.
+func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int, outHeight int, outPipe io.WriteCloser) error {
 	defer outPipe.Close()
 
 	if fps <= 0 || fps > 60 {
 		fps = 60
 	}
+	if outWidth <= 0 {
+		outWidth = 1920
+	}
+	if outHeight <= 0 {
+		outHeight = 1080
+	}
+	// Force even dimensions
+	outWidth = (outWidth / 2) * 2
+	outHeight = (outHeight / 2) * 2
 
 	// If minimized at start, restore so window has valid bounds and DWM renders it
 	if procWinIsIconic.Find() == nil {
@@ -174,40 +190,77 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 		}
 	}
 
-	w, h := GetWindowDimensions(hwnd)
-
 	hdcWindow, _, _ := procWinGetDC.Call(hwnd)
 	if hdcWindow == 0 {
-		return fmt.Errorf("failed to get window DC for 0x%x", hwnd)
+		hdcWindow, _, _ = procWinGetDC.Call(0)
+		if hdcWindow == 0 {
+			return fmt.Errorf("failed to get window DC for 0x%x", hwnd)
+		}
 	}
 	defer procWinReleaseDC.Call(hwnd, hdcWindow)
 
-	hdcMem, _, _ := procWinCreateCompatibleDC.Call(hdcWindow)
-	if hdcMem == 0 {
-		return fmt.Errorf("failed to create compatible memory DC")
+	// Fixed output DC & Bitmap for continuous FFmpeg stream
+	hdcOutMem, _, _ := procWinCreateCompatibleDC.Call(hdcWindow)
+	if hdcOutMem == 0 {
+		return fmt.Errorf("failed to create compatible output memory DC")
 	}
-	defer procWinDeleteDC.Call(hdcMem)
+	defer procWinDeleteDC.Call(hdcOutMem)
 
-	hBitmap, _, _ := procWinCreateCompatibleBitmap.Call(hdcWindow, uintptr(w), uintptr(h))
-	if hBitmap == 0 {
-		return fmt.Errorf("failed to create compatible bitmap (%dx%d)", w, h)
+	hOutBitmap, _, _ := procWinCreateCompatibleBitmap.Call(hdcWindow, uintptr(outWidth), uintptr(outHeight))
+	if hOutBitmap == 0 {
+		return fmt.Errorf("failed to create compatible output bitmap (%dx%d)", outWidth, outHeight)
 	}
-	defer procWinDeleteObject.Call(hBitmap)
+	defer procWinDeleteObject.Call(hOutBitmap)
 
-	procWinSelectObject.Call(hdcMem, hBitmap)
+	procWinSelectObject.Call(hdcOutMem, hOutBitmap)
+	if procWinSetStretchBltMode.Find() == nil {
+		procWinSetStretchBltMode.Call(hdcOutMem, uintptr(HALFTONE))
+	}
+
+	// Dynamic window capture DC & Bitmap (adapted dynamically when window is resized)
+	hdcWinMem, _, _ := procWinCreateCompatibleDC.Call(hdcWindow)
+	if hdcWinMem == 0 {
+		return fmt.Errorf("failed to create compatible window memory DC")
+	}
+	defer procWinDeleteDC.Call(hdcWinMem)
+
+	var curWinBitmap syscall.Handle
+	var curCapW, curCapH int
+
+	reallocWinBitmap := func(w, h int) bool {
+		if curWinBitmap != 0 {
+			procWinDeleteObject.Call(uintptr(curWinBitmap))
+			curWinBitmap = 0
+		}
+		bm, _, _ := procWinCreateCompatibleBitmap.Call(hdcWindow, uintptr(w), uintptr(h))
+		if bm == 0 {
+			return false
+		}
+		curWinBitmap = syscall.Handle(bm)
+		procWinSelectObject.Call(hdcWinMem, uintptr(curWinBitmap))
+		curCapW = w
+		curCapH = h
+		return true
+	}
 
 	var bmi winBITMAPINFO
 	bmi.BmiHeader.BiSize = uint32(unsafe.Sizeof(bmi.BmiHeader))
-	bmi.BmiHeader.BiWidth = int32(w)
-	bmi.BmiHeader.BiHeight = -int32(h) // Negative height for top-down DIB
+	bmi.BmiHeader.BiWidth = int32(outWidth)
+	bmi.BmiHeader.BiHeight = -int32(outHeight) // Negative height for top-down DIB
 	bmi.BmiHeader.BiPlanes = 1
 	bmi.BmiHeader.BiBitCount = 32
 	bmi.BmiHeader.BiCompression = BI_RGB
 
-	frameSize := w * h * 4
+	frameSize := outWidth * outHeight * 4
 	rawBytes := make([]byte, frameSize)
 	lastGoodFrame := make([]byte, frameSize)
 	hasValidFrame := false
+
+	defer func() {
+		if curWinBitmap != 0 {
+			procWinDeleteObject.Call(uintptr(curWinBitmap))
+		}
+	}()
 
 	ticker := time.NewTicker(time.Second / time.Duration(fps))
 	defer ticker.Stop()
@@ -251,39 +304,97 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 				continue
 			}
 
-			// 1. Get window screen coordinates for mouse position
-			var winRect winRECT
-			procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&winRect)))
+			// 1. Get current window dimensions
+			curW, curH := GetWindowDimensions(hwnd)
+			if curW <= 50 || curH <= 50 {
+				if hasValidFrame {
+					_, _ = outPipe.Write(lastGoodFrame)
+				}
+				continue
+			}
+
+			// Ensure window capture bitmap matches current window size
+			if curWinBitmap == 0 || curCapW != curW || curCapH != curH {
+				if !reallocWinBitmap(curW, curH) {
+					if hasValidFrame {
+						_, _ = outPipe.Write(lastGoodFrame)
+					}
+					continue
+				}
+			}
 
 			// 2. Capture isolated window surface directly via PrintWindow (PW_RENDERFULLCONTENT)
-			pwRet, _, _ := procWinPrintWindow.Call(hwnd, hdcMem, uintptr(PW_RENDERFULLCONTENT))
+			pwRet, _, _ := procWinPrintWindow.Call(hwnd, hdcWinMem, uintptr(PW_RENDERFULLCONTENT))
 			if pwRet == 0 {
 				// Fallback: try PrintWindow with 0 or BitBlt
-				pwRet2, _, _ := procWinPrintWindow.Call(hwnd, hdcMem, 0)
+				pwRet2, _, _ := procWinPrintWindow.Call(hwnd, hdcWinMem, 0)
 				if pwRet2 == 0 && procWinBitBlt.Find() == nil {
-					procWinBitBlt.Call(hdcMem, 0, 0, uintptr(w), uintptr(h), hdcWindow, 0, 0, uintptr(SRCCOPY))
+					procWinBitBlt.Call(hdcWinMem, 0, 0, uintptr(curW), uintptr(curH), hdcWindow, 0, 0, uintptr(SRCCOPY))
 				}
 			}
 
 			// 3. Draw live mouse cursor overlay relative to window top-left
+			var winRect winRECT
+			procWinGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&winRect)))
+
 			var ci winCURSORINFO
 			ci.CbSize = uint32(unsafe.Sizeof(ci))
 			if ret, _, _ := procWinGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); ret != 0 {
 				if ci.Flags == CURSOR_SHOWING {
 					mx := ci.PtScreenPos.X - winRect.Left
 					my := ci.PtScreenPos.Y - winRect.Top
-					if mx >= 0 && mx < int32(w) && my >= 0 && my < int32(h) {
-						procWinDrawIconEx.Call(hdcMem, uintptr(mx), uintptr(my), uintptr(ci.HCursor), 0, 0, 0, 0, DI_NORMAL)
+					if mx >= 0 && mx < int32(curW) && my >= 0 && my < int32(curH) {
+						procWinDrawIconEx.Call(hdcWinMem, uintptr(mx), uintptr(my), uintptr(ci.HCursor), 0, 0, 0, 0, DI_NORMAL)
 					}
 				}
 			}
 
-			// 4. Read bits into memory buffer
+			// 4. Calculate aspect-fit scaling into fixed output canvas
+			scaleX := float64(outWidth) / float64(curW)
+			scaleY := float64(outHeight) / float64(curH)
+			scale := scaleX
+			if scaleY < scale {
+				scale = scaleY
+			}
+			destW := int(float64(curW) * scale)
+			destH := int(float64(curH) * scale)
+			// Force even dimensions
+			destW = (destW / 2) * 2
+			destH = (destH / 2) * 2
+			destX := (outWidth - destW) / 2
+			destY := (outHeight - destH) / 2
+
+			// Clear output canvas to black before painting (erases old borders / prevents ghosting)
+			if procWinPatBlt.Find() == nil {
+				procWinPatBlt.Call(hdcOutMem, 0, 0, uintptr(outWidth), uintptr(outHeight), uintptr(BLACKNESS))
+			} else if procWinBitBlt.Find() == nil {
+				procWinBitBlt.Call(hdcOutMem, 0, 0, uintptr(outWidth), uintptr(outHeight), 0, 0, 0, uintptr(BLACKNESS))
+			}
+
+			// Blit or Stretch window into output canvas
+			if destW == curW && destH == curH {
+				procWinBitBlt.Call(hdcOutMem, uintptr(destX), uintptr(destY), uintptr(destW), uintptr(destH), hdcWinMem, 0, 0, uintptr(SRCCOPY))
+			} else if procWinStretchBlt.Find() == nil {
+				if procWinSetBrushOrgEx.Find() == nil {
+					procWinSetBrushOrgEx.Call(hdcOutMem, 0, 0, 0)
+				}
+				procWinStretchBlt.Call(
+					hdcOutMem,
+					uintptr(destX), uintptr(destY), uintptr(destW), uintptr(destH),
+					hdcWinMem,
+					0, 0, uintptr(curW), uintptr(curH),
+					uintptr(SRCCOPY),
+				)
+			} else {
+				procWinBitBlt.Call(hdcOutMem, uintptr(destX), uintptr(destY), uintptr(destW), uintptr(destH), hdcWinMem, 0, 0, uintptr(SRCCOPY))
+			}
+
+			// 5. Read bits from output canvas into memory buffer
 			procWinGetDIBits.Call(
-				hdcMem,
-				hBitmap,
+				hdcOutMem,
+				hOutBitmap,
 				0,
-				uintptr(h),
+				uintptr(outHeight),
 				uintptr(unsafe.Pointer(&rawBytes[0])),
 				uintptr(unsafe.Pointer(&bmi)),
 				DIB_RGB_COLORS,
@@ -293,7 +404,7 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outPipe io.W
 			copy(lastGoodFrame, rawBytes)
 			hasValidFrame = true
 
-			// 5. Write to FFmpeg rawvideo pipe
+			// 6. Write to FFmpeg rawvideo pipe
 			if _, err := outPipe.Write(rawBytes); err != nil {
 				return err
 			}

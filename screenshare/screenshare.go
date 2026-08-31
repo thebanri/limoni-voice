@@ -1270,6 +1270,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	var extraFiles []*os.File
 	var cleanupFunc func()
 	var targetHwnd uintptr
+	var winWidth, winHeight int
 	var macSckitBin string
 	var macWidth, macHeight, macFps int
 
@@ -1303,12 +1304,27 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 
 		if targetHwnd != 0 {
-			w, h := GetWindowDimensions(targetHwnd)
+			winWidth = 1920
+			winHeight = 1080
+			if opt.Resolution != "" && strings.Contains(opt.Resolution, "x") {
+				parts := strings.Split(opt.Resolution, "x")
+				if len(parts) == 2 {
+					if w, err := strconv.Atoi(parts[0]); err == nil && w > 0 {
+						winWidth = w
+					}
+					if h, err := strconv.Atoi(parts[1]); err == nil && h > 0 {
+						winHeight = h
+					}
+				}
+			}
+			winWidth = (winWidth / 2) * 2
+			winHeight = (winHeight / 2) * 2
+
 			args = []string{
 				"-fflags", "nobuffer+flush_packets",
 				"-f", "rawvideo",
 				"-pixel_format", "bgra",
-				"-video_size", fmt.Sprintf("%dx%d", w, h),
+				"-video_size", fmt.Sprintf("%dx%d", winWidth, winHeight),
 				"-framerate", fmt.Sprintf("%d", opt.FPS),
 				"-i", "pipe:0",
 				"-vf", scaleOpt,
@@ -1571,7 +1587,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	}
 
 	if targetHwnd != 0 && stdinPipe != nil {
-		go StreamWindowFrames(sessionCtx, targetHwnd, opt.FPS, stdinPipe)
+		go StreamWindowFrames(sessionCtx, targetHwnd, opt.FPS, winWidth, winHeight, stdinPipe)
 	}
 
 	go s.monitor()
