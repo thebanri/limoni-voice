@@ -479,7 +479,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		return
 	}
 
-	modalW, modalH := uint16(66), uint16(16)
+	modalW, modalH := uint16(64), uint16(15)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -490,44 +490,50 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
 	animatedArea := terminal.ScaleRect(modalArea, progress)
 
-	if animatedArea.Width < 6 || animatedArea.Height < 4 {
+	if animatedArea.Width < 8 || animatedArea.Height < 5 {
 		return
 	}
 
+	// 1. Draw Drop Shadow behind the dialog
+	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
+
 	frame.RegisterModal("screenshare_select_dialog", animatedArea, onCancel)
 
-	dialogBg := cell.NewColorRGB(20, 22, 28)
+	dialogBg := cell.NewColorRGB(0x13, 0x17, 0x22)
 	buf := frame.Buffer
 
-	// 1. Clear full dialog area with solid dark background so background VU meters never poke through
+	// 2. Clear entire dialog area with solid dark background
 	for y := animatedArea.Y; y < animatedArea.Y+animatedArea.Height; y++ {
 		for x := animatedArea.X; x < animatedArea.X+animatedArea.Width; x++ {
 			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
 		}
 	}
 
-	// 2. Draw dialog backdrop and block
+	// 3. Draw dialog Block with rounded borders and centered title
 	block := widgets.Block{
-		Title:       " 📺 SELECT SCREEN OR WINDOW ",
-		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: dialogBg},
-		BorderStyle: cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Modifier: cell.ModifierBold},
+		Title:          " 📺 SELECT SCREEN OR WINDOW ",
+		TitleAlignment: widgets.AlignCenter,
+		Borders:        widgets.BorderAll,
+		BorderSymbols:  widgets.SymbolsRounded,
+		BorderStyle:    cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Modifier: cell.ModifierBold},
+		Style:          cell.Style{Bg: dialogBg},
 	}
 	frame.RenderWidget(block, animatedArea)
 
-	inner := cell.Rect{
-		X:      animatedArea.X + 1,
-		Y:      animatedArea.Y + 1,
-		Width:  animatedArea.Width - 2,
-		Height: animatedArea.Height - 2,
-	}
+	inner := block.Inner(animatedArea)
 	if inner.Height < 3 || inner.Width < 4 {
 		return
 	}
 
+	// 4. Header title
 	headerText := fmt.Sprintf("Select target to broadcast (%d available):", len(targets))
-	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{Fg: cell.NewColorRGB(150, 160, 180), Bg: dialogBg, Modifier: cell.ModifierBold})
+	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{
+		Fg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
+		Bg:       dialogBg,
+		Modifier: cell.ModifierBold,
+	})
 
-	// 3. List targets with scrolling window around selectedIdx
+	// 5. List targets with scrolling window around selectedIdx
 	listY := inner.Y + 2
 	maxDisplay := int(inner.Height - 3)
 	if maxDisplay < 1 {
@@ -543,10 +549,10 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		endIdx = len(targets)
 	}
 
-	itemWidth := inner.Width - 2
-	hasScrollbar := len(targets) > maxDisplay && inner.Width > 6
+	hasScrollbar := len(targets) > maxDisplay && inner.Width > 8
+	listWidth := inner.Width - 2
 	if hasScrollbar {
-		itemWidth = inner.Width - 3 // Leave 1 column for scrollbar
+		listWidth = inner.Width - 4 // Leave margin for scrollbar
 	}
 
 	for i := startIdx; i < endIdx; i++ {
@@ -554,36 +560,44 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		rowY := listY + uint16(i-startIdx)
 		isSel := (i == selectedIdx)
 
-		itemStyle := cell.Style{Fg: cell.NewColorRGB(200, 210, 225), Bg: cell.NewColorRGB(26, 30, 40)}
+		itemStyle := cell.Style{
+			Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9),
+			Bg: cell.NewColorRGB(0x1B, 0x20, 0x2E),
+		}
 		prefix := "  "
 		if isSel {
 			itemStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+				Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 				Modifier: cell.ModifierBold,
 			}
 			prefix = "▶ "
 		}
 
-		itemText := fmt.Sprintf("%s%s", prefix, t.Title)
-		maxChars := int(itemWidth - 1)
-		if maxChars > 3 && len([]rune(itemText)) > maxChars {
-			itemText = string([]rune(itemText)[:maxChars-3]) + "..."
+		itemText := prefix + t.Title
+		maxChars := int(listWidth)
+		runes := []rune(itemText)
+		if len(runes) > maxChars {
+			if maxChars > 3 {
+				itemText = string(runes[:maxChars-3]) + "..."
+			} else {
+				itemText = string(runes[:maxChars])
+			}
 		}
 
-		// Clear row full width and draw text
-		for x := inner.X + 1; x < inner.X+1+itemWidth; x++ {
+		// Clear full row
+		for x := inner.X + 1; x < inner.X+1+listWidth; x++ {
 			buf.SetCell(x, rowY, cell.Cell{Content: ' ', Style: itemStyle})
 		}
 		buf.SetString(inner.X+1, rowY, itemText, itemStyle)
 
 		targetItem := t
-		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, itemWidth, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, listWidth, 1), func(_ backend.MouseEvent) {
 			onSelect(targetItem)
 		})
 	}
 
-	// 4. Draw Vertical Scrollbar
+	// 6. Draw Vertical Scrollbar on the right border margin
 	if hasScrollbar {
 		scrollX := inner.X + inner.Width - 2
 		trackHeight := maxDisplay
@@ -600,25 +614,29 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		for r := 0; r < trackHeight; r++ {
 			curY := listY + uint16(r)
 			if r >= thumbY && r < thumbY+thumbHeight {
-				// Scrollbar Thumb (Cyan glowing bar)
+				// Scrollbar Thumb (Cyan bar)
 				buf.SetCell(scrollX, curY, cell.Cell{
 					Content: '█',
-					Style:   cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Bg: cell.NewColorRGB(26, 30, 40)},
+					Style:   cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: dialogBg},
 				})
 			} else {
 				// Scrollbar Track
 				buf.SetCell(scrollX, curY, cell.Cell{
-					Content: '│',
-					Style:   cell.Style{Fg: cell.NewColorRGB(60, 70, 90), Bg: dialogBg},
+					Content: '░',
+					Style:   cell.Style{Fg: cell.NewColorRGB(0x2D, 0x37, 0x48), Bg: dialogBg},
 				})
 			}
 		}
 	}
 
-	// 5. Bottom Guide
-	guideText := "[ENTER/CLICK] Select  [↑/↓] Navigate  [ESC] Cancel"
+	// 7. Bottom Navigation Guide
+	bottomY := inner.Y + inner.Height - 1
+	guideText := "[ENTER/CLICK] Select   [↑/↓] Navigate   [ESC] Cancel"
 	if len(targets) > maxDisplay {
 		guideText = fmt.Sprintf("[%d/%d]  %s", selectedIdx+1, len(targets), guideText)
 	}
-	buf.SetString(inner.X+1, inner.Y+inner.Height-1, guideText, cell.Style{Fg: cell.NewColorRGB(120, 130, 150), Bg: dialogBg})
+	buf.SetString(inner.X+1, bottomY, guideText, cell.Style{
+		Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
+		Bg: dialogBg,
+	})
 }

@@ -101,7 +101,7 @@ func ListWindows() []WindowInfo {
 						}
 						screenTargets = append(screenTargets, WindowInfo{
 							ID:    id,
-							Title: "🖥️  " + name,
+							Title: "[■] " + name,
 						})
 					}
 				} else if parts[0] == "ALL" {
@@ -109,7 +109,7 @@ func ListWindows() []WindowInfo {
 					if len(sub) >= 5 {
 						screenTargets = append(screenTargets, WindowInfo{
 							ID:    "desktop",
-							Title: "🖥️  " + sub[4],
+							Title: "[▣] " + sub[4],
 						})
 					}
 				} else if parts[0] == "WIN" {
@@ -121,7 +121,7 @@ func ListWindows() []WindowInfo {
 							seen[title] = true
 							winTargets = append(winTargets, WindowInfo{
 								ID:    fmt.Sprintf("hwnd:%s:%s", handle, title),
-								Title: "🪟  " + title,
+								Title: "[◆] " + title,
 							})
 						}
 					}
@@ -139,7 +139,7 @@ func ListWindows() []WindowInfo {
 	case "darwin":
 		targets = append(targets, WindowInfo{
 			ID:    "desktop",
-			Title: "🖥️  Entire Screen (Primary Display)",
+			Title: "[▣] Entire Screen (Primary Display)",
 		})
 		if binPath, err := getOrBuildMacCaptureBinary(); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -162,7 +162,7 @@ func ListWindows() []WindowInfo {
 							seen[title] = true
 							targets = append(targets, WindowInfo{
 								ID:    winID,
-								Title: "🪟  " + title,
+								Title: "[◆] " + title,
 							})
 						}
 					}
@@ -286,7 +286,7 @@ func listLinuxTargets() []WindowInfo {
 	// 1. Focused Window option (Always captures whichever window is active)
 	targets = append(targets, WindowInfo{
 		ID:    "focused",
-		Title: "🎯 Currently Focused Window (Active Application)",
+		Title: "[●] Focused Window (Active Application)",
 	})
 
 	// 2. Discover Monitors via xrandr
@@ -316,7 +316,7 @@ func listLinuxTargets() []WindowInfo {
 					if monName != "" && !seenMonitors[monName] {
 						seenMonitors[monName] = true
 						id := fmt.Sprintf("monitor:%s:%s:%s:%s:%s", monName, w, h, x, y)
-						title := fmt.Sprintf("🖥️  Screen %d: %s (%sx%s)%s", idx, monName, w, h, primaryTag)
+						title := fmt.Sprintf("[■] Screen %d: %s (%sx%s)%s", idx, monName, w, h, primaryTag)
 						monitorTargets = append(monitorTargets, WindowInfo{
 							ID:    id,
 							Title: title,
@@ -352,7 +352,7 @@ func listLinuxTargets() []WindowInfo {
 						}
 						monitorTargets = append(monitorTargets, WindowInfo{
 							ID:    "monitor:" + parts[0],
-							Title: fmt.Sprintf("🖥️  Screen %d: %s%s", idx, parts[0], res),
+							Title: fmt.Sprintf("[■] Screen %d: %s%s", idx, parts[0], res),
 						})
 						idx++
 					}
@@ -366,13 +366,13 @@ func listLinuxTargets() []WindowInfo {
 		if len(monitorTargets) > 1 {
 			targets = append(targets, WindowInfo{
 				ID:    "desktop",
-				Title: "🖥️  Entire Desktop (All Screens Combined)",
+				Title: "[▣] Entire Desktop (All Screens Combined)",
 			})
 		}
 	} else {
 		targets = append(targets, WindowInfo{
 			ID:    "desktop",
-			Title: "🖥️  Entire Screen (Primary Display)",
+			Title: "[▣] Entire Screen (Primary Display)",
 		})
 	}
 
@@ -397,7 +397,7 @@ func listLinuxTargets() []WindowInfo {
 						seenWins[title] = true
 						windowTargets = append(windowTargets, WindowInfo{
 							ID:    fmt.Sprintf("win:%s:%s", winID, title),
-							Title: "🪟  " + title,
+							Title: "[◆] " + title,
 						})
 					}
 				}
@@ -458,7 +458,7 @@ func listLinuxTargets() []WindowInfo {
 							seenWins[displayTitle] = true
 							windowTargets = append(windowTargets, WindowInfo{
 								ID:    fmt.Sprintf("win:%s:%s", winID, displayTitle),
-								Title: "🪟  " + displayTitle,
+								Title: "[◆] " + displayTitle,
 							})
 						}
 					}
@@ -531,36 +531,36 @@ func listRunningLinuxGUIApps() []linuxGUIAppInfo {
 	seen := make(map[string]bool)
 
 	knownApps := map[string]string{
-		"zen-bin":          "🌐 Zen Browser",
-		"zen":              "🌐 Zen Browser",
-		"firefox":          "🌐 Mozilla Firefox",
-		"firefox-bin":      "🌐 Mozilla Firefox",
-		"chrome":           "🌐 Google Chrome",
-		"google-chrome":    "🌐 Google Chrome",
-		"chromium":         "🌐 Chromium",
-		"brave":            "🌐 Brave Browser",
-		"opera":            "🌐 Opera Browser",
-		"antigravity-ide":  "💻 Antigravity IDE",
-		"code":             "💻 Visual Studio Code",
-		"codium":           "💻 VSCodium",
-		"discord":          "💬 Discord",
-		"vesktop":          "💬 Vesktop (Discord)",
-		"webcord":          "💬 WebCord (Discord)",
-		"telegram-desktop": "✈️ Telegram",
-		"slack":            "💬 Slack",
-		"spotify":          "🎵 Spotify",
-		"steam":            "🎮 Steam",
-		"nautilus":         "📁 Files (Nautilus)",
-		"thunar":           "📁 Files (Thunar)",
-		"dolphin":          "📁 Files (Dolphin)",
-		"gnome-terminal":   "🖥️ GNOME Terminal",
-		"alacritty":        "🖥️ Alacritty Terminal",
-		"kitty":            "🖥️ Kitty Terminal",
-		"wezterm-gui":      "🖥️ WezTerm",
-		"foot":             "🖥️ Foot Terminal",
-		"obs":              "🎥 OBS Studio",
-		"mpv":              "🎬 MPV Player",
-		"vlc":              "🎬 VLC Media Player",
+		"zen-bin":          "[◆] Zen Browser",
+		"zen":              "[◆] Zen Browser",
+		"firefox":          "[◆] Mozilla Firefox",
+		"firefox-bin":      "[◆] Mozilla Firefox",
+		"chrome":           "[◆] Google Chrome",
+		"google-chrome":    "[◆] Google Chrome",
+		"chromium":         "[◆] Chromium",
+		"brave":            "[◆] Brave Browser",
+		"opera":            "[◆] Opera Browser",
+		"antigravity-ide":  "[◆] Antigravity IDE",
+		"code":             "[◆] Visual Studio Code",
+		"codium":           "[◆] VSCodium",
+		"discord":          "[◆] Discord",
+		"vesktop":          "[◆] Vesktop (Discord)",
+		"webcord":          "[◆] WebCord (Discord)",
+		"telegram-desktop": "[◆] Telegram",
+		"slack":            "[◆] Slack",
+		"spotify":          "[◆] Spotify",
+		"steam":            "[◆] Steam",
+		"nautilus":         "[◆] Files (Nautilus)",
+		"thunar":           "[◆] Files (Thunar)",
+		"dolphin":          "[◆] Files (Dolphin)",
+		"gnome-terminal":   "[◆] GNOME Terminal",
+		"alacritty":        "[◆] Alacritty Terminal",
+		"kitty":            "[◆] Kitty Terminal",
+		"wezterm-gui":      "[◆] WezTerm",
+		"foot":             "[◆] Foot Terminal",
+		"obs":              "[◆] OBS Studio",
+		"mpv":              "[◆] MPV Player",
+		"vlc":              "[◆] VLC Media Player",
 	}
 
 	files, err := os.ReadDir("/proc")
