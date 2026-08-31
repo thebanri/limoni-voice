@@ -375,6 +375,7 @@ func (s *RelayServer) removeClient(client *Client) {
 
 	if isEmpty {
 		roomCode := room.Code
+		room.mu.Unlock()
 		go func() {
 			time.Sleep(30 * time.Second)
 			s.mu.Lock()
@@ -393,6 +394,17 @@ func (s *RelayServer) removeClient(client *Client) {
 
 	log.Printf("[-] %s (%s) left room %s", nickname, senderID, room.Code)
 
+	var newHostID, newHostNick string
+	if isHostLeaving && len(remainingMembers) > 0 {
+		newHost := remainingMembers[0]
+		room.HostID = newHost.senderID
+		newHostID = newHost.senderID
+		newHostNick = newHost.nickname
+		log.Printf("👑 Host migrated in room %s to %s (%s)", room.Code, newHost.nickname, newHost.senderID)
+	}
+	roomCode := room.Code
+	room.mu.Unlock()
+
 	// Notify remaining members about peer leaving
 	leaveMsg := ControlMessage{
 		Type:     "peer_left",
@@ -403,23 +415,18 @@ func (s *RelayServer) removeClient(client *Client) {
 		sendControlMessage(m, leaveMsg)
 	}
 
-	// Automatic Host Migration: If the host left and members remain, elect the first connected member as new Host
-	if isHostLeaving && len(remainingMembers) > 0 {
-		newHost := remainingMembers[0]
-		room.HostID = newHost.senderID
-		log.Printf("👑 Host migrated in room %s to %s (%s)", room.Code, newHost.nickname, newHost.senderID)
-
+	// Automatic Host Migration notification
+	if isHostLeaving && len(remainingMembers) > 0 && newHostID != "" {
 		newHostMsg := ControlMessage{
 			Type:     "new_host",
-			RoomCode: room.Code,
-			SenderID: newHost.senderID,
-			Nickname: newHost.nickname,
+			RoomCode: roomCode,
+			SenderID: newHostID,
+			Nickname: newHostNick,
 		}
 		for _, m := range remainingMembers {
 			sendControlMessage(m, newHostMsg)
 		}
 	}
-	room.mu.Unlock()
 }
 
 func sendControlMessage(client *Client, msg ControlMessage) {

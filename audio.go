@@ -143,9 +143,10 @@ type AudioEngine struct {
 	gateGainHigh float64
 
 	// DSP filter & VAD state
-	hpPrevIn       float64
-	hpPrevOut      float64
-	speechHangover int // Hangover counter (chunks) to preserve word endings and pauses
+	hpPrevIn        float64
+	hpPrevOut       float64
+	speechHangover  int     // Hangover counter (chunks) to preserve word endings and pauses
+	lastPlaybackRMS float64 // Tracks speaker playback energy for Acoustic Echo Suppression (AES)
 
 	// Live audio capture & playback processes
 	captureCmd   *exec.Cmd
@@ -169,8 +170,8 @@ func NewAudioEngine() *AudioEngine {
 		SuppressionMode: 1, // Default: ACIK (Standart)
 		Gain:            1.0,
 		GainSliderState: widgets.NewSliderState(100),
-		VADSliderState:  widgets.NewSliderState(2),
-		VADThreshold:    0.002, // Ultra-sensitive: relaxed conversational voice is detected without shouting
+		VADSliderState:  widgets.NewSliderState(6),
+		VADThreshold:    0.006, // Balanced: natural voice detection without laptop speaker echo
 		LocalWave:       make([]float64, 40),
 		PeerWaves:       make(map[string][]float64),
 		peerBuffers:     make(map[string][]byte),
@@ -511,8 +512,19 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 		}
 	}
 
-	// 5. Voice Activity Detection (VAD)
+	// 5. Voice Activity Detection (VAD) with Acoustic Echo Suppression (AES)
 	threshold := a.VADThreshold
+
+	// Dynamic Acoustic Echo Suppression: When speakers (e.g. laptop speakers) are playing sound,
+	// dynamically duck the microphone threshold to prevent acoustic feedback loop!
+	if a.lastPlaybackRMS > 0.001 {
+		echoDucker := a.lastPlaybackRMS * 0.80
+		if echoDucker > threshold {
+			threshold = echoDucker
+		}
+		a.lastPlaybackRMS *= 0.88 // smooth decay
+	}
+
 	snrFloor := math.Max(a.noiseFloorMid, 0.0005)
 	midSNR := midRMS / snrFloor
 
@@ -768,7 +780,8 @@ func (a *AudioEngine) playbackMixerLoop() {
 
 			var streams [][]byte
 			for id, buf := range a.peerBuffers {
-				if id == "local_loopback" && !a.Loopback {
+				if id == "local_loopback" {
+					delete(a.peerBuffers, id)
 					continue
 				}
 				if len(buf) >= AudioChunkSize {
@@ -784,6 +797,16 @@ func (a *AudioEngine) playbackMixerLoop() {
 
 			if len(streams) > 0 && pipe != nil {
 				mixed := mixPCM(streams, AudioChunkSize/2)
+				var playEnergy float64
+				for i := 0; i < len(mixed)/2; i++ {
+					s := float64(int16(binary.LittleEndian.Uint16(mixed[i*2 : i*2+2])))
+					playEnergy += s * s
+				}
+				playRMS := math.Sqrt(playEnergy/float64(len(mixed)/2)) / 32768.0
+				a.mu.Lock()
+				a.lastPlaybackRMS = playRMS
+				a.mu.Unlock()
+
 				if _, err := pipe.Write(mixed); err != nil {
 					a.mu.Lock()
 					if a.playbackPipe == pipe {

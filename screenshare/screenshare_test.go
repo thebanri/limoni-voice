@@ -77,3 +77,64 @@ func TestSessionLifecycleWithDummyProcess(t *testing.T) {
 		t.Fatal("session did not finish within timeout")
 	}
 }
+
+func TestParseXrandrGeometry(t *testing.T) {
+	// Standard case: 1920/531x1080/299+1920+0
+	w, h, x, y := parseXrandrGeometry("1920/531x1080/299+1920+0")
+	if w != "1920" || h != "1080" || x != "1920" || y != "0" {
+		t.Fatalf("expected 1920, 1080, 1920, 0; got %s, %s, %s, %s", w, h, x, y)
+	}
+
+	// Simple case: 2560x1440+0+0
+	w, h, x, y = parseXrandrGeometry("2560x1440+0+0")
+	if w != "2560" || h != "1440" || x != "0" || y != "0" {
+		t.Fatalf("expected 2560, 1440, 0, 0; got %s, %s, %s, %s", w, h, x, y)
+	}
+}
+
+func TestListWindowsLinuxTargets(t *testing.T) {
+	targets := ListWindows()
+	if len(targets) == 0 {
+		t.Fatal("expected at least 1 target from ListWindows()")
+	}
+
+	t.Logf("Found %d targets in ListWindows():", len(targets))
+	for i, tg := range targets {
+		t.Logf("  [%d] ID=%s | Title=%s", i, tg.ID, tg.Title)
+	}
+}
+
+func TestBuildLinuxBroadcastCommand(t *testing.T) {
+	opts := BroadcastOptions{
+		Resolution: "1920x1080",
+		FPS:        60,
+		Bitrate:    "6M",
+	}
+
+	// Test default desktop option
+	opts.WindowID = "desktop"
+	bin, args, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+	if err != nil {
+		t.Fatalf("buildLinuxBroadcastCommand desktop failed: %v", err)
+	}
+	if bin == "" || len(args) == 0 {
+		t.Fatal("expected non-empty bin and args")
+	}
+	t.Logf("Built desktop broadcast command: %s %v", bin, args)
+
+	// Test monitor option
+	opts.WindowID = "monitor:DP-1:1920:1080:1920:0"
+	bin, args, err = buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+	if err != nil {
+		t.Fatalf("buildLinuxBroadcastCommand monitor failed: %v", err)
+	}
+	t.Logf("Built monitor broadcast command: %s %v", bin, args)
+
+	// Test focused window option
+	opts.WindowID = "focused"
+	bin, args, err = buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+	if err != nil {
+		t.Fatalf("buildLinuxBroadcastCommand focused failed: %v", err)
+	}
+	t.Logf("Built focused broadcast command: %s %v", bin, args)
+}

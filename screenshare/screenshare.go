@@ -171,30 +171,264 @@ func ListWindows() []WindowInfo {
 		}
 
 	case "linux":
+		targets = listLinuxTargets()
+	}
+	return targets
+}
+
+func parseXrandrGeometry(geom string) (w, h, x, y string) {
+	w, h, x, y = "1920", "1080", "0", "0"
+	xIdx := strings.Index(geom, "x")
+	if xIdx == -1 {
+		return
+	}
+	rawW := geom[:xIdx]
+	if slashIdx := strings.Index(rawW, "/"); slashIdx != -1 {
+		w = rawW[:slashIdx]
+	} else {
+		w = rawW
+	}
+
+	rest := geom[xIdx+1:]
+	plusIdx := strings.Index(rest, "+")
+	if plusIdx != -1 {
+		rawH := rest[:plusIdx]
+		if slashIdx := strings.Index(rawH, "/"); slashIdx != -1 {
+			h = rawH[:slashIdx]
+		} else {
+			h = rawH
+		}
+
+		offsets := strings.Split(rest[plusIdx+1:], "+")
+		if len(offsets) >= 2 {
+			x = offsets[0]
+			y = offsets[1]
+		} else if len(offsets) == 1 {
+			x = offsets[0]
+		}
+	} else {
+		if slashIdx := strings.Index(rest, "/"); slashIdx != -1 {
+			h = rest[:slashIdx]
+		} else {
+			h = rest
+		}
+	}
+	return
+}
+
+func getActiveWindowIDX11() string {
+	if xpropBin, err := FindExecutable("xprop"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, xpropBin, "-root", "_NET_ACTIVE_WINDOW")
+		out, err := cmd.Output()
+		if err == nil {
+			str := string(out)
+			if idx := strings.Index(str, "#"); idx != -1 {
+				winID := strings.TrimSpace(str[idx+1:])
+				if winID != "" && winID != "0x0" {
+					return winID
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func getLinuxDisplay() string {
+	if disp := os.Getenv("DISPLAY"); disp != "" {
+		return disp
+	}
+	return ":0.0"
+}
+
+func isWayland() bool {
+	return os.Getenv("WAYLAND_DISPLAY") != "" || strings.EqualFold(os.Getenv("XDG_SESSION_TYPE"), "wayland")
+}
+
+func listLinuxTargets() []WindowInfo {
+	var targets []WindowInfo
+	seenMonitors := make(map[string]bool)
+	var monitorTargets []WindowInfo
+	var windowTargets []WindowInfo
+	seenWins := make(map[string]bool)
+
+	// 1. Focused Window option (Always captures whichever window is active)
+	targets = append(targets, WindowInfo{
+		ID:    "focused",
+		Title: "🎯 Currently Focused Window (Active Application)",
+	})
+
+	// 2. Discover Monitors via xrandr
+	if xrandrBin, err := FindExecutable("xrandr"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		cmd := exec.CommandContext(ctx, xrandrBin, "--listmonitors")
+		out, err := cmd.Output()
+		cancel()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			idx := 1
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "Monitors:") || strings.HasPrefix(trimmed, "WARNING:") {
+					continue
+				}
+				fields := strings.Fields(trimmed)
+				if len(fields) >= 3 {
+					isPrimary := strings.Contains(line, "*")
+					primaryTag := ""
+					if isPrimary {
+						primaryTag = " (Primary)"
+					}
+					monName := fields[len(fields)-1]
+					geomField := fields[len(fields)-2]
+					w, h, x, y := parseXrandrGeometry(geomField)
+					if monName != "" && !seenMonitors[monName] {
+						seenMonitors[monName] = true
+						id := fmt.Sprintf("monitor:%s:%s:%s:%s:%s", monName, w, h, x, y)
+						title := fmt.Sprintf("🖥️  Screen %d: %s (%sx%s)%s", idx, monName, w, h, primaryTag)
+						monitorTargets = append(monitorTargets, WindowInfo{
+							ID:    id,
+							Title: title,
+						})
+						idx++
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: discover monitors via gpu-screen-recorder --list-monitors
+	if len(monitorTargets) == 0 {
+		if gsrBin, err := FindExecutable("gpu-screen-recorder"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			cmd := exec.CommandContext(ctx, gsrBin, "--list-monitors")
+			out, err := cmd.Output()
+			cancel()
+			if err == nil {
+				lines := strings.Split(string(out), "\n")
+				idx := 1
+				for _, line := range lines {
+					trimmed := strings.TrimSpace(line)
+					if trimmed == "" || trimmed == "portal" || trimmed == "region" || strings.HasPrefix(trimmed, "/dev/") {
+						continue
+					}
+					parts := strings.Split(trimmed, "|")
+					if len(parts) >= 1 && parts[0] != "" && !seenMonitors[parts[0]] {
+						seenMonitors[parts[0]] = true
+						res := ""
+						if len(parts) >= 2 {
+							res = fmt.Sprintf(" (%s)", parts[1])
+						}
+						monitorTargets = append(monitorTargets, WindowInfo{
+							ID:    "monitor:" + parts[0],
+							Title: fmt.Sprintf("🖥️  Screen %d: %s%s", idx, parts[0], res),
+						})
+						idx++
+					}
+				}
+			}
+		}
+	}
+
+	if len(monitorTargets) > 0 {
+		targets = append(targets, monitorTargets...)
+		if len(monitorTargets) > 1 {
+			targets = append(targets, WindowInfo{
+				ID:    "desktop",
+				Title: "🖥️  Entire Desktop (All Screens Combined)",
+			})
+		}
+	} else {
 		targets = append(targets, WindowInfo{
 			ID:    "desktop",
 			Title: "🖥️  Entire Screen (Primary Display)",
 		})
-		// Try wmctrl -l
-		if p, err := FindExecutable("wmctrl"); err == nil {
-			cmd := exec.Command(p, "-l")
-			if out, err := cmd.Output(); err == nil {
-				lines := strings.Split(string(out), "\n")
-				seen := make(map[string]bool)
-				for _, line := range lines {
-					trimmed := strings.TrimSpace(line)
-					if trimmed == "" {
+	}
+
+	// 3. Discover Windows via wmctrl
+	if p, err := FindExecutable("wmctrl"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		cmd := exec.CommandContext(ctx, p, "-l")
+		out, err := cmd.Output()
+		cancel()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" {
+					continue
+				}
+				fields := strings.Fields(trimmed)
+				if len(fields) >= 4 {
+					winID := fields[0]
+					title := strings.Join(fields[3:], " ")
+					if !seenWins[title] && !strings.EqualFold(title, "Desktop") {
+						seenWins[title] = true
+						windowTargets = append(windowTargets, WindowInfo{
+							ID:    fmt.Sprintf("win:%s:%s", winID, title),
+							Title: "🪟  " + title,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// 4. Discover Windows via xprop (_NET_CLIENT_LIST_STACKING / _NET_CLIENT_LIST)
+	if xpropBin, err := FindExecutable("xprop"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		cmd := exec.CommandContext(ctx, xpropBin, "-root", "_NET_CLIENT_LIST_STACKING")
+		out, err := cmd.Output()
+		cancel()
+		if err != nil || len(out) == 0 {
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
+			cmd2 := exec.CommandContext(ctx2, xpropBin, "-root", "_NET_CLIENT_LIST")
+			out, _ = cmd2.Output()
+			cancel2()
+		}
+		if len(out) > 0 {
+			outStr := string(out)
+			if idx := strings.Index(outStr, "#"); idx != -1 {
+				winIDs := strings.Split(outStr[idx+1:], ",")
+				for _, rawID := range winIDs {
+					winID := strings.TrimSpace(rawID)
+					if winID == "" || winID == "0x0" {
 						continue
 					}
-					fields := strings.Fields(trimmed)
-					if len(fields) >= 4 {
-						winID := fields[0]
-						title := strings.Join(fields[3:], " ")
-						if !seen[title] && !strings.EqualFold(title, "Desktop") {
-							seen[title] = true
-							targets = append(targets, WindowInfo{
-								ID:    winID,
-								Title: "🪟  " + title,
+					nameCtx, nameCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+					nameCmd := exec.CommandContext(nameCtx, xpropBin, "-id", winID, "_NET_WM_NAME", "WM_NAME", "WM_CLASS")
+					nameOut, err := nameCmd.Output()
+					nameCancel()
+					if err == nil {
+						lines := strings.Split(string(nameOut), "\n")
+						var rawTitle, rawClass string
+						for _, nl := range lines {
+							if strings.HasPrefix(nl, "_NET_WM_NAME") || strings.HasPrefix(nl, "WM_NAME") {
+								if eqIdx := strings.Index(nl, "="); eqIdx != -1 {
+									t := strings.Trim(strings.TrimSpace(nl[eqIdx+1:]), "\"")
+									if t != "" && rawTitle == "" {
+										rawTitle = t
+									}
+								}
+							} else if strings.HasPrefix(nl, "WM_CLASS") {
+								if eqIdx := strings.Index(nl, "="); eqIdx != -1 {
+									c := strings.Trim(strings.TrimSpace(nl[eqIdx+1:]), "\"")
+									if c != "" && rawClass == "" {
+										rawClass = c
+									}
+								}
+							}
+						}
+						displayTitle := rawTitle
+						if displayTitle == "" {
+							displayTitle = rawClass
+						}
+						if displayTitle != "" && !seenWins[displayTitle] && !strings.EqualFold(displayTitle, "Desktop") {
+							seenWins[displayTitle] = true
+							windowTargets = append(windowTargets, WindowInfo{
+								ID:    fmt.Sprintf("win:%s:%s", winID, displayTitle),
+								Title: "🪟  " + displayTitle,
 							})
 						}
 					}
@@ -202,6 +436,44 @@ func ListWindows() []WindowInfo {
 			}
 		}
 	}
+
+	// 5. Discover Windows on Hyprland
+	if hyprBin, err := FindExecutable("hyprctl"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		cmd := exec.CommandContext(ctx, hyprBin, "clients")
+		out, err := cmd.Output()
+		cancel()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			var curTitle, curClass string
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "title:") {
+					curTitle = strings.TrimSpace(strings.TrimPrefix(trimmed, "title:"))
+				} else if strings.HasPrefix(trimmed, "class:") {
+					curClass = strings.TrimSpace(strings.TrimPrefix(trimmed, "class:"))
+				} else if trimmed == "" {
+					if curTitle != "" && !seenWins[curTitle] {
+						seenWins[curTitle] = true
+						displayTitle := curTitle
+						if curClass != "" {
+							displayTitle = fmt.Sprintf("%s - %s", curClass, curTitle)
+						}
+						windowTargets = append(windowTargets, WindowInfo{
+							ID:    "focused",
+							Title: "🪟  " + displayTitle,
+						})
+					}
+					curTitle, curClass = "", ""
+				}
+			}
+		}
+	}
+
+	if len(windowTargets) > 0 {
+		targets = append(targets, windowTargets...)
+	}
+
 	return targets
 }
 
@@ -674,6 +946,148 @@ func CheckDependencies() DependencyStatus {
 	return status
 }
 
+func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string, []string, error) {
+	targetID := strings.TrimSpace(opt.WindowID)
+	scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
+	if scaleRes == "" {
+		scaleRes = "1920:1080"
+	}
+	fps := opt.FPS
+	if fps <= 0 {
+		fps = 60
+	}
+
+	// 1. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS)
+	if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
+		gsrTarget := "screen"
+		if targetID == "focused" {
+			gsrTarget = "focused"
+		} else if strings.HasPrefix(targetID, "monitor:") {
+			parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
+			if len(parts) > 0 && parts[0] != "" {
+				gsrTarget = parts[0]
+			}
+		} else if strings.HasPrefix(targetID, "win:") {
+			parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
+			if len(parts) > 0 && parts[0] != "" {
+				gsrTarget = parts[0]
+			}
+		} else if targetID == "desktop" || targetID == "screen" || targetID == "" {
+			gsrTarget = "screen"
+		} else {
+			gsrTarget = targetID
+		}
+
+		args := []string{
+			"-w", gsrTarget,
+			"-s", opt.Resolution,
+			"-f", fmt.Sprintf("%d", fps),
+			"-k", "h264",
+			"-q", "high",
+			"-tune", "performance",
+			"-keyint", "15",
+			"-restore-portal-session", "no",
+			"-c", "mpegts",
+			"-o", targetURL,
+		}
+		return p, args, nil
+	}
+
+	// 2. Try wf-recorder on Wayland / wlroots (Sway, Hyprland, Wayfire)
+	if isWayland() {
+		if p, err := FindExecutable("wf-recorder"); err == nil {
+			var wfArgs []string
+			if strings.HasPrefix(targetID, "monitor:") {
+				parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
+				if len(parts) > 0 && parts[0] != "" {
+					wfArgs = append(wfArgs, "-o", parts[0])
+				}
+			}
+			wfArgs = append(wfArgs,
+				"-m", "mpegts",
+				"-c", "libx264",
+				"-p", "preset=ultrafast",
+				"-p", "tune=zerolatency",
+				"-p", "keyint=30",
+				"-p", "crf=23",
+				"-r", fmt.Sprintf("%d", fps),
+				"-f", targetURL,
+			)
+			return p, wfArgs, nil
+		}
+	}
+
+	// 3. Try FFmpeg (Universal for X11 & XWayland across all DEs: GNOME, KDE, XFCE, Cinnamon, MATE, etc.)
+	if p, err := FindExecutable("ffmpeg"); err == nil {
+		display := getLinuxDisplay()
+		vf := fmt.Sprintf("scale=%s:flags=bicubic,format=yuv420p", scaleRes)
+
+		var inputArgs []string
+		if strings.HasPrefix(targetID, "monitor:") {
+			parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
+			if len(parts) >= 5 && parts[1] != "" && parts[2] != "" {
+				w, h, x, y := parts[1], parts[2], parts[3], parts[4]
+				inputArgs = append(inputArgs,
+					"-video_size", fmt.Sprintf("%sx%s", w, h),
+					"-i", fmt.Sprintf("%s+%s,%s", display, x, y),
+				)
+			} else {
+				inputArgs = append(inputArgs, "-i", display)
+			}
+		} else if targetID == "focused" {
+			winID := getActiveWindowIDX11()
+			if winID != "" {
+				inputArgs = append(inputArgs, "-window_id", winID, "-i", display)
+			} else {
+				inputArgs = append(inputArgs, "-i", display)
+			}
+		} else if strings.HasPrefix(targetID, "win:") {
+			parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
+			if len(parts) > 0 && parts[0] != "" {
+				inputArgs = append(inputArgs,
+					"-window_id", parts[0],
+					"-i", display,
+				)
+			} else {
+				inputArgs = append(inputArgs, "-i", display)
+			}
+		} else {
+			inputArgs = append(inputArgs, "-i", display)
+		}
+
+		args := []string{
+			"-fflags", "nobuffer+flush_packets",
+			"-thread_queue_size", "2",
+			"-probesize", "32",
+			"-analyzeduration", "0",
+			"-f", "x11grab",
+			"-framerate", fmt.Sprintf("%d", fps),
+			"-draw_mouse", "1",
+		}
+		args = append(args, inputArgs...)
+		args = append(args,
+			"-vf", vf,
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-tune", "zerolatency",
+			"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+			"-crf", "23",
+			"-maxrate", "8M",
+			"-bufsize", "16M",
+			"-pix_fmt", "yuv420p",
+			"-g", "30",
+			"-bf", "0",
+			"-bsf:v", "dump_extra",
+			"-f", "mpegts",
+			"-mpegts_flags", "+latm+pat_pmt_at_frames",
+			targetURL,
+		)
+		return p, args, nil
+	}
+
+	return "", nil, errors.New("sistemde ekran paylasimi icin gerekli araclar ('gpu-screen-recorder', 'wf-recorder' veya 'ffmpeg') bulunamadi")
+}
+
 // StartBroadcasting starts hardware-accelerated screen capture and streams over pipe or UDP
 func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...BroadcastOptions) (*Session, error) {
 	if targetIP == "" {
@@ -702,53 +1116,10 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	switch runtime.GOOS {
 	case "linux":
-		// Check if gpu-screen-recorder is available
-		if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
-			binPath = p
-			windowTarget := opt.WindowID
-			if windowTarget == "" {
-				windowTarget = "portal"
-			}
-			args = []string{
-				"-w", windowTarget,
-				"-s", opt.Resolution,
-				"-f", fmt.Sprintf("%d", opt.FPS),
-				"-k", "h264",
-				"-q", "high",
-				"-tune", "performance",
-				"-keyint", "15",
-				"-c", "mpegts",
-				"-o", targetURL,
-			}
-		} else if p, err := FindExecutable("ffmpeg"); err == nil {
-			// Fallback to ffmpeg x11grab on Linux
-			binPath = p
-			scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
-			if scaleRes == "" {
-				scaleRes = "1920:1080"
-			}
-			args = []string{
-				"-f", "x11grab",
-				"-framerate", fmt.Sprintf("%d", opt.FPS),
-				"-i", ":0.0",
-				"-vf", fmt.Sprintf("scale=%s:flags=bicubic", scaleRes),
-				"-c:v", "libx264",
-				"-preset", "ultrafast",
-				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "23",
-				"-maxrate", "8M",
-				"-bufsize", "16M",
-				"-pix_fmt", "yuv420p",
-				"-g", "30",
-				"-bf", "0",
-				"-bsf:v", "dump_extra",
-				"-f", "mpegts",
-				"-mpegts_flags", "+latm+pat_pmt_at_frames",
-				targetURL,
-			}
-		} else {
-			return nil, errors.New("neither 'gpu-screen-recorder' nor 'ffmpeg' was found on this Linux system")
+		var err error
+		binPath, args, err = buildLinuxBroadcastCommand(opt, targetURL)
+		if err != nil {
+			return nil, err
 		}
 
 	case "windows":
@@ -1077,6 +1448,12 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--video-sync=desync",
 			"--framedrop=vo",
 			"--untimed=yes",
+			"--no-osc",
+			"--osc=no",
+			"--no-osd-bar",
+			"--osd-bar=no",
+			"--osd-level=0",
+			"--cursor-autohide=1000",
 			"--demuxer-readahead-secs=0",
 			"--demuxer-max-bytes=100K",
 			"--demuxer-max-back-bytes=0",

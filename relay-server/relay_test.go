@@ -106,8 +106,65 @@ func TestRelayServerRoomMatchingAndForwarding(t *testing.T) {
 	}
 }
 
+func TestEmptyRoomLeaveNoDeadlock(t *testing.T) {
+	server := NewRelayServer()
+	s := httptest.NewServer(server.upgraderHandler())
+	defer s.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
+
+	// 1. Host creates room and disconnects
+	hostConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect host: %v", err)
+	}
+	hostMsg := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "EMPTY-TEST",
+		SenderID: "host_empty",
+		Nickname: "HostEmpty",
+	}
+	hostData, _ := json.Marshal(hostMsg)
+	_ = hostConn.WriteMessage(websocket.TextMessage, hostData)
+
+	// Read room_created
+	_, _, _ = hostConn.ReadMessage()
+
+	// Close host connection (making room empty)
+	hostConn.Close()
+
+	// 2. Immediately create another room with a new client to ensure server is NOT deadlocked
+	newHostConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect second host: %v", err)
+	}
+	defer newHostConn.Close()
+
+	newHostMsg := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "NEW-ROOM-1",
+		SenderID: "host_2",
+		Nickname: "Host2",
+	}
+	newData, _ := json.Marshal(newHostMsg)
+	if err := newHostConn.WriteMessage(websocket.TextMessage, newData); err != nil {
+		t.Fatalf("Failed to send second host_room: %v", err)
+	}
+
+	_, newResp, err := newHostConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read response on second host (possible deadlock!): %v", err)
+	}
+	var createdMsg ControlMessage
+	json.Unmarshal(newResp, &createdMsg)
+	if createdMsg.Type != "room_created" {
+		t.Fatalf("Expected room_created, got %s", createdMsg.Type)
+	}
+}
+
 func (s *RelayServer) upgraderHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	return mux
 }
+
