@@ -116,7 +116,7 @@ func isMutterAvailable() bool {
 }
 
 // buildGstreamerPipewireCommand builds a GStreamer command line using PipeWire source to stream MPEG-TS UDP or stdout
-func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt BroadcastOptions) (string, []string, error) {
+func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt BroadcastOptions, hasFD bool) (string, []string, error) {
 	gstBin, err := FindExecutable("gst-launch-1.0")
 	if err != nil {
 		return "", nil, fmt.Errorf("gst-launch-1.0 not found: %w", err)
@@ -177,12 +177,20 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	args := []string{
 		"-q",
 		"pipewiresrc",
+	}
+	if hasFD {
+		args = append(args, "fd=3")
+	}
+	args = append(args,
 		fmt.Sprintf("path=%d", nodeID),
 		"do-timestamp=true",
-		"keepalive-time=1000",
+		"provide-clock=false",
+		"always-copy=true",
+		"!", "queue", "max-size-buffers=3", "max-size-bytes=0", "max-size-time=0",
 		"!", "videoconvert",
 		"!", "videoscale",
-		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,format=I420", outWidth, outHeight),
+		"!", "videorate",
+		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=I420", outWidth, outHeight, fps),
 		"!", "x264enc",
 		"speed-preset=ultrafast",
 		"tune=zerolatency",
@@ -199,7 +207,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"alignment=5",
 		"pat-interval=5",
 		"pcr-interval=5",
-	}
+	)
 
 	if usePipe {
 		args = append(args, "!", "fdsink", "fd=1", "sync=false")

@@ -16,6 +16,6 @@ func isMutterAvailable() bool {
 	return false
 }
 
-func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt BroadcastOptions) (string, []string, error) {
+func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt BroadcastOptions, hasFD bool) (string, []string, error) {
 	return "", nil, errors.New("gstreamer pipewire is only supported on Linux")
 }

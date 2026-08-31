@@ -1058,7 +1058,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 				defer cancel()
 				nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 2) // 2 = Window Only
 				if errPortal == nil && nodeID != 0 {
-					bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt)
+					bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
 					if errGst == nil {
 						return bin, args, pwFile, cleanup, nil
 					}
@@ -1087,7 +1087,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			defer cancel()
 			nodeID, cleanup, errMutter := RequestMutterScreenCast(ctx, connector)
 			if errMutter == nil && nodeID != 0 {
-				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt)
+				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, false)
 				if errGst == nil {
 					return bin, args, nil, cleanup, nil
 				}
@@ -1103,7 +1103,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			defer cancel()
 			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 3) // 3 = Screen or Window
 			if errPortal == nil && nodeID != 0 {
-				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt)
+				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
 				if errGst == nil {
 					return bin, args, pwFile, cleanup, nil
 				}
