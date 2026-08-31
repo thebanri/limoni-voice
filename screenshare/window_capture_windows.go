@@ -273,12 +273,8 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 			// Check if window is still alive
 			if procWinIsWindow.Find() == nil {
 				if ret, _, _ := procWinIsWindow.Call(hwnd); ret == 0 {
-					if hasValidFrame {
-						_, _ = outPipe.Write(lastGoodFrame)
-					} else {
-						_, _ = outPipe.Write(rawBytes)
-					}
-					continue
+					logMsg("[WIN-WATCH] Target HWND 0x%x was closed. Automatically ending screen stream.", hwnd)
+					return errors.New("captured window was closed by user")
 				}
 			}
 

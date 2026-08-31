@@ -235,6 +235,36 @@ func getActiveWindowIDX11() string {
 	return ""
 }
 
+func watchX11WindowLiveness(ctx context.Context, winID string, cancel context.CancelFunc) {
+	if winID == "" || winID == "0x0" {
+		return
+	}
+	xpropBin, err := FindExecutable("xprop")
+	if err != nil {
+		return
+	}
+
+	ticker := time.NewTicker(600 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkCtx, checkCancel := context.WithTimeout(ctx, 400*time.Millisecond)
+			cmd := exec.CommandContext(checkCtx, xpropBin, "-id", winID, "WM_NAME")
+			err := cmd.Run()
+			checkCancel()
+			if err != nil {
+				logMsg("[X11-WATCH] Target window %s was closed. Automatically ending screen stream.", winID)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 func getLinuxDisplay() string {
 	if disp := os.Getenv("DISPLAY"); disp != "" {
 		return disp
@@ -1588,6 +1618,16 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	if targetHwnd != 0 && stdinPipe != nil {
 		go StreamWindowFrames(sessionCtx, targetHwnd, opt.FPS, winWidth, winHeight, stdinPipe)
+	}
+
+	if runtime.GOOS == "linux" && (strings.HasPrefix(opt.WindowID, "win:") || opt.WindowID == "focused") {
+		targetWinID := strings.TrimPrefix(opt.WindowID, "win:")
+		if opt.WindowID == "focused" {
+			targetWinID = getActiveWindowIDX11()
+		}
+		if targetWinID != "" {
+			go watchX11WindowLiveness(sessionCtx, targetWinID, cancel)
+		}
 	}
 
 	go s.monitor()
