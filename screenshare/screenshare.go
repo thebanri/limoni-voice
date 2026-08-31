@@ -470,11 +470,102 @@ func listLinuxTargets() []WindowInfo {
 		}
 	}
 
+	// 6. Discover Running Graphical Applications (Wayland & X11 native apps: Zen, VS Code, Discord, etc.)
+	guiApps := listRunningLinuxGUIApps()
+	for _, app := range guiApps {
+		if !seenWins[app.Title] && !seenWins[app.Name] {
+			seenWins[app.Title] = true
+			seenWins[app.Name] = true
+			windowTargets = append(windowTargets, WindowInfo{
+				ID:    fmt.Sprintf("app:%d:%s", app.PID, app.Name),
+				Title: app.Title,
+			})
+		}
+	}
+
 	if len(windowTargets) > 0 {
 		targets = append(targets, windowTargets...)
 	}
 
 	return targets
+}
+
+type linuxGUIAppInfo struct {
+	Name  string
+	PID   int
+	Title string
+}
+
+func listRunningLinuxGUIApps() []linuxGUIAppInfo {
+	var apps []linuxGUIAppInfo
+	seen := make(map[string]bool)
+
+	knownApps := map[string]string{
+		"zen-bin":          "🌐 Zen Browser",
+		"zen":              "🌐 Zen Browser",
+		"firefox":          "🌐 Mozilla Firefox",
+		"firefox-bin":      "🌐 Mozilla Firefox",
+		"chrome":           "🌐 Google Chrome",
+		"google-chrome":    "🌐 Google Chrome",
+		"chromium":         "🌐 Chromium",
+		"brave":            "🌐 Brave Browser",
+		"opera":            "🌐 Opera Browser",
+		"antigravity-ide":  "💻 Antigravity IDE",
+		"code":             "💻 Visual Studio Code",
+		"codium":           "💻 VSCodium",
+		"discord":          "💬 Discord",
+		"vesktop":          "💬 Vesktop (Discord)",
+		"webcord":          "💬 WebCord (Discord)",
+		"telegram-desktop": "✈️ Telegram",
+		"slack":            "💬 Slack",
+		"spotify":          "🎵 Spotify",
+		"steam":            "🎮 Steam",
+		"nautilus":         "📁 Files (Nautilus)",
+		"thunar":           "📁 Files (Thunar)",
+		"dolphin":          "📁 Files (Dolphin)",
+		"gnome-terminal":   "🖥️ GNOME Terminal",
+		"alacritty":        "🖥️ Alacritty Terminal",
+		"kitty":            "🖥️ Kitty Terminal",
+		"wezterm-gui":      "🖥️ WezTerm",
+		"foot":             "🖥️ Foot Terminal",
+		"obs":              "🎥 OBS Studio",
+		"mpv":              "🎬 MPV Player",
+		"vlc":              "🎬 VLC Media Player",
+	}
+
+	files, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+
+	for _, f := range files {
+		if !f.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(f.Name())
+		if err != nil || pid <= 1 {
+			continue
+		}
+
+		commBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err != nil {
+			continue
+		}
+		comm := strings.TrimSpace(string(commBytes))
+
+		if title, ok := knownApps[strings.ToLower(comm)]; ok {
+			if !seen[title] {
+				seen[title] = true
+				apps = append(apps, linuxGUIAppInfo{
+					Name:  comm,
+					PID:   pid,
+					Title: title,
+				})
+			}
+		}
+	}
+
+	return apps
 }
 
 func getMacScreenDevice(binPath string) string {
