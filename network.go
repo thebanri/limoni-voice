@@ -149,6 +149,7 @@ type P2PNode struct {
 	LanOnly          bool
 	wsConn           *websocket.Conn
 	wsSendCh         chan []byte
+	wsAudioCh        chan []byte // high-priority dedicated audio channel
 	wsMu             sync.Mutex
 	isRelayConnected bool
 	wsCancel         chan struct{}
@@ -563,8 +564,10 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		wsSendCh := make(chan []byte, 4096)
+		wsAudioCh := make(chan []byte, 256)
 		n.mu.Lock()
 		n.wsSendCh = wsSendCh
+		n.wsAudioCh = wsAudioCh
 		n.mu.Unlock()
 
 		dialer := websocket.Dialer{
@@ -611,7 +614,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		connCancel := make(chan struct{})
 
 		// Start write pump
-		go n.relayWritePump(conn, wsSendCh, connCancel)
+		go n.relayWritePump(conn, wsAudioCh, wsSendCh, connCancel)
 
 		// Send initial action (host or join) with local UDP port for direct P2P hole-punching
 		n.mu.RLock()
@@ -698,26 +701,53 @@ func (n *P2PNode) sendRelayControlLocked(msg RelayControlMessage) {
 	n.wsConn.WriteMessage(websocket.TextMessage, data)
 }
 
-func (n *P2PNode) relayWritePump(conn *websocket.Conn, sendCh chan []byte, cancel chan struct{}) {
+func (n *P2PNode) relayWritePump(conn *websocket.Conn, audioCh, videoCh chan []byte, cancel chan struct{}) {
 	ticker := time.NewTicker(8 * time.Second)
 	defer func() {
 		ticker.Stop()
 		conn.Close()
 	}()
 
+	writeMsg := func(data []byte) error {
+		n.wsMu.Lock()
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		err := conn.WriteMessage(websocket.BinaryMessage, data)
+		n.wsMu.Unlock()
+		return err
+	}
+
 	for {
+		// Priority 1: Drain ALL pending audio packets first (voice must never wait behind video)
+		for {
+			select {
+			case data, ok := <-audioCh:
+				if !ok {
+					return
+				}
+				if writeMsg(data) != nil {
+					return
+				}
+			default:
+				goto sendOther
+			}
+		}
+	sendOther:
+		// Priority 2: Process one video/control packet, then loop back to recheck audio
 		select {
 		case <-cancel:
 			return
-		case data, ok := <-sendCh:
+		case data, ok := <-audioCh:
 			if !ok {
 				return
 			}
-			n.wsMu.Lock()
-			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			err := conn.WriteMessage(websocket.BinaryMessage, data)
-			n.wsMu.Unlock()
-			if err != nil {
+			if writeMsg(data) != nil {
+				return
+			}
+		case data, ok := <-videoCh:
+			if !ok {
+				return
+			}
+			if writeMsg(data) != nil {
 				return
 			}
 		case <-ticker.C:
@@ -1102,7 +1132,45 @@ func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
 		Payload:    pcm,
 	}
 
-	n.broadcastToPeers(&pkt)
+	n.sendAudioToPeers(&pkt)
+}
+
+// sendAudioToPeers routes audio packets through the high-priority audio channel
+// to prevent video traffic from starving voice data on the WebSocket relay.
+func (n *P2PNode) sendAudioToPeers(pkt *P2PPacket) {
+	n.mu.RLock()
+	aead := n.aead
+	wsAudioCh := n.wsAudioCh
+	isRelay := n.isRelayConnected
+	if pkt.LocalPort == 0 {
+		pkt.LocalPort = n.Port
+	}
+	if aead == nil || (len(n.Peers) == 0 && !isRelay) {
+		n.mu.RUnlock()
+		return
+	}
+
+	data, err := encodeAndEncryptPacket(pkt, aead)
+	if err != nil {
+		n.mu.RUnlock()
+		return
+	}
+
+	// 1. Forward via dedicated high-priority audio WebSocket channel (Internet)
+	if isRelay && wsAudioCh != nil {
+		select {
+		case wsAudioCh <- data:
+		default:
+		}
+	}
+
+	// 2. Also send via direct UDP to known LAN peer addresses
+	for _, peer := range n.Peers {
+		if peer.Addr != nil && n.Conn != nil {
+			n.Conn.WriteToUDP(data, peer.Addr)
+		}
+	}
+	n.mu.RUnlock()
 }
 
 func (n *P2PNode) SendMuteState(isMuted bool) {
@@ -2093,6 +2161,11 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		var totalPackets int
 		var totalBytes int64
 
+		// Rate limiter: max ~500 video packets/sec to leave breathing room for audio goroutines.
+		// This prevents video from monopolizing CPU (encrypt) and WebSocket write bandwidth.
+		minInterval := 2 * time.Millisecond
+		lastSend := time.Now()
+
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
@@ -2107,6 +2180,11 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 
 			if !sharing {
 				break
+			}
+
+			// Rate limit: yield CPU to audio goroutines between video packets
+			if elapsed := time.Since(lastSend); elapsed < minInterval {
+				time.Sleep(minInterval - elapsed)
 			}
 
 			seq++
@@ -2134,6 +2212,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 				Payload:  chunk,
 			}
 			n.broadcastToPeers(&vidPkt)
+			lastSend = time.Now()
 		}
 	}()
 
