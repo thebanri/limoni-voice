@@ -189,7 +189,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"!", "queue", "max-size-buffers=3", "max-size-bytes=0", "max-size-time=0",
 		"!", "videoconvert",
 		"!", "videoscale",
-		"!", "videorate",
+		"!", "videorate", "skip-to-first=true", "max-duplication-time=33333333",
 		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=I420", outWidth, outHeight, fps),
 		"!", "x264enc",
 		"speed-preset=ultrafast",
