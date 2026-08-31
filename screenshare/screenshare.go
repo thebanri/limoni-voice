@@ -1096,6 +1096,22 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 				}
 			}
 		}
+	} else if isWayland() {
+		// 2b. On KDE Plasma / non-GNOME Wayland compositors -> capture Screen via Desktop Portal
+		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
+			defer cancel()
+			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 3) // 3 = Screen or Window
+			if errPortal == nil && nodeID != 0 {
+				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, fps)
+				if errGst == nil {
+					return bin, args, pwFile, cleanup, nil
+				}
+				if cleanup != nil {
+					cleanup()
+				}
+			}
+		}
 	}
 
 	// 3. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS)
