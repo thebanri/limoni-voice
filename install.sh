@@ -69,7 +69,7 @@ if [ -z "${LATEST_TAG}" ]; then
 fi
 
 if [ -z "${LATEST_TAG}" ]; then
-    LATEST_TAG="v1.4.3"
+    LATEST_TAG="v1.4.4"
 fi
 
 echo -e "${GREEN}[+] Target version:${NC} ${BOLD}${LATEST_TAG}${NC}"

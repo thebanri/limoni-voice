@@ -46,4 +46,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd release_assets
-          gh release create "${GITHUB_REF_NAME}" * --title "Limoni Voice ${GITHUB_REF_NAME}" --generate-notes
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} exists, updating assets..."
+            gh release upload "${GITHUB_REF_NAME}" * --clobber
+          else
+            echo "Creating new release ${GITHUB_REF_NAME}..."
+            gh release create "${GITHUB_REF_NAME}" * --title "Limoni Voice ${GITHUB_REF_NAME}" --generate-notes
+          fi
