@@ -3,6 +3,8 @@
 package main
 
 import (
+	"fmt"
+	"strconv"
 	"syscall"
 	"unsafe"
 )
@@ -18,6 +20,7 @@ var (
 	procWaveInStop             = modwinmm.NewProc("waveInStop")
 	procWaveInReset            = modwinmm.NewProc("waveInReset")
 	procWaveInGetNumDevs       = modwinmm.NewProc("waveInGetNumDevs")
+	procWaveInGetDevCapsW      = modwinmm.NewProc("waveInGetDevCapsW")
 
 	procWaveOutOpen            = modwinmm.NewProc("waveOutOpen")
 	procWaveOutClose           = modwinmm.NewProc("waveOutClose")
@@ -26,6 +29,7 @@ var (
 	procWaveOutWrite           = modwinmm.NewProc("waveOutWrite")
 	procWaveOutReset           = modwinmm.NewProc("waveOutReset")
 	procWaveOutGetNumDevs      = modwinmm.NewProc("waveOutGetNumDevs")
+	procWaveOutGetDevCapsW     = modwinmm.NewProc("waveOutGetDevCapsW")
 )
 
 const (
@@ -59,6 +63,27 @@ type WAVEHDR struct {
 	reserved        uintptr
 }
 
+type WAVEINCAPSW struct {
+	wMid           uint16
+	wPid           uint16
+	vDriverVersion uint32
+	szPname        [32]uint16
+	dwFormats      uint32
+	wChannels      uint16
+	wReserved1     uint16
+}
+
+type WAVEOUTCAPSW struct {
+	wMid           uint16
+	wPid           uint16
+	vDriverVersion uint32
+	szPname        [32]uint16
+	dwFormats      uint32
+	wChannels      uint16
+	wReserved1     uint16
+	dwSupport      uint32
+}
+
 var (
 	kernel32                = syscall.NewLazyDLL("kernel32.dll")
 	procCreateEvent         = kernel32.NewProc("CreateEventW")
@@ -82,6 +107,54 @@ func waitForWindowsEvent(h uintptr, ms uint32) uint32 {
 	return uint32(ret)
 }
 
+func enumerateWindowsInputDevices() []AudioDevice {
+	devs := []AudioDevice{
+		{ID: "default", Name: "Default Microphone (Windows Preferred)", IsDefault: true, IsInput: true},
+	}
+
+	numDevs, _, _ := procWaveInGetNumDevs.Call()
+	for i := uintptr(0); i < numDevs; i++ {
+		var caps WAVEINCAPSW
+		ret, _, _ := procWaveInGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps))
+		if ret == 0 {
+			name := syscall.UTF16ToString(caps.szPname[:])
+			if name == "" {
+				name = fmt.Sprintf("Microphone Device %d", i)
+			}
+			devs = append(devs, AudioDevice{
+				ID:      fmt.Sprintf("%d", i),
+				Name:    name,
+				IsInput: true,
+			})
+		}
+	}
+	return devs
+}
+
+func enumerateWindowsOutputDevices() []AudioDevice {
+	devs := []AudioDevice{
+		{ID: "default", Name: "Default Output / Speakers (Windows Preferred)", IsDefault: true, IsInput: false},
+	}
+
+	numDevs, _, _ := procWaveOutGetNumDevs.Call()
+	for i := uintptr(0); i < numDevs; i++ {
+		var caps WAVEOUTCAPSW
+		ret, _, _ := procWaveOutGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps))
+		if ret == 0 {
+			name := syscall.UTF16ToString(caps.szPname[:])
+			if name == "" {
+				name = fmt.Sprintf("Speaker Device %d", i)
+			}
+			devs = append(devs, AudioDevice{
+				ID:      fmt.Sprintf("%d", i),
+				Name:    name,
+				IsInput: false,
+			})
+		}
+	}
+	return devs
+}
+
 // startWindowsCapture initializes native Windows audio capture using winmm waveIn API.
 // Supports 16kHz native, or fallback to 48kHz with 3:1 decimation if hardware requires it.
 func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking bool, pcm []byte)) bool {
@@ -89,6 +162,16 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 	if numDevs == 0 {
 		return false
 	}
+
+	targetDevID := WAVE_MAPPER
+	a.mu.RLock()
+	if a.SelectedInputIdx > 0 && a.SelectedInputIdx < len(a.InputDevices) {
+		devStr := a.InputDevices[a.SelectedInputIdx].ID
+		if idx, err := strconv.Atoi(devStr); err == nil && uintptr(idx) < numDevs {
+			targetDevID = uintptr(idx)
+		}
+	}
+	a.mu.RUnlock()
 
 	sampleRates := []uint32{16000, 48000, 44100}
 	var hWaveIn uintptr
@@ -111,7 +194,7 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 		var h uintptr
 		ret, _, _ := procWaveInOpen.Call(
 			uintptr(unsafe.Pointer(&h)),
-			WAVE_MAPPER,
+			targetDevID,
 			uintptr(unsafe.Pointer(&wfx)),
 			ev,
 			0,
@@ -265,7 +348,6 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 						}
 					}
 
-					// CRITICAL FIX: Proper unprepare & prepare cycle so WHDR_PREPARED flag is valid
 					procWaveInUnprepareHeader.Call(hWaveIn, uintptr(unsafe.Pointer(hdr)), unsafe.Sizeof(*hdr))
 					hdr.dwBufferLength = rawBufSize
 					hdr.dwBytesRecorded = 0
@@ -294,10 +376,15 @@ type windowsWaveWriter struct {
 	closed      bool
 }
 
-func newWindowsWaveWriter() *windowsWaveWriter {
+func newWindowsWaveWriter(devIndex int) *windowsWaveWriter {
 	numDevs, _, _ := procWaveOutGetNumDevs.Call()
 	if numDevs == 0 {
 		return nil
+	}
+
+	targetDevID := WAVE_MAPPER
+	if devIndex > 0 && uintptr(devIndex) <= numDevs {
+		targetDevID = uintptr(devIndex - 1)
 	}
 
 	wfx := WAVEFORMATEX{
@@ -318,7 +405,7 @@ func newWindowsWaveWriter() *windowsWaveWriter {
 	var hWaveOut uintptr
 	ret, _, _ := procWaveOutOpen.Call(
 		uintptr(unsafe.Pointer(&hWaveOut)),
-		WAVE_MAPPER,
+		targetDevID,
 		uintptr(unsafe.Pointer(&wfx)),
 		eventHandle,
 		0,
@@ -330,7 +417,6 @@ func newWindowsWaveWriter() *windowsWaveWriter {
 		return nil
 	}
 
-	// 16 buffers to ensure smooth playback without glitches
 	const numBufs = 16
 	const bufSize = AudioChunkSize
 
@@ -363,7 +449,6 @@ func (w *windowsWaveWriter) Write(p []byte) (n int, err error) {
 	numBufs := len(w.headers)
 	foundIdx := -1
 
-	// Look for an available (done) buffer slot
 	for attempt := 0; attempt < 3; attempt++ {
 		for i := 0; i < numBufs; i++ {
 			idx := (w.bufIdx + i) % numBufs
@@ -422,7 +507,12 @@ func (w *windowsWaveWriter) Close() error {
 }
 
 func (a *AudioEngine) startWindowsPlayback() bool {
-	writer := newWindowsWaveWriter()
+	devIndex := 0
+	a.mu.RLock()
+	devIndex = a.SelectedOutputIdx
+	a.mu.RUnlock()
+
+	writer := newWindowsWaveWriter(devIndex)
 	if writer == nil {
 		return false
 	}

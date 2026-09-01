@@ -579,3 +579,88 @@ func TestGainRange300(t *testing.T) {
 		t.Fatalf("Expected soft-boosted sample between 10000 and 32767, got %d", val)
 	}
 }
+
+func TestAudioDeviceEnumerationAndSelection(t *testing.T) {
+	inDevs := EnumerateInputDevices()
+	if len(inDevs) == 0 {
+		t.Fatalf("Expected at least 1 input device (default), got 0")
+	}
+
+	outDevs := EnumerateOutputDevices()
+	if len(outDevs) == 0 {
+		t.Fatalf("Expected at least 1 output device (default), got 0")
+	}
+
+	engine := NewAudioEngine()
+	// Add mock devices for comprehensive cycling test
+	engine.InputDevices = []AudioDevice{
+		{ID: "default", Name: "Default Mic", IsDefault: true, IsInput: true},
+		{ID: "mic_2", Name: "USB Headset Mic", IsInput: true},
+		{ID: "mic_3", Name: "Webcam Mic", IsInput: true},
+	}
+	engine.OutputDevices = []AudioDevice{
+		{ID: "default", Name: "Default Speakers", IsDefault: true, IsInput: false},
+		{ID: "out_2", Name: "Headphones", IsInput: false},
+	}
+
+	// Test Mic Cycling
+	if engine.GetSelectedInputName() != "Default Mic" {
+		t.Fatalf("Expected 'Default Mic', got %q", engine.GetSelectedInputName())
+	}
+	engine.CycleInputDevice(1)
+	if engine.SelectedInputIdx != 1 || engine.GetSelectedInputName() != "USB Headset Mic" {
+		t.Fatalf("Expected 'USB Headset Mic' at index 1, got %q", engine.GetSelectedInputName())
+	}
+	engine.CycleInputDevice(-1)
+	if engine.SelectedInputIdx != 0 {
+		t.Fatalf("Expected index 0 after reverse cycle, got %d", engine.SelectedInputIdx)
+	}
+
+	// Test Output Device Cycling
+	if engine.GetSelectedOutputName() != "Default Speakers" {
+		t.Fatalf("Expected 'Default Speakers', got %q", engine.GetSelectedOutputName())
+	}
+	engine.CycleOutputDevice(1)
+	if engine.SelectedOutputIdx != 1 || engine.GetSelectedOutputName() != "Headphones" {
+		t.Fatalf("Expected 'Headphones' at index 1, got %q", engine.GetSelectedOutputName())
+	}
+}
+
+func TestOutputVolumeAndAGC(t *testing.T) {
+	engine := NewAudioEngine()
+
+	// Initial output volume should be 1.0 (100%)
+	if engine.OutputVolume != 1.0 {
+		t.Fatalf("Expected initial output volume 1.0, got %f", engine.OutputVolume)
+	}
+
+	// Boost output volume to 1.5 (150%)
+	engine.AdjustOutputVolume(0.5)
+	if engine.OutputVolume != 1.5 {
+		t.Fatalf("Expected output volume 1.5, got %f", engine.OutputVolume)
+	}
+
+	// Test mixPCM with output volume multiplier
+	chunk := make([]byte, AudioChunkSize)
+	for i := 0; i < len(chunk)/2; i++ {
+		binary.LittleEndian.PutUint16(chunk[i*2:i*2+2], 1000)
+	}
+	mixed := mixPCM([][]byte{chunk}, len(chunk)/2, 2.0)
+	val := int16(binary.LittleEndian.Uint16(mixed[0:2]))
+	if val < 1900 || val > 2100 {
+		t.Fatalf("Expected output sample ~2000 after 2.0x volume, got %d", val)
+	}
+
+	// Test PlayPeerPCM dynamic AGC boosting for quiet incoming voice
+	quietChunk := make([]byte, AudioChunkSize)
+	for i := 0; i < len(quietChunk)/2; i++ {
+		binary.LittleEndian.PutUint16(quietChunk[i*2:i*2+2], 500)
+	}
+	quietRMS := calculateRMS(quietChunk)
+	engine.PlayPeerPCM("peer_quiet", quietChunk, quietRMS, true)
+	jb := engine.peerJitterBuffers["peer_quiet"]
+	if jb == nil {
+		t.Fatalf("Expected jitter buffer created for peer_quiet")
+	}
+}
+

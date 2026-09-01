@@ -9,3 +9,11 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 func (a *AudioEngine) startWindowsPlayback() bool {
 	return false
 }
+
+func enumerateWindowsInputDevices() []AudioDevice {
+	return nil
+}
+
+func enumerateWindowsOutputDevices() []AudioDevice {
+	return nil
+}

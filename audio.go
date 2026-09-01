@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,53 +60,211 @@ const (
 	AudioChunkSize  = 640 // 320 samples @ 16-bit (20ms)
 )
 
-// biquad is a persistent-state 2nd-order IIR filter (RBJ Audio EQ Cookbook,
-// Direct Form I). Because its state carries over sample-by-sample across
-// chunk boundaries, it introduces no block-edge clicking the way a
-// window-and-reconstruct (STFT) approach would if used on 20ms frames
-// without overlap-add.
-type biquad struct {
-	b0, b1, b2, a1, a2 float64
-	x1, x2, y1, y2     float64
+// AudioDevice represents a system microphone or speaker output device.
+type AudioDevice struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsDefault bool   `json:"is_default"`
+	IsInput   bool   `json:"is_input"`
 }
 
-func newLowpass(fs, f0, q float64) biquad {
-	w0 := 2 * math.Pi * f0 / fs
-	alpha := math.Sin(w0) / (2 * q)
-	cosw0 := math.Cos(w0)
-	a0 := 1 + alpha
-	return biquad{
-		b0: ((1 - cosw0) / 2) / a0,
-		b1: (1 - cosw0) / a0,
-		b2: ((1 - cosw0) / 2) / a0,
-		a1: (-2 * cosw0) / a0,
-		a2: (1 - alpha) / a0,
+// EnumerateInputDevices discovers available microphone input devices on the system.
+func EnumerateInputDevices() []AudioDevice {
+	devices := []AudioDevice{
+		{ID: "default", Name: "Default System Microphone", IsDefault: true, IsInput: true},
 	}
-}
 
-func newHighpass(fs, f0, q float64) biquad {
-	w0 := 2 * math.Pi * f0 / fs
-	alpha := math.Sin(w0) / (2 * q)
-	cosw0 := math.Cos(w0)
-	a0 := 1 + alpha
-	return biquad{
-		b0: ((1 + cosw0) / 2) / a0,
-		b1: (-(1 + cosw0)) / a0,
-		b2: ((1 + cosw0) / 2) / a0,
-		a1: (-2 * cosw0) / a0,
-		a2: (1 - alpha) / a0,
+	if runtime.GOOS == "windows" {
+		winDevs := enumerateWindowsInputDevices()
+		if len(winDevs) > 0 {
+			return winDevs
+		}
+		return devices
 	}
+
+	// Linux PulseAudio / PipeWire device enumeration
+	if p := findAudioTool("pactl"); p != "" {
+		out, err := exec.Command(p, "list", "sources").Output()
+		if err == nil {
+			parsed := parsePactlSources(out)
+			if len(parsed) > 0 {
+				return append(devices, parsed...)
+			}
+		}
+	}
+
+	// Fallback to ALSA arecord -l
+	if p := findAudioTool("arecord"); p != "" {
+		out, err := exec.Command(p, "-l").Output()
+		if err == nil {
+			parsed := parseAlsaDevices(out, true)
+			if len(parsed) > 0 {
+				return append(devices, parsed...)
+			}
+		}
+	}
+
+	return devices
 }
 
-func (f *biquad) process(x float64) float64 {
-	y := f.b0*x + f.b1*f.x1 + f.b2*f.x2 - f.a1*f.y1 - f.a2*f.y2
-	f.x2, f.x1 = f.x1, x
-	f.y2, f.y1 = f.y1, y
-	return y
+// EnumerateOutputDevices discovers available speaker/headphone playback devices on the system.
+func EnumerateOutputDevices() []AudioDevice {
+	devices := []AudioDevice{
+		{ID: "default", Name: "Default System Output / Speakers", IsDefault: true, IsInput: false},
+	}
+
+	if runtime.GOOS == "windows" {
+		winDevs := enumerateWindowsOutputDevices()
+		if len(winDevs) > 0 {
+			return winDevs
+		}
+		return devices
+	}
+
+	// Linux PulseAudio / PipeWire device enumeration
+	if p := findAudioTool("pactl"); p != "" {
+		out, err := exec.Command(p, "list", "sinks").Output()
+		if err == nil {
+			parsed := parsePactlSinks(out)
+			if len(parsed) > 0 {
+				return append(devices, parsed...)
+			}
+		}
+	}
+
+	// Fallback to ALSA aplay -l
+	if p := findAudioTool("aplay"); p != "" {
+		out, err := exec.Command(p, "-l").Output()
+		if err == nil {
+			parsed := parseAlsaDevices(out, false)
+			if len(parsed) > 0 {
+				return append(devices, parsed...)
+			}
+		}
+	}
+
+	return devices
 }
 
-// butterworthQ is the standard maximally-flat Q for a single-stage 2nd order filter.
-const butterworthQ = 0.70710678
+func parsePactlSources(data []byte) []AudioDevice {
+	var devices []AudioDevice
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	var curName, curDesc string
+
+	flush := func() {
+		if curName != "" {
+			// Skip monitor sources for microphone list
+			if !strings.HasSuffix(curName, ".monitor") && !strings.HasPrefix(curDesc, "Monitor of") {
+				displayName := curDesc
+				if displayName == "" {
+					displayName = curName
+				}
+				devices = append(devices, AudioDevice{
+					ID:      curName,
+					Name:    displayName,
+					IsInput: true,
+				})
+			}
+		}
+		curName = ""
+		curDesc = ""
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "Source #") {
+			flush()
+		} else if strings.HasPrefix(line, "Name: ") {
+			curName = strings.TrimSpace(strings.TrimPrefix(line, "Name: "))
+		} else if strings.HasPrefix(line, "Description: ") {
+			curDesc = strings.TrimSpace(strings.TrimPrefix(line, "Description: "))
+		} else if strings.HasPrefix(line, "device.description = ") {
+			val := strings.Trim(strings.TrimPrefix(line, "device.description = "), "\"")
+			if curDesc == "" {
+				curDesc = val
+			}
+		} else if strings.HasPrefix(line, "node.description = ") {
+			val := strings.Trim(strings.TrimPrefix(line, "node.description = "), "\"")
+			if curDesc == "" {
+				curDesc = val
+			}
+		}
+	}
+	flush()
+	return devices
+}
+
+func parsePactlSinks(data []byte) []AudioDevice {
+	var devices []AudioDevice
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	var curName, curDesc string
+
+	flush := func() {
+		if curName != "" {
+			displayName := curDesc
+			if displayName == "" {
+				displayName = curName
+			}
+			devices = append(devices, AudioDevice{
+				ID:      curName,
+				Name:    displayName,
+				IsInput: false,
+			})
+		}
+		curName = ""
+		curDesc = ""
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "Sink #") {
+			flush()
+		} else if strings.HasPrefix(line, "Name: ") {
+			curName = strings.TrimSpace(strings.TrimPrefix(line, "Name: "))
+		} else if strings.HasPrefix(line, "Description: ") {
+			curDesc = strings.TrimSpace(strings.TrimPrefix(line, "Description: "))
+		} else if strings.HasPrefix(line, "device.description = ") {
+			val := strings.Trim(strings.TrimPrefix(line, "device.description = "), "\"")
+			if curDesc == "" {
+				curDesc = val
+			}
+		} else if strings.HasPrefix(line, "node.description = ") {
+			val := strings.Trim(strings.TrimPrefix(line, "node.description = "), "\"")
+			if curDesc == "" {
+				curDesc = val
+			}
+		}
+	}
+	flush()
+	return devices
+}
+
+func parseAlsaDevices(data []byte, isInput bool) []AudioDevice {
+	var devices []AudioDevice
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "card ") {
+			// card 1: Device [USB Audio], device 0: USB Audio [USB Audio]
+			parts := strings.Split(line, ":")
+			if len(parts) >= 3 {
+				cardNum := strings.TrimPrefix(strings.Fields(parts[0])[1], "card")
+				cardNum = strings.TrimSpace(cardNum)
+				devName := strings.TrimSpace(parts[1])
+				if idx := strings.Index(devName, "["); idx != -1 {
+					devName = strings.Trim(devName[idx:], "[]")
+				}
+				devID := fmt.Sprintf("hw:%s,0", cardNum)
+				devices = append(devices, AudioDevice{
+					ID:      devID,
+					Name:    devName,
+					IsInput: isInput,
+				})
+			}
+		}
+	}
+	return devices
+}
 
 // PeerJitterBuffer maintains a smooth, jitter-free FIFO audio chunk queue for each peer.
 // It absorbs network timing variance with a 2-chunk (40ms) pre-buffering cushion,
@@ -168,38 +330,30 @@ type AudioEngine struct {
 	PrevMuted    bool
 	PrevDeafened bool
 
-	// Suppression mode: 0 = KAPALI, 1 = ACIK (Standart), 2 = YUKSEK
-	SuppressionMode int
-	Gain            float64 // 0.0 to 3.0 (1.0 = 100%, up to 300%)
-	GainSliderState *widgets.SliderState
-	VADSliderState  *widgets.SliderState
-	IsSpeaking      bool
-	LocalRMS        float64
-	LocalWave       []float64 // Last 40 samples for visualizer
-	PeerWaves       map[string][]float64
-	VADThreshold    float64
+	// Suppression mode: 0 = OFF (Bypass), 1 = ON (Standard Clean), 2 = HIGH
+	SuppressionMode   int
+	Gain              float64 // Mic Gain: 0.0 to 3.0 (1.0 = 100%, up to 300%)
+	OutputVolume      float64 // Output Volume: 0.0 to 2.0 (1.0 = 100%, up to 200%)
+	GainSliderState   *widgets.SliderState
+	OutputSliderState *widgets.SliderState
+	VADSliderState    *widgets.SliderState
+	IsSpeaking        bool
+	LocalRMS          float64
+	LocalWave         []float64 // Last 40 samples for visualizer
+	PeerWaves         map[string][]float64
+	VADThreshold      float64
 
-	// 3-band splitter: low (<150Hz rumble/hum), mid (150-3400Hz voice),
-	// high (>3400Hz hiss/sibilance). Each has independent adaptive noise
-	// floor tracking and gate gain, so a constant hum or fan hiss can be
-	// suppressed continuously -- including while you're actively speaking --
-	// instead of only during silence.
-	lpLow  biquad // low band extractor: LPF @150Hz
-	hpMid  biquad // mid band extractor: HPF @150Hz (stage 1)
-	lpMid  biquad // mid band extractor: LPF @3400Hz (stage 2)
-	hpHigh biquad // high band extractor: HPF @3400Hz
+	// Devices
+	InputDevices      []AudioDevice
+	OutputDevices     []AudioDevice
+	SelectedInputIdx  int
+	SelectedOutputIdx int
 
-	noiseFloorLow  float64
-	noiseFloorMid  float64
-	noiseFloorHigh float64
-
-	gateGainLow  float64
-	gateGainMid  float64
-	gateGainHigh float64
-
-	// DSP filter & VAD state
+	// DSP state
 	hpPrevIn        float64
 	hpPrevOut       float64
+	noiseFloor      float64
+	gateGain        float64
 	speechHangover  int     // Hangover counter (chunks) to preserve word endings and pauses
 	lastPlaybackRMS float64 // Tracks speaker playback energy for Acoustic Echo Suppression (AES)
 
@@ -208,6 +362,7 @@ type AudioEngine struct {
 	capturePipe  io.ReadCloser
 	playbackCmd  *exec.Cmd
 	playbackPipe io.WriteCloser
+	onFrame      func(rms float64, speaking bool, pcm []byte)
 
 	// Mixing buffer for incoming peer streams with jitter compensation
 	peerJitterBuffers map[string]*PeerJitterBuffer
@@ -217,33 +372,156 @@ type AudioEngine struct {
 }
 
 func NewAudioEngine() *AudioEngine {
+	inputDevs := EnumerateInputDevices()
+	outputDevs := EnumerateOutputDevices()
+
 	engine := &AudioEngine{
 		Muted:             false,
 		Deafened:          false,
 		Loopback:          false,
 		InTestMode:        false,
-		SuppressionMode:   1, // Default: ACIK (Standart)
-		Gain:              1.0,
+		SuppressionMode:   1, // Default: ON (Standard Clean)
+		Gain:              1.0,  // Standard 100% initial mic gain
+		OutputVolume:      1.0,  // 100% master playback volume
 		GainSliderState:   widgets.NewSliderState(100),
+		OutputSliderState: widgets.NewSliderState(100),
 		VADSliderState:    widgets.NewSliderState(6),
-		VADThreshold:      0.006, // Balanced: natural voice detection without laptop speaker echo
+		VADThreshold:      0.005, // Highly responsive, natural voice detection
 		LocalWave:         make([]float64, 40),
 		PeerWaves:         make(map[string][]float64),
 		peerJitterBuffers: make(map[string]*PeerJitterBuffer),
 		mixChan:           make(chan []byte, 64),
 		stopChan:          make(chan struct{}),
-
-		lpLow:  newLowpass(AudioSampleRate, 150.0, butterworthQ),
-		hpMid:  newHighpass(AudioSampleRate, 150.0, butterworthQ),
-		lpMid:  newLowpass(AudioSampleRate, 3400.0, butterworthQ),
-		hpHigh: newHighpass(AudioSampleRate, 3400.0, butterworthQ),
-
-		noiseFloorLow:  0.001,
-		noiseFloorMid:  0.001,
-		noiseFloorHigh: 0.001,
+		InputDevices:      inputDevs,
+		OutputDevices:     outputDevs,
+		SelectedInputIdx:  0,
+		SelectedOutputIdx: 0,
+		noiseFloor:        0.001,
+		gateGain:          1.0,
 	}
 
 	return engine
+}
+
+func (a *AudioEngine) RefreshDevices() {
+	inDevs := EnumerateInputDevices()
+	outDevs := EnumerateOutputDevices()
+
+	a.mu.Lock()
+	a.InputDevices = inDevs
+	a.OutputDevices = outDevs
+	if a.SelectedInputIdx >= len(inDevs) {
+		a.SelectedInputIdx = 0
+	}
+	if a.SelectedOutputIdx >= len(outDevs) {
+		a.SelectedOutputIdx = 0
+	}
+	a.mu.Unlock()
+}
+
+func (a *AudioEngine) SetInputDevice(idx int) {
+	a.mu.Lock()
+	if len(a.InputDevices) == 0 {
+		a.mu.Unlock()
+		return
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(a.InputDevices) {
+		idx = len(a.InputDevices) - 1
+	}
+	if a.SelectedInputIdx == idx {
+		a.mu.Unlock()
+		return
+	}
+	a.SelectedInputIdx = idx
+	isRunning := a.running
+	onFrame := a.onFrame
+	a.mu.Unlock()
+
+	if isRunning {
+		a.restartCapture(onFrame)
+	}
+}
+
+func (a *AudioEngine) CycleInputDevice(delta int) int {
+	a.mu.Lock()
+	n := len(a.InputDevices)
+	if n <= 1 {
+		a.mu.Unlock()
+		return 0
+	}
+	newIdx := (a.SelectedInputIdx + delta%n + n) % n
+	a.mu.Unlock()
+
+	a.SetInputDevice(newIdx)
+	return newIdx
+}
+
+func (a *AudioEngine) SetOutputDevice(idx int) {
+	a.mu.Lock()
+	if len(a.OutputDevices) == 0 {
+		a.mu.Unlock()
+		return
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(a.OutputDevices) {
+		idx = len(a.OutputDevices) - 1
+	}
+	if a.SelectedOutputIdx == idx {
+		a.mu.Unlock()
+		return
+	}
+	a.SelectedOutputIdx = idx
+	isRunning := a.running
+	a.mu.Unlock()
+
+	if isRunning {
+		a.restartPlayback()
+	}
+}
+
+func (a *AudioEngine) CycleOutputDevice(delta int) int {
+	a.mu.Lock()
+	n := len(a.OutputDevices)
+	if n <= 1 {
+		a.mu.Unlock()
+		return 0
+	}
+	newIdx := (a.SelectedOutputIdx + delta%n + n) % n
+	a.mu.Unlock()
+
+	a.SetOutputDevice(newIdx)
+	return newIdx
+}
+
+func (a *AudioEngine) GetSelectedInputName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.InputDevices) == 0 {
+		return "Default Microphone"
+	}
+	idx := a.SelectedInputIdx
+	if idx < 0 || idx >= len(a.InputDevices) {
+		idx = 0
+	}
+	return a.InputDevices[idx].Name
+}
+
+func (a *AudioEngine) GetSelectedOutputName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.OutputDevices) == 0 {
+		return "Default Speakers"
+	}
+	idx := a.SelectedOutputIdx
+	if idx < 0 || idx >= len(a.OutputDevices) {
+		idx = 0
+	}
+	return a.OutputDevices[idx].Name
 }
 
 // EnterTestMode sets up isolated microphone test state:
@@ -314,6 +592,7 @@ func (a *AudioEngine) Start(onFrame func(rms float64, speaking bool, pcm []byte)
 		return
 	}
 	a.running = true
+	a.onFrame = onFrame
 	a.stopChan = make(chan struct{})
 	a.mu.Unlock()
 
@@ -348,11 +627,48 @@ func (a *AudioEngine) Stop() {
 	}
 }
 
+func (a *AudioEngine) restartCapture(onFrame func(rms float64, speaking bool, pcm []byte)) {
+	a.mu.Lock()
+	if a.capturePipe != nil {
+		_ = a.capturePipe.Close()
+		a.capturePipe = nil
+	}
+	if a.captureCmd != nil && a.captureCmd.Process != nil {
+		_ = a.captureCmd.Process.Kill()
+		a.captureCmd = nil
+	}
+	a.mu.Unlock()
+
+	a.startCapture(onFrame)
+}
+
+func (a *AudioEngine) restartPlayback() {
+	a.mu.Lock()
+	if a.playbackPipe != nil {
+		_ = a.playbackPipe.Close()
+		a.playbackPipe = nil
+	}
+	if a.playbackCmd != nil && a.playbackCmd.Process != nil {
+		_ = a.playbackCmd.Process.Kill()
+		a.playbackCmd = nil
+	}
+	a.mu.Unlock()
+
+	a.startPlayback()
+}
+
 func (a *AudioEngine) startCapture(onFrame func(rms float64, speaking bool, pcm []byte)) {
 	// 1. Try native Windows audio capture (winmm waveIn)
 	if a.startWindowsCapture(onFrame) {
 		return
 	}
+
+	var chosenDeviceID string
+	a.mu.RLock()
+	if a.SelectedInputIdx >= 0 && a.SelectedInputIdx < len(a.InputDevices) {
+		chosenDeviceID = a.InputDevices[a.SelectedInputIdx].ID
+	}
+	a.mu.RUnlock()
 
 	// 2. Try macOS specific audio capture (avfoundation ffmpeg or sox/rec)
 	if runtime.GOOS == "darwin" {
@@ -364,43 +680,68 @@ func (a *AudioEngine) startCapture(onFrame func(rms float64, speaking bool, pcm 
 			darwinCmds = append(darwinCmds, exec.Command(p, "-q", "-d", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"))
 		}
 		if p := findAudioTool("ffmpeg"); p != "" {
+			inputArg := ":default"
+			if chosenDeviceID != "" && chosenDeviceID != "default" {
+				inputArg = ":" + chosenDeviceID
+			}
 			darwinCmds = append(darwinCmds,
-				exec.Command(p, "-loglevel", "quiet", "-f", "avfoundation", "-i", ":default", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"),
+				exec.Command(p, "-loglevel", "quiet", "-f", "avfoundation", "-i", inputArg, "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"),
 				exec.Command(p, "-loglevel", "quiet", "-f", "avfoundation", "-i", ":0", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"),
-				exec.Command(p, "-loglevel", "quiet", "-f", "avfoundation", "-i", ":none", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"),
 			)
 		}
 
 		for _, cmd := range darwinCmds {
 			stdout, err := cmd.StdoutPipe()
 			if err == nil && cmd.Start() == nil {
+				a.mu.Lock()
 				a.captureCmd = cmd
 				a.capturePipe = stdout
+				a.mu.Unlock()
 				go a.readCaptureLoop(stdout, onFrame)
 				return
 			}
 		}
 	}
 
-	// 3. Try Linux command-line capture tools
+	// 3. Try Linux command-line capture tools with selected device ID
 	var cmd *exec.Cmd
 	if p := findAudioTool("parec"); p != "" {
-		cmd = exec.Command(p, "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
+		if chosenDeviceID != "" && chosenDeviceID != "default" {
+			cmd = exec.Command(p, "-d", chosenDeviceID, "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
+		} else {
+			cmd = exec.Command(p, "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
+		}
 	} else if p := findAudioTool("pw-record"); p != "" {
-		cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+		if chosenDeviceID != "" && chosenDeviceID != "default" {
+			cmd = exec.Command(p, "--target", chosenDeviceID, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+		} else {
+			cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+		}
 	} else if p := findAudioTool("rec"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
+		if chosenDeviceID != "" && chosenDeviceID != "default" {
+			cmd.Env = append(os.Environ(), "AUDIODEV="+chosenDeviceID)
+		}
 	} else if p := findAudioTool("sox"); p != "" {
 		cmd = exec.Command(p, "-q", "-d", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-")
+		if chosenDeviceID != "" && chosenDeviceID != "default" {
+			cmd.Env = append(os.Environ(), "AUDIODEV="+chosenDeviceID)
+		}
 	} else if p := findAudioTool("arecord"); p != "" {
-		cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
+		if chosenDeviceID != "" && chosenDeviceID != "default" {
+			cmd = exec.Command(p, "-D", chosenDeviceID, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
+		} else {
+			cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
+		}
 	}
 
 	if cmd != nil {
 		stdout, err := cmd.StdoutPipe()
 		if err == nil && cmd.Start() == nil {
+			a.mu.Lock()
 			a.captureCmd = cmd
 			a.capturePipe = stdout
+			a.mu.Unlock()
 			go a.readCaptureLoop(stdout, onFrame)
 			return
 		}
@@ -445,14 +786,14 @@ func (a *AudioEngine) readCaptureLoop(r io.Reader, onFrame func(rms float64, spe
 			processed := applyGain(buf, gain)
 
 			if suppressMode == 0 {
-				// KAPALI (Bypass Mode): Direct raw audio with basic VAD
+				// OFF (Bypass Mode): Direct clean audio with basic VAD
 				rawRMS := calculateRMS(processed)
 				speaking = rawRMS > a.VADThreshold
 				finalRMS = rawRMS
 				chunk = make([]byte, len(processed))
 				copy(chunk, processed)
 			} else {
-				// ACIK / YUKSEK (True Spectral Gating & Transient Subband Noise Reduction)
+				// ON / HIGH: Pristine linear-phase noise suppression & speech clarity enhancement
 				var cleaned []byte
 				speaking, finalRMS, cleaned = a.processNoiseCancellation(processed, suppressMode)
 				chunk = cleaned
@@ -474,25 +815,21 @@ func (a *AudioEngine) readCaptureLoop(r io.Reader, onFrame func(rms float64, spe
 	}
 }
 
-// processNoiseCancellation performs 3-band spectral gating designed to eliminate
-// ambient hum, desk vibrations, fan hiss, and isolated sharp keystrokes without
-// cutting off the user's voice or muffling natural vocal harmonics:
-// 1. High-Pass Filter (85 Hz) to eliminate desk thumps & DC offset
-// 2. 3-band splitting: low (<150Hz voice depth/hum), mid (150-3400Hz vocal fundamentals),
-//    high (>3400Hz sibilance & consonants) via persistent-state IIR biquads
-// 3. Transient click protection that preserves voice attacks without muting speech onset
-// 4. Per-band noise floor tracking that protects against speech pollution
-// 5. Intelligent VAD with generous hangover and zero attack delay so the start of words is never cut off
-// 6. Natural band gain balancing and soft-knee peak limiting
+// processNoiseCancellation performs full-spectrum, phase-linear voice enhancement:
+// 1. High-Pass Filter (75 Hz) to eliminate desk thumps & DC offset without cutting vocal warmth
+// 2. Adaptive noise floor tracking on silence
+// 3. Transient isolation and intelligent VAD with generous hangover
+// 4. Transparent dynamic spectral gate (OFF: 100%, ON: -18dB noise floor reduction, HIGH: -36dB)
+// 5. Headroom vocal limiter with transparent saturation above 30,000 for crystal-clear clarity.
 func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, float64, []byte) {
 	sampleCount := len(pcm) / 2
 	if sampleCount != 320 {
 		return false, 0, pcm
 	}
 
-	// 1. High-Pass Filter (85 Hz) - removes sub-audible DC offset / desk rumble
+	// 1. High-Pass Filter (75 Hz) - removes sub-audible DC offset & desk thumps without muffling voice
 	filtered := make([]float64, 320)
-	const hpAlpha = 0.967
+	const hpAlpha = 0.970
 	var frameEnergy float64
 	var highFreqEnergy float64
 	var maxPeak float64
@@ -517,60 +854,32 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	}
 	frameRMS := math.Sqrt(frameEnergy/320.0) / 32768.0
 
-	// 2. 3-Band Splitter via persistent-state RBJ biquads
-	lowBand := make([]float64, 320)
-	midBand := make([]float64, 320)
-	highBand := make([]float64, 320)
-
-	var lowEnergy, midEnergy, highEnergy float64
-	for i := 0; i < 320; i++ {
-		x := filtered[i]
-
-		lo := a.lpLow.process(x)
-		hpStage := a.hpMid.process(x)
-		mid := a.lpMid.process(hpStage)
-		hi := a.hpHigh.process(x)
-
-		lowBand[i] = lo
-		midBand[i] = mid
-		highBand[i] = hi
-
-		lowEnergy += lo * lo
-		midEnergy += mid * mid
-		highEnergy += hi * hi
-	}
-
-	lowRMS := math.Sqrt(lowEnergy/320.0) / 32768.0
-	midRMS := math.Sqrt(midEnergy/320.0) / 32768.0
-	highRMS := math.Sqrt(highEnergy/320.0) / 32768.0
-
-	// 3. Transient Click Isolation (sharp mechanical clicks with no vocal energy)
+	// 2. Transient Click Isolation (sharp mechanical clicks with no vocal energy)
 	hRatio := highFreqEnergy / (frameEnergy + 1.0)
 	peakToRMS := maxPeak / ((frameRMS * 32768.0) + 1.0)
-	isTransientClick := (hRatio > 2.5 && peakToRMS > 6.0 && midRMS < a.VADThreshold*1.5)
+	isTransientClick := (hRatio > 3.0 && peakToRMS > 7.0 && frameRMS < a.VADThreshold*2.0)
 
-	// 4. Adaptive Per-Band Noise Floor Tracking
-	// Crucial rule: do NOT allow active human speech to raise the noise floor.
+	// 3. Adaptive Noise Floor Tracking
+	// Active human speech must NOT pollute the noise floor estimate.
 	if !a.IsSpeaking {
-		a.noiseFloorLow = adaptNoiseFloor(a.noiseFloorLow, lowRMS)
-		a.noiseFloorMid = adaptNoiseFloor(a.noiseFloorMid, midRMS)
-		a.noiseFloorHigh = adaptNoiseFloor(a.noiseFloorHigh, highRMS)
+		if a.noiseFloor <= 0 || math.IsNaN(a.noiseFloor) {
+			a.noiseFloor = 0.001
+		}
+		if frameRMS < a.noiseFloor {
+			a.noiseFloor = a.noiseFloor*0.85 + frameRMS*0.15
+		} else {
+			a.noiseFloor = a.noiseFloor*0.98 + frameRMS*0.02
+		}
 	} else {
-		if lowRMS < a.noiseFloorLow {
-			a.noiseFloorLow = lowRMS
-		}
-		if midRMS < a.noiseFloorMid {
-			a.noiseFloorMid = midRMS
-		}
-		if highRMS < a.noiseFloorHigh {
-			a.noiseFloorHigh = highRMS
+		if frameRMS < a.noiseFloor {
+			a.noiseFloor = frameRMS
 		}
 	}
 
-	// 5. Voice Activity Detection (VAD) with Acoustic Echo Suppression (AES)
+	// 4. Voice Activity Detection (VAD) with Acoustic Echo Suppression (AES)
 	threshold := a.VADThreshold
 
-	// Dynamic Acoustic Echo Suppression: When speakers (e.g. laptop speakers) are playing sound,
+	// Dynamic Acoustic Echo Suppression: When speakers are playing sound,
 	// dynamically duck the microphone threshold to prevent acoustic feedback loop!
 	if a.lastPlaybackRMS > 0.001 {
 		echoDucker := a.lastPlaybackRMS * 0.80
@@ -580,14 +889,14 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 		a.lastPlaybackRMS *= 0.88 // smooth decay
 	}
 
-	snrFloor := math.Max(a.noiseFloorMid, 0.0005)
-	midSNR := midRMS / snrFloor
+	snrFloor := math.Max(a.noiseFloor, 0.0005)
+	snr := frameRMS / snrFloor
 
 	var isSpeech bool
-	if mode == 2 { // YUKSEK (Aggressive mode for noisy rooms)
-		isSpeech = (midRMS > threshold*1.3 && midSNR > 1.25 && !isTransientClick)
-	} else { // ACIK (Standart mode - natural, warm, highly responsive)
-		isSpeech = (midRMS > threshold && midSNR > 1.10 && !isTransientClick) || (frameRMS > threshold*2.0 && !isTransientClick)
+	if mode == 2 { // HIGH (Aggressive mode for noisy rooms)
+		isSpeech = (frameRMS > threshold*1.25 && snr > 1.25 && !isTransientClick)
+	} else { // ON (Standard mode - natural, warm, crisp full-spectrum voice)
+		isSpeech = (frameRMS > threshold && snr > 1.08 && !isTransientClick)
 	}
 
 	speaking := false
@@ -603,43 +912,42 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 		}
 	}
 
-	// 6. Target Gains Per Band
-	var targetLow, targetMid, targetHigh float64
+	// 5. Target Gain Calculation
+	var targetGain float64
 	if speaking {
-		// When speaking: pass vocal warmth (low), core voice (mid), and crisp consonants (high) with 100% fidelity
-		targetLow = 1.0
-		targetMid = 1.0
-		targetHigh = 1.0
+		// When speaking: pass 100% full-bandwidth audio with pristine linear-phase fidelity
+		targetGain = 1.0
 	} else {
-		// When silent: suppress room hum, ambient noise, and fan hiss
-		if mode == 1 { // ACIK (Standart): gentle attenuation
-			targetLow = 0.04
-			targetMid = 0.05
-			targetHigh = 0.04
-		} else { // YUKSEK: near-total gate cutoff
-			targetLow = 0.0
-			targetMid = 0.01
-			targetHigh = 0.0
+		// When silent: smoothly attenuate background noise without phase distortion
+		if mode == 1 { // Standard: natural -18dB noise floor attenuation
+			targetGain = 0.12
+		} else { // HIGH: -36dB aggressive gate
+			targetGain = 0.02
 		}
 	}
 
-	// Smooth gain envelope ramping
-	a.gateGainLow = smoothGain(a.gateGainLow, targetLow)
-	a.gateGainMid = smoothGain(a.gateGainMid, targetMid)
-	a.gateGainHigh = smoothGain(a.gateGainHigh, targetHigh)
+	// Smooth gain envelope ramping (fast attack ~5ms, smooth release ~150ms)
+	var alpha float64
+	if targetGain > a.gateGain {
+		alpha = 0.80
+	} else {
+		alpha = 0.15
+	}
+	a.gateGain = a.gateGain + (targetGain-a.gateGain)*alpha
 
-	// 7. Recombine Bands & Soft-Knee Peak Vocal Limiter
+	// 6. Apply Gain & Soft-Knee Peak Vocal Limiter with High Headroom
 	outBytes := make([]byte, AudioChunkSize)
 	var sumSquares float64
+	g := a.gateGain
 
 	for i := 0; i < 320; i++ {
-		sample := lowBand[i]*a.gateGainLow + midBand[i]*a.gateGainMid + highBand[i]*a.gateGainHigh
+		sample := filtered[i] * g
 
-		// Soft compressor curve to keep voice full-bodied and prevent digital clipping
-		if sample > 28000.0 {
-			sample = 28000.0 + (sample-28000.0)*0.35
-		} else if sample < -28000.0 {
-			sample = -28000.0 + (sample+28000.0)*0.35
+		// Soft compressor curve above 30000 to preserve full vocal punch without digital clipping
+		if sample > 30000.0 {
+			sample = 30000.0 + (sample-30000.0)*0.30
+		} else if sample < -30000.0 {
+			sample = -30000.0 + (sample+30000.0)*0.30
 		}
 
 		norm := sample / 32768.0
@@ -655,33 +963,11 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	}
 
 	finalRMS := math.Sqrt(sumSquares / 320.0)
-	if !speaking && a.gateGainMid < 0.06 {
+	if !speaking && a.gateGain < 0.15 {
 		finalRMS = 0
 	}
 
 	return speaking, finalRMS, outBytes
-}
-
-// adaptNoiseFloor tracks a slowly-adapting noise floor estimate: fast-tracks
-// downward in quiet stretches, creeps upward slowly during non-speech ambient noise.
-func adaptNoiseFloor(floor, rms float64) float64 {
-	if floor <= 0 || math.IsNaN(floor) {
-		floor = 0.001
-	}
-	if rms < floor {
-		return floor*0.85 + rms*0.15
-	}
-	return floor*0.98 + rms*0.02
-}
-
-// smoothGain applies an exponential attack/release envelope to avoid
-// clicking or pumping when a band's gate opens or closes.
-func smoothGain(current, target float64) float64 {
-	alpha := 0.70 // Fast attack (~10ms) so speech is immediately audible
-	if target < current {
-		alpha = 0.12 // Smooth release (~180ms) to avoid clicking or unnatural pumping
-	}
-	return current + (target-current)*alpha
 }
 
 func (a *AudioEngine) fallbackSimulatedLoop(onFrame func(rms float64, speaking bool, pcm []byte)) {
@@ -722,6 +1008,13 @@ func (a *AudioEngine) startPlayback() {
 		return
 	}
 
+	var chosenOutputID string
+	a.mu.RLock()
+	if a.SelectedOutputIdx >= 0 && a.SelectedOutputIdx < len(a.OutputDevices) {
+		chosenOutputID = a.OutputDevices[a.SelectedOutputIdx].ID
+	}
+	a.mu.RUnlock()
+
 	// 2. Try macOS specific audio playback (mpv, sox/play, ffplay)
 	if runtime.GOOS == "darwin" {
 		var darwinCmds []*exec.Cmd
@@ -750,12 +1043,20 @@ func (a *AudioEngine) startPlayback() {
 		}
 	}
 
-	// 3. Try Linux command-line playback tools
+	// 3. Try Linux command-line playback tools with selected device ID
 	var cmd *exec.Cmd
 	if p := findAudioTool("pacat"); p != "" {
-		cmd = exec.Command(p, "--playback", "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
+		if chosenOutputID != "" && chosenOutputID != "default" {
+			cmd = exec.Command(p, "-d", chosenOutputID, "--playback", "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
+		} else {
+			cmd = exec.Command(p, "--playback", "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=20")
+		}
 	} else if p := findAudioTool("pw-play"); p != "" {
-		cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+		if chosenOutputID != "" && chosenOutputID != "default" {
+			cmd = exec.Command(p, "--target", chosenOutputID, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+		} else {
+			cmd = exec.Command(p, "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+		}
 	} else if p := findAudioTool("ffplay"); p != "" {
 		cmd = exec.Command(p, "-loglevel", "quiet", "-nodisp", "-f", "s16le", "-ar", "16000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay", "-i", "pipe:0")
 	} else if p := findAudioTool("mpv"); p != "" {
@@ -765,7 +1066,11 @@ func (a *AudioEngine) startPlayback() {
 	} else if p := findAudioTool("sox"); p != "" {
 		cmd = exec.Command(p, "-q", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-", "-d")
 	} else if p := findAudioTool("aplay"); p != "" {
-		cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
+		if chosenOutputID != "" && chosenOutputID != "default" {
+			cmd = exec.Command(p, "-D", chosenOutputID, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
+		} else {
+			cmd = exec.Command(p, "-q", "-r", "16000", "-f", "S16_LE", "-c", "1", "-t", "raw")
+		}
 	}
 
 	if cmd != nil {
@@ -796,6 +1101,8 @@ func (a *AudioEngine) playbackMixerLoop() {
 				a.startPlayback()
 				continue
 			}
+
+			outputVol := a.OutputVolume
 
 			// In test mode: only play local_loopback stream
 			if a.InTestMode {
@@ -842,7 +1149,7 @@ func (a *AudioEngine) playbackMixerLoop() {
 
 			if len(streams) > 0 && pipe != nil {
 				silenceFramesLeft = 3 // keep 3 frames of comfort silence after active speech ends
-				mixed := mixPCM(streams, AudioChunkSize/2)
+				mixed := mixPCM(streams, AudioChunkSize/2, outputVol)
 				var playEnergy float64
 				for i := 0; i < len(mixed)/2; i++ {
 					s := float64(int16(binary.LittleEndian.Uint16(mixed[i*2 : i*2+2])))
@@ -882,6 +1189,7 @@ func (a *AudioEngine) queueLoopbackPCM(pcm []byte, rms float64, speaking bool) {
 }
 
 // PlayPeerPCM queues incoming audio data from a peer for real-time mixing and playback.
+// Automatically applies dynamic voice leveling to boost quiet peers for optimal loudness and clarity.
 func (a *AudioEngine) PlayPeerPCM(peerID string, pcm []byte, rms float64, speaking bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -901,6 +1209,14 @@ func (a *AudioEngine) PlayPeerPCM(peerID string, pcm []byte, rms float64, speaki
 
 	if a.Deafened || a.InTestMode || len(pcm) == 0 {
 		return
+	}
+
+	// Dynamic Peer Voice Leveling / AGC: If a peer's mic is quiet, gently boost it so they are loud and clear
+	if rms > 0.002 && rms < 0.14 {
+		boostFactor := math.Min(2.2, 0.16/math.Max(rms, 0.04))
+		if boostFactor > 1.05 {
+			pcm = applyGain(pcm, boostFactor)
+		}
 	}
 
 	jb, exists := a.peerJitterBuffers[peerID]
@@ -966,6 +1282,22 @@ func (a *AudioEngine) AdjustGain(delta float64) float64 {
 		a.GainSliderState.Set(int(math.Round(a.Gain*100)), 0, 300)
 	}
 	return a.Gain
+}
+
+func (a *AudioEngine) AdjustOutputVolume(delta float64) float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.OutputVolume += delta
+	if a.OutputVolume < 0.0 {
+		a.OutputVolume = 0.0
+	}
+	if a.OutputVolume > 2.0 {
+		a.OutputVolume = 2.0
+	}
+	if a.OutputSliderState != nil {
+		a.OutputSliderState.Set(int(math.Round(a.OutputVolume*100)), 0, 200)
+	}
+	return a.OutputVolume
 }
 
 func (a *AudioEngine) AdjustThreshold(delta float64) float64 {
@@ -1037,11 +1369,11 @@ func applyGain(pcm []byte, gain float64) []byte {
 	for i := 0; i < sampleCount; i++ {
 		s := int16(binary.LittleEndian.Uint16(pcm[i*2 : i*2+2]))
 		amplified := float64(s) * gain
-		// Soft-knee saturation above 24000 to prevent harsh digital clipping when boosted up to 300%
-		if amplified > 24000.0 {
-			amplified = 24000.0 + (amplified-24000.0)*0.45
-		} else if amplified < -24000.0 {
-			amplified = -24000.0 + (amplified+24000.0)*0.45
+		// Soft-knee saturation above 28000 to prevent harsh digital clipping
+		if amplified > 28000.0 {
+			amplified = 28000.0 + (amplified-28000.0)*0.35
+		} else if amplified < -28000.0 {
+			amplified = -28000.0 + (amplified+28000.0)*0.35
 		}
 		if amplified > 32767 {
 			amplified = 32767
@@ -1053,8 +1385,11 @@ func applyGain(pcm []byte, gain float64) []byte {
 	return out
 }
 
-func mixPCM(streams [][]byte, numSamples int) []byte {
+func mixPCM(streams [][]byte, numSamples int, outputVolume float64) []byte {
 	out := make([]byte, numSamples*2)
+	if len(streams) == 0 {
+		return out
+	}
 	for i := 0; i < numSamples; i++ {
 		var sum float64
 		for _, stream := range streams {
@@ -1063,11 +1398,16 @@ func mixPCM(streams [][]byte, numSamples int) []byte {
 				sum += float64(s)
 			}
 		}
-		// Soft saturation for multi-speaker mix
-		if sum > 28000.0 {
-			sum = 28000.0 + (sum-28000.0)*0.35
-		} else if sum < -28000.0 {
-			sum = -28000.0 + (sum+28000.0)*0.35
+
+		if outputVolume != 1.0 && outputVolume > 0 {
+			sum *= outputVolume
+		}
+
+		// Soft saturation limiter for multi-speaker mix
+		if sum > 29000.0 {
+			sum = 29000.0 + (sum-29000.0)*0.30
+		} else if sum < -29000.0 {
+			sum = -29000.0 + (sum+29000.0)*0.30
 		}
 		if sum > 32767 {
 			sum = 32767

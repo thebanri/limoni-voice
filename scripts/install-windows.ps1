@@ -53,9 +53,9 @@ if (!$currentExe) {
 
 if ($currentExe -and (Test-Path $currentExe)) {
     Copy-Item $currentExe $targetExe -Force
-    Write-Host "[+] limoni-voice.exe yerel dizinden kopyalandi." -ForegroundColor Green
+    Write-Host "[+] limoni-voice.exe copied from local directory." -ForegroundColor Green
 } else {
-    Write-Host "[*] limoni-voice.exe GitHub Releases uzerinden indiriliyor..." -ForegroundColor Yellow
+    Write-Host "[*] Downloading limoni-voice.exe from GitHub Releases..." -ForegroundColor Yellow
     $arch = "windows_amd64"
     if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
         $arch = "windows_arm64"
@@ -66,14 +66,14 @@ if ($currentExe -and (Test-Path $currentExe)) {
     try {
         Invoke-WebRequest -Uri $releaseUrl -OutFile $targetExe -UseBasicParsing
         $success = $true
-        Write-Host "[+] limoni-voice.exe basariyla indirildi." -ForegroundColor Green
+        Write-Host "[+] limoni-voice.exe downloaded successfully." -ForegroundColor Green
     } catch {
         try {
             Invoke-WebRequest -Uri $fallbackUrl -OutFile $targetExe -UseBasicParsing
             $success = $true
-            Write-Host "[+] limoni-voice.exe basariyla indirildi." -ForegroundColor Green
+            Write-Host "[+] limoni-voice.exe downloaded successfully." -ForegroundColor Green
         } catch {
-            Write-Host "[-] limoni-voice.exe indirilemedi: $_" -ForegroundColor DarkYellow
+            Write-Host "[-] Failed to download limoni-voice.exe: $_" -ForegroundColor DarkYellow
         }
     }
 }
@@ -90,13 +90,13 @@ try {
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/thebanri/limoni-voice/main/microphone.obj" -OutFile $micPath -UseBasicParsing
     }
 } catch {
-    Write-Host "[-] Assetler indirilirken uyari: $_" -ForegroundColor DarkYellow
+    Write-Host "[-] Warning downloading assets: $_" -ForegroundColor DarkYellow
 }
 
 # 3. Check and Download FFmpeg if missing
 $ffmpegExe = Join-Path $binDir "ffmpeg.exe"
 if (!(Test-Path $ffmpegExe) -and !(Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue)) {
-    Write-Host "[*] FFmpeg indiriliyor (Ekran yayini icin gerekli)..." -ForegroundColor Yellow
+    Write-Host "[*] Downloading FFmpeg (required for screen broadcasting)..." -ForegroundColor Yellow
     $ffmpegZip = Join-Path $env:TEMP "ffmpeg-release-essentials.zip"
     $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
     try {
@@ -105,32 +105,32 @@ if (!(Test-Path $ffmpegExe) -and !(Get-Command "ffmpeg.exe" -ErrorAction Silentl
         $extractedFfmpeg = Get-ChildItem -Path "$env:TEMP\ffmpeg_extracted" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
         if ($extractedFfmpeg) {
             Copy-Item $extractedFfmpeg.FullName $binDir -Force
-            Write-Host "[+] ffmpeg.exe basariyla kuruldu!" -ForegroundColor Green
+            Write-Host "[+] ffmpeg.exe installed successfully!" -ForegroundColor Green
         }
         Remove-Item $ffmpegZip -Force -ErrorAction SilentlyContinue
         Remove-Item "$env:TEMP\ffmpeg_extracted" -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
-        Write-Host "[-] Otomatik indirme basarisiz, winget deneniyor..." -ForegroundColor DarkYellow
+        Write-Host "[-] Automatic download failed, attempting winget..." -ForegroundColor DarkYellow
         try {
             winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
         } catch {}
     }
 } else {
-    Write-Host "[+] FFmpeg zaten mevcut." -ForegroundColor Green
+    Write-Host "[+] FFmpeg is already installed." -ForegroundColor Green
 }
 
 # 4. Check and Download MPV if missing
 $mpvExe = Join-Path $binDir "mpv.exe"
 if (!(Test-Path $mpvExe) -and !(Get-Command "mpv.exe" -ErrorAction SilentlyContinue)) {
-    Write-Host "[*] MPV Player kontrol ediliyor (Yayin izleyici icin gerekli)..." -ForegroundColor Yellow
+    Write-Host "[*] Checking MPV Player (required for screen stream viewing)..." -ForegroundColor Yellow
     try {
         winget install mpv.mpv --accept-source-agreements --accept-package-agreements
-        Write-Host "[+] MPV basariyla kuruldu!" -ForegroundColor Green
+        Write-Host "[+] MPV installed successfully!" -ForegroundColor Green
     } catch {
-        Write-Host "[-] winget ile kurulamadi, lutfen https://mpv.io adresinden yukleyin." -ForegroundColor DarkYellow
+        Write-Host "[-] Could not install via winget, please install manually from https://mpv.io" -ForegroundColor DarkYellow
     }
 } else {
-    Write-Host "[+] MPV zaten mevcut." -ForegroundColor Green
+    Write-Host "[+] MPV is already installed." -ForegroundColor Green
 }
 
 # 5. Add bin directory to User PATH
@@ -139,7 +139,7 @@ if ([string]::IsNullOrWhiteSpace($userPath)) {
     [Environment]::SetEnvironmentVariable("Path", $binDir, "User")
 } elseif ($userPath -notlike "*$binDir*") {
     [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
-    Write-Host "[+] $binDir Kullanici PATH degiskenine eklendi." -ForegroundColor Green
+    Write-Host "[+] $binDir added to User PATH environment variable." -ForegroundColor Green
 }
 
 # 6. Create Desktop Shortcut with custom Icon
@@ -157,10 +157,10 @@ if (![string]::IsNullOrWhiteSpace($desktop) -and (Test-Path $desktop)) {
             }
             $shortcut.Description = "Limoni Voice - P2P Encrypted Voice & Screen Sharing"
             $shortcut.Save()
-            Write-Host "[+] Masaustu kisayolu olusturuldu (Ikonlu)!" -ForegroundColor Green
+            Write-Host "[+] Desktop shortcut created (with custom icon)!" -ForegroundColor Green
         }
     } catch {
-        Write-Host "[-] Masaustu kisayolu olusturulamadi: $_" -ForegroundColor DarkYellow
+        Write-Host "[-] Could not create desktop shortcut: $_" -ForegroundColor DarkYellow
     }
 }
 
@@ -171,5 +171,5 @@ try {
 } catch {}
 
 Write-Host "`n==========================================" -ForegroundColor Cyan
-Write-Host " [✓] Kurulum Tamamlandi! Limoni Voice Hazir." -ForegroundColor Green
+Write-Host " [✓] Installation Complete! Limoni Voice is ready." -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Cyan

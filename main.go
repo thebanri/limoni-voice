@@ -446,8 +446,10 @@ func main() {
 						closeTestModal()
 					case backend.KeySpace:
 						audio.ToggleLoopback()
-					case backend.KeyArrowLeft, backend.KeyArrowRight:
-						audio.CycleSuppressionMode()
+					case backend.KeyArrowLeft:
+						audio.CycleInputDevice(-1)
+					case backend.KeyArrowRight:
+						audio.CycleInputDevice(1)
 					case backend.KeyRune:
 						switch e.Ch {
 						case 'l', 'L':
@@ -456,17 +458,27 @@ func main() {
 							audio.CycleSuppressionMode()
 						case 'm', 'M':
 							isMuted := audio.ToggleMute()
-							node.SendMuteState(isMuted)
-						case '0':
-							audio.SetSuppressionMode(0)
-						case '1':
-							audio.AdjustGain(-0.1)
-						case '2':
-							audio.AdjustGain(0.1)
+							if node != nil {
+								node.SendMuteState(isMuted)
+							}
+						case 'd', 'D':
+							isDeaf := audio.ToggleDeafen()
+							if node != nil {
+								node.SendDeafenState(isDeaf)
+								node.SendMuteState(audio.Muted)
+							}
+						case '1', '[', ']':
+							audio.CycleInputDevice(1)
+						case '2', 'o', 'O':
+							audio.CycleOutputDevice(1)
 						case '-', '_':
 							audio.AdjustGain(-0.1)
 						case '+', '=':
 							audio.AdjustGain(0.1)
+						case '9', '(':
+							audio.AdjustOutputVolume(-0.1)
+						case '0', ')':
+							audio.AdjustOutputVolume(0.1)
 						}
 					}
 					continue

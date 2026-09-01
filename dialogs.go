@@ -113,16 +113,23 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 	}
 }
 
-// DrawTestModal renders the interactive Microphone & Sound Test Dialog without any icons or emojis.
+// DrawTestModal renders the interactive Microphone & Audio Device Settings panel without any icons or emojis.
 func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onClose func()) {
-	modalW, modalH := uint16(64), uint16(17)
+	modalW, modalH := uint16(68), uint16(22)
+	if screenArea.Width < modalW+2 {
+		modalW = screenArea.Width - 2
+	}
+	if screenArea.Height < modalH+2 {
+		modalH = screenArea.Height - 2
+	}
+
 	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
 	widgets.DrawShadow(frame.Buffer, modalArea, 2, 1)
 
 	frame.RegisterModal("sound_test_modal", modalArea, onClose)
 
 	mainBlock := widgets.Block{
-		Title:          " MICROPHONE & SOUND TEST PANEL ",
+		Title:          " MICROPHONE & AUDIO SETTINGS ",
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
@@ -161,77 +168,121 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Width:  inner.Width - 2,
 		Height: 3,
 	}
-	DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "MICROPHONE INPUT LEVEL")
+	DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "MIC INPUT LEVEL")
 
-	// 3. Loopback / Echo test toggle
-	loopbackY := inner.Y + 5
-	loopBox := "[ ] Hear My Own Voice (Loopback Test) [Space]"
-	loopStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
-	if audio.Loopback {
-		loopBox = "[X] Hear My Own Voice (Loopback ACTIVE) [Space]"
-		loopStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
-			Modifier: cell.ModifierBold,
-		}
-	}
-	buf.SetString(inner.X+1, loopbackY, loopBox, loopStyle)
-	frame.RegisterClickHandler(cell.NewRect(inner.X+1, loopbackY, uint16(len([]rune(loopBox))), 1), func(_ backend.MouseEvent) {
-		audio.ToggleLoopback()
+	// 3. Microphone Input Device Selection Row
+	micDevY := inner.Y + 4
+	buf.SetString(inner.X+1, micDevY, "Microphone [1]:", cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Modifier: cell.ModifierBold,
 	})
 
-	// 4. Suppression Mode Toggle Buttons [N]
-	noiseY := inner.Y + 7
-	buf.SetString(inner.X+1, noiseY, "Noise Suppression [N]:", cell.Style{
-		Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4),
-		Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
-	})
-
-	optOff := " [ OFF ] "
-	optStd := " [ ON (Standard) ] "
-	optHi := " [ HIGH ] "
-
-	curMode := audio.SuppressionMode
-	styleOff := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
-	styleStd := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
-	styleHi := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
-
-	activeStyle := cell.Style{
+	prevBtn := "[◀]"
+	nextBtn := "[▶]"
+	micBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 		Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 		Modifier: cell.ModifierBold,
 	}
 
-	if curMode == 0 {
-		styleOff = activeStyle
-	} else if curMode == 1 {
-		styleStd = activeStyle
-	} else {
-		styleHi = activeStyle
+	curMicName := audio.GetSelectedInputName()
+	micTotal := len(audio.InputDevices)
+	if micTotal == 0 {
+		micTotal = 1
 	}
+	micCurIdx := audio.SelectedInputIdx + 1
+	micDisplay := fmt.Sprintf("(%d/%d) %s", micCurIdx, micTotal, curMicName)
 
-	optOffX := inner.X + 24
-	buf.SetString(optOffX, noiseY, optOff, styleOff)
-	frame.RegisterClickHandler(cell.NewRect(optOffX, noiseY, uint16(len([]rune(optOff))), 1), func(_ backend.MouseEvent) {
-		audio.SetSuppressionMode(0)
+	boxX := inner.X + 17
+	buf.SetString(boxX, micDevY, prevBtn, micBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(boxX, micDevY, uint16(len([]rune(prevBtn))), 1), func(_ backend.MouseEvent) {
+		audio.CycleInputDevice(-1)
 	})
 
-	optStdX := optOffX + uint16(len([]rune(optOff))) + 1
-	buf.SetString(optStdX, noiseY, optStd, styleStd)
-	frame.RegisterClickHandler(cell.NewRect(optStdX, noiseY, uint16(len([]rune(optStd))), 1), func(_ backend.MouseEvent) {
-		audio.SetSuppressionMode(1)
+	boxWidth := uint16(24)
+	if inner.Width > 32 {
+		boxWidth = inner.Width - 28
+	}
+	micNameX := boxX + uint16(len([]rune(prevBtn))) + 1
+	micRunes := []rune(micDisplay)
+	if len(micRunes) > int(boxWidth) {
+		if boxWidth > 3 {
+			micDisplay = string(micRunes[:boxWidth-3]) + "..."
+		} else {
+			micDisplay = string(micRunes[:boxWidth])
+		}
+	}
+	nameStyle := cell.Style{
+		Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF),
+		Bg: cell.NewColorRGB(0x22, 0x27, 0x36),
+	}
+	for x := micNameX; x < micNameX+boxWidth; x++ {
+		buf.SetCell(x, micDevY, cell.Cell{Content: ' ', Style: nameStyle})
+	}
+	buf.SetString(micNameX, micDevY, micDisplay, nameStyle)
+	frame.RegisterClickHandler(cell.NewRect(micNameX, micDevY, boxWidth, 1), func(_ backend.MouseEvent) {
+		audio.CycleInputDevice(1)
 	})
 
-	optHiX := optStdX + uint16(len([]rune(optStd))) + 1
-	if optHiX+uint16(len([]rune(optHi))) <= inner.X+inner.Width {
-		buf.SetString(optHiX, noiseY, optHi, styleHi)
-		frame.RegisterClickHandler(cell.NewRect(optHiX, noiseY, uint16(len([]rune(optHi))), 1), func(_ backend.MouseEvent) {
-			audio.SetSuppressionMode(2)
-		})
+	nextMicX := micNameX + boxWidth + 1
+	buf.SetString(nextMicX, micDevY, nextBtn, micBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(nextMicX, micDevY, uint16(len([]rune(nextBtn))), 1), func(_ backend.MouseEvent) {
+		audio.CycleInputDevice(1)
+	})
+
+	// 4. Output (Speaker/Headphone) Device Selection Row
+	outDevY := inner.Y + 6
+	buf.SetString(inner.X+1, outDevY, "Output Dev [2]:", cell.Style{
+		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Modifier: cell.ModifierBold,
+	})
+
+	outBtnStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+		Modifier: cell.ModifierBold,
 	}
 
-	// 5. Volume Slider (Limoni widgets.Slider)
-	gainY := inner.Y + 9
+	curOutName := audio.GetSelectedOutputName()
+	outTotal := len(audio.OutputDevices)
+	if outTotal == 0 {
+		outTotal = 1
+	}
+	outCurIdx := audio.SelectedOutputIdx + 1
+	outDisplay := fmt.Sprintf("(%d/%d) %s", outCurIdx, outTotal, curOutName)
+
+	buf.SetString(boxX, outDevY, prevBtn, outBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(boxX, outDevY, uint16(len([]rune(prevBtn))), 1), func(_ backend.MouseEvent) {
+		audio.CycleOutputDevice(-1)
+	})
+
+	outNameX := boxX + uint16(len([]rune(prevBtn))) + 1
+	outRunes := []rune(outDisplay)
+	if len(outRunes) > int(boxWidth) {
+		if boxWidth > 3 {
+			outDisplay = string(outRunes[:boxWidth-3]) + "..."
+		} else {
+			outDisplay = string(outRunes[:boxWidth])
+		}
+	}
+	for x := outNameX; x < outNameX+boxWidth; x++ {
+		buf.SetCell(x, outDevY, cell.Cell{Content: ' ', Style: nameStyle})
+	}
+	buf.SetString(outNameX, outDevY, outDisplay, nameStyle)
+	frame.RegisterClickHandler(cell.NewRect(outNameX, outDevY, boxWidth, 1), func(_ backend.MouseEvent) {
+		audio.CycleOutputDevice(1)
+	})
+
+	nextOutX := outNameX + boxWidth + 1
+	buf.SetString(nextOutX, outDevY, nextBtn, outBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(nextOutX, outDevY, uint16(len([]rune(nextBtn))), 1), func(_ backend.MouseEvent) {
+		audio.CycleOutputDevice(1)
+	})
+
+	// 5. Mic Volume Slider
+	gainY := inner.Y + 8
 	gainPct := int(math.Round(audio.Gain * 100))
 	gainLabel := fmt.Sprintf("Mic Volume:    [ %3d%% ]", gainPct)
 	buf.SetString(inner.X+1, gainY, gainLabel, cell.Style{
@@ -287,8 +338,111 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	frame.RenderWidget(gainSlider, gainSliderArea)
 
-	// 6. Sensitivity / VAD Threshold Slider (Limoni widgets.Slider)
-	vadY := inner.Y + 11
+	// 6. Speaker Output Volume Slider
+	outVolY := inner.Y + 10
+	outPct := int(math.Round(audio.OutputVolume * 100))
+	outVolLabel := fmt.Sprintf("Speaker Vol:   [ %3d%% ]", outPct)
+	buf.SetString(inner.X+1, outVolY, outVolLabel, cell.Style{
+		Fg:       cell.NewColorRGB(0xA2, 0x9B, 0xFE),
+		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Modifier: cell.ModifierBold,
+	})
+
+	if audio.OutputSliderState == nil {
+		audio.OutputSliderState = widgets.NewSliderState(outPct)
+	} else {
+		audio.OutputSliderState.Set(outPct, 0, 200)
+	}
+
+	outSliderArea := cell.Rect{
+		X:      inner.X + 28,
+		Y:      outVolY,
+		Width:  sliderWidth,
+		Height: 1,
+	}
+	outSlider := widgets.Slider{
+		ID:    "speaker_vol_slider",
+		State: audio.OutputSliderState,
+		Min:   0,
+		Max:   200,
+		TrackStyle: cell.Style{
+			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
+			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+		},
+		FilledStyle: cell.Style{
+			Fg:       cell.NewColorRGB(0xA2, 0x9B, 0xFE),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		},
+		ThumbStyle: cell.Style{
+			Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		},
+		FocusedStyle: cell.Style{
+			Fg: cell.NewColorRGB(0xFD, 0x79, 0xA8),
+			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+		},
+		OnChange: func(value int) {
+			audio.mu.Lock()
+			audio.OutputVolume = float64(value) / 100.0
+			audio.mu.Unlock()
+		},
+	}
+	frame.RenderWidget(outSlider, outSliderArea)
+
+	// 7. Suppression Mode Toggle Buttons [N]
+	noiseY := inner.Y + 12
+	buf.SetString(inner.X+1, noiseY, "Noise Filter [N]:", cell.Style{
+		Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4),
+		Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+	})
+
+	optOff := " [ OFF ] "
+	optStd := " [ ON (Standard) ] "
+	optHi := " [ HIGH ] "
+
+	curMode := audio.SuppressionMode
+	styleOff := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	styleStd := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	styleHi := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+
+	activeStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+		Modifier: cell.ModifierBold,
+	}
+
+	if curMode == 0 {
+		styleOff = activeStyle
+	} else if curMode == 1 {
+		styleStd = activeStyle
+	} else {
+		styleHi = activeStyle
+	}
+
+	optOffX := inner.X + 20
+	buf.SetString(optOffX, noiseY, optOff, styleOff)
+	frame.RegisterClickHandler(cell.NewRect(optOffX, noiseY, uint16(len([]rune(optOff))), 1), func(_ backend.MouseEvent) {
+		audio.SetSuppressionMode(0)
+	})
+
+	optStdX := optOffX + uint16(len([]rune(optOff))) + 1
+	buf.SetString(optStdX, noiseY, optStd, styleStd)
+	frame.RegisterClickHandler(cell.NewRect(optStdX, noiseY, uint16(len([]rune(optStd))), 1), func(_ backend.MouseEvent) {
+		audio.SetSuppressionMode(1)
+	})
+
+	optHiX := optStdX + uint16(len([]rune(optStd))) + 1
+	if optHiX+uint16(len([]rune(optHi))) <= inner.X+inner.Width {
+		buf.SetString(optHiX, noiseY, optHi, styleHi)
+		frame.RegisterClickHandler(cell.NewRect(optHiX, noiseY, uint16(len([]rune(optHi))), 1), func(_ backend.MouseEvent) {
+			audio.SetSuppressionMode(2)
+		})
+	}
+
+	// 8. Sensitivity / VAD Threshold Slider
+	vadY := inner.Y + 14
 	vadVal := int(math.Round(audio.VADThreshold * 1000))
 	vadLabel := fmt.Sprintf("Sensitivity:   [ %3d ]", vadVal)
 	buf.SetString(inner.X+1, vadY, vadLabel, cell.Style{
@@ -340,8 +494,25 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	frame.RenderWidget(vadSlider, vadSliderArea)
 
-	// 7. Action Buttons (Mute, Close)
-	btnY := inner.Y + 13
+	// 9. Loopback / Echo test toggle
+	loopbackY := inner.Y + 16
+	loopBox := "[ ] Hear My Own Voice (Loopback Test) [Space]"
+	loopStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
+	if audio.Loopback {
+		loopBox = "[X] Hear My Own Voice (Loopback ACTIVE) [Space]"
+		loopStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Modifier: cell.ModifierBold,
+		}
+	}
+	buf.SetString(inner.X+1, loopbackY, loopBox, loopStyle)
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, loopbackY, uint16(len([]rune(loopBox))), 1), func(_ backend.MouseEvent) {
+		audio.ToggleLoopback()
+	})
+
+	// 10. Action Buttons (Mute, Deafen, Close)
+	btnY := inner.Y + 18
 	muteBtn := "[M] Mute Mic"
 	muteBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
@@ -356,11 +527,35 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			Modifier: cell.ModifierBold,
 		}
 	}
-	buf.SetString(inner.X+1, btnY, "  "+muteBtn+"  ", muteBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(inner.X+1, btnY, uint16(len([]rune(muteBtn)))+4, 1), func(_ backend.MouseEvent) {
+	buf.SetString(inner.X+1, btnY, " "+muteBtn+" ", muteBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, btnY, uint16(len([]rune(muteBtn)))+2, 1), func(_ backend.MouseEvent) {
 		isMuted := audio.ToggleMute()
 		if node != nil {
 			node.SendMuteState(isMuted)
+		}
+	})
+
+	deafBtn := "[D] Deafen"
+	deafBtnStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+		Modifier: cell.ModifierBold,
+	}
+	if audio.Deafened {
+		deafBtn = "[D] Undeafen"
+		deafBtnStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
+			Modifier: cell.ModifierBold,
+		}
+	}
+	deafX := inner.X + uint16(len([]rune(muteBtn))) + 4
+	buf.SetString(deafX, btnY, " "+deafBtn+" ", deafBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(deafX, btnY, uint16(len([]rune(deafBtn)))+2, 1), func(_ backend.MouseEvent) {
+		isDeaf := audio.ToggleDeafen()
+		if node != nil {
+			node.SendDeafenState(isDeaf)
+			node.SendMuteState(audio.Muted)
 		}
 	})
 
