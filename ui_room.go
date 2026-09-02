@@ -439,18 +439,18 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		}
 
 		topBarText := fmt.Sprintf(" 🎬 %s'S LIVE STREAM ACTIVE (HD 60 FPS) ", strings.ToUpper(watchedNick))
-		buf.SetString(inner.X+3, inner.Y+2, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
+		buf.SetString(inner.X+3, inner.Y+1, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 
 		msg1 := "📺 Playing in high-performance hardware-accelerated video window."
-		msg2 := "Press [W] or [Esc] to close viewer, or click the stop button below."
-		buf.SetString(inner.X+3, inner.Y+4, msg1, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
-		buf.SetString(inner.X+3, inner.Y+5, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+		msg2 := "Press [W] / [Esc] to close viewer, or click the stop button below."
+		buf.SetString(inner.X+3, inner.Y+3, msg1, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
 
 		btnText := "   ⏹️ [W] STOP WATCHING (Click)   "
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0xFF, 0x76, 0x75), Modifier: cell.ModifierBold}
-		buf.SetString(inner.X+3, inner.Y+7, btnText, btnStyle)
+		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
-		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+7, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
 			_ = node.StopWatchingScreen()
 			r.SetToast("Screen viewer closed")
 		})
@@ -464,15 +464,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		}
 
 		if len(otherPeers) > 0 {
-			switchY := inner.Y + 9
-			buf.SetString(inner.X+3, switchY, "Switch to other live stream in room:", cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
+			switchY := inner.Y + 8
+			buf.SetString(inner.X+3, switchY, "Switch to another live stream:", cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 			switchY += 1
 			for idx, p := range otherPeers {
-				if switchY+uint16(idx*2) >= inner.Y+inner.Height {
+				btnRowY := switchY + uint16(idx*2)
+				if btnRowY >= inner.Y+inner.Height {
 					break
 				}
-				btnRowY := switchY + uint16(idx*2)
-				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream 📺   ", p.Nickname)
+				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream 📺 (HD 60 FPS)   ", p.Nickname)
 				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 

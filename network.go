@@ -2646,29 +2646,31 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	n.log("🎬 Live screen stream viewer window opened (HD 60 FPS).")
 
 	// 4. Monitor receiver session lifecycle
-	go func() {
+	go func(curSession *screenshare.Session) {
 		select {
-		case err := <-session.Err():
+		case err := <-curSession.Err():
 			n.log(fmt.Sprintf("⚠️ Screen viewer closed/error: %v", err))
-		case <-session.Done():
+		case <-curSession.Done():
 			n.log("ℹ️ Screen viewer window closed.")
 		}
 
 		n.mu.Lock()
-		n.IsWatchingScreen = false
-		n.WatchingPeerID = ""
-		n.WatchingPeerNick = ""
-		n.receiverSession = nil
-		if n.videoTCPConn != nil {
-			_ = n.videoTCPConn.Close()
-			n.videoTCPConn = nil
-		}
-		if n.videoTCPListener != nil {
-			_ = n.videoTCPListener.Close()
-			n.videoTCPListener = nil
+		if n.receiverSession == curSession {
+			n.IsWatchingScreen = false
+			n.WatchingPeerID = ""
+			n.WatchingPeerNick = ""
+			n.receiverSession = nil
+			if n.videoTCPConn != nil {
+				_ = n.videoTCPConn.Close()
+				n.videoTCPConn = nil
+			}
+			if n.videoTCPListener != nil {
+				_ = n.videoTCPListener.Close()
+				n.videoTCPListener = nil
+			}
 		}
 		n.mu.Unlock()
-	}()
+	}(session)
 
 	return nil
 }
