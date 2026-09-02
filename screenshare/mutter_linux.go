@@ -127,7 +127,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		fps = 60
 	}
 
-	bitrateKbps := 2500
+	bitrateKbps := 3500
 	if opt.Bitrate != "" {
 		bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))
 		if strings.HasSuffix(bStr, "M") {
@@ -199,12 +199,11 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"tune=zerolatency",
 		"pass=cbr",
 		fmt.Sprintf("bitrate=%d", bitrateKbps),
-		"intra-refresh=true",
 		"key-int-max=60",
 		"bframes=0",
 		"byte-stream=true",
 		"sliced-threads=true",
-		"option-string=intra-refresh=1:keyint=60:min-keyint=60:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:repeat-headers=1",
+		"option-string=repeat-headers=1:keyint=60:min-keyint=30:scenecut=40:open-gop=0:sync-lookahead=0:rc-lookahead=0",
 		"insert-vui=true",
 		"!", "video/x-h264,profile=baseline,stream-format=byte-stream",
 		"!", "mpegtsmux",
