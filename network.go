@@ -288,8 +288,8 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 		}
 	}
 
-	// If pending buffer grows too large (> 24 packets ~20ms), force advance to avoid stalling
-	if len(b.pending) > 24 {
+	// If pending buffer grows too large (> 4 packets ~15ms), force advance to avoid stalling
+	if len(b.pending) > 4 {
 		var minSeq uint32
 		var found bool
 		for s := range b.pending {
@@ -675,8 +675,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsPriorityCh := make(chan []byte, 512)
-		wsVideoCh := make(chan []byte, 128)
+		wsPriorityCh := make(chan []byte, 256)
+		wsVideoCh := make(chan []byte, 32)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -714,6 +714,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 
 		if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
 			_ = tcpConn.SetNoDelay(true)
+			_ = tcpConn.SetWriteBuffer(64 * 1024) // Cap kernel socket send buffer to 64KB (strictly prevents TCP bufferbloat & 1000ms spikes)
+			_ = tcpConn.SetReadBuffer(64 * 1024)
 		}
 
 		if firstConnect {
@@ -1741,10 +1743,13 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		select {
 		case wsVideoCh <- data:
 		default:
-			// If buffer is full, drop oldest video chunk to keep playback real-time
-			select {
-			case <-wsVideoCh:
-			default:
+			// If buffer has more than 8 chunks, drop oldest chunks immediately to prevent queue buildup
+			for len(wsVideoCh) > 8 {
+				select {
+				case <-wsVideoCh:
+				default:
+					break
+				}
 			}
 			select {
 			case wsVideoCh <- data:

@@ -106,10 +106,16 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	clientIP := extractClientIP(r)
 	log.Printf("[🌐] New connection from IP: %s (remote: %s)", clientIP, remoteAddr)
 
+	if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetWriteBuffer(64 * 1024)
+		_ = tcpConn.SetReadBuffer(64 * 1024)
+	}
+
 	client := &Client{
 		conn:     conn,
 		publicIP: clientIP,
-		sendCh:   make(chan []byte, 128),
+		sendCh:   make(chan []byte, 32),
 	}
 
 	// Start write pump
@@ -360,9 +366,12 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 			select {
 			case member.sendCh <- data:
 			default:
-				select {
-				case <-member.sendCh:
-				default:
+				for len(member.sendCh) > 8 {
+					select {
+					case <-member.sendCh:
+					default:
+						break
+					}
 				}
 				select {
 				case member.sendCh <- data:
