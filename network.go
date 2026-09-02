@@ -1001,30 +1001,40 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 		n.log(fmt.Sprintf("[☁️] Room '%s' created on relay (Internet E2EE)", msg.RoomCode))
 
 	case "welcome":
-		if n.Connecting && !n.IsConnected {
+		if !n.IsConnected && n.Connecting {
 			if n.connectCancel != nil {
 				close(n.connectCancel)
 				n.connectCancel = nil
 			}
-			n.Connecting = false
 			n.IsConnected = true
+			n.Connecting = false
 			n.IsHost = false
 			n.HostID = msg.SenderID
 			n.HostNick = msg.Nickname
-			n.RoomCode = n.ConnectTargetRoom
 
 			var hostAddr *net.UDPAddr
 			if msg.PublicIP != "" && msg.Port > 0 {
 				hostAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", msg.PublicIP, msg.Port))
 			}
 
-			hostPeer := &PeerInfo{
-				ID:       msg.SenderID,
-				Nickname: msg.Nickname,
-				Addr:     hostAddr,
-				LastSeen: time.Now(),
+			if existingHost, ok := n.Peers[msg.SenderID]; ok {
+				existingHost.Nickname = msg.Nickname
+				existingHost.LastSeen = time.Now()
+				if hostAddr != nil && (existingHost.Addr == nil || (!existingHost.Addr.IP.IsPrivate() && !existingHost.Addr.IP.IsLoopback())) {
+					existingHost.Addr = hostAddr
+				}
+			} else {
+				hostPeer := &PeerInfo{
+					ID:       msg.SenderID,
+					Nickname: msg.Nickname,
+					Addr:     hostAddr,
+					LastSeen: time.Now(),
+				}
+				n.Peers[msg.SenderID] = hostPeer
+				if n.OnPeerEvent != nil {
+					go n.OnPeerEvent("join", hostPeer)
+				}
 			}
-			n.Peers[msg.SenderID] = hostPeer
 
 			// Trigger direct UDP hole-punching to Host
 			if msg.PublicIP != "" {
@@ -1032,16 +1042,24 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			}
 
 			for _, p := range msg.Peers {
-				if p.SenderID != n.LocalID && n.Peers[p.SenderID] == nil {
+				if p.SenderID != n.LocalID {
 					var pAddr *net.UDPAddr
 					if p.PublicIP != "" && p.LocalPort > 0 {
 						pAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", p.PublicIP, p.LocalPort))
 					}
-					n.Peers[p.SenderID] = &PeerInfo{
-						ID:       p.SenderID,
-						Nickname: p.Nickname,
-						Addr:     pAddr,
-						LastSeen: time.Now(),
+					if existingPeer, ok := n.Peers[p.SenderID]; ok {
+						existingPeer.Nickname = p.Nickname
+						existingPeer.LastSeen = time.Now()
+						if pAddr != nil && (existingPeer.Addr == nil || (!existingPeer.Addr.IP.IsPrivate() && !existingPeer.Addr.IP.IsLoopback())) {
+							existingPeer.Addr = pAddr
+						}
+					} else {
+						n.Peers[p.SenderID] = &PeerInfo{
+							ID:       p.SenderID,
+							Nickname: p.Nickname,
+							Addr:     pAddr,
+							LastSeen: time.Now(),
+						}
 					}
 					if p.PublicIP != "" {
 						go n.punchPeerUDP(p.PublicIP, p.LocalPort)
@@ -1054,21 +1072,26 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			if successCb != nil {
 				go successCb(msg.Nickname)
 			}
-			if n.OnPeerEvent != nil {
-				go n.OnPeerEvent("join", hostPeer)
-			}
 		} else if n.IsConnected {
 			for _, p := range msg.Peers {
-				if p.SenderID != n.LocalID && n.Peers[p.SenderID] == nil {
+				if p.SenderID != n.LocalID {
 					var pAddr *net.UDPAddr
 					if p.PublicIP != "" && p.LocalPort > 0 {
 						pAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", p.PublicIP, p.LocalPort))
 					}
-					n.Peers[p.SenderID] = &PeerInfo{
-						ID:       p.SenderID,
-						Nickname: p.Nickname,
-						Addr:     pAddr,
-						LastSeen: time.Now(),
+					if existingPeer, ok := n.Peers[p.SenderID]; ok {
+						existingPeer.Nickname = p.Nickname
+						existingPeer.LastSeen = time.Now()
+						if pAddr != nil && (existingPeer.Addr == nil || (!existingPeer.Addr.IP.IsPrivate() && !existingPeer.Addr.IP.IsLoopback())) {
+							existingPeer.Addr = pAddr
+						}
+					} else {
+						n.Peers[p.SenderID] = &PeerInfo{
+							ID:       p.SenderID,
+							Nickname: p.Nickname,
+							Addr:     pAddr,
+							LastSeen: time.Now(),
+						}
 					}
 					if p.PublicIP != "" {
 						go n.punchPeerUDP(p.PublicIP, p.LocalPort)
@@ -1100,7 +1123,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			} else {
 				peer.Nickname = msg.Nickname
 				peer.LastSeen = time.Now()
-				if peerAddr != nil {
+				if peerAddr != nil && (peer.Addr == nil || (!peer.Addr.IP.IsPrivate() && !peer.Addr.IP.IsLoopback())) {
 					peer.Addr = peerAddr
 				}
 			}
