@@ -457,8 +457,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Modifier: cell.ModifierBold,
 	})
 
-	modeVa := " [ Voice Activity ] "
-	modePtt := " [ Push-to-Talk ] "
+	modeVa := " [ Voice ] "
+	modePtt := " [ PTT ] "
 
 	styleVa := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
 	stylePtt := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
@@ -474,7 +474,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		styleVa = activeModeStyle
 	}
 
-	modeVaX := inner.X + 20
+	modeVaX := inner.X + 18
 	buf.SetString(modeVaX, inputModeY, modeVa, styleVa)
 	frame.RegisterClickHandler(cell.NewRect(modeVaX, inputModeY, uint16(len([]rune(modeVa))), 1), func(_ backend.MouseEvent) {
 		audio.SetInputMode(InputModeVoiceActivity)
@@ -487,14 +487,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	})
 
 	if audio.InputMode == InputModePushToTalk {
-		keyLabel := fmt.Sprintf(" Key [K]: [ %s ]", audio.GetPTTKeyName())
+		keyLabel := fmt.Sprintf(" [ Key [K]: %s ] ", audio.GetPTTKeyName())
 		keyStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Bg:       cell.NewColorRGB(0x22, 0x27, 0x36),
 			Modifier: cell.ModifierBold,
 		}
 		if audio.PTTListeningKey {
-			keyLabel = " Key: [ Press key... ]"
+			keyLabel = " [ Press Key... ] "
 			keyStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
 				Bg:       cell.NewColorRGB(0x3B, 0x2A, 0x1E),
@@ -502,12 +502,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			}
 		}
 		keyX := modePttX + uint16(len([]rune(modePtt))) + 1
-		buf.SetString(keyX, inputModeY, keyLabel, keyStyle)
-		frame.RegisterClickHandler(cell.NewRect(keyX, inputModeY, uint16(len([]rune(keyLabel))), 1), func(_ backend.MouseEvent) {
-			audio.mu.Lock()
-			audio.PTTListeningKey = !audio.PTTListeningKey
-			audio.mu.Unlock()
-		})
+		if keyX+uint16(len([]rune(keyLabel))) <= inner.X+inner.Width {
+			buf.SetString(keyX, inputModeY, keyLabel, keyStyle)
+			frame.RegisterClickHandler(cell.NewRect(keyX, inputModeY, uint16(len([]rune(keyLabel))), 1), func(_ backend.MouseEvent) {
+				audio.mu.Lock()
+				audio.PTTListeningKey = !audio.PTTListeningKey
+				audio.mu.Unlock()
+			})
+		}
 	}
 
 	// 9. Sensitivity / VAD Threshold Slider
