@@ -1693,9 +1693,7 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 	n.mu.RUnlock()
 }
 
-// broadcastVideoPacket routes screen share chunks:
-// 1. Directly over UDP to all peers that have a reachable UDP address (LAN / P2P direct with 0ms relay delay)
-// 2. Via WebSocket Relay ONLY for internet peers that do not have a direct UDP address, or while direct UDP is establishing
+// broadcastVideoPacket routes screen share chunks through the paced video channel with bounded queue
 func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 	n.mu.RLock()
 	aead := n.aead
@@ -1704,7 +1702,7 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 	if pkt.LocalPort == 0 {
 		pkt.LocalPort = n.Port
 	}
-	if aead == nil || len(n.Peers) == 0 {
+	if aead == nil || (len(n.Peers) == 0 && !isRelay) {
 		n.mu.RUnlock()
 		return
 	}
@@ -1715,25 +1713,27 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		return
 	}
 
-	hasDirectPeers := false
-	hasRelayOnlyPeers := false
-
-	// 1. Direct UDP to reachable peers (LAN / Direct P2P)
-	for _, peer := range n.Peers {
-		if peer.Addr != nil && n.Conn != nil {
-			n.Conn.WriteToUDP(data, peer.Addr)
-			hasDirectPeers = true
-		} else {
-			hasRelayOnlyPeers = true
-		}
-	}
-
-	// 2. Forward via WebSocket Relay ONLY to internet peers that cannot be reached directly via UDP,
-	// or when direct UDP connection has not yet punched through
-	if isRelay && wsVideoCh != nil && (hasRelayOnlyPeers || !hasDirectPeers) {
+	// 1. Guaranteed delivery to all room members via WebSocket Relay
+	if isRelay && wsVideoCh != nil {
 		select {
 		case wsVideoCh <- data:
 		default:
+			// If buffer is full, drop oldest video chunk to keep playback real-time
+			select {
+			case <-wsVideoCh:
+			default:
+			}
+			select {
+			case wsVideoCh <- data:
+			default:
+			}
+		}
+	}
+
+	// 2. Also send via direct UDP to known peer addresses
+	for _, peer := range n.Peers {
+		if peer.Addr != nil && n.Conn != nil {
+			n.Conn.WriteToUDP(data, peer.Addr)
 		}
 	}
 	n.mu.RUnlock()
@@ -2247,6 +2247,17 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 	n.lastVideoChunkTime = time.Now()
 	watching := n.IsWatchingScreen
 	tcpConn := n.videoTCPConn
+
+	// Keep prebuffer of recent video chunks (~30 chunks = ~35KB) so player gets headers immediately on connect
+	for _, chunk := range readyChunks {
+		if len(chunk) > 0 {
+			if len(n.videoPreBuf) < 30 {
+				n.videoPreBuf = append(n.videoPreBuf, chunk)
+			} else {
+				n.videoPreBuf = append(n.videoPreBuf[1:], chunk)
+			}
+		}
+	}
 	n.mu.Unlock()
 
 	if watching && tcpConn != nil {
@@ -2503,6 +2514,12 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		n.mu.Lock()
 		if n.IsWatchingScreen {
 			n.videoTCPConn = conn
+			// Immediately flush pre-buffered chunks so player receives sync frames instantly
+			for _, chunk := range n.videoPreBuf {
+				if len(chunk) > 0 {
+					_, _ = conn.Write(chunk)
+				}
+			}
 		} else {
 			_ = conn.Close()
 		}
@@ -2626,20 +2643,11 @@ func (n *P2PNode) heartbeatLoop() {
 			go n.sendPacketTo(peer.Addr, &pingPkt)
 		}
 
-		// If user is watching screen, check if ANY peer is still sharing screen or if stream died (>10s gap)
-		if n.IsWatchingScreen {
-			anySharing := false
-			for _, p := range n.Peers {
-				if p.IsSharingScreen {
-					anySharing = true
-					break
-				}
-			}
-			if !anySharing || (len(n.Peers) > 0 && !n.lastVideoChunkTime.IsZero() && now.Sub(n.lastVideoChunkTime) > 10*time.Second) {
-				go func() {
-					_ = n.StopWatchingScreen()
-				}()
-			}
+		// If all peers disconnected, stop watching
+		if n.IsWatchingScreen && len(n.Peers) == 0 {
+			go func() {
+				_ = n.StopWatchingScreen()
+			}()
 		}
 		n.mu.Unlock()
 	}
