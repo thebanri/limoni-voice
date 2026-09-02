@@ -2273,6 +2273,11 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 
 	n.mu.Lock()
 	n.lastVideoChunkTime = time.Now()
+	for _, p := range n.Peers {
+		if p.IsSharingScreen || (nickname != "" && p.Nickname == nickname) {
+			p.LastSeen = time.Now()
+		}
+	}
 	watching := n.IsWatchingScreen
 	tcpConn := n.videoTCPConn
 
