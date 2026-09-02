@@ -486,6 +486,30 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.SetInputMode(InputModePushToTalk)
 	})
 
+	if audio.InputMode == InputModePushToTalk {
+		keyLabel := fmt.Sprintf(" Key [K]: [ %s ]", audio.GetPTTKeyName())
+		keyStyle := cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Bg:       cell.NewColorRGB(0x22, 0x27, 0x36),
+			Modifier: cell.ModifierBold,
+		}
+		if audio.PTTListeningKey {
+			keyLabel = " Key: [ Press key... ]"
+			keyStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+				Bg:       cell.NewColorRGB(0x3B, 0x2A, 0x1E),
+				Modifier: cell.ModifierBold,
+			}
+		}
+		keyX := modePttX + uint16(len([]rune(modePtt))) + 1
+		buf.SetString(keyX, inputModeY, keyLabel, keyStyle)
+		frame.RegisterClickHandler(cell.NewRect(keyX, inputModeY, uint16(len([]rune(keyLabel))), 1), func(_ backend.MouseEvent) {
+			audio.mu.Lock()
+			audio.PTTListeningKey = !audio.PTTListeningKey
+			audio.mu.Unlock()
+		})
+	}
+
 	// 9. Sensitivity / VAD Threshold Slider
 	vadY := inner.Y + 16
 	vadVal := int(math.Round(audio.VADThreshold * 1000))

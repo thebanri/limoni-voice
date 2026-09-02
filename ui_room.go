@@ -956,7 +956,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		frame.RegisterClickHandler(cell.NewRect(modeX, row1Y, modeLen, 1), func(_ backend.MouseEvent) {
 			m := audio.CycleInputMode()
 			if m == InputModePushToTalk {
-				r.SetToast("Mode: Push-to-Talk (Hold Space to talk)")
+				r.SetToast(fmt.Sprintf("Mode: Push-to-Talk (Hold %s to talk)", audio.GetPTTKeyName()))
 			} else {
 				r.SetToast("Mode: Voice Activity (Always on / VAD)")
 			}

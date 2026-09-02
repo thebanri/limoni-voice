@@ -338,9 +338,12 @@ type AudioEngine struct {
 	PrevDeafened bool
 
 	// Push-to-Talk (PTT)
-	InputMode      AudioInputMode
-	IsPTTActive    bool
-	PTTReleaseTime time.Time
+	InputMode       AudioInputMode
+	IsPTTActive     bool
+	PTTReleaseTime  time.Time
+	PTTKey          rune
+	PTTKeyName      string
+	PTTListeningKey bool
 
 	// Suppression mode: 0 = OFF (Bypass), 1 = ON (Standard Clean), 2 = HIGH
 	SuppressionMode   int
@@ -393,6 +396,9 @@ func NewAudioEngine() *AudioEngine {
 		Loopback:          false,
 		InTestMode:        false,
 		InputMode:         InputModeVoiceActivity,
+		PTTKey:            ' ',
+		PTTKeyName:        "Space",
+		PTTListeningKey:   false,
 		SuppressionMode:   1, // Default: ON (Standard Clean)
 		Gain:              1.0,  // Standard 100% initial mic gain
 		OutputVolume:      1.0,  // 100% master playback volume
@@ -620,8 +626,37 @@ func (a *AudioEngine) SetPTT(active bool) {
 func (a *AudioEngine) PulsePTT(duration time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.IsPTTActive = true
 	a.PTTReleaseTime = time.Now().Add(duration)
+}
+
+func (a *AudioEngine) SetPTTKey(key rune, name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.PTTKey = key
+	if name == "" {
+		if key == ' ' {
+			name = "Space"
+		} else {
+			name = strings.ToUpper(string(key))
+		}
+	}
+	a.PTTKeyName = name
+	a.PTTListeningKey = false
+}
+
+func (a *AudioEngine) GetPTTKeyName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.PTTKeyName != "" {
+		return a.PTTKeyName
+	}
+	if a.PTTKey == ' ' {
+		return "Space"
+	}
+	if a.PTTKey > 0 {
+		return strings.ToUpper(string(a.PTTKey))
+	}
+	return "Space"
 }
 
 func (a *AudioEngine) IsTransmitting() bool {

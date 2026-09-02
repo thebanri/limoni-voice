@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/backend"
@@ -462,13 +463,32 @@ func main() {
 				}
 
 				if showTestModal {
+					if audio.PTTListeningKey {
+						switch e.Type {
+						case backend.KeyEsc:
+							audio.mu.Lock()
+							audio.PTTListeningKey = false
+							audio.mu.Unlock()
+						case backend.KeySpace:
+							audio.SetPTTKey(' ', "Space")
+						case backend.KeyEnter:
+							audio.SetPTTKey('\n', "Enter")
+						case backend.KeyTab:
+							audio.SetPTTKey('\t', "Tab")
+						case backend.KeyRune:
+							ch := unicode.ToLower(e.Ch)
+							audio.SetPTTKey(ch, strings.ToUpper(string(e.Ch)))
+						}
+						continue
+					}
+
 					switch e.Type {
 					case backend.KeyEsc:
 						closeTestModal()
 					case backend.KeySpace:
-						if audio.InputMode == InputModePushToTalk {
+						if audio.InputMode == InputModePushToTalk && audio.PTTKey == ' ' {
 							audio.PulsePTT(350 * time.Millisecond)
-						} else {
+						} else if audio.InputMode == InputModeVoiceActivity {
 							audio.ToggleLoopback()
 						}
 					case backend.KeyArrowLeft:
@@ -476,13 +496,23 @@ func main() {
 					case backend.KeyArrowRight:
 						audio.CycleInputDevice(1)
 					case backend.KeyRune:
+						if audio.InputMode == InputModePushToTalk && unicode.ToLower(e.Ch) == unicode.ToLower(audio.PTTKey) {
+							audio.PulsePTT(350 * time.Millisecond)
+							continue
+						}
 						switch e.Ch {
+						case 'k', 'K':
+							if audio.InputMode == InputModePushToTalk {
+								audio.mu.Lock()
+								audio.PTTListeningKey = true
+								audio.mu.Unlock()
+							}
 						case 'p', 'P':
 							audio.CycleInputMode()
 						case ' ':
-							if audio.InputMode == InputModePushToTalk {
+							if audio.InputMode == InputModePushToTalk && audio.PTTKey == ' ' {
 								audio.PulsePTT(350 * time.Millisecond)
-							} else {
+							} else if audio.InputMode == InputModeVoiceActivity {
 								audio.ToggleLoopback()
 							}
 						case 'l', 'L':
@@ -660,7 +690,7 @@ func main() {
 						}
 
 					case backend.KeySpace:
-						if audio.InputMode == InputModePushToTalk {
+						if audio.InputMode == InputModePushToTalk && audio.PTTKey == ' ' {
 							audio.PulsePTT(350 * time.Millisecond)
 						}
 
@@ -669,17 +699,22 @@ func main() {
 						room.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 
 					case backend.KeyRune:
+						if audio.InputMode == InputModePushToTalk && unicode.ToLower(e.Ch) == unicode.ToLower(audio.PTTKey) {
+							audio.PulsePTT(350 * time.Millisecond)
+							continue
+						}
+
 						switch e.Ch {
 						case 'p', 'P':
 							m := audio.CycleInputMode()
 							if m == InputModePushToTalk {
-								room.SetToast("Mode: Push-to-Talk (Hold Space to talk)")
+								room.SetToast(fmt.Sprintf("Mode: Push-to-Talk (Hold %s to talk)", audio.GetPTTKeyName()))
 							} else {
 								room.SetToast("Mode: Voice Activity (Always on / VAD)")
 							}
 
 						case ' ':
-							if audio.InputMode == InputModePushToTalk {
+							if audio.InputMode == InputModePushToTalk && audio.PTTKey == ' ' {
 								audio.PulsePTT(350 * time.Millisecond)
 							}
 
