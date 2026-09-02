@@ -519,6 +519,26 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75)}
 		statusText = "[MIC OFF]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+	} else if audio.InputMode == InputModePushToTalk {
+		if audio.IsTransmitting() {
+			borderStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+				Modifier: cell.ModifierBold,
+			}
+			statusText = "[PTT TALKING...]"
+			statusStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+				Modifier: cell.ModifierBold,
+			}
+		} else {
+			borderStyle = cell.Style{Fg: cell.NewColorRGB(0x4E, 0xCD, 0xC4)}
+			statusText = "[PTT IDLE (SPACE)]"
+			statusStyle = cell.Style{
+				Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+				Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			}
+		}
 	} else if audio.IsSpeaking {
 		borderStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
@@ -910,6 +930,39 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		})
 	}
 
+	// Push-to-Talk / Voice Activity Mode Button [P]
+	modeLabel := "[P] Voice"
+	modeStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	if audio.InputMode == InputModePushToTalk {
+		modeLabel = "[P] PTT"
+		if audio.IsTransmitting() {
+			modeStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+				Modifier: cell.ModifierBold,
+			}
+		} else {
+			modeStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+				Modifier: cell.ModifierBold,
+			}
+		}
+	}
+	modeX := deafenX + deafenLen + 2
+	modeLen := uint16(len([]rune(modeLabel)))
+	if modeX+modeLen <= ctrlInner.X+ctrlInner.Width {
+		buf.SetString(modeX, row1Y, modeLabel, modeStyle)
+		frame.RegisterClickHandler(cell.NewRect(modeX, row1Y, modeLen, 1), func(_ backend.MouseEvent) {
+			m := audio.CycleInputMode()
+			if m == InputModePushToTalk {
+				r.SetToast("Mode: Push-to-Talk (Hold Space to talk)")
+			} else {
+				r.SetToast("Mode: Voice Activity (Always on / VAD)")
+			}
+		})
+	}
+
 	// Noise Suppression Button [N]
 	noiseStr := audio.SuppressionModeString()
 	noiseLabel := fmt.Sprintf("[N] Noise: %s", noiseStr)
@@ -921,7 +974,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			Modifier: cell.ModifierBold,
 		}
 	}
-	noiseX := deafenX + deafenLen + 2
+	noiseX := modeX + modeLen + 2
 	noiseLen := uint16(len([]rune(noiseLabel)))
 	if noiseX+noiseLen <= ctrlInner.X+ctrlInner.Width {
 		buf.SetString(noiseX, row1Y, noiseLabel, noiseStyle)

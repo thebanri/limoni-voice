@@ -463,38 +463,76 @@ func TestSpeechPassesThroughAllModes(t *testing.T) {
 	}
 }
 
-func TestVideoDeduplicator(t *testing.T) {
-	dedup := VideoDeduplicator{}
+func TestVideoReorderBuffer(t *testing.T) {
+	buf := VideoReorderBuffer{}
+	buf.Reset()
 
-	// First time seeing packet 1 -> true
-	if !dedup.ShouldProcess(1) {
-		t.Fatalf("Expected seq 1 to be processed")
+	// Push in-order packet 1 -> returns [chunk1]
+	c1 := []byte("chunk1")
+	out := buf.Push(1, c1)
+	if len(out) != 1 || string(out[0]) != "chunk1" {
+		t.Fatalf("Expected chunk1, got %v", out)
 	}
 
-	// Duplicate packet 1 -> false
-	if dedup.ShouldProcess(1) {
-		t.Fatalf("Expected duplicate seq 1 to be dropped")
+	// Push out-of-order packet 3 -> buffers, returns nil
+	c3 := []byte("chunk3")
+	out = buf.Push(3, c3)
+	if len(out) != 0 {
+		t.Fatalf("Expected nil when packet 2 is missing, got %v", out)
 	}
 
-	// Next packet 2 -> true
-	if !dedup.ShouldProcess(2) {
-		t.Fatalf("Expected seq 2 to be processed")
+	// Push missing packet 2 -> returns [chunk2, chunk3] in exact sequence order!
+	c2 := []byte("chunk2")
+	out = buf.Push(2, c2)
+	if len(out) != 2 || string(out[0]) != "chunk2" || string(out[1]) != "chunk3" {
+		t.Fatalf("Expected [chunk2, chunk3], got %v", out)
 	}
 
-	// Out of order packet 3 -> true
-	if !dedup.ShouldProcess(3) {
-		t.Fatalf("Expected seq 3 to be processed")
-	}
-
-	// Duplicate packet 2 -> false
-	if dedup.ShouldProcess(2) {
-		t.Fatalf("Expected duplicate seq 2 to be dropped")
+	// Push duplicate packet 2 -> dropped, returns nil
+	out = buf.Push(2, c2)
+	if len(out) != 0 {
+		t.Fatalf("Expected duplicate packet 2 to be dropped, got %v", out)
 	}
 
 	// Test Reset
-	dedup.Reset()
-	if !dedup.ShouldProcess(1) {
-		t.Fatalf("Expected seq 1 to be processed after Reset")
+	buf.Reset()
+	out = buf.Push(10, []byte("chunk10"))
+	if len(out) != 1 || string(out[0]) != "chunk10" {
+		t.Fatalf("Expected chunk10 after reset, got %v", out)
+	}
+}
+
+func TestPushToTalkMode(t *testing.T) {
+	engine := NewAudioEngine()
+	if engine.InputMode != InputModeVoiceActivity {
+		t.Fatalf("Expected default input mode to be VoiceActivity")
+	}
+	if !engine.IsTransmitting() {
+		t.Fatalf("Expected VoiceActivity mode to be transmitting when unmuted")
+	}
+
+	engine.CycleInputMode()
+	if engine.InputMode != InputModePushToTalk {
+		t.Fatalf("Expected InputMode to be PushToTalk")
+	}
+	if engine.IsTransmitting() {
+		t.Fatalf("Expected PushToTalk to NOT be transmitting when PTT is idle")
+	}
+
+	engine.PulsePTT(200 * time.Millisecond)
+	if !engine.IsTransmitting() {
+		t.Fatalf("Expected PushToTalk to be transmitting after PulsePTT")
+	}
+
+	engine.SetPTT(true)
+	if !engine.IsTransmitting() {
+		t.Fatalf("Expected PushToTalk to be transmitting when PTT is active")
+	}
+
+	engine.SetPTT(false)
+	// Due to hangover delay, should still be transmitting briefly
+	if !engine.IsTransmitting() {
+		t.Fatalf("Expected PushToTalk to still be transmitting during release hangover")
 	}
 }
 

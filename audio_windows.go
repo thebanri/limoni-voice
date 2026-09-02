@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -310,12 +311,14 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 						gain := a.Gain
 						loopback := a.Loopback
 						suppressMode := a.SuppressionMode
+						inputMode := a.InputMode
+						isPTT := a.IsPTTActive || time.Now().Before(a.PTTReleaseTime)
 
 						var processedChunk []byte
 						var finalRMS float64
 						var speaking bool
 
-						if muted {
+						if muted || (inputMode == InputModePushToTalk && !isPTT) {
 							processedChunk = make([]byte, AudioChunkSize)
 							finalRMS = 0
 							speaking = false
@@ -332,6 +335,9 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 								copy(processedChunk, processed)
 							} else {
 								speaking, finalRMS, processedChunk = a.processNoiseCancellation(processed, suppressMode)
+							}
+							if inputMode == InputModePushToTalk && isPTT {
+								speaking = true
 							}
 							a.LocalRMS = finalRMS
 							a.IsSpeaking = speaking

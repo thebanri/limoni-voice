@@ -203,7 +203,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"bframes=0",
 		"byte-stream=true",
 		"sliced-threads=true",
-		"option-string=repeat-headers=1:scenecut=0:sync-lookahead=0:rc-lookahead=0",
+		"option-string=repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:no-scenecut=1:intra-refresh=0:open-gop=0:sync-lookahead=0:rc-lookahead=0",
 		"insert-vui=true",
 		"!", "video/x-h264,profile=baseline,stream-format=byte-stream",
 		"!", "mpegtsmux",

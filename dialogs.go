@@ -115,7 +115,7 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 
 // DrawTestModal renders the interactive Microphone & Audio Device Settings panel without any icons or emojis.
 func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onClose func()) {
-	modalW, modalH := uint16(68), uint16(22)
+	modalW, modalH := uint16(68), uint16(24)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -153,6 +153,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	if audio.Muted {
 		statusText = "[MIC OFF (MUTED)]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
+	} else if audio.InputMode == InputModePushToTalk {
+		if audio.IsTransmitting() {
+			statusText = "[PTT ACTIVE (TRANSMITTING...)]"
+			statusStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
+		} else {
+			statusText = "[PTT IDLE (PRESS SPACE/P TO TALK)]"
+			statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
+		}
 	} else if audio.IsSpeaking {
 		statusText = "[SPEAKING (AUDIO ACTIVE...)]"
 		statusStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
@@ -441,8 +449,45 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		})
 	}
 
-	// 8. Sensitivity / VAD Threshold Slider
-	vadY := inner.Y + 14
+	// 8. Input Mode Selection Row [P]
+	inputModeY := inner.Y + 14
+	buf.SetString(inner.X+1, inputModeY, "Input Mode [P]:", cell.Style{
+		Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Modifier: cell.ModifierBold,
+	})
+
+	modeVa := " [ Voice Activity ] "
+	modePtt := " [ Push-to-Talk ] "
+
+	styleVa := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	stylePtt := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	activeModeStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+		Modifier: cell.ModifierBold,
+	}
+
+	if audio.InputMode == InputModePushToTalk {
+		stylePtt = activeModeStyle
+	} else {
+		styleVa = activeModeStyle
+	}
+
+	modeVaX := inner.X + 20
+	buf.SetString(modeVaX, inputModeY, modeVa, styleVa)
+	frame.RegisterClickHandler(cell.NewRect(modeVaX, inputModeY, uint16(len([]rune(modeVa))), 1), func(_ backend.MouseEvent) {
+		audio.SetInputMode(InputModeVoiceActivity)
+	})
+
+	modePttX := modeVaX + uint16(len([]rune(modeVa))) + 1
+	buf.SetString(modePttX, inputModeY, modePtt, stylePtt)
+	frame.RegisterClickHandler(cell.NewRect(modePttX, inputModeY, uint16(len([]rune(modePtt))), 1), func(_ backend.MouseEvent) {
+		audio.SetInputMode(InputModePushToTalk)
+	})
+
+	// 9. Sensitivity / VAD Threshold Slider
+	vadY := inner.Y + 16
 	vadVal := int(math.Round(audio.VADThreshold * 1000))
 	vadLabel := fmt.Sprintf("Sensitivity:   [ %3d ]", vadVal)
 	buf.SetString(inner.X+1, vadY, vadLabel, cell.Style{
@@ -494,12 +539,12 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	frame.RenderWidget(vadSlider, vadSliderArea)
 
-	// 9. Loopback / Echo test toggle
-	loopbackY := inner.Y + 16
-	loopBox := "[ ] Hear My Own Voice (Loopback Test) [Space]"
+	// 10. Loopback / Echo test toggle
+	loopbackY := inner.Y + 18
+	loopBox := "[ ] Hear My Own Voice (Loopback Test) [L]"
 	loopStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
 	if audio.Loopback {
-		loopBox = "[X] Hear My Own Voice (Loopback ACTIVE) [Space]"
+		loopBox = "[X] Hear My Own Voice (Loopback ACTIVE) [L]"
 		loopStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
@@ -511,8 +556,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.ToggleLoopback()
 	})
 
-	// 10. Action Buttons (Mute, Deafen, Close)
-	btnY := inner.Y + 18
+	// 11. Action Buttons (Mute, Deafen, Close)
+	btnY := inner.Y + 20
 	muteBtn := "[M] Mute Mic"
 	muteBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),

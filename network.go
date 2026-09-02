@@ -164,7 +164,7 @@ type P2PNode struct {
 	videoTCPListener   net.Listener
 	videoTCPConn       net.Conn
 	videoPreBuf        [][]byte
-	videoDedup         VideoDeduplicator
+	videoReorder       VideoReorderBuffer
 	audioDedup         AudioDeduplicator
 	silenceHangover    int
 	lastVideoChunkTime time.Time
@@ -224,42 +224,98 @@ func (d *AudioDeduplicator) Reset(senderID string) {
 	}
 }
 
-// VideoDeduplicator prevents duplicate video packets from being fed to the local player
-// when packets arrive over both direct UDP and WebSocket relay transports.
-type VideoDeduplicator struct {
-	mu     sync.Mutex
-	maxSeq uint32
-	seqs   [4096]uint32
+// VideoReorderBuffer ensures video packets are delivered to the player in strictly sequential order.
+// It discards stale/duplicate packets and buffers out-of-order packets (up to 24 items / ~20ms window)
+// so MPEG-TS / H.264 streams never suffer from macroblocking, packet loss or green screen tear.
+type VideoReorderBuffer struct {
+	mu          sync.Mutex
+	expectedSeq uint32
+	pending     map[uint32][]byte
+	firstPkt    bool
 }
 
-func (d *VideoDeduplicator) ShouldProcess(seq uint32) bool {
-	if seq == 0 {
-		return true
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	idx := seq % 4096
-	if d.seqs[idx] == seq {
-		// Already processed this exact sequence number!
-		return false
-	}
-	// Drop old packets that are too far behind maxSeq (accounting for uint32 wrap-around)
-	if d.maxSeq > 3000 && seq < d.maxSeq-3000 {
-		return false
-	}
-	d.seqs[idx] = seq
-	if seq > d.maxSeq || (d.maxSeq > 0xFFFFFF00 && seq < 0x00000FFF) {
-		d.maxSeq = seq
-	}
-	return true
+func (b *VideoReorderBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.expectedSeq = 0
+	b.pending = make(map[uint32][]byte)
+	b.firstPkt = true
 }
 
-func (d *VideoDeduplicator) Reset() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.maxSeq = 0
-	d.seqs = [4096]uint32{}
+func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
+	if len(payload) == 0 {
+		return nil
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.pending == nil {
+		b.pending = make(map[uint32][]byte)
+	}
+
+	if b.firstPkt || seq == 0 {
+		b.firstPkt = false
+		b.expectedSeq = seq
+		b.pending[seq] = payload
+	} else {
+		// Detect wrap-around or old stale packet
+		diff := int32(seq - b.expectedSeq)
+		if diff < 0 && diff > -3000 {
+			// Stale packet that already passed its sequence window, discard!
+			return nil
+		}
+		// If packet sequence jumped forward by more than 1000 (possible new stream), re-sync
+		if diff > 1000 || diff < -3000 {
+			b.expectedSeq = seq
+			b.pending = make(map[uint32][]byte)
+		}
+		b.pending[seq] = payload
+	}
+
+	// Drain all contiguous sequential packets from pending
+	var ready [][]byte
+	for {
+		chunk, ok := b.pending[b.expectedSeq]
+		if !ok {
+			break
+		}
+		delete(b.pending, b.expectedSeq)
+		ready = append(ready, chunk)
+		b.expectedSeq++
+		if b.expectedSeq == 0 {
+			b.expectedSeq = 1
+		}
+	}
+
+	// If pending buffer grows too large (> 24 packets ~20ms), force advance to avoid stalling
+	if len(b.pending) > 24 {
+		var minSeq uint32
+		var found bool
+		for s := range b.pending {
+			if !found || (int32(s-minSeq) < 0) {
+				minSeq = s
+				found = true
+			}
+		}
+		if found {
+			b.expectedSeq = minSeq
+			for {
+				chunk, ok := b.pending[b.expectedSeq]
+				if !ok {
+					break
+				}
+				delete(b.pending, b.expectedSeq)
+				ready = append(ready, chunk)
+				b.expectedSeq++
+				if b.expectedSeq == 0 {
+					b.expectedSeq = 1
+				}
+			}
+		}
+	}
+
+	return ready
 }
 
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
@@ -619,7 +675,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsSendCh := make(chan []byte, 4096)
+		wsSendCh := make(chan []byte, 8192)
 		wsAudioCh := make(chan []byte, 256)
 		n.mu.Lock()
 		n.wsSendCh = wsSendCh
@@ -873,11 +929,8 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 				continue
 			}
 
-			// Fast-path: feed video chunks directly to local player without heavy room locks
+			// Fast-path: feed video chunks directly to sequential reorder buffer
 			if pkt.Type == PacketScreenShareData {
-				if !n.videoDedup.ShouldProcess(pkt.Seq) {
-					continue
-				}
 				n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
 				continue
 			}
@@ -1631,10 +1684,12 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 		}
 	}
 
-	// 2. Also send via direct UDP to known LAN peer addresses
-	for _, peer := range n.Peers {
-		if peer.Addr != nil && n.Conn != nil {
-			n.Conn.WriteToUDP(data, peer.Addr)
+	// 2. Also send via direct UDP to known LAN peer addresses (for voice/control, and video when not on relay)
+	if !isRelay || pkt.Type != PacketScreenShareData {
+		for _, peer := range n.Peers {
+			if peer.Addr != nil && n.Conn != nil {
+				n.Conn.WriteToUDP(data, peer.Addr)
+			}
 		}
 	}
 	n.mu.RUnlock()
@@ -1664,9 +1719,6 @@ func (n *P2PNode) listenLoop() {
 		}
 
 		if pkt.Type == PacketScreenShareData {
-			if !n.videoDedup.ShouldProcess(pkt.Seq) {
-				continue
-			}
 			n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
 			continue
 		}
@@ -1702,9 +1754,6 @@ func (n *P2PNode) listenBroadcastLoop() {
 		}
 
 		if pkt.Type == PacketScreenShareData {
-			if !n.videoDedup.ShouldProcess(pkt.Seq) {
-				continue
-			}
 			n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
 			continue
 		}
@@ -2144,31 +2193,32 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 	if len(payload) == 0 {
 		return
 	}
+
+	readyChunks := n.videoReorder.Push(seq, payload)
+	if len(readyChunks) == 0 {
+		return
+	}
+
 	n.mu.Lock()
 	n.lastVideoChunkTime = time.Now()
 	watching := n.IsWatchingScreen
 	tcpConn := n.videoTCPConn
-
-	// Ring buffer of recent video chunks (~90 chunks = ~85KB) so when player starts, it receives keyframe headers
-	if len(n.videoPreBuf) < 90 {
-		n.videoPreBuf = append(n.videoPreBuf, payload)
-	} else {
-		n.videoPreBuf = append(n.videoPreBuf[1:], payload)
-	}
 	n.mu.Unlock()
 
 	if watching && tcpConn != nil {
-		if seq%120 == 1 && nickname != "" {
-			n.log(fmt.Sprintf("🎬 [WATCH] Receiving stream from %s: packet #%d (%d bytes) -> playing", nickname, seq, len(payload)))
-		}
-		if _, err := tcpConn.Write(payload); err != nil {
-			n.mu.Lock()
-			if n.videoTCPConn == tcpConn {
-				n.videoTCPConn = nil
-				_ = tcpConn.Close()
-				n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP disconnected: %v", err))
+		for _, chunk := range readyChunks {
+			if len(chunk) > 0 {
+				if _, err := tcpConn.Write(chunk); err != nil {
+					n.mu.Lock()
+					if n.videoTCPConn == tcpConn {
+						n.videoTCPConn = nil
+						_ = tcpConn.Close()
+						n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP disconnected: %v", err))
+					}
+					n.mu.Unlock()
+					break
+				}
 			}
-			n.mu.Unlock()
 		}
 	}
 }
@@ -2377,7 +2427,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	} else {
 		opt = screenshare.DefaultReceiverOptions()
 	}
-	n.videoDedup.Reset()
+	n.videoReorder.Reset()
 	n.mu.Unlock()
 
 	// 1. Open a local TCP listener on a dynamic free port (127.0.0.1:0)

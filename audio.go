@@ -321,6 +321,13 @@ func (jb *PeerJitterBuffer) Reset() {
 	jb.isPlaying = false
 }
 
+type AudioInputMode int
+
+const (
+	InputModeVoiceActivity AudioInputMode = 0
+	InputModePushToTalk    AudioInputMode = 1
+)
+
 type AudioEngine struct {
 	mu           sync.RWMutex
 	Muted        bool
@@ -329,6 +336,11 @@ type AudioEngine struct {
 	InTestMode   bool // True when test dialog is open
 	PrevMuted    bool
 	PrevDeafened bool
+
+	// Push-to-Talk (PTT)
+	InputMode      AudioInputMode
+	IsPTTActive    bool
+	PTTReleaseTime time.Time
 
 	// Suppression mode: 0 = OFF (Bypass), 1 = ON (Standard Clean), 2 = HIGH
 	SuppressionMode   int
@@ -380,6 +392,7 @@ func NewAudioEngine() *AudioEngine {
 		Deafened:          false,
 		Loopback:          false,
 		InTestMode:        false,
+		InputMode:         InputModeVoiceActivity,
 		SuppressionMode:   1, // Default: ON (Standard Clean)
 		Gain:              1.0,  // Standard 100% initial mic gain
 		OutputVolume:      1.0,  // 100% master playback volume
@@ -567,6 +580,60 @@ func (a *AudioEngine) SetSuppressionMode(mode int) int {
 	}
 	a.SuppressionMode = mode
 	return a.SuppressionMode
+}
+
+func (a *AudioEngine) SetInputMode(mode AudioInputMode) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.InputMode = mode
+}
+
+func (a *AudioEngine) CycleInputMode() AudioInputMode {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.InputMode == InputModeVoiceActivity {
+		a.InputMode = InputModePushToTalk
+	} else {
+		a.InputMode = InputModeVoiceActivity
+	}
+	return a.InputMode
+}
+
+func (a *AudioEngine) InputModeString() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.InputMode == InputModePushToTalk {
+		return "Push-to-Talk"
+	}
+	return "Voice Activity"
+}
+
+func (a *AudioEngine) SetPTT(active bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.IsPTTActive && !active {
+		a.PTTReleaseTime = time.Now().Add(250 * time.Millisecond)
+	}
+	a.IsPTTActive = active
+}
+
+func (a *AudioEngine) PulsePTT(duration time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.IsPTTActive = true
+	a.PTTReleaseTime = time.Now().Add(duration)
+}
+
+func (a *AudioEngine) IsTransmitting() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.Muted {
+		return false
+	}
+	if a.InputMode == InputModeVoiceActivity {
+		return true
+	}
+	return a.IsPTTActive || time.Now().Before(a.PTTReleaseTime)
 }
 
 func (a *AudioEngine) SuppressionModeString() string {
@@ -769,12 +836,14 @@ func (a *AudioEngine) readCaptureLoop(r io.Reader, onFrame func(rms float64, spe
 		gain := a.Gain
 		loopback := a.Loopback
 		suppressMode := a.SuppressionMode
+		inputMode := a.InputMode
+		isPTT := a.IsPTTActive || time.Now().Before(a.PTTReleaseTime)
 
 		var chunk []byte
 		var finalRMS float64
 		var speaking bool
 
-		if muted {
+		if muted || (inputMode == InputModePushToTalk && !isPTT) {
 			chunk = make([]byte, AudioChunkSize)
 			finalRMS = 0
 			speaking = false
@@ -797,6 +866,10 @@ func (a *AudioEngine) readCaptureLoop(r io.Reader, onFrame func(rms float64, spe
 				var cleaned []byte
 				speaking, finalRMS, cleaned = a.processNoiseCancellation(processed, suppressMode)
 				chunk = cleaned
+			}
+
+			if inputMode == InputModePushToTalk && isPTT {
+				speaking = true
 			}
 
 			a.LocalRMS = finalRMS

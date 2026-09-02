@@ -922,6 +922,7 @@ func FindExecutable(name string) (string, error) {
 		searchDirs = append(searchDirs,
 			filepath.Join(home, ".limoni-voice", "bin"),
 			filepath.Join(home, "AppData", "Local", "limoni-voice", "bin"),
+			filepath.Join(home, "AppData", "Local", "LimoniVoice", "bin"),
 			filepath.Join(home, "scoop", "shims"),
 			filepath.Join(home, "scoop", "apps", "ffmpeg", "current", "bin"),
 			filepath.Join(home, "scoop", "apps", "mpv", "current"),
@@ -958,6 +959,7 @@ func FindExecutable(name string) (string, error) {
 			filepath.Join(os.Getenv("LOCALAPPDATA"), "LimoniVoice"),
 			filepath.Join(os.Getenv("APPDATA"), "LimoniVoice", "bin"),
 			filepath.Join(os.Getenv("APPDATA"), "LimoniVoice"),
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "Microsoft", "WinGet", "Links"),
 			sysDrive+`\ffmpeg\bin`,
 			sysDrive+`\ffmpeg`,
 			sysDrive+`\mpv`,
@@ -966,6 +968,25 @@ func FindExecutable(name string) (string, error) {
 			sysDrive+`\ProgramData\chocolatey\bin`,
 			sysDrive+`\ProgramData\chocolatey\lib\mpv\tools`,
 		)
+
+		// Scan WinGet Packages recursively for extracted packages
+		wingetPackages := filepath.Join(os.Getenv("LOCALAPPDATA"), "Microsoft", "WinGet", "Packages")
+		if entries, err := os.ReadDir(wingetPackages); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					pkgDir := filepath.Join(wingetPackages, entry.Name())
+					searchDirs = append(searchDirs, pkgDir)
+					// Scan 1 level down
+					if subEntries, errSub := os.ReadDir(pkgDir); errSub == nil {
+						for _, sub := range subEntries {
+							if sub.IsDir() {
+								searchDirs = append(searchDirs, filepath.Join(pkgDir, sub.Name()))
+							}
+						}
+					}
+				}
+			}
+		}
 
 		// Scan Program Files subdirectories matching *mpv*, *MPV*, *ffmpeg*, *FFmpeg*, *player*
 		for _, pf := range basePfDirs {
@@ -1007,6 +1028,7 @@ func FindExecutable(name string) (string, error) {
 			}
 			searchDirs = append(searchDirs,
 				filepath.Join(ad, "Programs", "mpv"),
+				filepath.Join(ad, "Programs", "mpv.net"),
 				filepath.Join(ad, "Programs", "MPV Player"),
 				filepath.Join(ad, "Programs", "ffmpeg", "bin"),
 			)
@@ -1257,7 +1279,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+			"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:no-scenecut=1:intra-refresh=0:open-gop=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
 			"-crf", "23",
 			"-maxrate", "8M",
 			"-bufsize", "16M",
@@ -1292,7 +1314,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	targetURL := "-"
 	if !usePipe {
-		targetURL = fmt.Sprintf("udp://%s:%d?pkt_size=940", targetIP, port)
+		targetURL = fmt.Sprintf("udp://%s:%d?pkt_size=1316", targetIP, port)
 	}
 
 	var binPath string
@@ -1323,7 +1345,12 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya PowerShell'de 'winget install Gyan.FFmpeg' calistirin.")
 		}
 		binPath = p
-		scaleOpt := "pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p"
+
+		scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
+		if scaleRes == "" {
+			scaleRes = "1920:1080"
+		}
+		scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p", scaleRes)
 
 		if strings.HasPrefix(opt.WindowID, "hwnd:") {
 			parts := strings.SplitN(strings.TrimPrefix(opt.WindowID, "hwnd:"), ":", 2)
@@ -1361,16 +1388,18 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "23",
-				"-maxrate", "8M",
-				"-bufsize", "16M",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:no-scenecut=1:intra-refresh=0:open-gop=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "22",
+				"-b:v", "4M",
+				"-maxrate", "4.5M",
+				"-bufsize", "9M",
 				"-pix_fmt", "yuv420p",
 				"-g", "30",
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
 				"-mpegts_flags", "+latm+pat_pmt_at_frames",
+				"-pcr_period", "20",
 				targetURL,
 			}
 		} else {
@@ -1413,16 +1442,18 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "23",
-				"-maxrate", "8M",
-				"-bufsize", "16M",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:no-scenecut=1:intra-refresh=0:open-gop=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "22",
+				"-b:v", "4M",
+				"-maxrate", "4.5M",
+				"-bufsize", "9M",
 				"-pix_fmt", "yuv420p",
 				"-g", "30",
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
 				"-mpegts_flags", "+latm+pat_pmt_at_frames",
+				"-pcr_period", "20",
 				targetURL,
 			)
 		}
@@ -1465,10 +1496,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "23",
-				"-maxrate", "8M",
-				"-bufsize", "16M",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:no-scenecut=1:intra-refresh=0:open-gop=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "22",
+				"-b:v", "4M",
+				"-maxrate", "4.5M",
+				"-bufsize", "9M",
 				"-pix_fmt", "yuv420p",
 				"-g", "30",
 				"-bf", "0",
@@ -1496,10 +1528,11 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
-				"-crf", "23",
-				"-maxrate", "8M",
-				"-bufsize", "16M",
+				"-x264-params", "repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:no-scenecut=1:intra-refresh=0:open-gop=0:sync-lookahead=0:rc-lookahead=0:sliced-threads=1",
+				"-crf", "22",
+				"-b:v", "4M",
+				"-maxrate", "4.5M",
+				"-bufsize", "9M",
 				"-pix_fmt", "yuv420p",
 				"-g", "30",
 				"-bf", "0",
@@ -1680,10 +1713,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--osd-level=0",
 			"--cursor-autohide=1000",
 			"--demuxer-lavf-format=mpegts",
-			"--demuxer-lavf-analyzeduration=0.5",
-			"--demuxer-lavf-probesize=262144", // 256KB probe: reliably captures SPS/PPS keyframe headers
-			"--demuxer-readahead-secs=0.5",
-			"--demuxer-max-bytes=4M",
+			"--demuxer-lavf-analyzeduration=0.1",
+			"--demuxer-lavf-probesize=65536", // 64KB probe: fast startup and captures SPS/PPS
+			"--cache=yes",
+			"--demuxer-readahead-secs=0.1",
+			"--demuxer-max-bytes=16M",
 			"--demuxer-max-back-bytes=0",
 			"--demuxer-lavf-o=fflags=+nobuffer+flush_packets",
 			"--title=" + windowTitle,
@@ -1700,8 +1734,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-fflags", "nobuffer+flush_packets",
 			"-framedrop",
 			"-sync", "ext",
-			"-probesize", "262144",
-			"-analyzeduration", "500000",
+			"-probesize", "65536",
+			"-analyzeduration", "100000",
 			"-f", "mpegts",
 			"-alwaysontop",
 			"-window_title", windowTitle,

@@ -331,7 +331,9 @@ func main() {
 	// Audio frame capture and sender loop
 	audio.Start(func(rms float64, speaking bool, pcm []byte) {
 		if currentScreen == ScreenRoom && !audio.InTestMode && !audio.Muted {
-			node.SendAudio(rms, speaking, pcm)
+			if audio.InputMode == InputModeVoiceActivity || audio.IsTransmitting() {
+				node.SendAudio(rms, speaking, pcm)
+			}
 		}
 	})
 	defer audio.Stop()
@@ -445,13 +447,25 @@ func main() {
 					case backend.KeyEsc:
 						closeTestModal()
 					case backend.KeySpace:
-						audio.ToggleLoopback()
+						if audio.InputMode == InputModePushToTalk {
+							audio.PulsePTT(350 * time.Millisecond)
+						} else {
+							audio.ToggleLoopback()
+						}
 					case backend.KeyArrowLeft:
 						audio.CycleInputDevice(-1)
 					case backend.KeyArrowRight:
 						audio.CycleInputDevice(1)
 					case backend.KeyRune:
 						switch e.Ch {
+						case 'p', 'P':
+							audio.CycleInputMode()
+						case ' ':
+							if audio.InputMode == InputModePushToTalk {
+								audio.PulsePTT(350 * time.Millisecond)
+							} else {
+								audio.ToggleLoopback()
+							}
 						case 'l', 'L':
 							audio.ToggleLoopback()
 						case 'n', 'N':
@@ -626,12 +640,30 @@ func main() {
 							openLeaveModal()
 						}
 
+					case backend.KeySpace:
+						if audio.InputMode == InputModePushToTalk {
+							audio.PulsePTT(350 * time.Millisecond)
+						}
+
 					case backend.KeyF2:
 						CopyToClipboard(node.RoomCode)
 						room.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 
 					case backend.KeyRune:
 						switch e.Ch {
+						case 'p', 'P':
+							m := audio.CycleInputMode()
+							if m == InputModePushToTalk {
+								room.SetToast("Mode: Push-to-Talk (Hold Space to talk)")
+							} else {
+								room.SetToast("Mode: Voice Activity (Always on / VAD)")
+							}
+
+						case ' ':
+							if audio.InputMode == InputModePushToTalk {
+								audio.PulsePTT(350 * time.Millisecond)
+							}
+
 						case 't', 'T':
 							openTestModal()
 

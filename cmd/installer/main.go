@@ -105,13 +105,36 @@ func main() {
 	targetMpv := filepath.Join(binDir, "mpv.exe")
 	if !fileExists(targetMpv) && !commandExists("mpv.exe") {
 		fmt.Println("[*] Checking MPV Player (for stream viewing)...")
-		cmd := exec.Command("winget", "install", "-e", "--id", "shinchiro.mpv", "--accept-source-agreements", "--accept-package-agreements")
+		cmd := exec.Command("winget", "install", "-e", "--id", "mpv.mpv", "--accept-source-agreements", "--accept-package-agreements")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			// Fallback to mpv.net if shinchiro is unavailable
-			cmdFallback := exec.Command("winget", "install", "-e", "--id", "mpv.net", "--accept-source-agreements", "--accept-package-agreements")
-			_ = cmdFallback.Run()
+			// Fallback to shinchiro.mpv or mpv.net
+			_ = exec.Command("winget", "install", "-e", "--id", "shinchiro.mpv", "--accept-source-agreements", "--accept-package-agreements").Run()
+			_ = exec.Command("winget", "install", "-e", "--id", "mpv.net", "--accept-source-agreements", "--accept-package-agreements").Run()
+		}
+
+		// Check if winget placed mpv in packages or programs directory and copy to binDir
+		searchDirs := []string{
+			filepath.Join(localAppData, "Microsoft", "WinGet", "Packages"),
+			filepath.Join(localAppData, "Microsoft", "WinGet", "Links"),
+			filepath.Join(localAppData, "Programs", "mpv"),
+			filepath.Join(localAppData, "Programs", "mpv.net"),
+			filepath.Join(os.Getenv("ProgramFiles"), "mpv"),
+		}
+		for _, sDir := range searchDirs {
+			if _, err := os.Stat(sDir); err == nil {
+				_ = filepath.Walk(sDir, func(path string, info os.FileInfo, err error) error {
+					if err == nil && !info.IsDir() && strings.EqualFold(info.Name(), "mpv.exe") {
+						_ = copyFile(path, targetMpv)
+						return io.EOF // stop walking
+					}
+					return nil
+				})
+			}
+			if fileExists(targetMpv) {
+				break
+			}
 		}
 	} else {
 		fmt.Println("[✓] MPV Player already installed.")

@@ -123,17 +123,74 @@ if (!(Test-Path $ffmpegExe) -and !(Get-Command "ffmpeg.exe" -ErrorAction Silentl
 $mpvExe = Join-Path $binDir "mpv.exe"
 if (!(Test-Path $mpvExe) -and !(Get-Command "mpv.exe" -ErrorAction SilentlyContinue)) {
     Write-Host "[*] Checking MPV Player (required for screen stream viewing)..." -ForegroundColor Yellow
+    $mpvInstalled = $false
+
+    # Try winget first
     try {
-        winget install mpv.mpv --accept-source-agreements --accept-package-agreements
-        Write-Host "[+] MPV installed successfully!" -ForegroundColor Green
+        winget install --id mpv.mpv -e --accept-source-agreements --accept-package-agreements | Out-Null
+        $mpvInstalled = $true
     } catch {
-        Write-Host "[-] Could not install via winget, please install manually from https://mpv.io" -ForegroundColor DarkYellow
+        try {
+            winget install --id shinchiro.mpv -e --accept-source-agreements --accept-package-agreements | Out-Null
+            $mpvInstalled = $true
+        } catch {
+            try {
+                winget install --id mpv.net -e --accept-source-agreements --accept-package-agreements | Out-Null
+                $mpvInstalled = $true
+            } catch {}
+        }
+    }
+
+    # Search for winget extracted packages or existing installations and copy mpv.exe to binDir
+    $searchLocations = @(
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"),
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"),
+        (Join-Path $env:LOCALAPPDATA "Programs\mpv"),
+        (Join-Path $env:LOCALAPPDATA "Programs\mpv.net"),
+        (Join-Path $env:ProgramFiles "mpv"),
+        (Join-Path $env:ProgramFiles "mpv.net"),
+        (Join-Path $env:USERPROFILE "scoop\shims"),
+        (Join-Path $env:USERPROFILE "scoop\apps\mpv\current")
+    )
+
+    foreach ($loc in $searchLocations) {
+        if (Test-Path $loc) {
+            $found = Get-ChildItem -Path $loc -Recurse -Filter "mpv.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found -and (Test-Path $found.FullName)) {
+                Copy-Item $found.FullName $binDir -Force -ErrorAction SilentlyContinue
+                Write-Host "[+] mpv.exe copied from $($found.FullName) to $binDir" -ForegroundColor Green
+                break
+            }
+        }
+    }
+
+    if (Test-Path $mpvExe) {
+        Write-Host "[+] MPV installed successfully into $binDir!" -ForegroundColor Green
+    } else {
+        Write-Host "[*] Downloading portable MPV Player directly..." -ForegroundColor Yellow
+        $mpvZip = Join-Path $env:TEMP "mpv_build.zip"
+        $mpvUrls = @(
+            "https://github.com/thebanri/limoni-voice/releases/download/v1.0.0/mpv.exe",
+            "https://sourceforge.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-20240901-git-1beea03.7z/download"
+        )
+        foreach ($url in $mpvUrls) {
+            try {
+                if ($url.EndsWith(".exe")) {
+                    Invoke-WebRequest -Uri $url -OutFile $mpvExe -UseBasicParsing
+                    if (Test-Path $mpvExe) {
+                        Write-Host "[+] mpv.exe downloaded directly to $binDir!" -ForegroundColor Green
+                        break
+                    }
+                }
+            } catch {}
+        }
     }
 } else {
     Write-Host "[+] MPV is already installed." -ForegroundColor Green
 }
 
-# 5. Add bin directory to User PATH
+# 5. Add bin directory to User PATH and current session PATH
+$env:PATH = "$binDir;$env:PATH"
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ([string]::IsNullOrWhiteSpace($userPath)) {
     [Environment]::SetEnvironmentVariable("Path", $binDir, "User")
