@@ -603,19 +603,24 @@ func (n *P2PNode) LeaveRoom() {
 	_ = n.StopWatchingScreen()
 
 	n.mu.Lock()
-	if !n.IsConnected {
+	if !n.IsConnected && !n.Connecting {
 		n.mu.Unlock()
 		return
 	}
 	room := n.RoomCode
 	wasHost := n.IsHost
+	aead := n.aead
 	n.IsConnected = false
+	n.Connecting = false
 	n.IsHost = false
 	n.HostID = ""
 	n.HostNick = ""
 	n.RoomCode = ""
 	n.RoomKey = nil
-	n.aead = nil
+	peers := make([]*PeerInfo, 0, len(n.Peers))
+	for _, p := range n.Peers {
+		peers = append(peers, p)
+	}
 	n.mu.Unlock()
 
 	pkt := P2PPacket{
@@ -627,10 +632,20 @@ func (n *P2PNode) LeaveRoom() {
 		IsDeafened: n.audio.Deafened,
 		Timestamp:  time.Now().UnixMilli(),
 	}
-	n.broadcastToPeers(&pkt)
+	if aead != nil {
+		data, err := encodeAndEncryptPacket(&pkt, aead)
+		if err == nil {
+			for _, peer := range peers {
+				if peer.Addr != nil && n.Conn != nil {
+					n.Conn.WriteToUDP(data, peer.Addr)
+				}
+			}
+		}
+	}
 	n.closeRelay()
 
 	n.mu.Lock()
+	n.aead = nil
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
 
@@ -639,6 +654,23 @@ func (n *P2PNode) LeaveRoom() {
 	} else {
 		n.log("Left the room.")
 	}
+}
+
+// Close gracefully terminates all active network listeners, screen shares, and leaves any room
+func (n *P2PNode) Close() {
+	n.LeaveRoom()
+	_ = n.StopScreenShare()
+	_ = n.StopWatchingScreen()
+	n.mu.Lock()
+	if n.Conn != nil {
+		_ = n.Conn.Close()
+		n.Conn = nil
+	}
+	if n.BroadcastConn != nil {
+		_ = n.BroadcastConn.Close()
+		n.BroadcastConn = nil
+	}
+	n.mu.Unlock()
 }
 
 // connectRelay connects to the WebSocket relay server in the background and sends the initial host/join message.

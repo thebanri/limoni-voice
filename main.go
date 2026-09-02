@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/thebanri/limoni/animation"
@@ -336,7 +338,15 @@ func main() {
 			}
 		}
 	})
-	defer audio.Stop()
+	cleanExit := func() {
+		node.Close()
+		audio.Stop()
+		b.Close()
+		os.Exit(0)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 
 	renderTicker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
 	defer renderTicker.Stop()
@@ -345,6 +355,18 @@ func main() {
 
 	for {
 		select {
+		case sig := <-sigCh:
+			if sig == syscall.SIGHUP || sig == syscall.SIGTERM {
+				cleanExit()
+			} else if sig == os.Interrupt {
+				if showExitModal || showLeaveModal {
+					cleanExit()
+				} else if currentScreen == ScreenRoom {
+					openLeaveModal()
+				} else {
+					openExitModal()
+				}
+			}
 		case ev := <-b.Events():
 			switch ev.Type {
 			case backend.EventPaste:
@@ -365,9 +387,8 @@ func main() {
 
 				// Ctrl+C Always triggers exit confirmation
 				if e.Ctrl && (e.Ch == 'c' || e.Ch == 'C') {
-					if showExitModal {
-						b.Close()
-						os.Exit(0)
+					if showExitModal || showLeaveModal {
+						cleanExit()
 					}
 					if currentScreen == ScreenRoom {
 						openLeaveModal()
@@ -393,8 +414,7 @@ func main() {
 						t.FocusManager().Next()
 					case backend.KeyEnter, backend.KeySpace:
 						if focused == "exit_app_dialog_btn_0" {
-							b.Close()
-							os.Exit(0)
+							cleanExit()
 						} else {
 							closeExitModal()
 						}
@@ -402,8 +422,7 @@ func main() {
 						closeExitModal()
 					case backend.KeyRune:
 						if e.Ch == 'e' || e.Ch == 'E' || e.Ch == 'y' || e.Ch == 'Y' {
-							b.Close()
-							os.Exit(0)
+							cleanExit()
 						} else if e.Ch == 'h' || e.Ch == 'H' || e.Ch == 'n' || e.Ch == 'N' {
 							closeExitModal()
 						}
@@ -820,8 +839,7 @@ func main() {
 						DrawTestModal(f, f.Area(), audio, node, closeTestModal)
 					} else if showExitModal || exitProg > 0.001 {
 						DrawExitModal(f, f.Area(), exitProg, func() {
-							b.Close()
-							os.Exit(0)
+							cleanExit()
 						}, func() {
 							closeExitModal()
 						})
