@@ -297,7 +297,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 			break
 		}
 		peerCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
-		isReconnecting := time.Since(peer.LastSeen) > 3500*time.Millisecond
+		isReconnecting := time.Since(peer.LastSeen) > 5000*time.Millisecond
 		r.renderMemberMiniCard(frame, peerCard, peer.Nickname, peer.RMS, peer.Speaking, peer.IsMuted, peer.IsDeafened, peer.IsSharingScreen, peer.PingMs, isReconnecting, false)
 		currY += uint16(slotHeight)
 	}

@@ -148,8 +148,8 @@ type P2PNode struct {
 	RelayURL         string
 	LanOnly          bool
 	wsConn           *websocket.Conn
-	wsSendCh         chan []byte
-	wsAudioCh        chan []byte // high-priority dedicated audio channel
+	wsPriorityCh     chan []byte // dedicated real-time channel for Audio, Ping, Pong & Control (never delayed by video)
+	wsVideoCh        chan []byte // video stream channel with bounded queue to eliminate bufferbloat
 	wsMu             sync.Mutex
 	isRelayConnected bool
 	wsCancel         chan struct{}
@@ -675,15 +675,15 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsSendCh := make(chan []byte, 8192)
-		wsAudioCh := make(chan []byte, 256)
+		wsPriorityCh := make(chan []byte, 512)
+		wsVideoCh := make(chan []byte, 128)
 		n.mu.Lock()
-		n.wsSendCh = wsSendCh
-		n.wsAudioCh = wsAudioCh
+		n.wsPriorityCh = wsPriorityCh
+		n.wsVideoCh = wsVideoCh
 		n.mu.Unlock()
 
 		dialer := websocket.Dialer{
-			HandshakeTimeout: 6 * time.Second,
+			HandshakeTimeout: 4 * time.Second,
 		}
 		conn, _, err := dialer.Dial(relayURL, nil)
 		if err != nil {
@@ -691,11 +691,11 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 				n.log(fmt.Sprintf("[☁️] Failed to connect to relay server (%v). LAN mode active.", err))
 				firstConnect = false
 			}
-			// Wait before retry
+			// Fast retry when disconnected (e.g. switching to VPN)
 			select {
 			case <-cancel:
 				return
-			case <-time.After(3 * time.Second):
+			case <-time.After(1 * time.Second):
 				continue
 			}
 		}
@@ -725,8 +725,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 
 		connCancel := make(chan struct{})
 
-		// Start write pump
-		go n.relayWritePump(conn, wsAudioCh, wsSendCh, connCancel)
+		// Start write pump with dedicated priority vs video scheduling
+		go n.relayWritePump(conn, wsPriorityCh, wsVideoCh, connCancel)
 
 		// Send initial action (host or join) with local UDP port for direct P2P hole-punching
 		n.mu.RLock()
@@ -769,11 +769,11 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 			return
 		}
 
-		// Wait briefly before reconnecting
+		// Fast reconnect after drop
 		select {
 		case <-cancel:
 			return
-		case <-time.After(2 * time.Second):
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }
@@ -813,8 +813,8 @@ func (n *P2PNode) sendRelayControlLocked(msg RelayControlMessage) {
 	n.wsConn.WriteMessage(websocket.TextMessage, data)
 }
 
-func (n *P2PNode) relayWritePump(conn *websocket.Conn, audioCh, videoCh chan []byte, cancel chan struct{}) {
-	ticker := time.NewTicker(8 * time.Second)
+func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan []byte, cancel chan struct{}) {
+	ticker := time.NewTicker(3 * time.Second)
 	defer func() {
 		ticker.Stop()
 		conn.Close()
@@ -822,17 +822,18 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, audioCh, videoCh chan []b
 
 	writeMsg := func(data []byte) error {
 		n.wsMu.Lock()
-		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 		err := conn.WriteMessage(websocket.BinaryMessage, data)
 		n.wsMu.Unlock()
 		return err
 	}
 
 	for {
-		// Priority 1: Drain ALL pending audio packets first (voice must never wait behind video)
+		// Priority 1: Drain ALL pending priority packets (Voice, Ping, Pong, Mute, Control) first!
+		// Ping and Voice will NEVER wait behind video packets!
 		for {
 			select {
-			case data, ok := <-audioCh:
+			case data, ok := <-priorityCh:
 				if !ok {
 					return
 				}
@@ -840,15 +841,15 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, audioCh, videoCh chan []b
 					return
 				}
 			default:
-				goto sendOther
+				goto sendVideoOrWait
 			}
 		}
-	sendOther:
-		// Priority 2: Process one video/control packet, then loop back to recheck audio
+
+	sendVideoOrWait:
 		select {
 		case <-cancel:
 			return
-		case data, ok := <-audioCh:
+		case data, ok := <-priorityCh:
 			if !ok {
 				return
 			}
@@ -864,7 +865,7 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, audioCh, videoCh chan []b
 			}
 		case <-ticker.C:
 			n.wsMu.Lock()
-			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 			err := conn.WriteMessage(websocket.PingMessage, nil)
 			n.wsMu.Unlock()
 			if err != nil {
@@ -877,18 +878,18 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, audioCh, videoCh chan []b
 func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 	defer conn.Close()
 
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(7 * time.Second))
 
 	conn.SetPingHandler(func(appData string) error {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
 		n.wsMu.Lock()
-		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(3*time.Second))
 		n.wsMu.Unlock()
 		return err
 	})
 
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
 		return nil
 	})
 
@@ -904,7 +905,7 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 			return
 		}
 
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
 
 		switch msgType {
 		case websocket.TextMessage:
@@ -1099,12 +1100,12 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			} else {
 				peer.Nickname = msg.Nickname
 				peer.LastSeen = time.Now()
-				if peerAddr != nil && peer.Addr == nil {
+				if peerAddr != nil {
 					peer.Addr = peerAddr
 				}
 			}
 
-			// Trigger direct UDP hole-punching to the new joiner
+			// Trigger direct UDP hole-punching to the new/reconnected joiner
 			if msg.PublicIP != "" {
 				go n.punchPeerUDP(msg.PublicIP, msg.Port)
 			}
@@ -1252,12 +1253,11 @@ func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
 	n.sendAudioToPeers(&pkt)
 }
 
-// sendAudioToPeers routes audio packets through the high-priority audio channel
-// to prevent video traffic from starving voice data on the WebSocket relay.
+// sendAudioToPeers routes audio packets through the high-priority channel
 func (n *P2PNode) sendAudioToPeers(pkt *P2PPacket) {
 	n.mu.RLock()
 	aead := n.aead
-	wsAudioCh := n.wsAudioCh
+	wsPriorityCh := n.wsPriorityCh
 	isRelay := n.isRelayConnected
 	if pkt.LocalPort == 0 {
 		pkt.LocalPort = n.Port
@@ -1273,10 +1273,10 @@ func (n *P2PNode) sendAudioToPeers(pkt *P2PPacket) {
 		return
 	}
 
-	// 1. Forward via dedicated high-priority audio WebSocket channel (Internet)
-	if isRelay && wsAudioCh != nil {
+	// 1. Forward via dedicated high-priority WebSocket channel (never queued behind video)
+	if isRelay && wsPriorityCh != nil {
 		select {
-		case wsAudioCh <- data:
+		case wsPriorityCh <- data:
 		default:
 		}
 	}
@@ -1627,7 +1627,7 @@ func (n *P2PNode) sendBroadcastPacket(pkt *P2PPacket, port int) {
 func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
 	n.mu.RLock()
 	aead := n.aead
-	wsSendCh := n.wsSendCh
+	wsPriorityCh := n.wsPriorityCh
 	isRelay := n.isRelayConnected
 	if pkt.LocalPort == 0 {
 		pkt.LocalPort = n.Port
@@ -1643,10 +1643,10 @@ func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
 		return
 	}
 
-	// 1. Guaranteed delivery via WebSocket relay (ensures pings and audio never drop over the internet)
-	if isRelay && wsSendCh != nil {
+	// 1. Forward via high-priority WebSocket channel (Ping, Pong & Control with 0ms queue delay)
+	if isRelay && wsPriorityCh != nil {
 		select {
-		case wsSendCh <- data:
+		case wsPriorityCh <- data:
 		default:
 		}
 	}
@@ -1660,7 +1660,7 @@ func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
 func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 	n.mu.RLock()
 	aead := n.aead
-	wsSendCh := n.wsSendCh
+	wsPriorityCh := n.wsPriorityCh
 	isRelay := n.isRelayConnected
 	if pkt.LocalPort == 0 {
 		pkt.LocalPort = n.Port
@@ -1676,16 +1676,53 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 		return
 	}
 
-	// 1. Forward via WebSocket Relay to all room members over Internet
-	if isRelay && wsSendCh != nil {
+	// 1. Forward via high-priority WebSocket Relay
+	if isRelay && wsPriorityCh != nil {
 		select {
-		case wsSendCh <- data:
+		case wsPriorityCh <- data:
 		default:
 		}
 	}
 
-	// 2. Also send via direct UDP to known LAN peer addresses (for voice/control, and video when not on relay)
-	if !isRelay || pkt.Type != PacketScreenShareData {
+	// 2. Also send via direct UDP to known LAN peer addresses
+	for _, peer := range n.Peers {
+		if peer.Addr != nil && n.Conn != nil {
+			n.Conn.WriteToUDP(data, peer.Addr)
+		}
+	}
+	n.mu.RUnlock()
+}
+
+// broadcastVideoPacket routes screen share chunks through the paced video channel with bounded queue
+func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
+	n.mu.RLock()
+	aead := n.aead
+	wsVideoCh := n.wsVideoCh
+	isRelay := n.isRelayConnected
+	if pkt.LocalPort == 0 {
+		pkt.LocalPort = n.Port
+	}
+	if aead == nil || (len(n.Peers) == 0 && !isRelay) {
+		n.mu.RUnlock()
+		return
+	}
+
+	data, err := encodeAndEncryptPacket(pkt, aead)
+	if err != nil {
+		n.mu.RUnlock()
+		return
+	}
+
+	// 1. Forward via WebSocket Relay with bounded queue (drop stale chunks on congestion to prevent ping spikes)
+	if isRelay && wsVideoCh != nil {
+		select {
+		case wsVideoCh <- data:
+		default:
+		}
+	}
+
+	// 2. Send via direct UDP to LAN peers only when NOT on relay (avoids sending duplicate video streams)
+	if !isRelay {
 		for _, peer := range n.Peers {
 			if peer.Addr != nil && n.Conn != nil {
 				n.Conn.WriteToUDP(data, peer.Addr)
@@ -2327,7 +2364,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 				Seq:      seq,
 				Payload:  chunk,
 			}
-			n.broadcastToPeers(&vidPkt)
+			n.broadcastVideoPacket(&vidPkt)
 		}
 	}()
 
