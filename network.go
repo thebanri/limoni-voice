@@ -683,7 +683,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		n.mu.Unlock()
 
 		dialer := websocket.Dialer{
-			HandshakeTimeout: 4 * time.Second,
+			HandshakeTimeout: 8 * time.Second,
 		}
 		conn, _, err := dialer.Dial(relayURL, nil)
 		if err != nil {

@@ -400,13 +400,13 @@ func (s *RelayServer) handleDisconnect(client *Client) {
 	}
 
 	client.isDisconnected = true
-	log.Printf("[⏳] Connection lost for %s (%s) in room %s. Waiting 10s grace period...", nickname, senderID, room.Code)
+	log.Printf("[⏳] Connection lost for %s (%s) in room %s. Waiting 30s grace period...", nickname, senderID, room.Code)
 
 	if client.disconnectTimer != nil {
 		client.disconnectTimer.Stop()
 	}
 
-	client.disconnectTimer = time.AfterFunc(10*time.Second, func() {
+	client.disconnectTimer = time.AfterFunc(30*time.Second, func() {
 		s.removeClientImmediate(client)
 	})
 	room.mu.Unlock()

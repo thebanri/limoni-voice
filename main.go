@@ -286,7 +286,7 @@ func main() {
 		lobby.ConnectingTarget = cleanCode
 		lobby.SetToast(fmt.Sprintf("Searching for room '%s' and verifying host...", cleanCode))
 
-		node.RequestJoinRoom(cleanCode, 8*time.Second,
+		node.RequestJoinRoom(cleanCode, 15*time.Second,
 			func(hostNick string) {
 				lobby.IsConnecting = false
 				room = NewRoomView()

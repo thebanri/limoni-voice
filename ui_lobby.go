@@ -569,7 +569,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
 
-	frame.RegisterClickHandler(cell.NewRect(joinInner.X, joinInner.Y+3, uint16(len([]rune(joinBtns))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(joinInner.X, joinInner.Y+3, joinInner.Width, 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 1
 		if l.IsConnecting {
 			if l.OnCancelJoin != nil {
@@ -585,6 +585,10 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		} else {
 			l.SetToast("Please enter a room key to connect")
 		}
+	})
+
+	frame.RegisterClickHandler(joinInputRect, func(_ backend.MouseEvent) {
+		l.ActiveInput = 1
 	})
 
 	frame.RegisterClickHandler(joinArea, func(_ backend.MouseEvent) {
