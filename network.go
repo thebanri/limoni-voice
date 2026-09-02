@@ -1693,7 +1693,9 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 	n.mu.RUnlock()
 }
 
-// broadcastVideoPacket routes screen share chunks through the paced video channel with bounded queue
+// broadcastVideoPacket routes screen share chunks:
+// 1. Directly over UDP to all peers that have a reachable UDP address (LAN / P2P direct with 0ms relay delay)
+// 2. Via WebSocket Relay ONLY for internet peers that do not have a direct UDP address, or while direct UDP is establishing
 func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 	n.mu.RLock()
 	aead := n.aead
@@ -1702,7 +1704,7 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 	if pkt.LocalPort == 0 {
 		pkt.LocalPort = n.Port
 	}
-	if aead == nil || (len(n.Peers) == 0 && !isRelay) {
+	if aead == nil || len(n.Peers) == 0 {
 		n.mu.RUnlock()
 		return
 	}
@@ -1713,20 +1715,25 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		return
 	}
 
-	// 1. Forward via WebSocket Relay with bounded queue (drop stale chunks on congestion to prevent ping spikes)
-	if isRelay && wsVideoCh != nil {
-		select {
-		case wsVideoCh <- data:
-		default:
+	hasDirectPeers := false
+	hasRelayOnlyPeers := false
+
+	// 1. Direct UDP to reachable peers (LAN / Direct P2P)
+	for _, peer := range n.Peers {
+		if peer.Addr != nil && n.Conn != nil {
+			n.Conn.WriteToUDP(data, peer.Addr)
+			hasDirectPeers = true
+		} else {
+			hasRelayOnlyPeers = true
 		}
 	}
 
-	// 2. Send via direct UDP to LAN peers only when NOT on relay (avoids sending duplicate video streams)
-	if !isRelay {
-		for _, peer := range n.Peers {
-			if peer.Addr != nil && n.Conn != nil {
-				n.Conn.WriteToUDP(data, peer.Addr)
-			}
+	// 2. Forward via WebSocket Relay ONLY to internet peers that cannot be reached directly via UDP,
+	// or when direct UDP connection has not yet punched through
+	if isRelay && wsVideoCh != nil && (hasRelayOnlyPeers || !hasDirectPeers) {
+		select {
+		case wsVideoCh <- data:
+		default:
 		}
 	}
 	n.mu.RUnlock()

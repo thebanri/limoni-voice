@@ -199,17 +199,18 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"tune=zerolatency",
 		"pass=cbr",
 		fmt.Sprintf("bitrate=%d", bitrateKbps),
-		"key-int-max=30",
+		"intra-refresh=true",
+		"key-int-max=60",
 		"bframes=0",
 		"byte-stream=true",
 		"sliced-threads=true",
-		"option-string=repeat-headers=1:keyint=30:min-keyint=30:scenecut=0:no-scenecut=1:intra-refresh=0:open-gop=0:sync-lookahead=0:rc-lookahead=0",
+		"option-string=intra-refresh=1:keyint=60:min-keyint=60:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:repeat-headers=1",
 		"insert-vui=true",
 		"!", "video/x-h264,profile=baseline,stream-format=byte-stream",
 		"!", "mpegtsmux",
 		"alignment=7",
-		"pat-interval=5",
-		"pcr-interval=5",
+		"pat-interval=10",
+		"pcr-interval=10",
 	)
 
 	if usePipe {
