@@ -749,33 +749,32 @@ func main() {
 
 						case 'w', 'W':
 							if node.IsWatchingScreen {
-								go func() {
-									_ = node.StopWatchingScreen()
-									room.SetToast("Stream viewer closed")
-								}()
+								_ = node.StopWatchingScreen()
+								room.SetToast("Screen viewer closed")
 							} else {
-								var streamingPeer *PeerInfo
-								for _, p := range node.Peers {
+								peers := node.GetPeersList()
+								var streamingPeers []*PeerInfo
+								for _, p := range peers {
 									if p.IsSharingScreen {
-										streamingPeer = p
-										break
+										streamingPeers = append(streamingPeers, p)
 									}
 								}
-								if streamingPeer != nil {
-									port := streamingPeer.VideoPort
+								if len(streamingPeers) > 0 {
+									target := streamingPeers[0]
+									port := target.VideoPort
 									if port <= 0 {
 										port = 50100
 									}
 									opts := screenshare.ReceiverOptions{
-										WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (60 FPS)", streamingPeer.Nickname),
+										WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", target.Nickname),
 									}
-									room.SetToast("🎬 Starting stream viewer...")
+									room.SetToast(fmt.Sprintf("🎬 Starting %s stream...", target.Nickname))
 									go func() {
-										err := node.StartWatchingScreen(port, opts)
+										err := node.StartWatchingScreen(target.ID, port, opts)
 										if err != nil {
 											room.SetToast(fmt.Sprintf("Error: %v", err))
 										} else {
-											room.SetToast(fmt.Sprintf("%s stream opened (HD 60 FPS)", streamingPeer.Nickname))
+											room.SetToast(fmt.Sprintf("%s stream opened (HD 60 FPS)", target.Nickname))
 										}
 									}()
 								} else {

@@ -157,6 +157,8 @@ type P2PNode struct {
 	// Screen Sharing State & Subprocesses
 	IsSharingScreen  bool
 	IsWatchingScreen bool
+	WatchingPeerID   string
+	WatchingPeerNick string
 	ScreenSharePort    int
 	screenSession      *screenshare.Session
 	receiverSession    *screenshare.Session
@@ -966,7 +968,7 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 
 			// Fast-path: feed video chunks directly to sequential reorder buffer
 			if pkt.Type == PacketScreenShareData {
-				n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
+				n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
 				continue
 			}
 
@@ -1828,7 +1830,7 @@ func (n *P2PNode) listenLoop() {
 		}
 
 		if pkt.Type == PacketScreenShareData {
-			n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
+			n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
 			continue
 		}
 
@@ -1863,7 +1865,7 @@ func (n *P2PNode) listenBroadcastLoop() {
 		}
 
 		if pkt.Type == PacketScreenShareData {
-			n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
+			n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
 			continue
 		}
 
@@ -2267,14 +2269,17 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				go n.OnScreenShare(pkt.SenderID, false, 0)
 			}
 		}
-		if n.IsWatchingScreen {
+		n.mu.RLock()
+		watchingThisPeer := n.IsWatchingScreen && (n.WatchingPeerID == pkt.SenderID || n.WatchingPeerID == "")
+		n.mu.RUnlock()
+		if watchingThisPeer {
 			go func() {
 				_ = n.StopWatchingScreen()
 			}()
 		}
 
 	case PacketScreenShareData:
-		n.forwardVideoChunk(pkt.Payload, pkt.Seq, pkt.Nickname)
+		n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
 
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
@@ -2284,7 +2289,10 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
 			}
-			if wasSharing && n.IsWatchingScreen {
+			n.mu.RLock()
+			watchingThisPeer := wasSharing && n.IsWatchingScreen && (n.WatchingPeerID == pkt.SenderID || n.WatchingPeerID == "")
+			n.mu.RUnlock()
+			if watchingThisPeer {
 				go func() {
 					_ = n.StopWatchingScreen()
 				}()
@@ -2293,10 +2301,36 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	}
 }
 
-func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string) {
+func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32, nickname string) {
 	if len(payload) == 0 {
 		return
 	}
+
+	n.mu.Lock()
+	if peer, exists := n.Peers[senderID]; exists {
+		peer.LastSeen = time.Now()
+		peer.IsSharingScreen = true
+	} else if senderID != "" {
+		for _, p := range n.Peers {
+			if p.Nickname == nickname {
+				p.LastSeen = time.Now()
+				p.IsSharingScreen = true
+			}
+		}
+	}
+
+	watching := n.IsWatchingScreen
+	watchingPeerID := n.WatchingPeerID
+
+	// If we are watching a specific peer, ignore stream packets from other broadcasters
+	if watching && watchingPeerID != "" && senderID != "" && senderID != watchingPeerID {
+		n.mu.Unlock()
+		return
+	}
+
+	n.lastVideoChunkTime = time.Now()
+	tcpConn := n.videoTCPConn
+	n.mu.Unlock()
 
 	readyChunks := n.videoReorder.Push(seq, payload)
 	if len(readyChunks) == 0 {
@@ -2304,15 +2338,6 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 	}
 
 	n.mu.Lock()
-	n.lastVideoChunkTime = time.Now()
-	for _, p := range n.Peers {
-		if p.IsSharingScreen || (nickname != "" && p.Nickname == nickname) {
-			p.LastSeen = time.Now()
-		}
-	}
-	watching := n.IsWatchingScreen
-	tcpConn := n.videoTCPConn
-
 	// Keep prebuffer of recent video chunks (~30 chunks = ~35KB) so player gets headers immediately on connect
 	for _, chunk := range readyChunks {
 		if len(chunk) > 0 {
@@ -2323,6 +2348,8 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 			}
 		}
 	}
+	tcpConn = n.videoTCPConn
+	watching = n.IsWatchingScreen
 	n.mu.Unlock()
 
 	if watching && tcpConn != nil {
@@ -2336,7 +2363,7 @@ func (n *P2PNode) forwardVideoChunk(payload []byte, seq uint32, nickname string)
 						n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP disconnected: %v", err))
 					}
 					n.mu.Unlock()
-					break
+					return
 				}
 			}
 		}
@@ -2521,7 +2548,7 @@ func (n *P2PNode) StopScreenShare() error {
 }
 
 // StartWatchingScreen launches native hardware-accelerated video receiver (mpv/ffplay) and feeds it decrypted stream chunks over dynamic local TCP server
-func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOptions) error {
+func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screenshare.ReceiverOptions) error {
 	n.mu.Lock()
 	if n.receiverSession != nil {
 		prevSession := n.receiverSession
@@ -2541,6 +2568,13 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		n.mu.Lock()
 	}
 
+	n.WatchingPeerID = peerID
+	if p, ok := n.Peers[peerID]; ok {
+		n.WatchingPeerNick = p.Nickname
+	} else {
+		n.WatchingPeerNick = ""
+	}
+
 	var opt screenshare.ReceiverOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -2548,6 +2582,7 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		opt = screenshare.DefaultReceiverOptions()
 	}
 	n.videoReorder.Reset()
+	n.videoPreBuf = nil
 	n.mu.Unlock()
 
 	// 1. Open a local TCP listener on a dynamic free port (127.0.0.1:0)
@@ -2596,6 +2631,8 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	if err != nil {
 		n.mu.Lock()
 		n.IsWatchingScreen = false
+		n.WatchingPeerID = ""
+		n.WatchingPeerNick = ""
 		n.videoTCPListener = nil
 		n.mu.Unlock()
 		_ = tcpLn.Close()
@@ -2619,6 +2656,8 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 
 		n.mu.Lock()
 		n.IsWatchingScreen = false
+		n.WatchingPeerID = ""
+		n.WatchingPeerNick = ""
 		n.receiverSession = nil
 		if n.videoTCPConn != nil {
 			_ = n.videoTCPConn.Close()
@@ -2644,7 +2683,11 @@ func (n *P2PNode) StopWatchingScreen() error {
 	n.videoTCPConn = nil
 	n.videoTCPListener = nil
 	n.IsWatchingScreen = false
+	n.WatchingPeerID = ""
+	n.WatchingPeerNick = ""
 	n.lastVideoChunkTime = time.Time{}
+	n.videoPreBuf = nil
+	n.videoReorder.Reset()
 	n.mu.Unlock()
 
 	if conn != nil {
@@ -2654,7 +2697,19 @@ func (n *P2PNode) StopWatchingScreen() error {
 		_ = ln.Close()
 	}
 	if session != nil {
-		return session.Stop()
+		_ = session.Stop()
+	}
+
+	n.log("⏹️ Screen viewer closed.")
+	return nil
+}
+
+// GetPeer returns a peer info pointer by peer ID (or nil)
+func (n *P2PNode) GetPeer(id string) *PeerInfo {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if p, ok := n.Peers[id]; ok {
+		return p
 	}
 	return nil
 }
