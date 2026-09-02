@@ -131,17 +131,17 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// Set read deadline and handlers for keepalive (7s timeout for fast network change detection)
-	conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+	// Set read deadline and handlers for keepalive
+	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	conn.SetPingHandler(func(appData string) error {
-		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 		client.mu.Lock()
-		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(3*time.Second))
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
 		client.mu.Unlock()
 		return err
 	})
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 		return nil
 	})
 
@@ -155,7 +155,7 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Refresh deadline on valid message
-		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 
 		switch msgType {
 		case websocket.TextMessage:
@@ -516,7 +516,7 @@ func sendControlMessage(client *Client, msg ControlMessage) {
 }
 
 func (c *Client) writePump() {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(20 * time.Second)
 	defer func() {
 		ticker.Stop()
 		c.conn.Close()
@@ -529,7 +529,7 @@ func (c *Client) writePump() {
 				return
 			}
 			c.mu.Lock()
-			c.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+			c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			err := c.conn.WriteMessage(websocket.BinaryMessage, data)
 			c.mu.Unlock()
 			if err != nil {

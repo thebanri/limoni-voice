@@ -816,7 +816,7 @@ func (n *P2PNode) sendRelayControlLocked(msg RelayControlMessage) {
 }
 
 func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan []byte, cancel chan struct{}) {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(20 * time.Second)
 	defer func() {
 		ticker.Stop()
 		conn.Close()
@@ -824,7 +824,7 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan 
 
 	writeMsg := func(data []byte) error {
 		n.wsMu.Lock()
-		conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		err := conn.WriteMessage(websocket.BinaryMessage, data)
 		n.wsMu.Unlock()
 		return err
@@ -867,7 +867,7 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan 
 			}
 		case <-ticker.C:
 			n.wsMu.Lock()
-			conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			err := conn.WriteMessage(websocket.PingMessage, nil)
 			n.wsMu.Unlock()
 			if err != nil {
@@ -880,18 +880,18 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan 
 func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 	defer conn.Close()
 
-	conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 
 	conn.SetPingHandler(func(appData string) error {
-		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 		n.wsMu.Lock()
-		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(3*time.Second))
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
 		n.wsMu.Unlock()
 		return err
 	})
 
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 		return nil
 	})
 
@@ -907,7 +907,7 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 			return
 		}
 
-		conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 
 		switch msgType {
 		case websocket.TextMessage:
@@ -943,7 +943,7 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 	}
 }
 
-// punchPeerUDP sends direct UDP probe packets to punch through NAT and establish zero-latency P2P
+// punchPeerUDP sends direct UDP probe waves to punch through NAT and establish zero-latency P2P
 func (n *P2PNode) punchPeerUDP(publicIP string, localPort int) {
 	if publicIP == "" {
 		return
@@ -959,7 +959,6 @@ func (n *P2PNode) punchPeerUDP(publicIP string, localPort int) {
 		Timestamp:  time.Now().UnixMilli(),
 	}
 
-	// Try the peer's reported local port as well as common ports
 	targetPorts := []int{localPort}
 	for p := 50000; p <= 50008; p++ {
 		if p != localPort {
@@ -968,14 +967,20 @@ func (n *P2PNode) punchPeerUDP(publicIP string, localPort int) {
 	}
 	targetPorts = append(targetPorts, 45454)
 
-	for _, p := range targetPorts {
-		if p > 0 {
-			raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", publicIP, p))
-			if err == nil && n.Conn != nil {
-				go n.sendDirectUDPPacket(raddr, &pkt)
+	// Send 3 probe waves spaced by 100ms to open bidirectional NAT mapping reliably
+	go func() {
+		for wave := 0; wave < 3; wave++ {
+			for _, p := range targetPorts {
+				if p > 0 {
+					raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", publicIP, p))
+					if err == nil && n.Conn != nil {
+						n.sendDirectUDPPacket(raddr, &pkt)
+					}
+				}
 			}
+			time.Sleep(100 * time.Millisecond)
 		}
-	}
+	}()
 }
 
 func (n *P2PNode) sendDirectUDPPacket(addr *net.UDPAddr, pkt *P2PPacket) {
@@ -2194,12 +2199,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			nowMs := time.Now().UnixMilli()
 			rtt := nowMs - pkt.Timestamp
 			if rtt >= 0 && rtt < 3000 {
-				if peer.PingMs == 0 {
-					peer.PingMs = rtt
-				} else {
-					// Exponential Moving Average filter (80% previous + 20% current sample)
-					peer.PingMs = int64(float64(peer.PingMs)*0.80 + float64(rtt)*0.20)
-				}
+				peer.PingMs = rtt
 			}
 		}
 
