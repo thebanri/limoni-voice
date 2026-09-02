@@ -2481,6 +2481,12 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	}
 	assignedTCPPort := tcpLn.Addr().(*net.TCPAddr).Port
 
+	n.mu.Lock()
+	n.IsWatchingScreen = true
+	n.videoTCPListener = tcpLn
+	n.lastVideoChunkTime = time.Now()
+	n.mu.Unlock()
+
 	// 2. Start accepting incoming TCP connection from player in background immediately
 	go func() {
 		conn, err := tcpLn.Accept()
@@ -2497,12 +2503,6 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 		n.mu.Lock()
 		if n.IsWatchingScreen {
 			n.videoTCPConn = conn
-			// Immediately flush pre-buffered MPEG-TS chunks so player receives sync frame instantly
-			for _, chunk := range n.videoPreBuf {
-				if len(chunk) > 0 {
-					_, _ = conn.Write(chunk)
-				}
-			}
 		} else {
 			_ = conn.Close()
 		}
@@ -2512,15 +2512,16 @@ func (n *P2PNode) StartWatchingScreen(port int, opts ...screenshare.ReceiverOpti
 	// 3. Start MPV connecting to tcp://127.0.0.1:assignedTCPPort
 	session, err := screenshare.StartReceiving(context.Background(), assignedTCPPort, opt)
 	if err != nil {
+		n.mu.Lock()
+		n.IsWatchingScreen = false
+		n.videoTCPListener = nil
+		n.mu.Unlock()
 		_ = tcpLn.Close()
 		return err
 	}
 
 	n.mu.Lock()
 	n.receiverSession = session
-	n.videoTCPListener = tcpLn
-	n.IsWatchingScreen = true
-	n.lastVideoChunkTime = time.Now()
 	n.mu.Unlock()
 
 	n.log("🎬 Live screen stream viewer window opened (HD 60 FPS).")

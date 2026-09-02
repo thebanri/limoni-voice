@@ -1701,25 +1701,20 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--framedrop=vo",
 			"--hwdec=auto-safe",
 			"--video-sync=desync",
-			"--force-window=immediate", // Open window immediately without waiting for first parsed frame
-			"--ontop=yes",              // Bring viewer window to the foreground
-			"--focus-on=open",          // Focus window immediately when created
-			"--keep-open=yes",          // Keep window open through stream transitions
-			"--idle=yes",               // Idle mode so player doesn't quit on brief gaps
+			"--force-window=yes",
+			"--ontop=yes",
+			"--keep-open=yes",
+			"--idle=yes",
 			"--no-osc",
-			"--osc=no",
 			"--no-osd-bar",
-			"--osd-bar=no",
 			"--osd-level=0",
 			"--cursor-autohide=1000",
 			"--demuxer-lavf-format=mpegts",
 			"--demuxer-lavf-analyzeduration=0.1",
-			"--demuxer-lavf-probesize=65536", // 64KB probe: fast startup and captures SPS/PPS
+			"--demuxer-lavf-probesize=65536",
 			"--cache=yes",
 			"--demuxer-readahead-secs=0.1",
 			"--demuxer-max-bytes=16M",
-			"--demuxer-max-back-bytes=0",
-			"--demuxer-lavf-o=fflags=+nobuffer+flush_packets",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
 		}
