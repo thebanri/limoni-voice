@@ -325,19 +325,34 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 							a.LocalRMS = 0
 							a.IsSpeaking = false
 							a.shiftWave(0)
-						} else {
 							processed := applyGain(chunk, gain)
 							if suppressMode == 0 {
 								rawRMS := calculateRMS(processed)
 								speaking = rawRMS > a.VADThreshold
+								if inputMode == InputModePushToTalk && isPTT {
+									speaking = true
+								}
 								finalRMS = rawRMS
 								processedChunk = make([]byte, len(processed))
 								copy(processedChunk, processed)
+
+								targetGain := 0.0
+								if speaking {
+									targetGain = 1.0
+								}
+								if targetGain > a.gateGain {
+									a.gateGain += (targetGain - a.gateGain) * 0.85
+								} else {
+									a.gateGain += (targetGain - a.gateGain) * 0.15
+								}
+								if a.gateGain < 0.99 && inputMode != InputModePushToTalk {
+									processedChunk = applyGain(processedChunk, a.gateGain)
+								}
 							} else {
 								speaking, finalRMS, processedChunk = a.processNoiseCancellation(processed, suppressMode)
-							}
-							if inputMode == InputModePushToTalk && isPTT {
-								speaking = true
+								if inputMode == InputModePushToTalk && isPTT {
+									speaking = true
+								}
 							}
 							a.LocalRMS = finalRMS
 							a.IsSpeaking = speaking

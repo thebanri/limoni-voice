@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	AppVersion       = "v1.4.6"
+	AppVersion       = "v1.4.7"
 	GitHubRepo       = "thebanri/limoni-voice"
 	UpdateCheckDelay = 1200 * time.Millisecond
 )

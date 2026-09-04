@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,33 +16,117 @@ import (
 	"github.com/thebanri/limoni-voice/screenshare"
 )
 
+type RoomMessage struct {
+	Timestamp time.Time
+	Sender    string
+	SenderID  string
+	Text      string
+	IsChat    bool
+	IsSelf    bool
+}
+
 type RoomView struct {
 	mu                     sync.Mutex
 	StartTime              time.Time
 	ToastMsg               string
 	ToastTimer             int
 	Logs                   []string
+	Messages               []RoomMessage
+	ChatInputState         *widgets.TextInputState
+	IsChatFocused          bool
+	ChatScrollOffset       int
 	OnLeave                func()
 	OnOpenTestModal        func()
 	OnOpenScreenShareModal func()
+	OnSendChat             func(text string)
 	LastStageArea          cell.Rect
+	LastLogArea            cell.Rect
 }
 
 func NewRoomView() *RoomView {
 	return &RoomView{
-		StartTime: time.Now(),
-		Logs:      make([]string, 0),
+		StartTime:      time.Now(),
+		Logs:           make([]string, 0),
+		Messages:       make([]RoomMessage, 0, 64),
+		ChatInputState: widgets.NewTextInputState(),
 	}
 }
 
 func (r *RoomView) AddLog(msg string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Format log message with timestamp
-	ts := time.Now().Format("15:04:05")
-	r.Logs = append(r.Logs, fmt.Sprintf("[%s] %s", ts, msg))
+	now := time.Now()
+	ts := now.Format("15:04:05")
+	formatted := fmt.Sprintf("[%s] %s", ts, msg)
+	r.Logs = append(r.Logs, formatted)
 	if len(r.Logs) > 200 {
 		r.Logs = r.Logs[len(r.Logs)-100:]
+	}
+	r.Messages = append(r.Messages, RoomMessage{
+		Timestamp: now,
+		Text:      msg,
+		IsChat:    false,
+	})
+	if len(r.Messages) > 300 {
+		r.Messages = r.Messages[len(r.Messages)-200:]
+	}
+	r.ChatScrollOffset = 0
+}
+
+func (r *RoomView) AddChatMessage(nickname string, senderID string, text string, isSelf bool, ts time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	formattedTs := ts.Format("15:04:05")
+	dispName := nickname
+	if isSelf {
+		dispName = "You"
+	}
+	r.Logs = append(r.Logs, fmt.Sprintf("[%s] %s: %s", formattedTs, dispName, text))
+	if len(r.Logs) > 200 {
+		r.Logs = r.Logs[len(r.Logs)-100:]
+	}
+	r.Messages = append(r.Messages, RoomMessage{
+		Timestamp: ts,
+		Sender:    nickname,
+		SenderID:  senderID,
+		Text:      text,
+		IsChat:    true,
+		IsSelf:    isSelf,
+	})
+	if len(r.Messages) > 300 {
+		r.Messages = r.Messages[len(r.Messages)-200:]
+	}
+	r.ChatScrollOffset = 0
+}
+
+func (r *RoomView) SendCurrentChat() {
+	r.mu.Lock()
+	text := strings.TrimSpace(r.ChatInputState.Value())
+	if text == "" {
+		r.mu.Unlock()
+		return
+	}
+	r.ChatInputState.SetValue("")
+	onSend := r.OnSendChat
+	r.mu.Unlock()
+
+	if onSend != nil {
+		onSend(text)
+	}
+}
+
+func (r *RoomView) ScrollChat(delta int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ChatScrollOffset += delta
+	if r.ChatScrollOffset < 0 {
+		r.ChatScrollOffset = 0
+	}
+	if r.ChatScrollOffset > len(r.Messages) {
+		r.ChatScrollOffset = len(r.Messages)
 	}
 }
 
@@ -64,7 +149,7 @@ func (r *RoomView) Update() {
 }
 
 func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
-	footerHeight := uint16(7)
+	footerHeight := uint16(8)
 	if node.IsWatchingScreen {
 		footerHeight = 4 // Compact footer when watching stream so Stage gets maximum height!
 	}
@@ -1002,8 +1087,8 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 
 func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
 	fl := layout.NewFlexLayout(layout.Horizontal, 0,
-		layout.Percentage(60), // controls
-		layout.Percentage(40), // mini logs
+		layout.Percentage(52), // controls
+		layout.Percentage(48), // chat & room logs
 	)
 	cols := fl.Split(area)
 	if len(cols) < 2 {
@@ -1299,12 +1384,28 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 	}
 
-	// 2. Logs & Toast Area
+	// 2. Chat & Room Logs Area
+	r.mu.Lock()
+	r.LastLogArea = logArea
+	isFocused := r.IsChatFocused
+	toastMsg := r.ToastMsg
+	messagesCopy := make([]RoomMessage, len(r.Messages))
+	copy(messagesCopy, r.Messages)
+	scrollOffset := r.ChatScrollOffset
+	r.mu.Unlock()
+
+	blockTitle := " 💬 CHAT & ROOM LOG "
+	borderStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72)}
+	if isFocused {
+		blockTitle = " 💬 CHAT & LOG [Enter: Send | Esc: Exit] "
+		borderStyle = cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7), Modifier: cell.ModifierBold}
+	}
+
 	logBlock := widgets.Block{
-		Title:         " ROOM LOG & EVENTS ",
+		Title:         blockTitle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72)},
+		BorderStyle:   borderStyle,
 		Style:         cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
 	}
 	frame.RenderWidget(logBlock, logArea)
@@ -1315,6 +1416,13 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}})
 		}
 	}
+
+	// Register click handler to focus chat when clicking the area
+	frame.RegisterClickHandler(logArea, func(_ backend.MouseEvent) {
+		r.mu.Lock()
+		r.IsChatFocused = true
+		r.mu.Unlock()
+	})
 
 	maxW := int(logInner.Width) - 2
 	if maxW < 5 {
@@ -1332,33 +1440,244 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		return string(runes[:limit-1]) + "…"
 	}
 
-	r.mu.Lock()
-	toastMsg := r.ToastMsg
-	logsCopy := make([]string, len(r.Logs))
-	copy(logsCopy, r.Logs)
-	r.mu.Unlock()
+	hasInputLine := logInner.Height >= 2
+	msgHeight := int(logInner.Height)
+	inputY := logInner.Y + logInner.Height - 1
+	if hasInputLine {
+		msgHeight = int(logInner.Height) - 1
+	}
 
-	if toastMsg != "" {
+	// Draw Toast if active
+	if toastMsg != "" && msgHeight > 0 {
 		toastStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Modifier: cell.ModifierBold,
 		}
-		toastText := truncate("  "+toastMsg+"  ", maxW)
+		toastText := truncate(" 🔔 "+toastMsg+" ", maxW)
 		buf.SetString(logInner.X+1, logInner.Y, toastText, toastStyle)
-	} else if len(logsCopy) > 0 {
+	}
+
+	// Message rendering
+	startRow := logInner.Y
+	availRows := msgHeight
+	if toastMsg != "" && msgHeight > 1 {
+		startRow++
+		availRows--
+	}
+
+	if len(messagesCopy) > 0 && availRows > 0 {
 		startIdx := 0
-		if len(logsCopy) > int(logInner.Height) {
-			startIdx = len(logsCopy) - int(logInner.Height)
-		}
-		for i, line := range logsCopy[startIdx:] {
-			if uint16(i) < logInner.Height {
-				safeLine := truncate(line, maxW)
-				buf.SetString(logInner.X+1, logInner.Y+uint16(i), safeLine, cell.Style{Fg: cell.NewColorRGB(0xB2, 0xBE, 0xC3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+		if len(messagesCopy) > availRows {
+			startIdx = len(messagesCopy) - availRows - scrollOffset
+			if startIdx < 0 {
+				startIdx = 0
 			}
 		}
-	} else {
-		placeholder := truncate("Waiting for connections... Events will appear here when your friend joins.", maxW)
-		buf.SetString(logInner.X+1, logInner.Y, placeholder, cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+		endIdx := startIdx + availRows
+		if endIdx > len(messagesCopy) {
+			endIdx = len(messagesCopy)
+		}
+
+		visibleMsgs := messagesCopy[startIdx:endIdx]
+		for i, msg := range visibleMsgs {
+			rowY := startRow + uint16(i)
+			if hasInputLine && rowY >= inputY {
+				break
+			}
+			tsStr := fmt.Sprintf("[%s] ", msg.Timestamp.Format("15:04:05"))
+			timeStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+
+			curX := logInner.X + 1
+			buf.SetString(curX, rowY, tsStr, timeStyle)
+			curX += uint16(len([]rune(tsStr)))
+			remW := int(logInner.X+logInner.Width) - int(curX) - 1
+			if remW < 3 {
+				continue
+			}
+
+			if msg.IsChat {
+				var senderBadge string
+				var senderStyle cell.Style
+				if msg.IsSelf {
+					senderBadge = "You: "
+					senderStyle = cell.Style{
+						Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+						Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+						Modifier: cell.ModifierBold,
+					}
+				} else {
+					senderBadge = msg.Sender + ": "
+					senderStyle = cell.Style{
+						Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+						Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+						Modifier: cell.ModifierBold,
+					}
+				}
+				buf.SetString(curX, rowY, senderBadge, senderStyle)
+				curX += uint16(len([]rune(senderBadge)))
+				remW = int(logInner.X+logInner.Width) - int(curX) - 1
+				if remW > 0 {
+					r.renderChatTextWithLinks(frame, buf, curX, rowY, msg.Text, remW)
+				}
+			} else {
+				bodyText := truncate(msg.Text, remW)
+				logColor := cell.NewColorRGB(0xB2, 0xBE, 0xC3)
+				if strings.Contains(msg.Text, "[+]") || strings.Contains(msg.Text, "joined") {
+					logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)
+				} else if strings.Contains(msg.Text, "[-]") || strings.Contains(msg.Text, "left") {
+					logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
+				} else if strings.Contains(msg.Text, "⚠️") || strings.Contains(msg.Text, "❌") {
+					logColor = cell.NewColorRGB(0xFF, 0xE6, 0x6D)
+				}
+				buf.SetString(curX, rowY, bodyText, cell.Style{
+					Fg: logColor,
+					Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+				})
+			}
+		}
+
+		if scrollOffset > 0 {
+			scrollBadge := fmt.Sprintf(" ↑ +%d ", scrollOffset)
+			badgeLen := uint16(len([]rune(scrollBadge)))
+			if logInner.Width > badgeLen+2 {
+				badgeX := logInner.X + logInner.Width - badgeLen - 1
+				buf.SetString(badgeX, logInner.Y, scrollBadge, cell.Style{
+					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+					Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+					Modifier: cell.ModifierBold,
+				})
+			}
+		}
+	} else if len(messagesCopy) == 0 && toastMsg == "" && availRows > 0 {
+		placeholder := truncate("Waiting for connections... Messages & events will appear here.", maxW)
+		buf.SetString(logInner.X+1, startRow, placeholder, cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+	}
+
+	// Bottom Input Row
+	if hasInputLine {
+		if isFocused {
+			inputBg := cell.Style{Bg: cell.NewColorRGB(0x18, 0x1E, 0x2E)}
+			for x := logInner.X; x < logInner.X+logInner.Width; x++ {
+				buf.SetCell(x, inputY, cell.Cell{Content: ' ', Style: inputBg})
+			}
+			prompt := "💬 > "
+			promptLen := uint16(len([]rune(prompt)))
+			buf.SetString(logInner.X+1, inputY, prompt, cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+				Bg:       cell.NewColorRGB(0x18, 0x1E, 0x2E),
+				Modifier: cell.ModifierBold,
+			})
+			if logInner.Width > promptLen+3 {
+				inputArea := cell.NewRect(logInner.X+promptLen+1, inputY, logInner.Width-promptLen-2, 1)
+				chatInput := widgets.TextInput{
+					ID:          "room_chat_input",
+					State:       r.ChatInputState,
+					Placeholder: "Type message... (Enter: Send, Esc: Exit)",
+					Style:       cell.Style{Fg: cell.NewColorRGB(0xF1, 0xF2, 0xF6), Bg: cell.NewColorRGB(0x18, 0x1E, 0x2E)},
+					FocusedStyle: cell.Style{
+						Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
+						Bg:       cell.NewColorRGB(0x18, 0x1E, 0x2E),
+						Modifier: cell.ModifierBold,
+					},
+					PlaceholderStyle: cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x18, 0x1E, 0x2E)},
+				}
+				frame.RenderWidget(chatInput, inputArea)
+			}
+		} else {
+			unfocusedPrompt := "💬 [ Press Enter or / to Chat ]"
+			buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
+				Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+				Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+			})
+		}
+	}
+}
+
+var reChatURL = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)
+
+func (r *RoomView) renderChatTextWithLinks(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, text string, maxW int) {
+	if maxW <= 0 {
+		return
+	}
+	locs := reChatURL.FindAllStringIndex(text, -1)
+	plainStyle := cell.Style{
+		Fg: cell.NewColorRGB(0xF1, 0xF2, 0xF6),
+		Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+	}
+	linkStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+		Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+		Modifier: cell.ModifierUnderline | cell.ModifierBold,
+	}
+
+	if len(locs) == 0 {
+		runes := []rune(text)
+		if len(runes) > maxW {
+			if maxW > 3 {
+				text = string(runes[:maxW-1]) + "…"
+			} else {
+				text = string(runes[:maxW])
+			}
+		}
+		buf.SetString(startX, rowY, text, plainStyle)
+		return
+	}
+
+	curX := startX
+	lastIdx := 0
+	endX := startX + uint16(maxW)
+
+	for _, loc := range locs {
+		if curX >= endX {
+			break
+		}
+		// 1. Text before link
+		if loc[0] > lastIdx {
+			prefix := text[lastIdx:loc[0]]
+			pRunes := []rune(prefix)
+			rem := int(endX - curX)
+			if len(pRunes) > rem {
+				pRunes = pRunes[:rem]
+			}
+			buf.SetString(curX, rowY, string(pRunes), plainStyle)
+			curX += uint16(len(pRunes))
+		}
+
+		if curX >= endX {
+			break
+		}
+
+		// 2. Link text (underlined + clickable)
+		rawLink := text[loc[0]:loc[1]]
+		lRunes := []rune(rawLink)
+		rem := int(endX - curX)
+		drawnLen := len(lRunes)
+		if drawnLen > rem {
+			lRunes = lRunes[:rem]
+			drawnLen = rem
+		}
+		buf.SetString(curX, rowY, string(lRunes), linkStyle)
+
+		clickURL := rawLink
+		linkRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
+		frame.RegisterClickHandler(linkRect, func(_ backend.MouseEvent) {
+			_ = OpenBrowserURL(clickURL)
+			r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURL))
+		})
+
+		curX += uint16(drawnLen)
+		lastIdx = loc[1]
+	}
+
+	// 3. Trailing text after last link
+	if lastIdx < len(text) && curX < endX {
+		tail := text[lastIdx:]
+		tRunes := []rune(tail)
+		rem := int(endX - curX)
+		if len(tRunes) > rem {
+			tRunes = tRunes[:rem]
+		}
+		buf.SetString(curX, rowY, string(tRunes), plainStyle)
 	}
 }

@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"math"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
@@ -19,30 +22,47 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 		return
 	}
 
-	// 1. Top Header / Percentage Bar
-	pct := int(math.Min(rms*300.0, 100.0))
-	if isMuted || !isSpeaking || pct < 1 {
+	// 1. Live Input Level & Status Indicator
+	pct := int(math.Min(rms*350.0, 100.0))
+	if isMuted {
 		pct = 0
 	}
 
 	topStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
-	if isSpeaking && !isMuted {
+	var badgeText string
+	var badgeStyle cell.Style
+
+	if isMuted {
+		badgeText = "[ MUTED ]"
+		badgeStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A), Modifier: cell.ModifierBold}
+	} else if isSpeaking {
 		topStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
 			Modifier: cell.ModifierBold,
 		}
+		badgeText = "[ ● VOICE ACTIVE (GATE OPEN) ]"
+		badgeStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A), Modifier: cell.ModifierBold}
+	} else {
+		badgeText = "[ ○ NOISE GATED (GATE CLOSED) ]"
+		badgeStyle = cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
 	}
 
 	headerText := fmt.Sprintf("%s: [ %2d%% ]", label, pct)
-	if isMuted {
-		headerText = fmt.Sprintf("%s: [ SESSIZ ]", label)
-	}
-
 	buf.SetString(area.X, area.Y, headerText, topStyle)
 	headerLen := uint16(len([]rune(headerText)))
-	for x := area.X + headerLen; x < area.X+area.Width; x++ {
-		buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+
+	badgeX := area.X + headerLen + 2
+	badgeLen := uint16(len([]rune(badgeText)))
+	if badgeX+badgeLen <= area.X+area.Width {
+		buf.SetString(badgeX, area.Y, badgeText, badgeStyle)
+		for x := badgeX + badgeLen; x < area.X+area.Width; x++ {
+			buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+		}
+	} else {
+		for x := area.X + headerLen; x < area.X+area.Width; x++ {
+			buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+		}
 	}
 
 	// 2. Vertical Multi-Column Equalizer Bars
@@ -54,8 +74,8 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 	numCols := int(area.Width)
 	colWidth := 1
 
-	colLevelRatio := math.Min(rms*3.0, 1.0)
-	if isMuted || !isSpeaking {
+	colLevelRatio := math.Min(rms*3.5, 1.0)
+	if isMuted {
 		colLevelRatio = 0
 	}
 
@@ -64,37 +84,45 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 		rowY := area.Y + 1 + uint16(r)
 
 		var activeStyle cell.Style
-		if rowThreshold < 0.50 {
-			activeStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
-				Modifier: cell.ModifierBold,
-			}
-		} else if rowThreshold < 0.80 {
-			activeStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
-				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
-				Modifier: cell.ModifierBold,
+		if isSpeaking {
+			if rowThreshold < 0.50 {
+				activeStyle = cell.Style{
+					Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+					Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+					Modifier: cell.ModifierBold,
+				}
+			} else if rowThreshold < 0.80 {
+				activeStyle = cell.Style{
+					Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+					Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+					Modifier: cell.ModifierBold,
+				}
+			} else {
+				activeStyle = cell.Style{
+					Fg:       cell.NewColorRGB(0xFF, 0x55, 0x77),
+					Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+					Modifier: cell.ModifierBold,
+				}
 			}
 		} else {
+			// Dim blue-cyan bars showing ambient room sound below threshold
 			activeStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0xFF, 0x55, 0x77),
-				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
-				Modifier: cell.ModifierBold,
+				Fg: cell.NewColorRGB(0x4A, 0x69, 0x84),
+				Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A),
 			}
 		}
 
 		dimStyle := cell.Style{
-			Fg: cell.NewColorRGB(0x2D, 0x37, 0x48),
+			Fg: cell.NewColorRGB(0x23, 0x2A, 0x3B),
 			Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A),
 		}
 
 		for c := 0; c < numCols; c++ {
 			colX := area.X + uint16(c*colWidth)
-			variance := math.Sin(float64(c)*0.45) * 0.08
+			variance := math.Sin(float64(c)*0.45) * 0.06
 			effLevel := math.Max(0.0, math.Min(1.0, colLevelRatio+variance))
 
-			isLit := effLevel >= rowThreshold && isSpeaking && !isMuted && colLevelRatio > 0.005
+			isLit := effLevel >= rowThreshold && !isMuted && colLevelRatio > 0.002
 			var rChar rune = '█'
 			var st cell.Style = activeStyle
 
@@ -514,8 +542,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 9. Sensitivity / VAD Threshold Slider
 	vadY := inner.Y + 16
-	vadVal := int(math.Round(audio.VADThreshold * 1000))
-	vadLabel := fmt.Sprintf("Sensitivity:   [ %3d ]", vadVal)
+	vadSens := audio.GetVADSensitivity()
+	vadLabel := fmt.Sprintf("Sensitivity:   [ %3d%% ]", vadSens)
 	buf.SetString(inner.X+1, vadY, vadLabel, cell.Style{
 		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
 		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
@@ -523,9 +551,9 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	})
 
 	if audio.VADSliderState == nil {
-		audio.VADSliderState = widgets.NewSliderState(vadVal)
+		audio.VADSliderState = widgets.NewSliderState(vadSens)
 	} else {
-		audio.VADSliderState.Set(vadVal, 1, 50)
+		audio.VADSliderState.Set(vadSens, 1, 100)
 	}
 
 	vadSliderArea := cell.Rect{
@@ -538,7 +566,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		ID:    "mic_vad_slider",
 		State: audio.VADSliderState,
 		Min:   1,
-		Max:   50,
+		Max:   100,
 		TrackStyle: cell.Style{
 			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
 			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
@@ -558,9 +586,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
 		},
 		OnChange: func(value int) {
-			audio.mu.Lock()
-			audio.VADThreshold = float64(value) / 1000.0
-			audio.mu.Unlock()
+			audio.SetVADSensitivity(value)
 		},
 	}
 	frame.RenderWidget(vadSlider, vadSliderArea)
@@ -909,6 +935,247 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 	}
 	buf.SetString(inner.X+1, bottomY, guideText, cell.Style{
 		Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
+		Bg: dialogBg,
+	})
+}
+
+var (
+	debugLogsMu   sync.Mutex
+	debugLogsList = make([]string, 0, 500)
+)
+
+func AddDebugLog(msg string) {
+	debugLogsMu.Lock()
+	defer debugLogsMu.Unlock()
+	ts := time.Now().Format("15:04:05.000")
+	debugLogsList = append(debugLogsList, fmt.Sprintf("[%s] %s", ts, msg))
+	if len(debugLogsList) > 1000 {
+		debugLogsList = debugLogsList[len(debugLogsList)-500:]
+	}
+}
+
+func GetDebugLogs() []string {
+	debugLogsMu.Lock()
+	defer debugLogsMu.Unlock()
+	res := make([]string, len(debugLogsList))
+	copy(res, debugLogsList)
+	return res
+}
+
+func ClearDebugLogs() {
+	debugLogsMu.Lock()
+	defer debugLogsMu.Unlock()
+	debugLogsList = debugLogsList[:0]
+}
+
+func GetAllDebugLogsText() string {
+	debugLogsMu.Lock()
+	defer debugLogsMu.Unlock()
+	return strings.Join(debugLogsList, "\n")
+}
+
+// DrawDebugModal renders a full-featured technical debug log viewer modal
+func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onClose func(), onClear func(), onCopy func()) {
+	if area.Width < 20 || area.Height < 10 {
+		return
+	}
+
+	dialogW := uint16(math.Min(float64(area.Width-4), 110))
+	dialogH := uint16(math.Min(float64(area.Height-4), 32))
+	if dialogW < 30 {
+		dialogW = area.Width
+	}
+	if dialogH < 10 {
+		dialogH = area.Height
+	}
+
+	x := (area.Width - dialogW) / 2
+	y := (area.Height - dialogH) / 2
+	dialogArea := cell.NewRect(area.X+x, area.Y+y, dialogW, dialogH)
+
+	dialogBg := cell.NewColorRGB(0x0E, 0x11, 0x1B)
+	block := widgets.Block{
+		Title:         " 🐛 DEBUG & SYSTEM LOGS ",
+		Borders:       widgets.BorderAll,
+		BorderSymbols: widgets.SymbolsRounded,
+		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0xA2, 0x9B, 0xFE), Modifier: cell.ModifierBold},
+		Style:         cell.Style{Bg: dialogBg},
+	}
+	frame.RenderWidget(block, dialogArea)
+	inner := block.Inner(dialogArea)
+
+	buf := frame.Buffer
+	for dy := inner.Y; dy < inner.Y+inner.Height; dy++ {
+		for dx := inner.X; dx < inner.X+inner.Width; dx++ {
+			buf.SetCell(dx, dy, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
+		}
+	}
+
+	logs := GetDebugLogs()
+
+	// 1. Top Action Bar
+	// [Esc] Close button
+	closeBtn := "[Esc] Close"
+	closeLen := uint16(len([]rune(closeBtn)))
+	buf.SetString(inner.X+1, inner.Y, closeBtn, cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+		Modifier: cell.ModifierBold,
+	})
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, inner.Y, closeLen, 1), func(_ backend.MouseEvent) {
+		if onClose != nil {
+			onClose()
+		}
+	})
+
+	// [C] Copy All button
+	copyBtn := "[C] Copy All"
+	copyLen := uint16(len([]rune(copyBtn)))
+	copyX := inner.X + closeLen + 3
+	buf.SetString(copyX, inner.Y, copyBtn, cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+		Modifier: cell.ModifierBold,
+	})
+	frame.RegisterClickHandler(cell.NewRect(copyX, inner.Y, copyLen, 1), func(_ backend.MouseEvent) {
+		if onCopy != nil {
+			onCopy()
+		}
+	})
+
+	// [Del] Clear button
+	clearBtn := "[Del] Clear"
+	clearLen := uint16(len([]rune(clearBtn)))
+	clearX := copyX + copyLen + 2
+	buf.SetString(clearX, inner.Y, clearBtn, cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
+		Modifier: cell.ModifierBold,
+	})
+	frame.RegisterClickHandler(cell.NewRect(clearX, inner.Y, clearLen, 1), func(_ backend.MouseEvent) {
+		if onClear != nil {
+			onClear()
+		}
+	})
+
+	// Log Count info on the right
+	countInfo := fmt.Sprintf("Total: %d logs", len(logs))
+	countLen := uint16(len([]rune(countInfo)))
+	if inner.Width > countLen+2 {
+		buf.SetString(inner.X+inner.Width-countLen-1, inner.Y, countInfo, cell.Style{
+			Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
+			Bg: dialogBg,
+		})
+	}
+
+	// 2. Divider line
+	divY := inner.Y + 1
+	for dx := inner.X; dx < inner.X+inner.Width; dx++ {
+		buf.SetCell(dx, divY, cell.Cell{
+			Content: '─',
+			Style:   cell.Style{Fg: cell.NewColorRGB(0x2D, 0x37, 0x48), Bg: dialogBg},
+		})
+	}
+
+	// 3. Log lines display area
+	listY := inner.Y + 2
+	maxDisplay := int(inner.Height - 3)
+	if maxDisplay < 1 {
+		maxDisplay = 1
+	}
+
+	listWidth := inner.Width - 2
+	hasScrollbar := len(logs) > maxDisplay && inner.Width > 8
+	if hasScrollbar {
+		listWidth = inner.Width - 4
+	}
+
+	if len(logs) == 0 {
+		buf.SetString(inner.X+2, listY, "No debug logs recorded yet.", cell.Style{
+			Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+			Bg: dialogBg,
+		})
+	} else {
+		startIdx := 0
+		if len(logs) > maxDisplay {
+			startIdx = len(logs) - maxDisplay - scrollOffset
+			if startIdx < 0 {
+				startIdx = 0
+			}
+		}
+		endIdx := startIdx + maxDisplay
+		if endIdx > len(logs) {
+			endIdx = len(logs)
+		}
+
+		visibleLogs := logs[startIdx:endIdx]
+		for i, line := range visibleLogs {
+			rowY := listY + uint16(i)
+			logColor := cell.NewColorRGB(0xDF, 0xE6, 0xE9)
+			if strings.Contains(line, "[ERROR]") || strings.Contains(line, "❌") || strings.Contains(line, "failed") {
+				logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
+			} else if strings.Contains(line, "[WARN]") || strings.Contains(line, "⚠️") {
+				logColor = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+			} else if strings.Contains(line, "[SCREEN]") || strings.Contains(line, "[SHARE]") || strings.Contains(line, "[WATCH]") {
+				logColor = cell.NewColorRGB(0x00, 0xD2, 0xD3)
+			} else if strings.Contains(line, "[NET]") || strings.Contains(line, "[RELAY]") || strings.Contains(line, "[UDP]") || strings.Contains(line, "[TCP]") {
+				logColor = cell.NewColorRGB(0xA2, 0x9B, 0xFE)
+			} else if strings.Contains(line, "[+]") || strings.Contains(line, "joined") {
+				logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)
+			}
+
+			rLine := []rune(line)
+			if len(rLine) > int(listWidth) {
+				line = string(rLine[:listWidth-1]) + "…"
+			}
+			buf.SetString(inner.X+1, rowY, line, cell.Style{
+				Fg: logColor,
+				Bg: dialogBg,
+			})
+		}
+
+		// Draw Vertical Scrollbar
+		if hasScrollbar {
+			scrollX := inner.X + inner.Width - 2
+			trackHeight := maxDisplay
+			thumbHeight := int(math.Max(1, math.Round(float64(trackHeight*trackHeight)/float64(len(logs)))))
+			if thumbHeight >= trackHeight {
+				thumbHeight = trackHeight - 1
+			}
+			maxScroll := len(logs) - maxDisplay
+			thumbY := 0
+			if maxScroll > 0 {
+				thumbY = int(math.Round(float64(startIdx) / float64(maxScroll) * float64(trackHeight-thumbHeight)))
+			}
+
+			for r := 0; r < trackHeight; r++ {
+				curY := listY + uint16(r)
+				if r >= thumbY && r < thumbY+thumbHeight {
+					buf.SetCell(scrollX, curY, cell.Cell{
+						Content: '█',
+						Style:   cell.Style{Fg: cell.NewColorRGB(0xA2, 0x9B, 0xFE), Bg: dialogBg},
+					})
+				} else {
+					buf.SetCell(scrollX, curY, cell.Cell{
+						Content: '░',
+						Style:   cell.Style{Fg: cell.NewColorRGB(0x2D, 0x37, 0x48), Bg: dialogBg},
+					})
+				}
+			}
+		}
+	}
+
+	// 4. Bottom Hint
+	bottomY := inner.Y + inner.Height - 1
+	guide := "[ESC/F12] Close   [↑/↓ / PgUp/PgDn] Scroll   [C] Copy   [Del] Clear"
+	if scrollOffset > 0 {
+		guide = fmt.Sprintf("↑ +%d earlier logs   %s", scrollOffset, guide)
+	}
+	if maxG := int(inner.Width - 2); len([]rune(guide)) > maxG {
+		guide = string([]rune(guide)[:maxG])
+	}
+	buf.SetString(inner.X+1, bottomY, guide, cell.Style{
+		Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
 		Bg: dialogBg,
 	})
 }

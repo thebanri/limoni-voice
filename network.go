@@ -47,6 +47,7 @@ const (
 	PacketScreenShareStart
 	PacketScreenShareStop
 	PacketScreenShareData
+	PacketChatMessage
 )
 
 type P2PPacket struct {
@@ -168,9 +169,12 @@ type P2PNode struct {
 	videoPreBuf        [][]byte
 	videoReorder       VideoReorderBuffer
 	audioDedup         AudioDeduplicator
+	chatDedup          ChatDeduplicator
 	silenceHangover    int
 	lastVideoChunkTime time.Time
 	OnScreenShare      func(peerID string, isSharing bool, videoPort int)
+	OnChatMessage      func(senderID string, nickname string, text string, ts time.Time)
+	OnDebugLog         func(msg string)
 }
 
 // AudioDeduplicator prevents duplicate audio packets from being played
@@ -224,6 +228,41 @@ func (d *AudioDeduplicator) Reset(senderID string) {
 	if d.peers != nil {
 		delete(d.peers, senderID)
 	}
+}
+
+// ChatDeduplicator prevents duplicate text chat messages from appearing
+// when packets arrive over both direct UDP and WebSocket relay transports.
+type ChatDeduplicator struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func (d *ChatDeduplicator) ShouldProcess(senderID string, seq uint32, timestamp int64, text string) bool {
+	if senderID == "" {
+		return true
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.seen == nil {
+		d.seen = make(map[string]time.Time)
+	}
+
+	// Clean up entries older than 30 seconds
+	now := time.Now()
+	for k, exp := range d.seen {
+		if now.After(exp) {
+			delete(d.seen, k)
+		}
+	}
+
+	key := fmt.Sprintf("%s:%d:%d:%s", senderID, seq, timestamp, text)
+	if _, exists := d.seen[key]; exists {
+		return false
+	}
+
+	d.seen[key] = now.Add(30 * time.Second)
+	return true
 }
 
 // VideoReorderBuffer ensures video packets are delivered to the player in strictly sequential order.
@@ -1423,6 +1462,34 @@ func (n *P2PNode) SendScreenShareState(isSharing bool, videoPort int) {
 	n.broadcastToPeers(&pkt)
 }
 
+func (n *P2PNode) SendChatMessage(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	n.mu.Lock()
+	if !n.IsConnected || (len(n.Peers) == 0 && !n.isRelayConnected) {
+		n.mu.Unlock()
+		return
+	}
+	room := n.RoomCode
+	n.seqCounter++
+	seq := n.seqCounter
+	n.mu.Unlock()
+
+	pkt := P2PPacket{
+		Type:      PacketChatMessage,
+		RoomCode:  room,
+		SenderID:  n.LocalID,
+		Nickname:  n.Nickname,
+		LocalPort: n.Port,
+		Seq:       seq,
+		Payload:   []byte(text),
+		Timestamp: time.Now().UnixMilli(),
+	}
+	n.broadcastToPeers(&pkt)
+}
+
 func (n *P2PNode) sweepSubnets(pkt *P2PPacket) {
 	n.mu.Lock()
 	if n.IsConnected || !n.Connecting {
@@ -2269,9 +2336,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				go n.OnScreenShare(pkt.SenderID, false, 0)
 			}
 		}
-		n.mu.RLock()
 		watchingThisPeer := n.IsWatchingScreen && (n.WatchingPeerID == pkt.SenderID || n.WatchingPeerID == "")
-		n.mu.RUnlock()
 		if watchingThisPeer {
 			go func() {
 				_ = n.StopWatchingScreen()
@@ -2279,7 +2344,22 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketScreenShareData:
-		n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
+		go n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
+
+	case PacketChatMessage:
+		msgText := string(pkt.Payload)
+		if msgText != "" {
+			if !n.chatDedup.ShouldProcess(pkt.SenderID, pkt.Seq, pkt.Timestamp, msgText) {
+				return
+			}
+			ts := time.UnixMilli(pkt.Timestamp)
+			if pkt.Timestamp == 0 {
+				ts = time.Now()
+			}
+			if n.OnChatMessage != nil {
+				go n.OnChatMessage(pkt.SenderID, pkt.Nickname, msgText, ts)
+			}
+		}
 
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
@@ -2289,9 +2369,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
 			}
-			n.mu.RLock()
 			watchingThisPeer := wasSharing && n.IsWatchingScreen && (n.WatchingPeerID == pkt.SenderID || n.WatchingPeerID == "")
-			n.mu.RUnlock()
 			if watchingThisPeer {
 				go func() {
 					_ = n.StopWatchingScreen()
@@ -2360,7 +2438,7 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 					if n.videoTCPConn == tcpConn {
 						n.videoTCPConn = nil
 						_ = tcpConn.Close()
-						n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP disconnected: %v", err))
+						n.debugLog(fmt.Sprintf("⚠️ [WATCH] Player TCP disconnected: %v", err))
 					}
 					n.mu.Unlock()
 					return
@@ -2437,7 +2515,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
-				n.log(fmt.Sprintf("⚠️ [SHARE] UDP capture read ended: %v", err))
+				n.debugLog(fmt.Sprintf("⚠️ [SHARE] UDP capture read ended: %v", err))
 				break
 			}
 
@@ -2458,9 +2536,9 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 			totalPackets++
 			totalBytes += int64(nBytes)
 			if totalPackets == 1 {
-				n.log(fmt.Sprintf("📺 [SHARE] First video chunk captured (%d bytes)! Broadcasting...", nBytes))
+				n.debugLog(fmt.Sprintf("📺 [SHARE] First video chunk captured (%d bytes)! Broadcasting...", nBytes))
 			} else if totalPackets%120 == 0 {
-				n.log(fmt.Sprintf("📺 [SHARE] Stream active: %d chunks (%d KB) sent", totalPackets, totalBytes/1024))
+				n.debugLog(fmt.Sprintf("📺 [SHARE] Stream active: %d chunks (%d KB) sent", totalPackets, totalBytes/1024))
 			}
 
 			chunk := make([]byte, nBytes)
@@ -2602,10 +2680,10 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	go func() {
 		conn, err := tcpLn.Accept()
 		if err != nil {
-			n.log(fmt.Sprintf("⚠️ [WATCH] Player TCP accept error: %v", err))
+			n.debugLog(fmt.Sprintf("⚠️ [WATCH] Player TCP accept error: %v", err))
 			return
 		}
-		n.log(fmt.Sprintf("🎬 [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
+		n.debugLog(fmt.Sprintf("🎬 [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
 			_ = tcp.SetWriteBuffer(4 * 1024 * 1024)
@@ -2790,11 +2868,18 @@ func (n *P2PNode) GetPeersList() []*PeerInfo {
 	return list
 }
 
-func (n *P2PNode) log(msg string) {
+func (n *P2PNode) debugLog(msg string) {
 	if f, err := os.OpenFile("limoni-voice.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 		_, _ = f.WriteString(time.Now().Format("15:04:05.000 ") + msg + "\n")
 		_ = f.Close()
 	}
+	if n.OnDebugLog != nil {
+		n.OnDebugLog(msg)
+	}
+}
+
+func (n *P2PNode) log(msg string) {
+	n.debugLog(msg)
 	if n.OnLog != nil {
 		n.OnLog(msg)
 	}

@@ -161,6 +161,8 @@ func main() {
 	showLeaveModal := false
 	showExitModal := false
 	showScreenShareModal := false
+	showDebugModal := false
+	debugScrollOffset := 0
 	var screenShareTargets []screenshare.WindowInfo
 	selectedScreenShareIdx := 0
 
@@ -196,6 +198,16 @@ func main() {
 		showLeaveModal = true
 		leaveDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 		t.FocusManager().SetFocused("leave_room_dialog_btn_1")
+	}
+
+	openDebugModal := func() {
+		showDebugModal = true
+		debugScrollOffset = 0
+	}
+
+	closeDebugModal := func() {
+		showDebugModal = false
+		t.ForceFullRedraw()
 	}
 
 	closeLeaveModal := func() {
@@ -246,16 +258,33 @@ func main() {
 		screenShareDialogAnim.AnimateTo(1.0, 200*time.Millisecond, animation.EaseOutCubic)
 	}
 
+	screenshare.LogCallback = func(msg string) {
+		AddDebugLog("[SCREEN] " + msg)
+	}
+
 	node.OnLog = func(msg string) {
-		room.AddLog(msg)
+		AddDebugLog("[ROOM] " + msg)
+		isUserEvent := strings.HasPrefix(msg, "[+]") || strings.HasPrefix(msg, "[-]") ||
+			strings.HasPrefix(msg, "👑") || strings.HasPrefix(msg, "❌") ||
+			strings.Contains(msg, "joined") || strings.Contains(msg, "left")
+		if isUserEvent {
+			room.AddLog(msg)
+		}
 		if currentScreen == ScreenLobby {
 			lobby.SetToast(msg)
 		} else {
-			if (strings.HasPrefix(msg, "⚠️") || strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "📺") || strings.HasPrefix(msg, "⏹️") || strings.HasPrefix(msg, "🎬")) &&
-				!strings.Contains(msg, "[FFMPEG") && !strings.Contains(msg, "[MPV") && !strings.Contains(msg, "[WATCH]") && !strings.Contains(msg, "[SHARE]") && !strings.Contains(msg, "[BROADCAST]") && !strings.Contains(msg, "[DARWIN]") {
+			if strings.HasPrefix(msg, "⚠️") || strings.HasPrefix(msg, "❌") {
 				room.SetToast(msg)
 			}
 		}
+	}
+
+	node.OnDebugLog = func(msg string) {
+		AddDebugLog("[NET] " + msg)
+	}
+
+	node.OnChatMessage = func(senderID string, nickname string, text string, ts time.Time) {
+		room.AddChatMessage(nickname, senderID, text, false, ts)
 	}
 
 	// Room Transition Helpers
@@ -381,6 +410,12 @@ func main() {
 						lobby.CodeState.SetValue(NormalizeCode(pasted))
 						lobby.SetToast(fmt.Sprintf("Room key pasted: %s", NormalizeCode(pasted)))
 					}
+				} else if currentScreen == ScreenRoom && pasted != "" && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal {
+					if room.IsChatFocused {
+						for _, r := range pasted {
+							room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
+						}
+					}
 				}
 
 			case backend.EventKey:
@@ -395,6 +430,67 @@ func main() {
 						openLeaveModal()
 					} else {
 						openExitModal()
+					}
+					continue
+				}
+
+				// Ctrl+V in active room chat
+				if e.Ctrl && (e.Ch == 'v' || e.Ch == 'V') {
+					if currentScreen == ScreenRoom && room.IsChatFocused && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
+						clipText := GetClipboardText()
+						for _, r := range clipText {
+							room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
+						}
+						continue
+					}
+				}
+
+				// Dedicated Global Debug Modal Key (F12)
+				if e.Type == backend.KeyF12 {
+					if showDebugModal {
+						closeDebugModal()
+					} else {
+						openDebugModal()
+					}
+					continue
+				}
+
+				if showDebugModal {
+					switch e.Type {
+					case backend.KeyEsc:
+						closeDebugModal()
+					case backend.KeyRune:
+						if e.Ch == 'c' || e.Ch == 'C' {
+							allLogs := GetAllDebugLogsText()
+							CopyToClipboard(allLogs)
+							if currentScreen == ScreenLobby {
+								lobby.SetToast("Copied all debug logs to clipboard")
+							} else {
+								room.SetToast("Copied all debug logs to clipboard")
+							}
+						} else if e.Ch == 'x' || e.Ch == 'X' {
+							ClearDebugLogs()
+						}
+					case backend.KeyDelete:
+						ClearDebugLogs()
+					case backend.KeyArrowUp:
+						debugScrollOffset++
+					case backend.KeyArrowDown:
+						if debugScrollOffset > 0 {
+							debugScrollOffset--
+						}
+					case backend.KeyPageUp:
+						debugScrollOffset += 10
+					case backend.KeyPageDown:
+						if debugScrollOffset >= 10 {
+							debugScrollOffset -= 10
+						} else {
+							debugScrollOffset = 0
+						}
+					case backend.KeyHome:
+						debugScrollOffset = len(GetDebugLogs())
+					case backend.KeyEnd:
+						debugScrollOffset = 0
 					}
 					continue
 				}
@@ -677,7 +773,45 @@ func main() {
 
 				} else {
 					// --- 3. Screen: Room Key Handling ---
+					if room.IsChatFocused {
+						switch e.Type {
+						case backend.KeyEsc:
+							room.IsChatFocused = false
+						case backend.KeyEnter:
+							if strings.TrimSpace(room.ChatInputState.Value()) != "" {
+								room.SendCurrentChat()
+							} else {
+								room.IsChatFocused = false
+							}
+						case backend.KeyTab:
+							room.IsChatFocused = false
+						case backend.KeyArrowUp:
+							room.ScrollChat(1)
+						case backend.KeyArrowDown:
+							room.ScrollChat(-1)
+						case backend.KeyPageUp:
+							room.ScrollChat(5)
+						case backend.KeyPageDown:
+							room.ScrollChat(-5)
+						default:
+							room.ChatInputState.HandleKey(e)
+						}
+						continue
+					}
+
 					switch e.Type {
+					case backend.KeyEnter:
+						room.IsChatFocused = true
+
+					case backend.KeyTab:
+						room.IsChatFocused = true
+
+					case backend.KeyPageUp, backend.KeyArrowUp:
+						room.ScrollChat(1)
+
+					case backend.KeyPageDown, backend.KeyArrowDown:
+						room.ScrollChat(-1)
+
 					case backend.KeyEsc:
 						if node.IsWatchingScreen {
 							_ = node.StopWatchingScreen()
@@ -699,6 +833,11 @@ func main() {
 						room.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 
 					case backend.KeyRune:
+						if e.Ch == '/' {
+							room.IsChatFocused = true
+							continue
+						}
+
 						if audio.InputMode == InputModePushToTalk && unicode.ToLower(e.Ch) == unicode.ToLower(audio.PTTKey) {
 							audio.PulsePTT(350 * time.Millisecond)
 							continue
@@ -802,30 +941,46 @@ func main() {
 
 			case backend.EventMouse:
 				handled := t.RouteMouseEvent(ev.Mouse)
-				if !handled && currentScreen == ScreenLobby && !showTestModal && !showExitModal {
-					if ev.Mouse.Button == backend.MouseLeft {
-						if ev.Mouse.Drag {
-							if lobby.DragActive {
-								dx := int(ev.Mouse.X) - lobby.LastDragX
-								dy := int(ev.Mouse.Y) - lobby.LastDragY
-								lobby.RotY += float64(dx) * 1.6
-								lobby.RotX += float64(dy) * 1.6
+				if !handled {
+					if showDebugModal {
+						if ev.Mouse.Button == backend.MouseScrollUp {
+							debugScrollOffset++
+						} else if ev.Mouse.Button == backend.MouseScrollDown {
+							if debugScrollOffset > 0 {
+								debugScrollOffset--
 							}
-							lobby.LastDragX = int(ev.Mouse.X)
-							lobby.LastDragY = int(ev.Mouse.Y)
-							lobby.DragActive = true
-						} else {
+						}
+					} else if currentScreen == ScreenLobby && !showTestModal && !showExitModal {
+						if ev.Mouse.Button == backend.MouseLeft {
+							if ev.Mouse.Drag {
+								if lobby.DragActive {
+									dx := int(ev.Mouse.X) - lobby.LastDragX
+									dy := int(ev.Mouse.Y) - lobby.LastDragY
+									lobby.RotY += float64(dx) * 1.6
+									lobby.RotX += float64(dy) * 1.6
+								}
+								lobby.LastDragX = int(ev.Mouse.X)
+								lobby.LastDragY = int(ev.Mouse.Y)
+								lobby.DragActive = true
+							} else {
+								lobby.DragActive = false
+							}
+						} else if ev.Mouse.Button == backend.MouseNone {
 							lobby.DragActive = false
+						} else if ev.Mouse.Button == backend.MouseScrollUp {
+							if lobby.Scale < 12.0 {
+								lobby.Scale += 0.3
+							}
+						} else if ev.Mouse.Button == backend.MouseScrollDown {
+							if lobby.Scale > 1.5 {
+								lobby.Scale -= 0.3
+							}
 						}
-					} else if ev.Mouse.Button == backend.MouseNone {
-						lobby.DragActive = false
-					} else if ev.Mouse.Button == backend.MouseScrollUp {
-						if lobby.Scale < 12.0 {
-							lobby.Scale += 0.3
-						}
-					} else if ev.Mouse.Button == backend.MouseScrollDown {
-						if lobby.Scale > 1.5 {
-							lobby.Scale -= 0.3
+					} else if currentScreen == ScreenRoom && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal {
+						if ev.Mouse.Button == backend.MouseScrollUp {
+							room.ScrollChat(1)
+						} else if ev.Mouse.Button == backend.MouseScrollDown {
+							room.ScrollChat(-1)
 						}
 					}
 				}
@@ -869,7 +1024,12 @@ func main() {
 				_ = t.Draw(func(f *terminal.Frame) {
 					lobby.Render(f, f.Area())
 
-					if showTestModal {
+					if showDebugModal {
+						DrawDebugModal(f, f.Area(), debugScrollOffset, closeDebugModal, ClearDebugLogs, func() {
+							CopyToClipboard(GetAllDebugLogsText())
+							lobby.SetToast("Copied debug logs to clipboard")
+						})
+					} else if showTestModal {
 						DrawTestModal(f, f.Area(), audio, node, closeTestModal)
 					} else if showExitModal || exitProg > 0.001 {
 						DrawExitModal(f, f.Area(), exitProg, func() {
@@ -880,16 +1040,32 @@ func main() {
 					}
 				})
 			} else {
+				if !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
+					if room.IsChatFocused {
+						t.FocusManager().SetFocused("room_chat_input")
+					} else {
+						t.FocusManager().SetFocused("")
+					}
+				}
 				room.OnLeave = func() {
 					openLeaveModal()
 				}
 				room.OnOpenTestModal = openTestModal
 				room.OnOpenScreenShareModal = openScreenShareModal
+				room.OnSendChat = func(text string) {
+					node.SendChatMessage(text)
+					room.AddChatMessage(node.Nickname, node.LocalID, text, true, time.Now())
+				}
 				room.Update()
 				_ = t.Draw(func(f *terminal.Frame) {
 					room.Render(f, f.Area(), node, audio)
 
-					if showTestModal {
+					if showDebugModal {
+						DrawDebugModal(f, f.Area(), debugScrollOffset, closeDebugModal, ClearDebugLogs, func() {
+							CopyToClipboard(GetAllDebugLogsText())
+							room.SetToast("Copied debug logs to clipboard")
+						})
+					} else if showTestModal {
 						DrawTestModal(f, f.Area(), audio, node, closeTestModal)
 					} else if showLeaveModal || leaveProg > 0.001 {
 						DrawLeaveModal(f, f.Area(), leaveProg, func() {

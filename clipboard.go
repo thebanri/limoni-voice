@@ -117,3 +117,35 @@ func GetClipboardText() string {
 
 	return ""
 }
+
+// OpenBrowserURL opens a web URL in the user's default browser.
+func OpenBrowserURL(urlStr string) error {
+	urlStr = strings.TrimSpace(urlStr)
+	if urlStr == "" {
+		return nil
+	}
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		urlStr = "https://" + urlStr
+	}
+
+	var cmd *exec.Cmd
+	switch os.Getenv("GOOS") {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", urlStr)
+	case "darwin":
+		cmd = exec.Command("open", urlStr)
+	default:
+		// Try xdg-open on Linux/Unix, fallback to sensible browser or open
+		if path, err := exec.LookPath("xdg-open"); err == nil {
+			cmd = exec.Command(path, urlStr)
+		} else if path, err := exec.LookPath("open"); err == nil {
+			cmd = exec.Command(path, urlStr)
+		} else if path, err := exec.LookPath("sensible-browser"); err == nil {
+			cmd = exec.Command(path, urlStr)
+		} else {
+			cmd = exec.Command("xdg-open", urlStr)
+		}
+	}
+	return cmd.Start()
+}
+

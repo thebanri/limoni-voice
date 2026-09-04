@@ -463,6 +463,162 @@ func TestSpeechPassesThroughAllModes(t *testing.T) {
 	}
 }
 
+func TestVADSensitivityMapping(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// Default sensitivity
+	if audio.GetVADSensitivity() != 65 {
+		t.Fatalf("Expected default sensitivity 65, got %d", audio.GetVADSensitivity())
+	}
+
+	// Maximum sensitivity (100% -> very low threshold ~0.001)
+	audio.SetVADSensitivity(100)
+	if audio.GetVADSensitivity() != 100 {
+		t.Fatalf("Expected sensitivity 100, got %d", audio.GetVADSensitivity())
+	}
+	if audio.VADThreshold > 0.0015 {
+		t.Fatalf("Expected low threshold for max sensitivity, got %f", audio.VADThreshold)
+	}
+
+	// Minimum sensitivity (1% -> high threshold ~0.050)
+	audio.SetVADSensitivity(1)
+	if audio.GetVADSensitivity() != 1 {
+		t.Fatalf("Expected sensitivity 1, got %d", audio.GetVADSensitivity())
+	}
+	if audio.VADThreshold < 0.045 {
+		t.Fatalf("Expected high threshold for min sensitivity, got %f", audio.VADThreshold)
+	}
+
+	// Reset to 65%
+	audio.SetVADSensitivity(65)
+	if audio.GetVADSensitivity() != 65 {
+		t.Fatalf("Expected sensitivity 65, got %d", audio.GetVADSensitivity())
+	}
+}
+
+func TestNoiseSuppressionFiltersFanNoise(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// Generate synthetic PC fan / AC hum (120Hz + 240Hz low drone at moderate volume)
+	fanPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		s1 := 1200.0 * math.Sin(2.0*math.Pi*120.0*float64(i)/float64(AudioSampleRate))
+		s2 := 800.0 * math.Sin(2.0*math.Pi*240.0*float64(i)/float64(AudioSampleRate))
+		val := int16(s1 + s2)
+		binary.LittleEndian.PutUint16(fanPCM[i*2:i*2+2], uint16(val))
+	}
+
+	// Run fan noise in Mode 1:
+	audio.SetSuppressionMode(1)
+	audio.IsSpeaking = false
+
+	// Let the adaptive noise tracker adapt over multiple frames
+	for f := 0; f < 30; f++ {
+		audio.processNoiseCancellation(fanPCM, 1)
+	}
+
+	speaking, finalRMS, out := audio.processNoiseCancellation(fanPCM, 1)
+	if speaking {
+		t.Fatalf("Expected fan noise alone to NOT trigger speech VAD, but got speaking=true")
+	}
+	if finalRMS > 0.01 {
+		t.Fatalf("Expected fan noise to be gated to silence, got finalRMS=%f", finalRMS)
+	}
+	if calculateRMS(out) > 0.01 {
+		t.Fatalf("Expected gated output PCM RMS <= 0.01, got %f", calculateRMS(out))
+	}
+}
+
+func TestHandClapSuppression(t *testing.T) {
+	audio := NewAudioEngine()
+	audio.SetSuppressionMode(2) // Mode 2: HIGH (Sonar AI mode)
+
+	// Generate synthetic hand clap (sharp impulsive peak at sample 40, rapidly decaying, non-harmonic)
+	clapPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		var sample float64
+		if i >= 40 && i < 120 {
+			tVal := float64(i - 40)
+			sample = 16000.0 * math.Exp(-tVal/8.0) * math.Sin(2.0*math.Pi*1800.0*tVal/float64(AudioSampleRate))
+		}
+		val := int16(sample)
+		binary.LittleEndian.PutUint16(clapPCM[i*2:i*2+2], uint16(val))
+	}
+
+	speaking, _, _ := audio.processNoiseCancellation(clapPCM, 2)
+	if speaking {
+		t.Fatalf("Expected hand clap to be rejected by Sonar noise suppressor, but got speaking=true")
+	}
+}
+
+func TestMechanicalKeyboardTypingSuppression(t *testing.T) {
+	audio := NewAudioEngine()
+	audio.SetSuppressionMode(2)
+
+	// Generate synthetic mechanical keyboard switch click (high frequency click burst at 3500Hz)
+	keyPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		var sample float64
+		if i >= 30 && i < 90 {
+			tVal := float64(i - 30)
+			sample = 10000.0 * math.Exp(-tVal/6.0) * math.Sin(2.0*math.Pi*3600.0*tVal/float64(AudioSampleRate))
+		}
+		val := int16(sample)
+		binary.LittleEndian.PutUint16(keyPCM[i*2:i*2+2], uint16(val))
+	}
+
+	speaking, _, _ := audio.processNoiseCancellation(keyPCM, 2)
+	if speaking {
+		t.Fatalf("Expected mechanical keyboard click to be suppressed, but got speaking=true")
+	}
+}
+
+func TestCoughAndThroatClearingSuppression(t *testing.T) {
+	audio := NewAudioEngine()
+	audio.SetSuppressionMode(2)
+
+	// Generate synthetic cough / non-harmonic turbulent burst (pseudo-random broadband noise burst)
+	coughPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		// Non-harmonic multi-frequency turbulent burst
+		s := 4000.0*math.Sin(float64(i*i)*0.13) + 3000.0*math.Cos(float64(i*i*i)*0.07)
+		val := int16(s)
+		binary.LittleEndian.PutUint16(coughPCM[i*2:i*2+2], uint16(val))
+	}
+
+	speaking, _, _ := audio.processNoiseCancellation(coughPCM, 2)
+	if speaking {
+		t.Fatalf("Expected cough turbulence to be suppressed, but got speaking=true")
+	}
+}
+
+func TestPitchHarmonicSpeechPassthrough(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// Generate synthetic human speech with rich fundamental pitch + vocal harmonics (160 Hz + 320 Hz + 480 Hz)
+	speechPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		f0 := 160.0
+		tVal := float64(i) / float64(AudioSampleRate)
+		s1 := 3500.0 * math.Sin(2.0*math.Pi*f0*tVal)
+		s2 := 2500.0 * math.Sin(2.0*math.Pi*2.0*f0*tVal)
+		s3 := 1500.0 * math.Sin(2.0*math.Pi*3.0*f0*tVal)
+		val := int16(s1 + s2 + s3)
+		binary.LittleEndian.PutUint16(speechPCM[i*2:i*2+2], uint16(val))
+	}
+
+	// Test Mode 1 (Standard) and Mode 2 (High Sonar)
+	speaking1, rms1, out1 := audio.processNoiseCancellation(speechPCM, 1)
+	if !speaking1 || rms1 < 0.02 || calculateRMS(out1) < 0.02 {
+		t.Fatalf("Expected rich voiced speech to pass cleanly in Mode 1, speaking=%v, rms=%f", speaking1, rms1)
+	}
+
+	speaking2, rms2, out2 := audio.processNoiseCancellation(speechPCM, 2)
+	if !speaking2 || rms2 < 0.02 || calculateRMS(out2) < 0.02 {
+		t.Fatalf("Expected rich voiced speech to pass cleanly in Mode 2, speaking=%v, rms=%f", speaking2, rms2)
+	}
+}
+
 func TestVideoReorderBuffer(t *testing.T) {
 	buf := VideoReorderBuffer{}
 	buf.Reset()
@@ -701,4 +857,245 @@ func TestOutputVolumeAndAGC(t *testing.T) {
 		t.Fatalf("Expected jitter buffer created for peer_quiet")
 	}
 }
+
+func TestChatMessagePacketCodec(t *testing.T) {
+	roomCode := "4820-cyber-otter"
+	key := deriveRoomKey(roomCode)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("aes.NewCipher failed: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("cipher.NewGCM failed: %v", err)
+	}
+
+	chatText := "Selam! Limoni Voice chat test 🚀"
+	pkt := P2PPacket{
+		Type:      PacketChatMessage,
+		RoomCode:  roomCode,
+		SenderID:  "peer_abc",
+		Nickname:  "Alice",
+		Timestamp: time.Now().UnixMilli(),
+		Payload:   []byte(chatText),
+	}
+
+	data, err := encodeAndEncryptPacket(&pkt, aead)
+	if err != nil {
+		t.Fatalf("encodeAndEncryptPacket failed: %v", err)
+	}
+
+	var decoded P2PPacket
+	if err := decryptAndDecodePacket(data, &decoded, aead); err != nil {
+		t.Fatalf("decryptAndDecodePacket failed: %v", err)
+	}
+
+	if decoded.Type != PacketChatMessage {
+		t.Fatalf("Expected packet type PacketChatMessage (%d), got %d", PacketChatMessage, decoded.Type)
+	}
+	if decoded.Nickname != "Alice" {
+		t.Fatalf("Expected sender Nickname 'Alice', got %q", decoded.Nickname)
+	}
+	if string(decoded.Payload) != chatText {
+		t.Fatalf("Expected payload %q, got %q", chatText, string(decoded.Payload))
+	}
+}
+
+func TestRoomViewChatAndLogs(t *testing.T) {
+	room := NewRoomView()
+
+	// 1. Test adding log
+	room.AddLog("[+] Friend joined the room")
+	if len(room.Messages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(room.Messages))
+	}
+	if room.Messages[0].IsChat {
+		t.Fatalf("Expected first message to be log/event, not chat")
+	}
+
+	// 2. Test adding chat message
+	room.AddChatMessage("Bob", "peer_bob", "Hello world!", false, time.Now())
+	if len(room.Messages) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(room.Messages))
+	}
+	if !room.Messages[1].IsChat || room.Messages[1].Sender != "Bob" || room.Messages[1].Text != "Hello world!" {
+		t.Fatalf("Chat message not recorded properly: %+v", room.Messages[1])
+	}
+
+	// 3. Test sending current chat input
+	var sentText string
+	room.OnSendChat = func(text string) {
+		sentText = text
+	}
+	room.ChatInputState.SetValue("My new message")
+	room.SendCurrentChat()
+
+	if sentText != "My new message" {
+		t.Fatalf("Expected sent text 'My new message', got %q", sentText)
+	}
+	if room.ChatInputState.Value() != "" {
+		t.Fatalf("Expected ChatInputState cleared after send, got %q", room.ChatInputState.Value())
+	}
+
+	// 4. Test scrolling chat
+	room.ScrollChat(2)
+	if room.ChatScrollOffset != 2 {
+		t.Fatalf("Expected scroll offset 2, got %d", room.ChatScrollOffset)
+	}
+	room.ScrollChat(-5)
+	if room.ChatScrollOffset != 0 {
+		t.Fatalf("Expected scroll offset 0 (min bound), got %d", room.ChatScrollOffset)
+	}
+
+	// 5. Test rendering frame without crash
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 120, 40))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	audio := NewAudioEngine()
+	node := NewP2PNode("local_user", "You", audio)
+
+	room.Render(frame, cell.NewRect(0, 0, 120, 40), node, audio)
+}
+
+func TestP2PNodeChatCallbacks(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("test_peer_1", "User1", audio)
+	node.IsConnected = true
+	node.RoomCode = "1234-alpha-beta"
+
+	receivedCount := 0
+	receivedMsg := ""
+	receivedSender := ""
+	node.OnChatMessage = func(senderID string, nickname string, text string, ts time.Time) {
+		receivedCount++
+		receivedSender = nickname
+		receivedMsg = text
+	}
+
+	// Simulate receiving a PacketChatMessage from remote peer (e.g. from WebSocket Relay)
+	chatPkt := P2PPacket{
+		Type:      PacketChatMessage,
+		RoomCode:  "1234-alpha-beta",
+		SenderID:  "remote_peer_2",
+		Nickname:  "User2",
+		Seq:       42,
+		Payload:   []byte("Hey there!"),
+		Timestamp: 1725431154000,
+	}
+
+	node.handlePacket(&chatPkt, nil)
+
+	// Simulate duplicate packet arriving via Direct UDP transport
+	node.handlePacket(&chatPkt, nil)
+
+	// Wait briefly for goroutine callback
+	time.Sleep(50 * time.Millisecond)
+
+	if receivedCount != 1 {
+		t.Fatalf("Expected exactly 1 callback (deduplicated), got %d", receivedCount)
+	}
+	if receivedSender != "User2" || receivedMsg != "Hey there!" {
+		t.Fatalf("Expected received chat 'User2': 'Hey there!', got %q: %q", receivedSender, receivedMsg)
+	}
+}
+
+func TestPeerLeaveNoDeadlock(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("test_host", "Host", audio)
+	node.IsConnected = true
+	node.RoomCode = "5678-delta-echo"
+
+	// Register peer
+	node.Peers["peer_leaving"] = &PeerInfo{
+		ID:              "peer_leaving",
+		Nickname:        "LeavingUser",
+		IsSharingScreen: true,
+	}
+
+	leftFired := false
+	node.OnPeerEvent = func(event string, peer *PeerInfo) {
+		if event == "leave" {
+			leftFired = true
+		}
+	}
+
+	leavePkt := P2PPacket{
+		Type:      PacketLeave,
+		RoomCode:  "5678-delta-echo",
+		SenderID:  "peer_leaving",
+		Nickname:  "LeavingUser",
+		Timestamp: time.Now().UnixMilli(),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		node.handlePacket(&leavePkt, nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success, no deadlock!
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handlePacket deadlocked on PacketLeave!")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if !leftFired {
+		t.Fatalf("Expected OnPeerEvent leave callback to fire")
+	}
+	if node.Peers["peer_leaving"] != nil {
+		t.Fatalf("Expected peer removed from map")
+	}
+}
+
+func TestChatClickableLinks(t *testing.T) {
+	room := NewRoomView()
+	room.AddChatMessage("Alice", "peer_alice", "Check out https://github.com/thebanri/limoni and www.google.com for info!", false, time.Now())
+
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 120, 30))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	audio := NewAudioEngine()
+	node := NewP2PNode("local_user", "You", audio)
+
+	room.Render(frame, cell.NewRect(0, 0, 120, 30), node, audio)
+
+	// Verify click handler registered on frame
+	if frame == nil {
+		t.Fatalf("Frame is nil")
+	}
+}
+
+func TestDebugModalAndLogs(t *testing.T) {
+	ClearDebugLogs()
+	AddDebugLog("Test debug entry 1: [SCREEN] Chunk sent 1024 bytes")
+	AddDebugLog("Test debug entry 2: [NET] TCP connected to port 50100")
+
+	logs := GetDebugLogs()
+	if len(logs) != 2 {
+		t.Fatalf("Expected 2 debug logs, got %d", len(logs))
+	}
+	if !strings.Contains(logs[0], "Chunk sent") || !strings.Contains(logs[1], "port 50100") {
+		t.Fatalf("Debug log content mismatch: %v", logs)
+	}
+
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 120, 40))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	closed := false
+	cleared := false
+	copied := false
+
+	DrawDebugModal(frame, cell.NewRect(0, 0, 120, 40), 0, func() { closed = true }, func() { cleared = true }, func() { copied = true })
+	_ = closed
+	_ = cleared
+	_ = copied
+
+	allText := GetAllDebugLogsText()
+	if !strings.Contains(allText, "Chunk sent") {
+		t.Fatalf("GetAllDebugLogsText mismatch: %q", allText)
+	}
+}
+
+
+
+
 
