@@ -320,8 +320,8 @@ func TestJoinClosedRoomFails(t *testing.T) {
 	var failReason string
 	done := make(chan struct{})
 
-	// Attempt to join non-existent room with 300ms timeout
-	node.RequestJoinRoom(room, 300*time.Millisecond, func(hostNick string) {
+	// Attempt to join non-existent room with 150ms timeout
+	node.RequestJoinRoom(room, 150*time.Millisecond, func(hostNick string) {
 		t.Errorf("Expected join to FAIL on unopened room, but succeeded with host %s", hostNick)
 		close(done)
 	}, func(reason string) {
@@ -332,7 +332,7 @@ func TestJoinClosedRoomFails(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatalf("Expected join request callback to be called within timeout")
 	}
 
