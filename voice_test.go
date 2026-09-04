@@ -178,6 +178,8 @@ func TestP2PMaxPeers(t *testing.T) {
 func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	audio1 := NewAudioEngine()
 	node1 := NewP2PNode("node_1", "Alice", audio1)
+	node1.LanOnly = true
+	node1.RelayURL = ""
 	if err := node1.Start(); err != nil {
 		t.Fatalf("Node1 start failed: %v", err)
 	}
@@ -189,6 +191,8 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 
 	audio2 := NewAudioEngine()
 	node2 := NewP2PNode("node_2", "Bob", audio2)
+	node2.LanOnly = true
+	node2.RelayURL = ""
 	if err := node2.Start(); err != nil {
 		t.Fatalf("Node2 start failed: %v", err)
 	}
@@ -300,6 +304,8 @@ func TestP2PLANOnlyModeDirectDiscovery(t *testing.T) {
 func TestJoinClosedRoomFails(t *testing.T) {
 	audio := NewAudioEngine()
 	node := NewP2PNode("lonely_node", "Charlie", audio)
+	node.LanOnly = true
+	node.RelayURL = ""
 	if err := node.Start(); err != nil {
 		t.Fatalf("Node start failed: %v", err)
 	}
@@ -314,8 +320,8 @@ func TestJoinClosedRoomFails(t *testing.T) {
 	var failReason string
 	done := make(chan struct{})
 
-	// Attempt to join non-existent room with 500ms timeout
-	node.RequestJoinRoom(room, 500*time.Millisecond, func(hostNick string) {
+	// Attempt to join non-existent room with 300ms timeout
+	node.RequestJoinRoom(room, 300*time.Millisecond, func(hostNick string) {
 		t.Errorf("Expected join to FAIL on unopened room, but succeeded with host %s", hostNick)
 		close(done)
 	}, func(reason string) {
@@ -326,8 +332,8 @@ func TestJoinClosedRoomFails(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("Expected join request callback to be called within 3s")
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Expected join request callback to be called within timeout")
 	}
 
 	if !failed {

@@ -27,7 +27,7 @@ cp assets/icon.ico cmd/installer/icon.ico || true
 
 # 1. Run Unit Tests
 echo "==> Running Unit Tests..."
-go test -mod=vendor -v .
+go test -mod=vendor -v ./...
 
 # 2. Compile Linux AMD64 & ARM64
 echo "==> Building Linux AMD64..."
