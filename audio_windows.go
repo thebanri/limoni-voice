@@ -325,6 +325,7 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 							a.LocalRMS = 0
 							a.IsSpeaking = false
 							a.shiftWave(0)
+						} else {
 							processed := applyGain(chunk, gain)
 							if suppressMode == 0 {
 								rawRMS := calculateRMS(processed)

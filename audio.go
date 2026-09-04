@@ -1083,11 +1083,12 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	peakToRMS := maxPeak / ((frameRMS * 32768.0) + 1.0)
 	hfRatio := highEnergy / (midEnergy + lowEnergy + 1.0)
 
-	// Non-vocal sound discrimination (Claps, Keyboards, Coughs, Breath Pops)
-	isImpulsiveClap := (peakToRMS > 4.5 || maxSlew > 5500.0) && harmonicity < 0.25
-	isKeyboardClick := (hfRatio > 1.6 || maxSlew > 3500.0) && harmonicity < 0.22 && midRMS < a.VADThreshold*1.8
-	isCoughBurst := frameRMS > a.VADThreshold*1.40 && harmonicity < 0.22 && (lowEnergy > midEnergy*0.80 || hfRatio > 1.20)
-	isNonVocalNoise := isImpulsiveClap || isKeyboardClick || isCoughBurst
+	// Non-vocal sound discrimination (Claps, Keyboards, Coughs, Fan/AC low-drone)
+	isImpulsiveClap := (peakToRMS > 4.8 || maxSlew > 6000.0) && harmonicity < 0.22
+	isKeyboardClick := (hfRatio > 1.8 || maxSlew > 3800.0) && harmonicity < 0.20 && midRMS < a.VADThreshold*1.6
+	isCoughBurst := frameRMS > a.VADThreshold*1.60 && harmonicity < 0.18 && (lowEnergy > midEnergy*1.20 || hfRatio > 1.40)
+	isLowDrone := (lowEnergy > (midEnergy*2.2 + 1.0)) && (midRMS < a.VADThreshold*0.45 || harmonicity < 0.30)
+	isNonVocalNoise := isImpulsiveClap || isKeyboardClick || isCoughBurst || isLowDrone
 
 	// Slew-rate clamp on impulsive clicks/claps to soften raw audio
 	if isImpulsiveClap || isKeyboardClick {
@@ -1148,14 +1149,20 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 		a.noiseFloorHigh = a.noiseFloorHigh*0.998 + highRMS*0.002
 	}
 
-	// 4. Voice Activity Detection (VAD) with Pitch Harmonicity & AES
+	// 4. Voice Activity Detection (VAD) with Pitch Harmonicity & Gentle AES
 	threshold := a.VADThreshold
-	if a.lastPlaybackRMS > 0.001 {
-		echoDucker := a.lastPlaybackRMS * 0.80
+	if a.lastPlaybackRMS > 0.005 {
+		echoDucker := a.VADThreshold + (a.lastPlaybackRMS * 0.20)
+		maxEchoThresh := a.VADThreshold * 1.8
+		if echoDucker > maxEchoThresh {
+			echoDucker = maxEchoThresh
+		}
 		if echoDucker > threshold {
 			threshold = echoDucker
 		}
-		a.lastPlaybackRMS *= 0.88
+		a.lastPlaybackRMS *= 0.85
+	} else {
+		a.lastPlaybackRMS = 0
 	}
 
 	snrFloor := math.Max(a.noiseFloor, 0.0004)
@@ -1165,18 +1172,16 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	midSNR := midRMS / midSNRFloor
 
 	var isSpeech bool
-	if mode == 2 { // HIGH (SteelSeries Sonar AI Mode: Strict pitch harmonicity & vocal formant requirement)
-		isSpeech = (frameRMS > threshold*1.15 && snr > 1.25 && harmonicity >= 0.28 && midRMS > threshold*0.40 && midEnergy > (lowEnergy*0.40) && !isNonVocalNoise)
-	} else { // ON / Standard (Warm, natural speech with clap/cough/typing/fan rejection)
-		isVoiced := harmonicity >= 0.25 && midRMS > threshold*0.35 && midEnergy > (lowEnergy*0.40)
-		isUnvoicedConsonant := midRMS > threshold*0.40 && midEnergy > (lowEnergy*0.40) && midSNR > 1.20
-		isSpeech = (frameRMS > threshold && snr > 1.08 && (isVoiced || isUnvoicedConsonant) && !isNonVocalNoise)
+	if mode == 2 { // HIGH (SteelSeries Sonar Deep Suppression Mode)
+		isSpeech = (frameRMS > threshold*1.08 && snr > 1.25 && (harmonicity >= 0.22 || midSNR > 1.30) && !isNonVocalNoise)
+	} else { // ON / Standard (Warm, natural speech with stationary noise/clap/cough rejection)
+		isSpeech = (frameRMS > threshold && (snr > 1.20 || midSNR > 1.20) && !isNonVocalNoise)
 	}
 
 	speaking := false
 	if isSpeech {
 		if mode == 2 {
-			a.speechHangover = 8 // ~160ms hangover in HIGH mode
+			a.speechHangover = 10 // ~200ms hangover in HIGH mode
 		} else {
 			a.speechHangover = 18 // ~360ms hangover in STANDARD mode
 		}
