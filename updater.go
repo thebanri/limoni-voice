@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	AppVersion       = "v1.4.8"
+	AppVersion       = "v1.4.9"
 	GitHubRepo       = "thebanri/limoni-voice"
 	UpdateCheckDelay = 1200 * time.Millisecond
 )
@@ -158,26 +158,34 @@ func FindMatchingAsset(release *GitHubRelease, goos, goarch string) *GitHubAsset
 		return nil
 	}
 
-	var best *GitHubAsset
 	osTarget := strings.ToLower(goos)
 	archTarget := strings.ToLower(goarch)
 
 	for _, a := range release.Assets {
 		name := strings.ToLower(a.Name)
+
+		// Explicitly skip installers, setups, disk images, app bundles, package managers (.deb, .rpm, .msi)
+		if strings.Contains(name, "setup") ||
+			strings.Contains(name, "installer") ||
+			strings.Contains(name, ".dmg") ||
+			strings.Contains(name, ".app.") ||
+			strings.Contains(name, ".deb") ||
+			strings.Contains(name, ".rpm") ||
+			strings.Contains(name, ".msi") {
+			continue
+		}
+
 		if strings.Contains(name, osTarget) && strings.Contains(name, archTarget) {
 			if osTarget == "windows" && strings.HasSuffix(name, ".exe") {
 				return &a
 			}
-			if (osTarget == "linux" || osTarget == "darwin") && strings.HasSuffix(name, ".tar.gz") && !strings.Contains(name, ".app.") {
+			if (osTarget == "linux" || osTarget == "darwin") && (strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz")) {
 				return &a
-			}
-			if best == nil {
-				best = &a
 			}
 		}
 	}
 
-	return best
+	return nil
 }
 
 // DownloadAndApplyUpdate downloads the release asset, extracts the binary and replaces execPath.

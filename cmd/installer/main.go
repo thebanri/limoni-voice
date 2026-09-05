@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -29,18 +30,37 @@ const (
 )
 
 func main() {
-	fmt.Println("==================================================")
-	fmt.Println("   🍋  LIMONI VOICE - WINDOWS SETUP INSTALLER     ")
-	fmt.Println("==================================================")
-	fmt.Println()
-
 	localAppData := os.Getenv("LOCALAPPDATA")
 	if localAppData == "" {
 		localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
 	}
 
 	installDir := filepath.Join(localAppData, "LimoniVoice")
+	targetVoiceExe := filepath.Join(installDir, "limoni-voice.exe")
 	binDir := filepath.Join(installDir, "bin")
+
+	currExe, _ := os.Executable()
+	currExeAbs, _ := filepath.Abs(currExe)
+	targetVoiceExeAbs, _ := filepath.Abs(targetVoiceExe)
+
+	// If this installer executable is executing as `limoni-voice.exe` inside the install folder
+	// (caused when an older updater bug replaced the app binary with the installer),
+	// automatically self-heal by restoring the real application binary and launching it directly.
+	if strings.EqualFold(currExeAbs, targetVoiceExeAbs) {
+		fmt.Println("==================================================")
+		fmt.Println("   🍋  LIMONI VOICE - APPLICATION RESTORE         ")
+		fmt.Println("==================================================")
+		fmt.Println("[*] Restoring Limoni Voice application executable...")
+		if err := selfHealAndLaunch(installDir, targetVoiceExe, currExeAbs); err == nil {
+			return
+		}
+		fmt.Println("[!] Automatic restore failed, running full repair...")
+	}
+
+	fmt.Println("==================================================")
+	fmt.Println("   🍋  LIMONI VOICE - WINDOWS SETUP INSTALLER     ")
+	fmt.Println("==================================================")
+	fmt.Println()
 
 	if err := os.MkdirAll(binDir, 0755); err != nil {
 		fmt.Printf("[!] Failed to create install directory: %v\n", err)
@@ -64,20 +84,30 @@ func main() {
 	}
 
 	// 3. Install limoni-voice.exe (Standalone Embedded Binary -> Local Copy -> Online Download)
-	targetVoiceExe := filepath.Join(installDir, "limoni-voice.exe")
 	if len(embeddedVoiceExe) > 1024 {
 		fmt.Println("[+] Extracting Limoni Voice executable (embedded bundle)...")
-		_ = os.WriteFile(targetVoiceExe, embeddedVoiceExe, 0755)
+		if err := writeOrReplaceExecutable(targetVoiceExe, embeddedVoiceExe); err != nil {
+			fmt.Printf("[!] Failed to write limoni-voice.exe: %v\n", err)
+		}
 	} else {
 		currDirExe := filepath.Join(".", "limoni-voice.exe")
-		if fileExists(currDirExe) {
+		currDirExeAbs, _ := filepath.Abs(currDirExe)
+		if fileExists(currDirExe) && !strings.EqualFold(currExeAbs, currDirExeAbs) {
 			fmt.Println("[+] Copying limoni-voice.exe from local directory...")
 			_ = copyFile(currDirExe, targetVoiceExe)
 		} else {
 			// Download latest release binary
+			arch := runtime.GOARCH
 			fmt.Println("[*] Downloading limoni-voice.exe from GitHub Releases...")
-			downloadURL := REPO_URL + "/releases/latest/download/limoni-voice_windows_amd64.exe"
-			if err := downloadFileWithProgress(downloadURL, targetVoiceExe, "Limoni Voice"); err != nil {
+			downloadURL := fmt.Sprintf("%s/releases/latest/download/limoni-voice_windows_%s.exe", REPO_URL, arch)
+			tmpDl := filepath.Join(installDir, "limoni-voice.dl.tmp")
+			if err := downloadFileWithProgress(downloadURL, tmpDl, "Limoni Voice"); err == nil {
+				data, errRead := os.ReadFile(tmpDl)
+				_ = os.Remove(tmpDl)
+				if errRead == nil && len(data) > 1024 {
+					_ = writeOrReplaceExecutable(targetVoiceExe, data)
+				}
+			} else {
 				fmt.Printf("[-] Failed to download limoni-voice.exe: %v\n", err)
 			}
 		}
@@ -198,6 +228,76 @@ func main() {
 		launchCmd.Dir = installDir
 		_ = launchCmd.Start()
 	}
+}
+
+func selfHealAndLaunch(installDir, targetVoiceExe, currExeAbs string) error {
+	var appBytes []byte
+
+	if len(embeddedVoiceExe) > 1024 {
+		appBytes = embeddedVoiceExe
+	} else {
+		arch := runtime.GOARCH
+		downloadURL := fmt.Sprintf("%s/releases/latest/download/limoni-voice_windows_%s.exe", REPO_URL, arch)
+		tmpDl := filepath.Join(installDir, "limoni-voice.dl.tmp")
+		if err := downloadFileWithProgress(downloadURL, tmpDl, "Limoni Voice"); err == nil {
+			data, errRead := os.ReadFile(tmpDl)
+			_ = os.Remove(tmpDl)
+			if errRead == nil && len(data) > 1024 {
+				appBytes = data
+			}
+		}
+	}
+
+	if len(appBytes) < 1024 {
+		return fmt.Errorf("no application payload available")
+	}
+
+	// Rename running installer executable so we can write real limoni-voice.exe
+	oldPath := filepath.Join(installDir, "limoni-voice.installer.old")
+	_ = os.Remove(oldPath)
+	if err := os.Rename(currExeAbs, oldPath); err != nil {
+		return fmt.Errorf("failed to rename running installer: %w", err)
+	}
+
+	if err := os.WriteFile(targetVoiceExe, appBytes, 0755); err != nil {
+		_ = os.Rename(oldPath, currExeAbs)
+		return fmt.Errorf("failed to write application binary: %w", err)
+	}
+
+	// Ensure 3D model & icon exist
+	targetMicObj := filepath.Join(installDir, "microphone.obj")
+	if !fileExists(targetMicObj) && len(embeddedMicrophoneObj) > 0 {
+		_ = os.WriteFile(targetMicObj, embeddedMicrophoneObj, 0644)
+	}
+	targetIconIco := filepath.Join(installDir, "icon.ico")
+	if !fileExists(targetIconIco) && len(embeddedIconIco) > 0 {
+		_ = os.WriteFile(targetIconIco, embeddedIconIco, 0644)
+	}
+
+	_ = os.Remove(oldPath)
+
+	fmt.Println("[✓] Limoni Voice restored successfully! Launching...")
+	time.Sleep(300 * time.Millisecond)
+
+	launchCmd := exec.Command("cmd.exe", "/c", "start", "", targetVoiceExe)
+	launchCmd.Dir = installDir
+	return launchCmd.Start()
+}
+
+func writeOrReplaceExecutable(targetPath string, data []byte) error {
+	if fileExists(targetPath) {
+		oldPath := targetPath + ".old"
+		_ = os.Remove(oldPath)
+		if err := os.Rename(targetPath, oldPath); err == nil {
+			if errWrite := os.WriteFile(targetPath, data, 0755); errWrite != nil {
+				_ = os.Rename(oldPath, targetPath)
+				return errWrite
+			}
+			_ = os.Remove(oldPath)
+			return nil
+		}
+	}
+	return os.WriteFile(targetPath, data, 0755)
 }
 
 func fileExists(path string) bool {
