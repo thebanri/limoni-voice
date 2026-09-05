@@ -11,16 +11,29 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const (
-	AppVersion       = "v1.4.9"
+var (
+	// AppVersion is dynamically injected during compilation via -ldflags="-X main.AppVersion=vX.Y.Z".
+	// Falls back to runtime build info or "dev" when built without flags.
+	AppVersion       = "dev"
 	GitHubRepo       = "thebanri/limoni-voice"
 	UpdateCheckDelay = 1200 * time.Millisecond
 )
+
+func init() {
+	if AppVersion == "dev" || AppVersion == "" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			if info.Main.Version != "" && info.Main.Version != "(devel)" {
+				AppVersion = info.Main.Version
+			}
+		}
+	}
+}
 
 type GitHubRelease struct {
 	TagName string        `json:"tag_name"`

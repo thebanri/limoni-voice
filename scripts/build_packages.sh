@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-VERSION="${GITHUB_REF_NAME:-v1.0.0}"
+VERSION="${GITHUB_REF_NAME:-}"
 if [ -z "${VERSION}" ] || [ "${VERSION}" = "main" ] || [ "${VERSION}" = "master" ]; then
-  VERSION="v1.0.0"
+  VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
 fi
 RAW_VERSION="${VERSION#v}"
 

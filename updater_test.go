@@ -36,39 +36,39 @@ func TestIsNewerVersion(t *testing.T) {
 
 func TestFindMatchingAsset(t *testing.T) {
 	rel := &GitHubRelease{
-		TagName: "v1.4.8",
+		TagName: "v1.0.0",
 		Assets: []GitHubAsset{
 			{Name: "Limoni-Voice-Setup_windows_amd64.exe", BrowserDownloadURL: "https://example.com/Limoni-Voice-Setup_windows_amd64.exe"},
 			{Name: "Limoni-Voice-Setup.exe", BrowserDownloadURL: "https://example.com/Limoni-Voice-Setup.exe"},
 			{Name: "Limoni-Voice-Setup_windows_arm64.exe", BrowserDownloadURL: "https://example.com/Limoni-Voice-Setup_windows_arm64.exe"},
-			{Name: "limoni-voice_v1.4.8_windows_amd64.exe", BrowserDownloadURL: "https://example.com/limoni-voice_v1.4.8_windows_amd64.exe"},
-			{Name: "limoni-voice_v1.4.8_windows_arm64.exe", BrowserDownloadURL: "https://example.com/limoni-voice_v1.4.8_windows_arm64.exe"},
-			{Name: "limoni-voice_v1.4.8_linux_amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux_amd64.tar.gz"},
-			{Name: "limoni-voice_v1.4.8_linux_arm64.tar.gz", BrowserDownloadURL: "https://example.com/linux_arm64.tar.gz"},
-			{Name: "limoni-voice_1.4.8_amd64.deb", BrowserDownloadURL: "https://example.com/linux_amd64.deb"},
-			{Name: "Limoni-Voice_v1.4.8_macOS_arm64.dmg", BrowserDownloadURL: "https://example.com/Limoni-Voice_v1.4.8_macOS_arm64.dmg"},
-			{Name: "Limoni-Voice_v1.4.8_macOS_arm64.app.zip", BrowserDownloadURL: "https://example.com/Limoni-Voice_v1.4.8_macOS_arm64.app.zip"},
-			{Name: "limoni-voice_v1.4.8_darwin_arm64.tar.gz", BrowserDownloadURL: "https://example.com/darwin_arm64.tar.gz"},
+			{Name: "limoni-voice_v1.0.0_windows_amd64.exe", BrowserDownloadURL: "https://example.com/limoni-voice_v1.0.0_windows_amd64.exe"},
+			{Name: "limoni-voice_v1.0.0_windows_arm64.exe", BrowserDownloadURL: "https://example.com/limoni-voice_v1.0.0_windows_arm64.exe"},
+			{Name: "limoni-voice_v1.0.0_linux_amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux_amd64.tar.gz"},
+			{Name: "limoni-voice_v1.0.0_linux_arm64.tar.gz", BrowserDownloadURL: "https://example.com/linux_arm64.tar.gz"},
+			{Name: "limoni-voice_1.0.0_amd64.deb", BrowserDownloadURL: "https://example.com/linux_amd64.deb"},
+			{Name: "Limoni-Voice_v1.0.0_macOS_arm64.dmg", BrowserDownloadURL: "https://example.com/Limoni-Voice_v1.0.0_macOS_arm64.dmg"},
+			{Name: "Limoni-Voice_v1.0.0_macOS_arm64.app.zip", BrowserDownloadURL: "https://example.com/Limoni-Voice_v1.0.0_macOS_arm64.app.zip"},
+			{Name: "limoni-voice_v1.0.0_darwin_arm64.tar.gz", BrowserDownloadURL: "https://example.com/darwin_arm64.tar.gz"},
 		},
 	}
 
 	winAmd64 := FindMatchingAsset(rel, "windows", "amd64")
-	if winAmd64 == nil || winAmd64.Name != "limoni-voice_v1.4.8_windows_amd64.exe" {
+	if winAmd64 == nil || winAmd64.Name != "limoni-voice_v1.0.0_windows_amd64.exe" {
 		t.Fatalf("Expected windows amd64 standalone binary, got %v", winAmd64)
 	}
 
 	winArm64 := FindMatchingAsset(rel, "windows", "arm64")
-	if winArm64 == nil || winArm64.Name != "limoni-voice_v1.4.8_windows_arm64.exe" {
+	if winArm64 == nil || winArm64.Name != "limoni-voice_v1.0.0_windows_arm64.exe" {
 		t.Fatalf("Expected windows arm64 standalone binary, got %v", winArm64)
 	}
 
 	linuxAmd64 := FindMatchingAsset(rel, "linux", "amd64")
-	if linuxAmd64 == nil || linuxAmd64.Name != "limoni-voice_v1.4.8_linux_amd64.tar.gz" {
+	if linuxAmd64 == nil || linuxAmd64.Name != "limoni-voice_v1.0.0_linux_amd64.tar.gz" {
 		t.Fatalf("Expected linux amd64 tarball, got %v", linuxAmd64)
 	}
 
 	darwinArm64 := FindMatchingAsset(rel, "darwin", "arm64")
-	if darwinArm64 == nil || darwinArm64.Name != "limoni-voice_v1.4.8_darwin_arm64.tar.gz" {
+	if darwinArm64 == nil || darwinArm64.Name != "limoni-voice_v1.0.0_darwin_arm64.tar.gz" {
 		t.Fatalf("Expected darwin arm64 tarball, got %v", darwinArm64)
 	}
 }
