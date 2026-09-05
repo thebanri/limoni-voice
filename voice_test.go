@@ -625,6 +625,38 @@ func TestPitchHarmonicSpeechPassthrough(t *testing.T) {
 	}
 }
 
+func TestQuietSpeechAndDeepVoicePassthrough(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// 1. Test quiet human speech (RMS ~ 0.005)
+	quietPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		f0 := 140.0
+		tVal := float64(i) / float64(AudioSampleRate)
+		s := 220.0*math.Sin(2.0*math.Pi*f0*tVal) + 150.0*math.Sin(2.0*math.Pi*2.0*f0*tVal)
+		binary.LittleEndian.PutUint16(quietPCM[i*2:i*2+2], uint16(int16(s)))
+	}
+
+	speaking, rms, _ := audio.processNoiseCancellation(quietPCM, 1)
+	if !speaking || rms < 0.003 {
+		t.Fatalf("Expected quiet speech to trigger VAD in Mode 1, speaking=%v, rms=%f", speaking, rms)
+	}
+
+	// 2. Test deep male voice (95 Hz low pitch fundamental with high low-frequency energy)
+	deepPCM := make([]byte, AudioChunkSize)
+	for i := 0; i < 320; i++ {
+		f0 := 95.0
+		tVal := float64(i) / float64(AudioSampleRate)
+		s := 800.0*math.Sin(2.0*math.Pi*f0*tVal) + 500.0*math.Sin(2.0*math.Pi*2.0*f0*tVal) + 300.0*math.Sin(2.0*math.Pi*3.0*f0*tVal)
+		binary.LittleEndian.PutUint16(deepPCM[i*2:i*2+2], uint16(int16(s)))
+	}
+
+	speakingDeep, rmsDeep, _ := audio.processNoiseCancellation(deepPCM, 1)
+	if !speakingDeep || rmsDeep < 0.01 {
+		t.Fatalf("Expected deep voice to trigger VAD in Mode 1, speaking=%v, rms=%f", speakingDeep, rmsDeep)
+	}
+}
+
 func TestVideoReorderBuffer(t *testing.T) {
 	buf := VideoReorderBuffer{}
 	buf.Reset()

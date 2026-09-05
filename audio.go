@@ -416,7 +416,7 @@ func NewAudioEngine() *AudioEngine {
 		OutputSliderState: widgets.NewSliderState(100),
 		VADSensitivity:    65,
 		VADSliderState:    widgets.NewSliderState(65),
-		VADThreshold:      0.006, // Natural default voice detection threshold (~65% sensitivity)
+		VADThreshold:      0.0031, // Natural default voice detection threshold (~65% sensitivity, -50dB)
 		LocalWave:         make([]float64, 40),
 		PeerWaves:         make(map[string][]float64),
 		peerJitterBuffers: make(map[string]*PeerJitterBuffer),
@@ -1084,10 +1084,10 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	hfRatio := highEnergy / (midEnergy + lowEnergy + 1.0)
 
 	// Non-vocal sound discrimination (Claps, Keyboards, Coughs, Fan/AC low-drone)
-	isImpulsiveClap := (peakToRMS > 4.8 || maxSlew > 6000.0) && harmonicity < 0.22
-	isKeyboardClick := (hfRatio > 1.8 || maxSlew > 3800.0) && harmonicity < 0.20 && midRMS < a.VADThreshold*1.6
-	isCoughBurst := frameRMS > a.VADThreshold*1.60 && harmonicity < 0.18 && (lowEnergy > midEnergy*1.20 || hfRatio > 1.40)
-	isLowDrone := (lowEnergy > (midEnergy*2.2 + 1.0)) && (midRMS < a.VADThreshold*0.45 || harmonicity < 0.30)
+	isImpulsiveClap := (peakToRMS > 4.6 || maxSlew > 5500.0) && harmonicity < 0.22
+	isKeyboardClick := (hfRatio > 2.0 || maxSlew > 3800.0) && harmonicity < 0.18 && midRMS < a.VADThreshold*1.4
+	isCoughBurst := frameRMS > a.VADThreshold*1.40 && harmonicity < 0.20 && (lowEnergy > midEnergy*1.10 || hfRatio > 1.30)
+	isLowDrone := (lowEnergy > (midEnergy*2.5 + 1.0)) && (midRMS < 0.003 || midRMS < a.VADThreshold*0.50)
 	isNonVocalNoise := isImpulsiveClap || isKeyboardClick || isCoughBurst || isLowDrone
 
 	// Slew-rate clamp on impulsive clicks/claps to soften raw audio
@@ -1151,16 +1151,16 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 
 	// 4. Voice Activity Detection (VAD) with Pitch Harmonicity & Gentle AES
 	threshold := a.VADThreshold
-	if a.lastPlaybackRMS > 0.005 {
-		echoDucker := a.VADThreshold + (a.lastPlaybackRMS * 0.20)
-		maxEchoThresh := a.VADThreshold * 1.8
+	if a.lastPlaybackRMS > 0.015 {
+		echoDucker := a.VADThreshold + (a.lastPlaybackRMS * 0.10)
+		maxEchoThresh := a.VADThreshold * 1.30
 		if echoDucker > maxEchoThresh {
 			echoDucker = maxEchoThresh
 		}
 		if echoDucker > threshold {
 			threshold = echoDucker
 		}
-		a.lastPlaybackRMS *= 0.85
+		a.lastPlaybackRMS *= 0.80
 	} else {
 		a.lastPlaybackRMS = 0
 	}
@@ -1173,15 +1173,17 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 
 	var isSpeech bool
 	if mode == 2 { // HIGH (SteelSeries Sonar Deep Suppression Mode)
-		isSpeech = (frameRMS > threshold*1.08 && snr > 1.25 && (harmonicity >= 0.22 || midSNR > 1.30) && !isNonVocalNoise)
+		isSpeech = (frameRMS > threshold && snr > 1.25 && (harmonicity >= 0.20 || midSNR > 1.25) && !isNonVocalNoise)
 	} else { // ON / Standard (Warm, natural speech with stationary noise/clap/cough rejection)
-		isSpeech = (frameRMS > threshold && (snr > 1.20 || midSNR > 1.20) && !isNonVocalNoise)
+		isVoiced := harmonicity >= 0.18 && (snr > 1.15 || midSNR > 1.15) && midRMS > threshold*0.25
+		isUnvoicedConsonant := (snr > 1.20 || midSNR > 1.20) && highRMS > threshold*0.25
+		isSpeech = (frameRMS > threshold && (isVoiced || isUnvoicedConsonant) && !isNonVocalNoise)
 	}
 
 	speaking := false
 	if isSpeech {
 		if mode == 2 {
-			a.speechHangover = 10 // ~200ms hangover in HIGH mode
+			a.speechHangover = 12 // ~240ms hangover in HIGH mode
 		} else {
 			a.speechHangover = 18 // ~360ms hangover in STANDARD mode
 		}
@@ -1630,11 +1632,11 @@ func (a *AudioEngine) GetVADSensitivity() int {
 	if a.VADSensitivity > 0 {
 		return a.VADSensitivity
 	}
-	norm := (a.VADThreshold - 0.001) / 0.049
+	norm := math.Pow((a.VADThreshold-0.001)/0.049, 1.0/3.0)
 	if norm < 0 {
 		norm = 0
 	}
-	pct := int(math.Round(100.0 - math.Sqrt(norm)*99.0))
+	pct := int(math.Round(100.0 - norm*99.0))
 	if pct < 1 {
 		pct = 1
 	}
@@ -1655,7 +1657,8 @@ func (a *AudioEngine) SetVADSensitivity(pct int) int {
 	}
 	a.VADSensitivity = pct
 	norm := float64(100-pct) / 99.0
-	a.VADThreshold = 0.001 + 0.049*math.Pow(norm, 2.0)
+	// Sensitivity mapping: 100% -> 0.001 (-60dB), 65% -> 0.0031 (-50dB), 1% -> 0.050 (-26dB)
+	a.VADThreshold = 0.001 + 0.049*math.Pow(norm, 3.0)
 	if a.VADSliderState != nil {
 		a.VADSliderState.Set(pct, 1, 100)
 	}
@@ -1672,11 +1675,11 @@ func (a *AudioEngine) AdjustThreshold(delta float64) float64 {
 	if a.VADThreshold > 0.050 {
 		a.VADThreshold = 0.050
 	}
-	norm := (a.VADThreshold - 0.001) / 0.049
+	norm := math.Pow((a.VADThreshold-0.001)/0.049, 1.0/3.0)
 	if norm < 0 {
 		norm = 0
 	}
-	pct := int(math.Round(100.0 - math.Sqrt(norm)*99.0))
+	pct := int(math.Round(100.0 - norm*99.0))
 	if pct < 1 {
 		pct = 1
 	}

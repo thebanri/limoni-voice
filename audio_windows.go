@@ -278,12 +278,16 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 							chunk = make([]byte, bytesRead)
 							copy(chunk, data[:bytesRead])
 						} else if chosenRate == 48000 {
-							// 3:1 downsample to 16000 Hz
+							// 3:1 anti-aliased downsample to 16000 Hz
 							numSamples := bytesRead / 2
 							outSamples := numSamples / 3
 							chunk = make([]byte, outSamples*2)
 							for s := 0; s < outSamples; s++ {
-								copy(chunk[s*2:s*2+2], data[s*6:s*6+2])
+								s1 := int32(int16(binary.LittleEndian.Uint16(data[s*6 : s*6+2])))
+								s2 := int32(int16(binary.LittleEndian.Uint16(data[s*6+2 : s*6+4])))
+								s3 := int32(int16(binary.LittleEndian.Uint16(data[s*6+4 : s*6+6])))
+								avg := int16((s1 + s2 + s3) / 3)
+								binary.LittleEndian.PutUint16(chunk[s*2:s*2+2], uint16(avg))
 							}
 						} else {
 							// 44100 fallback (approximate 2.75 downsample)
@@ -329,7 +333,7 @@ func (a *AudioEngine) startWindowsCapture(onFrame func(rms float64, speaking boo
 							processed := applyGain(chunk, gain)
 							if suppressMode == 0 {
 								rawRMS := calculateRMS(processed)
-								speaking = rawRMS > a.VADThreshold
+								speaking = rawRMS > a.VADThreshold*0.70
 								if inputMode == InputModePushToTalk && isPTT {
 									speaking = true
 								}
