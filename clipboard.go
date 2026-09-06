@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
@@ -18,7 +19,23 @@ func CopyToClipboard(text string) bool {
 	b64 := base64.StdEncoding.EncodeToString([]byte(text))
 	fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", b64)
 
-	// 2. Try pbcopy (macOS)
+	// 2. Try clip (Windows)
+	if runtime.GOOS == "windows" {
+		if path, err := exec.LookPath("clip"); err == nil {
+			cmd := exec.Command(path)
+			stdin, err := cmd.StdinPipe()
+			if err == nil {
+				if err := cmd.Start(); err == nil {
+					stdin.Write([]byte(text))
+					stdin.Close()
+					_ = cmd.Wait()
+					return true
+				}
+			}
+		}
+	}
+
+	// 3. Try pbcopy (macOS)
 	if path, err := exec.LookPath("pbcopy"); err == nil {
 		cmd := exec.Command(path)
 		stdin, err := cmd.StdinPipe()
@@ -32,7 +49,7 @@ func CopyToClipboard(text string) bool {
 		}
 	}
 
-	// 3. Try wl-copy (Wayland)
+	// 4. Try wl-copy (Wayland)
 	if path, err := exec.LookPath("wl-copy"); err == nil {
 		cmd := exec.Command(path)
 		stdin, err := cmd.StdinPipe()
@@ -46,7 +63,7 @@ func CopyToClipboard(text string) bool {
 		}
 	}
 
-	// 4. Try xclip (X11)
+	// 5. Try xclip (X11)
 	if path, err := exec.LookPath("xclip"); err == nil {
 		cmd := exec.Command(path, "-selection", "clipboard")
 		stdin, err := cmd.StdinPipe()
@@ -60,7 +77,7 @@ func CopyToClipboard(text string) bool {
 		}
 	}
 
-	// 5. Try xsel (X11)
+	// 6. Try xsel (X11)
 	if path, err := exec.LookPath("xsel"); err == nil {
 		cmd := exec.Command(path, "--clipboard", "--input")
 		stdin, err := cmd.StdinPipe()
@@ -79,7 +96,18 @@ func CopyToClipboard(text string) bool {
 
 // GetClipboardText reads text from system clipboard using system utilities.
 func GetClipboardText() string {
-	// 1. Try pbpaste (macOS)
+	// 1. Try Windows PowerShell Get-Clipboard
+	if runtime.GOOS == "windows" {
+		if path, err := exec.LookPath("powershell"); err == nil {
+			cmd := exec.Command(path, "-NoProfile", "-Command", "Get-Clipboard")
+			out, err := cmd.Output()
+			if err == nil && len(out) > 0 {
+				return strings.TrimSpace(string(out))
+			}
+		}
+	}
+
+	// 2. Try pbpaste (macOS)
 	if path, err := exec.LookPath("pbpaste"); err == nil {
 		cmd := exec.Command(path)
 		out, err := cmd.Output()
@@ -88,7 +116,7 @@ func GetClipboardText() string {
 		}
 	}
 
-	// 2. Try wl-paste (Wayland)
+	// 3. Try wl-paste (Wayland)
 	if path, err := exec.LookPath("wl-paste"); err == nil {
 		cmd := exec.Command(path, "--no-newline")
 		out, err := cmd.Output()
@@ -97,7 +125,7 @@ func GetClipboardText() string {
 		}
 	}
 
-	// 3. Try xclip (X11)
+	// 4. Try xclip (X11)
 	if path, err := exec.LookPath("xclip"); err == nil {
 		cmd := exec.Command(path, "-selection", "clipboard", "-o")
 		out, err := cmd.Output()
@@ -106,7 +134,7 @@ func GetClipboardText() string {
 		}
 	}
 
-	// 4. Try xsel (X11)
+	// 5. Try xsel (X11)
 	if path, err := exec.LookPath("xsel"); err == nil {
 		cmd := exec.Command(path, "--clipboard", "--output")
 		out, err := cmd.Output()
@@ -128,24 +156,37 @@ func OpenBrowserURL(urlStr string) error {
 		urlStr = "https://" + urlStr
 	}
 
-	var cmd *exec.Cmd
-	switch os.Getenv("GOOS") {
+	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", urlStr)
+		// Option 1: rundll32 url.dll,FileProtocolHandler <url>
+		cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", urlStr)
+		if err := cmd.Start(); err == nil {
+			return nil
+		}
+		// Option 2: cmd.exe /c start "" <url>
+		cmd = exec.Command("cmd", "/c", "start", "", urlStr)
+		if err := cmd.Start(); err == nil {
+			return nil
+		}
+		// Option 3: PowerShell Start-Process
+		return exec.Command("powershell", "-NoProfile", "-Command", fmt.Sprintf("Start-Process '%s'", strings.ReplaceAll(urlStr, "'", "''"))).Start()
 	case "darwin":
-		cmd = exec.Command("open", urlStr)
+		cmd := exec.Command("open", urlStr)
+		return cmd.Start()
 	default:
 		// Try xdg-open on Linux/Unix, fallback to sensible browser or open
 		if path, err := exec.LookPath("xdg-open"); err == nil {
-			cmd = exec.Command(path, urlStr)
+			cmd := exec.Command(path, urlStr)
+			return cmd.Start()
 		} else if path, err := exec.LookPath("open"); err == nil {
-			cmd = exec.Command(path, urlStr)
+			cmd := exec.Command(path, urlStr)
+			return cmd.Start()
 		} else if path, err := exec.LookPath("sensible-browser"); err == nil {
-			cmd = exec.Command(path, urlStr)
-		} else {
-			cmd = exec.Command("xdg-open", urlStr)
+			cmd := exec.Command(path, urlStr)
+			return cmd.Start()
 		}
+		cmd := exec.Command("xdg-open", urlStr)
+		return cmd.Start()
 	}
-	return cmd.Start()
 }
 

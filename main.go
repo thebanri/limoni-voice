@@ -940,6 +940,21 @@ func main() {
 				}
 
 			case backend.EventMouse:
+				if currentScreen == ScreenRoom && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
+					if ev.Mouse.Button == backend.MouseLeft && !ev.Mouse.Drag {
+						room.mu.Lock()
+						wasChatFocused := room.IsChatFocused
+						lastLog := room.LastLogArea
+						room.mu.Unlock()
+
+						if wasChatFocused && !lastLog.Contains(ev.Mouse.X, ev.Mouse.Y) {
+							room.mu.Lock()
+							room.IsChatFocused = false
+							room.mu.Unlock()
+						}
+					}
+				}
+
 				handled := t.RouteMouseEvent(ev.Mouse)
 				if !handled {
 					if showDebugModal {

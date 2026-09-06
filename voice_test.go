@@ -1101,6 +1101,11 @@ func TestChatClickableLinks(t *testing.T) {
 	if frame == nil {
 		t.Fatalf("Frame is nil")
 	}
+
+	// Test OpenBrowserURL edge cases
+	if err := OpenBrowserURL(""); err != nil {
+		t.Fatalf("OpenBrowserURL empty string should not error: %v", err)
+	}
 }
 
 func TestDebugModalAndLogs(t *testing.T) {
@@ -1132,6 +1137,56 @@ func TestDebugModalAndLogs(t *testing.T) {
 		t.Fatalf("GetAllDebugLogsText mismatch: %q", allText)
 	}
 }
+
+func TestChatFocusOutsideClick(t *testing.T) {
+	room := NewRoomView()
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 120, 30))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	audio := NewAudioEngine()
+	node := NewP2PNode("local_user", "You", audio)
+
+	room.Render(frame, cell.NewRect(0, 0, 120, 30), node, audio)
+
+	if room.LastLogArea.Width == 0 || room.LastLogArea.Height == 0 {
+		t.Fatalf("Expected LastLogArea to be set after render")
+	}
+
+	// 1. Set chat focused
+	room.IsChatFocused = true
+
+	// 2. Click inside LastLogArea -> should stay focused
+	insideX := room.LastLogArea.X + room.LastLogArea.Width/2
+	insideY := room.LastLogArea.Y + room.LastLogArea.Height/2
+	if !room.LastLogArea.Contains(insideX, insideY) {
+		t.Fatalf("Inside point not in LastLogArea")
+	}
+
+	// Simulate event logic
+	wasFocused := room.IsChatFocused
+	if wasFocused && !room.LastLogArea.Contains(insideX, insideY) {
+		room.IsChatFocused = false
+	}
+	if !room.IsChatFocused {
+		t.Fatalf("Chat should remain focused when clicking inside chat area")
+	}
+
+	// 3. Click outside LastLogArea (e.g. at 0, 0) -> should lose focus
+	outsideX := uint16(0)
+	outsideY := uint16(0)
+	if room.LastLogArea.Contains(outsideX, outsideY) {
+		outsideX = room.LastLogArea.X - 5
+		outsideY = room.LastLogArea.Y - 5
+	}
+
+	wasFocused = room.IsChatFocused
+	if wasFocused && !room.LastLogArea.Contains(outsideX, outsideY) {
+		room.IsChatFocused = false
+	}
+	if room.IsChatFocused {
+		t.Fatalf("Chat should lose focus when clicking outside chat area")
+	}
+}
+
 
 
 

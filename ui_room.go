@@ -1660,9 +1660,18 @@ func (r *RoomView) renderChatTextWithLinks(frame *terminal.Frame, buf *buffer.Bu
 		buf.SetString(curX, rowY, string(lRunes), linkStyle)
 
 		clickURL := rawLink
+		for len(clickURL) > 0 {
+			lastChar := clickURL[len(clickURL)-1]
+			if lastChar == '.' || lastChar == ',' || lastChar == '!' || lastChar == '?' || lastChar == ';' || lastChar == ':' || lastChar == ')' || lastChar == ']' {
+				clickURL = clickURL[:len(clickURL)-1]
+			} else {
+				break
+			}
+		}
 		linkRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
 		frame.RegisterClickHandler(linkRect, func(_ backend.MouseEvent) {
 			_ = OpenBrowserURL(clickURL)
+			CopyToClipboard(clickURL)
 			r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURL))
 		})
 
