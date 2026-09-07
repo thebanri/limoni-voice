@@ -1,6 +1,8 @@
 package widgets
 
 import (
+	"strings"
+
 	"github.com/thebanri/limoni/core/accessibility"
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
@@ -39,6 +41,12 @@ func (state *TextInputState) HandleKey(key backend.KeyEvent) bool {
 	case backend.KeyRune:
 		state.insert(key.Ch)
 		return true
+
+	case backend.KeyEnter:
+		if key.Shift || key.Alt || key.Ctrl {
+			state.insert('\n')
+			return true
+		}
 
 	case backend.KeySpace:
 		state.insert(' ')
@@ -156,15 +164,31 @@ func (ti TextInput) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		phStyle := boxStyle.Merge(ti.PlaceholderStyle)
 		buf.SetString(ctx.Area.X, ctx.Area.Y, ti.Placeholder, phStyle)
 	} else {
-		buf.SetString(ctx.Area.X, ctx.Area.Y, textStr, boxStyle)
-	}
+		var displayText strings.Builder
+		cursorVisualCol := 0
+		for idx, r := range ti.State.Text {
+			if idx == ti.State.Cursor {
+				cursorVisualCol = len([]rune(displayText.String()))
+			}
+			if r == '\n' {
+				displayText.WriteString(" ↵ ")
+			} else {
+				displayText.WriteRune(r)
+			}
+		}
+		if ti.State.Cursor >= len(ti.State.Text) {
+			cursorVisualCol = len([]rune(displayText.String()))
+		}
 
-	// Eğer odaklıysa software cursor (Reverse style) çiz
-	if isFocused {
-		cursorX := ctx.Area.X + uint16(ti.State.Cursor)
-		if cursorX < ctx.Area.X+ctx.Area.Width {
-			if c := buf.Get(cursorX, ctx.Area.Y); c != nil {
-				c.Style.Modifier |= cell.ModifierReverse
+		buf.SetString(ctx.Area.X, ctx.Area.Y, displayText.String(), boxStyle)
+
+		// Eğer odaklıysa software cursor (Reverse style) çiz
+		if isFocused {
+			cursorX := ctx.Area.X + uint16(cursorVisualCol)
+			if cursorX < ctx.Area.X+ctx.Area.Width {
+				if c := buf.Get(cursorX, ctx.Area.Y); c != nil {
+					c.Style.Modifier |= cell.ModifierReverse
+				}
 			}
 		}
 	}

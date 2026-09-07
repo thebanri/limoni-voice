@@ -614,8 +614,23 @@ func main() {
 			case backend.EventKey:
 				e := ev.Key
 
-				// Ctrl+C Always triggers exit confirmation
+				// Ctrl+C: If text is selected in chat, copy it! Otherwise trigger exit/leave prompt
 				if e.Ctrl && (e.Ch == 'c' || e.Ch == 'C') {
+					if currentScreen == ScreenRoom {
+						room.mu.Lock()
+						selText := room.SelectedText
+						selActive := room.SelectionActive
+						room.mu.Unlock()
+						if selActive && selText != "" {
+							CopyToClipboard(selText)
+							previewStr := selText
+							if len([]rune(previewStr)) > 30 {
+								previewStr = string([]rune(previewStr)[:30]) + "…"
+							}
+							room.SetToast(fmt.Sprintf("✓ Copied: %s", previewStr))
+							continue
+						}
+					}
 					if showExitModal || showLeaveModal {
 						cleanExit()
 					}
@@ -1014,10 +1029,14 @@ func main() {
 						case backend.KeyEsc:
 							room.SetChatFocused(false)
 						case backend.KeyEnter:
-							if strings.TrimSpace(room.ChatInputState.Value()) != "" {
-								room.SendCurrentChat()
+							if e.Shift || e.Alt || e.Ctrl {
+								room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: '\n'})
 							} else {
-								room.SetChatFocused(false)
+								if strings.TrimSpace(room.ChatInputState.Value()) != "" {
+									room.SendCurrentChat()
+								} else {
+									room.SetChatFocused(false)
+								}
 							}
 						case backend.KeyTab:
 							room.SetChatFocused(false)
@@ -1245,7 +1264,37 @@ func main() {
 							}
 						}
 					} else if currentScreen == ScreenRoom && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal {
-						if ev.Mouse.Button == backend.MouseScrollUp {
+						room.mu.Lock()
+						lastLog := room.LastLogArea
+						isDragging := room.SelectionDragging
+						room.mu.Unlock()
+
+						inChatLog := lastLog.Contains(ev.Mouse.X, ev.Mouse.Y)
+						if ev.Mouse.Button == backend.MouseLeft {
+							if ev.Mouse.Drag {
+								if inChatLog || isDragging {
+									room.HandleMouseDrag(ev.Mouse.X, ev.Mouse.Y)
+								}
+							} else {
+								if inChatLog {
+									room.HandleMousePress(ev.Mouse.X, ev.Mouse.Y)
+								} else {
+									room.ClearSelection()
+								}
+							}
+						} else if ev.Mouse.Button == backend.MouseRelease || ev.Mouse.Button == backend.MouseNone {
+							if isDragging {
+								copied := room.HandleMouseRelease(ev.Mouse.X, ev.Mouse.Y)
+								if copied != "" {
+									CopyToClipboard(copied)
+									previewStr := copied
+									if len([]rune(previewStr)) > 30 {
+										previewStr = string([]rune(previewStr)[:30]) + "…"
+									}
+									room.SetToast(fmt.Sprintf("✓ Copied: %s", previewStr))
+								}
+							}
+						} else if ev.Mouse.Button == backend.MouseScrollUp {
 							room.ScrollChat(1)
 						} else if ev.Mouse.Button == backend.MouseScrollDown {
 							room.ScrollChat(-1)

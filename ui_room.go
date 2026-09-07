@@ -67,6 +67,27 @@ type RoomView struct {
 	OnTriggerSFX           func()
 	LastStageArea          cell.Rect
 	LastLogArea            cell.Rect
+	SelectionActive        bool
+	SelectionDragging      bool
+	SelectionStartX        int
+	SelectionStartY        int
+	SelectionEndX          int
+	SelectionEndY          int
+	SelectedText           string
+	renderedLines          []renderedChatLine
+}
+
+type renderedChatChar struct {
+	X uint16
+	Y uint16
+	R rune
+}
+
+type renderedChatLine struct {
+	RowY   uint16
+	StartX uint16
+	EndX   uint16
+	Chars  []renderedChatChar
 }
 
 func NewRoomView() *RoomView {
@@ -76,6 +97,7 @@ func NewRoomView() *RoomView {
 		Messages:       make([]RoomMessage, 0, 64),
 		ChatInputState: widgets.NewTextInputState(),
 		chatHistory:    make([]string, 0, 32),
+		renderedLines:  make([]renderedChatLine, 0, 64),
 	}
 }
 
@@ -1944,6 +1966,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 
 		visibleLines := lines[startIdx:endIdx]
+		var currentRenderedLines []renderedChatLine
 		for i, line := range visibleLines {
 			rowY := startRow + uint16(i)
 			if hasInputLine && rowY >= inputY {
@@ -1952,23 +1975,65 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			timeStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 
 			curX := logInner.X + 1
+			startX := curX
+			var lineChars []renderedChatChar
+
+			appendChars := func(str string, fromCol uint16) uint16 {
+				col := fromCol
+				for _, r := range str {
+					w := cell.RuneWidth(r)
+					if w > 0 {
+						lineChars = append(lineChars, renderedChatChar{X: col, Y: rowY, R: r})
+						col += uint16(w)
+					}
+				}
+				return col
+			}
+
 			buf.SetString(curX, rowY, line.Timestamp, timeStyle)
-			curX += uint16(len([]rune(line.Timestamp)))
+			curX = appendChars(line.Timestamp, curX)
 
 			if line.Badge != "" {
 				buf.SetString(curX, rowY, line.Badge, line.BadgeStyle)
-				curX += uint16(len([]rune(line.Badge)))
+				curX = appendChars(line.Badge, curX)
 			}
 
 			remW := int(logInner.X+logInner.Width) - int(curX) - 1
-			if remW <= 0 {
-				continue
+			if remW > 0 {
+				if line.IsChat {
+					spanChars := r.renderChatSpans(frame, buf, curX, rowY, line.Spans, remW)
+					lineChars = append(lineChars, spanChars...)
+				} else {
+					buf.SetString(curX, rowY, line.Text, line.TextStyle)
+					curX = appendChars(line.Text, curX)
+				}
 			}
 
-			if line.IsChat {
-				r.renderChatSpans(frame, buf, curX, rowY, line.Spans, remW)
-			} else {
-				buf.SetString(curX, rowY, line.Text, line.TextStyle)
+			currentRenderedLines = append(currentRenderedLines, renderedChatLine{
+				RowY:   rowY,
+				StartX: startX,
+				EndX:   curX,
+				Chars:  lineChars,
+			})
+		}
+
+		r.mu.Lock()
+		r.renderedLines = currentRenderedLines
+		selActive := r.SelectionActive
+		r.mu.Unlock()
+
+		// If selection is active, highlight the selected cells
+		if selActive {
+			for _, rl := range currentRenderedLines {
+				for _, ch := range rl.Chars {
+					if r.isCellSelected(ch.X, ch.Y) {
+						if cellPtr := buf.Get(ch.X, ch.Y); cellPtr != nil {
+							cellPtr.Style.Fg = cell.NewColorRGB(0x00, 0x00, 0x00)
+							cellPtr.Style.Bg = theme.Accent
+							cellPtr.Style.Modifier |= cell.ModifierBold
+						}
+					}
+				}
 			}
 		}
 
@@ -2404,9 +2469,10 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 	return lines
 }
 
-func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, spans []chatSpan, maxW int) {
+func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, spans []chatSpan, maxW int) []renderedChatChar {
+	var chars []renderedChatChar
 	if maxW <= 0 || len(spans) == 0 {
-		return
+		return chars
 	}
 	theme := CurrentTheme()
 	plainStyle := cell.Style{
@@ -2445,6 +2511,12 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			}
 			linkRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
 			frame.RegisterClickHandler(linkRect, func(_ backend.MouseEvent) {
+				r.mu.Lock()
+				isSelActive := r.SelectionActive
+				r.mu.Unlock()
+				if isSelActive {
+					return
+				}
 				_ = OpenBrowserURL(clickURL)
 				CopyToClipboard(clickURL)
 				r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURL))
@@ -2453,8 +2525,140 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			buf.SetString(curX, rowY, string(sRunes), plainStyle)
 		}
 
+		col := curX
+		for _, ru := range sRunes {
+			w := cell.RuneWidth(ru)
+			if w > 0 {
+				chars = append(chars, renderedChatChar{X: col, Y: rowY, R: ru})
+				col += uint16(w)
+			}
+		}
+
 		curX += uint16(drawnLen)
 	}
+	return chars
+}
+
+func (r *RoomView) isCellSelected(x, y uint16) bool {
+	sX, sY := r.SelectionStartX, r.SelectionStartY
+	eX, eY := r.SelectionEndX, r.SelectionEndY
+
+	if sY > eY || (sY == eY && sX > eX) {
+		sX, eX = eX, sX
+		sY, eY = eY, sY
+	}
+
+	iy := int(y)
+	ix := int(x)
+
+	if iy < sY || iy > eY {
+		return false
+	}
+	if sY == eY {
+		return ix >= sX && ix <= eX
+	}
+	if iy == sY {
+		return ix >= sX
+	}
+	if iy == eY {
+		return ix <= eX
+	}
+	return true
+}
+
+func (r *RoomView) extractSelectedText() string {
+	if len(r.renderedLines) == 0 {
+		return ""
+	}
+	sX, sY := r.SelectionStartX, r.SelectionStartY
+	eX, eY := r.SelectionEndX, r.SelectionEndY
+
+	if sY > eY || (sY == eY && sX > eX) {
+		sX, eX = eX, sX
+		sY, eY = eY, sY
+	}
+
+	var result strings.Builder
+	for _, rl := range r.renderedLines {
+		iy := int(rl.RowY)
+		if iy < sY || iy > eY {
+			continue
+		}
+		var lineStr strings.Builder
+		for _, ch := range rl.Chars {
+			ix := int(ch.X)
+			var inSel bool
+			if sY == eY {
+				inSel = (ix >= sX && ix <= eX)
+			} else if iy == sY {
+				inSel = (ix >= sX)
+			} else if iy == eY {
+				inSel = (ix <= eX)
+			} else {
+				inSel = true
+			}
+			if inSel {
+				lineStr.WriteRune(ch.R)
+			}
+		}
+		extracted := strings.TrimRight(lineStr.String(), " ")
+		if extracted != "" {
+			if result.Len() > 0 {
+				result.WriteRune('\n')
+			}
+			result.WriteString(extracted)
+		}
+	}
+	return result.String()
+}
+
+func (r *RoomView) HandleMousePress(x, y uint16) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.SelectionDragging = true
+	r.SelectionStartX = int(x)
+	r.SelectionStartY = int(y)
+	r.SelectionEndX = int(x)
+	r.SelectionEndY = int(y)
+	r.SelectionActive = false
+	r.SelectedText = ""
+}
+
+func (r *RoomView) HandleMouseDrag(x, y uint16) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.SelectionDragging {
+		r.SelectionDragging = true
+		r.SelectionStartX = int(x)
+		r.SelectionStartY = int(y)
+	}
+	r.SelectionEndX = int(x)
+	r.SelectionEndY = int(y)
+	if r.SelectionStartX != r.SelectionEndX || r.SelectionStartY != r.SelectionEndY {
+		r.SelectionActive = true
+		r.SelectedText = r.extractSelectedText()
+	}
+}
+
+func (r *RoomView) HandleMouseRelease(x, y uint16) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.SelectionDragging = false
+	if r.SelectionActive {
+		r.SelectionEndX = int(x)
+		r.SelectionEndY = int(y)
+		r.SelectedText = r.extractSelectedText()
+		return r.SelectedText
+	}
+	return ""
+}
+
+func (r *RoomView) ClearSelection() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.SelectionActive = false
+	r.SelectionDragging = false
+	r.SelectedText = ""
 }
 
 func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {

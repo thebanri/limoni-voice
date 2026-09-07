@@ -2028,6 +2028,172 @@ func TestHostMigrationPINPreservation(t *testing.T) {
 	}
 }
 
+func TestChatMultilineInput(t *testing.T) {
+	state := widgets.NewTextInputState()
+
+	// Type initial text "Hello"
+	for _, ch := range "Hello" {
+		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+	}
+	if state.Value() != "Hello" {
+		t.Fatalf("Expected 'Hello', got %q", state.Value())
+	}
+
+	// 1. Shift+Enter should insert newline '\n'
+	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter, Shift: true})
+	for _, ch := range "World" {
+		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+	}
+	if state.Value() != "Hello\nWorld" {
+		t.Fatalf("Expected 'Hello\\nWorld', got %q", state.Value())
+	}
+
+	// 2. Alt+Enter should insert newline '\n'
+	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter, Alt: true})
+	for _, ch := range "123" {
+		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+	}
+	if state.Value() != "Hello\nWorld\n123" {
+		t.Fatalf("Expected 'Hello\\nWorld\\n123', got %q", state.Value())
+	}
+
+	// 3. Ctrl+Enter should insert newline '\n'
+	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter, Ctrl: true})
+	for _, ch := range "End" {
+		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+	}
+	if state.Value() != "Hello\nWorld\n123\nEnd" {
+		t.Fatalf("Expected 'Hello\\nWorld\\n123\\nEnd', got %q", state.Value())
+	}
+
+	// 4. Plain Enter should NOT insert '\n' in TextInputState
+	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter})
+	if state.Value() != "Hello\nWorld\n123\nEnd" {
+		t.Fatalf("Plain enter modified text input state unexpectedly: %q", state.Value())
+	}
+}
+
+func TestTerminalParserMultilineEnter(t *testing.T) {
+	// 1. CSI u Shift+Enter: \x1b[13;2u
+	csiShiftEnter := []byte("\x1b[13;2u")
+	ev, _ := backend.ParseEvent(csiShiftEnter)
+	if ev.Key.Type != backend.KeyEnter || !ev.Key.Shift {
+		t.Fatalf("Expected Shift+Enter event from CSI u, got: %+v", ev)
+	}
+
+	// 2. CSI u Ctrl+Enter: \x1b[13;5u
+	csiCtrlEnter := []byte("\x1b[13;5u")
+	ev, _ = backend.ParseEvent(csiCtrlEnter)
+	if ev.Key.Type != backend.KeyEnter || !ev.Key.Ctrl {
+		t.Fatalf("Expected Ctrl+Enter event from CSI u, got: %+v", ev)
+	}
+
+	// 3. modifyOtherKeys Shift+Enter: \x1b[27;2;13~
+	mokShiftEnter := []byte("\x1b[27;2;13~")
+	ev, _ = backend.ParseEvent(mokShiftEnter)
+	if ev.Key.Type != backend.KeyEnter || !ev.Key.Shift {
+		t.Fatalf("Expected Shift+Enter event from modifyOtherKeys, got: %+v", ev)
+	}
+
+	// 4. Alt+Enter: \x1b\r
+	altEnter := []byte("\x1b\r")
+	ev, _ = backend.ParseEvent(altEnter)
+	if ev.Key.Type != backend.KeyEnter || !ev.Key.Alt {
+		t.Fatalf("Expected Alt+Enter event from \\x1b\\r, got: %+v", ev)
+	}
+
+	// 5. Ctrl+J (ASCII 10): \n
+	ctrlJ := []byte("\n")
+	ev, _ = backend.ParseEvent(ctrlJ)
+	if ev.Key.Type != backend.KeyEnter || !ev.Key.Ctrl {
+		t.Fatalf("Expected Ctrl+Enter event from \\n (Ctrl+J), got: %+v", ev)
+	}
+}
+
+func TestRoomChatMouseSelection(t *testing.T) {
+	room := NewRoomView()
+
+	// Simulate populated renderedChatLines
+	line1 := renderedChatLine{
+		RowY:   5,
+		StartX: 10,
+		EndX:   20,
+		Chars: []renderedChatChar{
+			{X: 10, Y: 5, R: 'H'},
+			{X: 11, Y: 5, R: 'e'},
+			{X: 12, Y: 5, R: 'l'},
+			{X: 13, Y: 5, R: 'l'},
+			{X: 14, Y: 5, R: 'o'},
+			{X: 15, Y: 5, R: ' '},
+			{X: 16, Y: 5, R: 'W'},
+			{X: 17, Y: 5, R: 'o'},
+			{X: 18, Y: 5, R: 'r'},
+			{X: 19, Y: 5, R: 'l'},
+			{X: 20, Y: 5, R: 'd'},
+		},
+	}
+	line2 := renderedChatLine{
+		RowY:   6,
+		StartX: 10,
+		EndX:   16,
+		Chars: []renderedChatChar{
+			{X: 10, Y: 6, R: 'F'},
+			{X: 11, Y: 6, R: 'o'},
+			{X: 12, Y: 6, R: 'o'},
+			{X: 13, Y: 6, R: ' '},
+			{X: 14, Y: 6, R: 'B'},
+			{X: 15, Y: 6, R: 'a'},
+			{X: 16, Y: 6, R: 'r'},
+		},
+	}
+	room.renderedLines = []renderedChatLine{line1, line2}
+
+	// 1. Mouse Press at (10, 5) -> 'H'
+	room.HandleMousePress(10, 5)
+	if !room.SelectionDragging || room.SelectionStartX != 10 || room.SelectionStartY != 5 {
+		t.Fatalf("HandleMousePress failed to initialize selection correctly")
+	}
+
+	// 2. Mouse Drag to (14, 5) -> 'o' in 'Hello'
+	room.HandleMouseDrag(14, 5)
+	if !room.SelectionActive || room.SelectionEndX != 14 || room.SelectionEndY != 5 {
+		t.Fatalf("HandleMouseDrag failed: active=%v, endX=%d, endY=%d", room.SelectionActive, room.SelectionEndX, room.SelectionEndY)
+	}
+
+	// Check cell selection
+	if !room.isCellSelected(10, 5) || !room.isCellSelected(12, 5) || !room.isCellSelected(14, 5) {
+		t.Fatalf("isCellSelected failed for selected cells")
+	}
+	if room.isCellSelected(15, 5) || room.isCellSelected(10, 6) {
+		t.Fatalf("isCellSelected returned true for non-selected cells")
+	}
+
+	// 3. Mouse Release -> Should extract "Hello"
+	text := room.HandleMouseRelease(14, 5)
+	if text != "Hello" {
+		t.Fatalf("Expected extracted text 'Hello', got %q", text)
+	}
+	if room.SelectedText != "Hello" {
+		t.Fatalf("Expected SelectedText 'Hello', got %q", room.SelectedText)
+	}
+
+	// 4. Multiline selection drag from (16, 5) ['W'] down to (12, 6) ['o']
+	room.HandleMousePress(16, 5)
+	room.HandleMouseDrag(12, 6)
+	multiText := room.HandleMouseRelease(12, 6)
+	expectedMulti := "World\nFoo"
+	if multiText != expectedMulti {
+		t.Fatalf("Expected multiline extracted text %q, got %q", expectedMulti, multiText)
+	}
+
+	// 5. ClearSelection
+	room.ClearSelection()
+	if room.SelectionActive || room.SelectionDragging || room.SelectedText != "" {
+		t.Fatalf("ClearSelection failed to reset state")
+	}
+}
+
+
 
 
 
