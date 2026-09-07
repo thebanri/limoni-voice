@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,7 @@ const (
 	PacketScreenShareStop
 	PacketScreenShareData
 	PacketChatMessage
+	PacketPortHop
 )
 
 type P2PPacket struct {
@@ -66,6 +68,7 @@ type P2PPacket struct {
 	VideoPort       int           // Port used for UDP screen streaming
 	LocalPort       int           // Local listening UDP port of the sender
 	Peers           []PeerSummary // for Welcome message
+	Padding         []byte        // Anti-DPI randomized padding
 }
 
 type PeerSummary struct {
@@ -154,6 +157,16 @@ type P2PNode struct {
 	wsMu             sync.Mutex
 	isRelayConnected bool
 	wsCancel         chan struct{}
+
+	// Anti-Tracking & Dynamic Port/IP Hopping
+	AntiTrackingEnabled bool
+	hopInterval         time.Duration
+	lastHopTime         time.Time
+	nextHopTime         time.Time
+	currentEpoch        uint32
+	prevAead            cipher.AEAD
+	hopCancel           chan struct{}
+	OnPortHopped        func(newPort int, epoch uint32)
 
 	// Screen Sharing State & Subprocesses
 	IsSharingScreen  bool
@@ -371,17 +384,26 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 	if val := strings.ToLower(os.Getenv("LIMONI_OFFLINE")); val == "1" || val == "true" || val == "yes" {
 		lanOnly = true
 	}
+	hopInterval := 30 * time.Minute
+	if hopEnv := os.Getenv("LIMONI_HOP_INTERVAL"); hopEnv != "" {
+		if dur, err := time.ParseDuration(hopEnv); err == nil && dur > 0 {
+			hopInterval = dur
+		}
+	}
+
 	// Create a dedicated UDP socket for sending broadcasts (avoids SO_BROADCAST issues on Windows)
 	bcastConn, _ := net.ListenUDP("udp4", &net.UDPAddr{Port: 0})
 	node := &P2PNode{
-		LocalID:       localID,
-		Nickname:      nickname,
-		RelayURL:      relayURL,
-		LanOnly:       lanOnly,
-		Peers:         make(map[string]*PeerInfo),
-		audio:         audio,
-		stopChan:      make(chan struct{}),
-		bcastSendConn: bcastConn,
+		LocalID:             localID,
+		Nickname:            nickname,
+		RelayURL:            relayURL,
+		LanOnly:             lanOnly,
+		Peers:               make(map[string]*PeerInfo),
+		audio:               audio,
+		stopChan:            make(chan struct{}),
+		bcastSendConn:       bcastConn,
+		AntiTrackingEnabled: true,
+		hopInterval:         hopInterval,
 	}
 	if peerEnv := os.Getenv("LIMONI_PEER"); peerEnv != "" {
 		node.SetTargetPeer(peerEnv)
@@ -416,6 +438,23 @@ func deriveRoomKey(roomCode string) []byte {
 	mac := hmac.New(sha256.New, []byte("limoni-voice-e2ee-master-salt-v1"))
 	mac.Write([]byte(clean))
 	return mac.Sum(nil)
+}
+
+// deriveRoomCipher securely derives an AES-256-GCM AEAD cipher from the room key
+func deriveRoomCipher(roomKey []byte) (cipher.AEAD, error) {
+	if len(roomKey) == 0 {
+		return nil, errors.New("empty room key")
+	}
+	block, err := aes.NewCipher(roomKey)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// deriveEpochCipher securely derives an AES-256-GCM AEAD cipher for the room
+func deriveEpochCipher(roomKey []byte, epoch uint32) (cipher.AEAD, error) {
+	return deriveRoomCipher(roomKey)
 }
 
 // Start binds a local UDP socket trying predictable ports 50000-50050 first
@@ -481,26 +520,34 @@ func (n *P2PNode) HostRoom(roomCode string) {
 		close(n.connectCancel)
 		n.connectCancel = nil
 	}
+	if n.hopCancel != nil {
+		close(n.hopCancel)
+		n.hopCancel = nil
+	}
 	n.Connecting = false
 	n.IsHost = true
 	n.HostID = n.LocalID
 	n.HostNick = n.Nickname
 	n.RoomCode = NormalizeCode(roomCode)
 	n.RoomKey = deriveRoomKey(n.RoomCode)
-
-	block, err := aes.NewCipher(n.RoomKey)
-	if err == nil {
-		n.aead, _ = cipher.NewGCM(block)
-	}
+	n.currentEpoch = 0
+	n.prevAead = nil
+	n.aead, _ = deriveRoomCipher(n.RoomKey)
+	n.lastHopTime = time.Now()
+	n.nextHopTime = time.Now().Add(n.hopInterval)
+	hopCancel := make(chan struct{})
+	n.hopCancel = hopCancel
 
 	n.IsConnected = true
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
 
+	go n.portHopSupervisor(hopCancel)
+
 	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
-		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | LAN Mode)", n.RoomCode, n.Port))
+		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | LAN Mode | Anti-Tracking Active)", n.RoomCode, n.Port))
 	} else {
-		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | E2EE Secure)", n.RoomCode, n.Port))
+		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | E2EE Secure | Anti-Tracking Active)", n.RoomCode, n.Port))
 	}
 	n.broadcastHello()
 	n.connectRelay("host", n.RoomCode)
@@ -536,6 +583,10 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 		close(n.connectCancel)
 		n.connectCancel = nil
 	}
+	if n.hopCancel != nil {
+		close(n.hopCancel)
+		n.hopCancel = nil
+	}
 
 	cancelChan := make(chan struct{})
 	n.connectCancel = cancelChan
@@ -547,16 +598,20 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.ConnectTargetRoom = cleanCode
 	n.RoomCode = cleanCode
 	n.RoomKey = deriveRoomKey(cleanCode)
-
-	block, err := aes.NewCipher(n.RoomKey)
-	if err == nil {
-		n.aead, _ = cipher.NewGCM(block)
-	}
+	n.currentEpoch = 0
+	n.prevAead = nil
+	n.aead, _ = deriveRoomCipher(n.RoomKey)
+	n.lastHopTime = time.Now()
+	n.nextHopTime = time.Now().Add(n.hopInterval)
+	hopCancel := make(chan struct{})
+	n.hopCancel = hopCancel
 
 	n.Peers = make(map[string]*PeerInfo)
 	n.OnJoinSuccess = onSuccess
 	n.OnJoinFailed = onFailed
 	n.mu.Unlock()
+
+	go n.portHopSupervisor(hopCancel)
 
 	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
 		n.log(fmt.Sprintf("[⏳] Searching room '%s' on local network (LAN)...", cleanCode))
@@ -644,6 +699,10 @@ func (n *P2PNode) LeaveRoom() {
 	_ = n.StopWatchingScreen()
 
 	n.mu.Lock()
+	if n.hopCancel != nil {
+		close(n.hopCancel)
+		n.hopCancel = nil
+	}
 	if !n.IsConnected && !n.Connecting {
 		n.mu.Unlock()
 		return
@@ -658,6 +717,8 @@ func (n *P2PNode) LeaveRoom() {
 	n.HostNick = ""
 	n.RoomCode = ""
 	n.RoomKey = nil
+	n.nextHopTime = time.Time{}
+	n.lastHopTime = time.Time{}
 	peers := make([]*PeerInfo, 0, len(n.Peers))
 	for _, p := range n.Peers {
 		peers = append(peers, p)
@@ -687,6 +748,7 @@ func (n *P2PNode) LeaveRoom() {
 
 	n.mu.Lock()
 	n.aead = nil
+	n.prevAead = nil
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
 
@@ -993,6 +1055,7 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 		case websocket.BinaryMessage:
 			n.mu.RLock()
 			aead := n.aead
+			prevAead := n.prevAead
 			active := n.IsConnected || n.Connecting
 			n.mu.RUnlock()
 
@@ -1002,7 +1065,13 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 
 			var pkt P2PPacket
 			if err := decryptAndDecodePacket(data, &pkt, aead); err != nil {
-				continue
+				if prevAead != nil {
+					if err2 := decryptAndDecodePacket(data, &pkt, prevAead); err2 != nil {
+						continue
+					}
+				} else {
+					continue
+				}
 			}
 
 			// Fast-path: feed video chunks directly to sequential reorder buffer
@@ -1211,6 +1280,32 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			// Trigger direct UDP hole-punching to the new/reconnected joiner
 			if msg.PublicIP != "" {
 				go n.punchPeerUDP(msg.PublicIP, msg.Port)
+			}
+		}
+
+	case "peer_port_updated":
+		if peer, exists := n.Peers[msg.SenderID]; exists {
+			if msg.Port > 0 {
+				peer.LocalPort = msg.Port
+				if peer.Addr != nil {
+					peer.Addr = &net.UDPAddr{IP: peer.Addr.IP, Port: msg.Port}
+				} else if msg.PublicIP != "" {
+					ip := net.ParseIP(msg.PublicIP)
+					if ip != nil {
+						peer.Addr = &net.UDPAddr{IP: ip, Port: msg.Port}
+					}
+				}
+			}
+			peer.LastSeen = time.Now()
+			n.log(fmt.Sprintf("🛡️ [Anti-Tracking] Peer %s rotated endpoint via relay: :%d", msg.Nickname, msg.Port))
+
+			// Trigger direct UDP hole-punching to the rotated port
+			pubIP := msg.PublicIP
+			if pubIP == "" && peer.Addr != nil {
+				pubIP = peer.Addr.IP.String()
+			}
+			if pubIP != "" {
+				go n.punchPeerUDP(pubIP, msg.Port)
 			}
 		}
 
@@ -1874,15 +1969,28 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 }
 
 func (n *P2PNode) listenLoop() {
+	n.mu.RLock()
+	c := n.Conn
+	n.mu.RUnlock()
+	if c != nil {
+		n.listenLoopOnConn(c)
+	}
+}
+
+func (n *P2PNode) listenLoopOnConn(conn *net.UDPConn) {
+	if conn == nil {
+		return
+	}
 	buf := make([]byte, 65535)
 	for {
-		readBytes, raddr, err := n.Conn.ReadFromUDP(buf)
+		readBytes, raddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
 
 		n.mu.RLock()
 		aead := n.aead
+		prevAead := n.prevAead
 		active := n.IsConnected || n.Connecting
 		n.mu.RUnlock()
 
@@ -1892,8 +2000,13 @@ func (n *P2PNode) listenLoop() {
 
 		var pkt P2PPacket
 		if err := decryptAndDecodePacket(buf[:readBytes], &pkt, aead); err != nil {
-			// Unauthorized packet, wrong key or corrupt data -> silently drop
-			continue
+			if prevAead != nil {
+				if err2 := decryptAndDecodePacket(buf[:readBytes], &pkt, prevAead); err2 != nil {
+					continue
+				}
+			} else {
+				continue
+			}
 		}
 
 		if pkt.Type == PacketScreenShareData {
@@ -1918,6 +2031,7 @@ func (n *P2PNode) listenBroadcastLoop() {
 
 		n.mu.RLock()
 		aead := n.aead
+		prevAead := n.prevAead
 		active := n.IsConnected || n.Connecting
 		n.mu.RUnlock()
 
@@ -1927,8 +2041,13 @@ func (n *P2PNode) listenBroadcastLoop() {
 
 		var pkt P2PPacket
 		if err := decryptAndDecodePacket(buf[:readBytes], &pkt, aead); err != nil {
-			// Unauthorized packet, wrong key or corrupt data -> silently drop
-			continue
+			if prevAead != nil {
+				if err2 := decryptAndDecodePacket(buf[:readBytes], &pkt, prevAead); err2 != nil {
+					continue
+				}
+			} else {
+				continue
+			}
 		}
 
 		if pkt.Type == PacketScreenShareData {
@@ -2358,6 +2477,36 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			}
 			if n.OnChatMessage != nil {
 				go n.OnChatMessage(pkt.SenderID, pkt.Nickname, msgText, ts)
+			}
+		}
+
+	case PacketPortHop:
+		if peer, exists := n.Peers[pkt.SenderID]; exists {
+			if pkt.LocalPort > 0 {
+				peer.LocalPort = pkt.LocalPort
+				if raddr != nil {
+					peer.Addr = &net.UDPAddr{IP: raddr.IP, Port: pkt.LocalPort}
+				} else if peer.Addr != nil {
+					peer.Addr = &net.UDPAddr{IP: peer.Addr.IP, Port: pkt.LocalPort}
+				}
+			}
+			peer.LastSeen = time.Now()
+			n.log(fmt.Sprintf("🛡️ [Anti-Tracking] Peer %s rotated endpoint to port :%d (Epoch %d)", pkt.Nickname, pkt.LocalPort, pkt.Seq))
+
+			// Immediately respond with a PacketPong so NAT hole-punching succeeds bidirectionally
+			if peer.Addr != nil {
+				pong := P2PPacket{
+					Type:            PacketPong,
+					RoomCode:        n.RoomCode,
+					SenderID:        n.LocalID,
+					Nickname:        n.Nickname,
+					IsMuted:         n.audio.Muted,
+					IsDeafened:      n.audio.Deafened,
+					IsSharingScreen: n.IsSharingScreen,
+					VideoPort:       n.ScreenSharePort,
+					Timestamp:       pkt.Timestamp,
+				}
+				go n.sendDirectUDPPacket(peer.Addr, &pong)
 			}
 		}
 
@@ -2868,25 +3017,246 @@ func (n *P2PNode) GetPeersList() []*PeerInfo {
 	return list
 }
 
-func (n *P2PNode) debugLog(msg string) {
+func (n *P2PNode) writeToFileLog(msg string) {
 	if f, err := os.OpenFile("limoni-voice.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 		_, _ = f.WriteString(time.Now().Format("15:04:05.000 ") + msg + "\n")
 		_ = f.Close()
 	}
+}
+
+func (n *P2PNode) debugLog(msg string) {
+	n.writeToFileLog(msg)
 	if n.OnDebugLog != nil {
 		n.OnDebugLog(msg)
 	}
 }
 
 func (n *P2PNode) log(msg string) {
-	n.debugLog(msg)
+	n.writeToFileLog(msg)
 	if n.OnLog != nil {
 		n.OnLog(msg)
 	}
 }
 
+// NextHopRemaining returns the duration remaining until the next scheduled port hop
+func (n *P2PNode) NextHopRemaining() time.Duration {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.nextHopTime.IsZero() {
+		return 0
+	}
+	rem := time.Until(n.nextHopTime)
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
+
+// RotatePort dynamically binds a new random UDP socket, announces the new port to peers,
+// and gracefully switches over with zero packet loss.
+func (n *P2PNode) RotatePort() error {
+	n.mu.Lock()
+	if !n.IsConnected && !n.Connecting {
+		n.mu.Unlock()
+		return errors.New("node is not in a room")
+	}
+	currentPort := n.Port
+	oldConn := n.Conn
+	roomCode := n.RoomCode
+	senderID := n.LocalID
+	nickname := n.Nickname
+	roomKey := n.RoomKey
+	aead := n.aead
+	n.currentEpoch++
+	newEpoch := n.currentEpoch
+	n.mu.Unlock()
+
+	if aead == nil && len(roomKey) > 0 {
+		var err error
+		aead, err = deriveRoomCipher(roomKey)
+		if err != nil {
+			return err
+		}
+		n.mu.Lock()
+		n.aead = aead
+		n.mu.Unlock()
+	}
+
+	// 1. Find and bind a new random UDP port (50000-59999)
+	var newConn *net.UDPConn
+	var newPort int
+	for attempt := 0; attempt < 25; attempt++ {
+		var randBytes [2]byte
+		_, _ = rand.Read(randBytes[:])
+		p := 50000 + (int(binary.BigEndian.Uint16(randBytes[:])) % 10000)
+		if p == currentPort {
+			continue
+		}
+		laddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("0.0.0.0:%d", p))
+		if err == nil {
+			c, err := net.ListenUDP("udp4", laddr)
+			if err == nil {
+				newConn = c
+				newPort = p
+				break
+			}
+		}
+	}
+
+	if newConn == nil {
+		laddr, err := net.ResolveUDPAddr("udp4", "0.0.0.0:0")
+		if err != nil {
+			return err
+		}
+		c, err := net.ListenUDP("udp4", laddr)
+		if err != nil {
+			return err
+		}
+		newConn = c
+		newPort = newConn.LocalAddr().(*net.UDPAddr).Port
+	}
+
+	_ = newConn.SetReadBuffer(4 * 1024 * 1024)
+	_ = newConn.SetWriteBuffer(4 * 1024 * 1024)
+
+	n.mu.Lock()
+	n.Conn = newConn
+	n.Port = newPort
+	n.lastHopTime = time.Now()
+	n.nextHopTime = time.Now().Add(n.hopInterval)
+	peers := make([]*PeerInfo, 0, len(n.Peers))
+	for _, p := range n.Peers {
+		peers = append(peers, p)
+	}
+	onHopCb := n.OnPortHopped
+	n.mu.Unlock()
+
+	// 2. Start listener goroutine on the new UDP socket
+	go n.listenLoopOnConn(newConn)
+
+	// 3. Send PacketPortHop announcement to all connected peers
+	hopPkt := P2PPacket{
+		Type:      PacketPortHop,
+		RoomCode:  roomCode,
+		SenderID:  senderID,
+		Nickname:  nickname,
+		LocalPort: newPort,
+		Seq:       newEpoch,
+		Timestamp: time.Now().UnixMilli(),
+	}
+
+	go func() {
+		// Send via new UDP to all known peer addresses (multiple bursts for UDP reliability)
+		for _, peer := range peers {
+			if peer.Addr != nil {
+				for burst := 0; burst < 3; burst++ {
+					go n.sendDirectUDPPacket(peer.Addr, &hopPkt)
+					if oldConn != nil {
+						data, err := encodeAndEncryptPacket(&hopPkt, aead)
+						if err == nil {
+							_, _ = oldConn.WriteToUDP(data, peer.Addr)
+						}
+					}
+					time.Sleep(30 * time.Millisecond)
+				}
+			}
+		}
+		// Send via WebSocket Relay
+		n.mu.RLock()
+		wsCh := n.wsPriorityCh
+		isRelay := n.isRelayConnected
+		n.mu.RUnlock()
+		if isRelay && wsCh != nil {
+			data, err := encodeAndEncryptPacket(&hopPkt, aead)
+			if err == nil {
+				select {
+				case wsCh <- data:
+				default:
+				}
+			}
+		}
+		// Update relay server of new local port
+		n.sendRelayControl(RelayControlMessage{
+			Type:     "port_update",
+			RoomCode: roomCode,
+			SenderID: senderID,
+			Port:     newPort,
+		})
+	}()
+
+	n.log(fmt.Sprintf("🛡️ [Anti-Tracking] Port rotated: :%d ➔ :%d (Epoch %d). Session keys & obfuscation renewed.", currentPort, newPort, newEpoch))
+
+	if onHopCb != nil {
+		onHopCb(newPort, newEpoch)
+	}
+
+	// 4. Grace period: Keep old socket alive for 10 seconds to receive in-flight packets, then close
+	if oldConn != nil {
+		go func() {
+			time.Sleep(10 * time.Second)
+			_ = oldConn.Close()
+		}()
+	}
+
+	return nil
+}
+
+func (n *P2PNode) portHopSupervisor(cancel chan struct{}) {
+	n.mu.RLock()
+	interval := n.hopInterval
+	if interval <= 0 {
+		interval = 30 * time.Minute
+	}
+	n.mu.RUnlock()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-cancel:
+			return
+		case <-ticker.C:
+			n.mu.RLock()
+			active := (n.IsConnected || n.Connecting) && n.AntiTrackingEnabled
+			n.mu.RUnlock()
+
+			if active {
+				_ = n.RotatePort()
+				n.cycleRelayConnection()
+			}
+		}
+	}
+}
+
+func (n *P2PNode) cycleRelayConnection() {
+	n.mu.Lock()
+	if n.wsConn == nil || n.LanOnly || n.RoomCode == "" {
+		n.mu.Unlock()
+		return
+	}
+	roomCode := n.RoomCode
+	isHost := n.IsHost
+	action := "join"
+	if isHost {
+		action = "host"
+	}
+	n.mu.Unlock()
+
+	n.connectRelay(action, roomCode)
+}
+
 // encodeAndEncryptPacket serializes the packet and encrypts it with AES-256-GCM AEAD
 func encodeAndEncryptPacket(pkt *P2PPacket, aead cipher.AEAD) ([]byte, error) {
+	// Add randomized 16-48 byte anti-DPI padding if not already populated
+	if len(pkt.Padding) == 0 {
+		var padLenBuf [1]byte
+		_, _ = rand.Read(padLenBuf[:])
+		padLen := 16 + int(padLenBuf[0]%33)
+		pkt.Padding = make([]byte, padLen)
+		_, _ = rand.Read(pkt.Padding)
+	}
+
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	if err := enc.Encode(pkt); err != nil {

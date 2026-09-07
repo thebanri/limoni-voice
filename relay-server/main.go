@@ -183,6 +183,24 @@ func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 		s.handleHostRoom(client, msg)
 	case "join_room":
 		s.handleJoinRoom(client, msg)
+	case "port_update":
+		client.localPort = msg.Port
+		log.Printf("[🛡️] Client %s (%s) rotated port to %d", client.nickname, client.senderID, msg.Port)
+		if client.room != nil {
+			client.room.mu.RLock()
+			for _, m := range client.room.Members {
+				if m != client && !m.isDisconnected {
+					sendControlMessage(m, ControlMessage{
+						Type:     "peer_port_updated",
+						SenderID: client.senderID,
+						Nickname: client.nickname,
+						Port:     client.localPort,
+						PublicIP: client.publicIP,
+					})
+				}
+			}
+			client.room.mu.RUnlock()
+		}
 	case "leave":
 		client.explicitLeave = true
 		s.removeClientImmediate(client)

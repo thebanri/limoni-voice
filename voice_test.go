@@ -4,7 +4,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
+	"fmt"
 	"math"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -1184,6 +1186,288 @@ func TestChatFocusOutsideClick(t *testing.T) {
 	}
 	if room.IsChatFocused {
 		t.Fatalf("Chat should lose focus when clicking outside chat area")
+	}
+}
+
+func TestSoundEffectsSynthesis(t *testing.T) {
+	// 1. Test Join Sound Synthesis
+	joinPCM := generateJoinSoundPCM()
+	if len(joinPCM) == 0 || len(joinPCM)%AudioChunkSize != 0 {
+		t.Fatalf("Join sound PCM length must be non-zero multiple of AudioChunkSize, got %d", len(joinPCM))
+	}
+
+	// 2. Test Leave Sound Synthesis
+	leavePCM := generateLeaveSoundPCM()
+	if len(leavePCM) == 0 || len(leavePCM)%AudioChunkSize != 0 {
+		t.Fatalf("Leave sound PCM length must be non-zero multiple of AudioChunkSize, got %d", len(leavePCM))
+	}
+
+	// 3. Test Chat Sound Synthesis
+	chatPCM := generateChatSoundPCM()
+	if len(chatPCM) == 0 || len(chatPCM)%AudioChunkSize != 0 {
+		t.Fatalf("Chat sound PCM length must be non-zero multiple of AudioChunkSize, got %d", len(chatPCM))
+	}
+
+	// 4. Test PlaySound queuing in AudioEngine
+	engine := NewAudioEngine()
+	engine.PlaySound(SoundJoin)
+	if len(engine.sfxQueue) == 0 {
+		t.Fatalf("Expected sfxQueue to have queued chunks after PlaySound(SoundJoin)")
+	}
+
+	engine.PlaySound(SoundLeave)
+	engine.PlaySound(SoundChat)
+	if len(engine.sfxQueue) < 10 {
+		t.Fatalf("Expected multiple sound effect chunks in sfxQueue, got %d", len(engine.sfxQueue))
+	}
+}
+
+func TestDynamicPortHopping(t *testing.T) {
+	engine := NewAudioEngine()
+	node := NewP2PNode("test-hop-node", "Hopper", engine)
+	err := node.Start()
+	if err != nil {
+		t.Fatalf("Failed to start P2PNode: %v", err)
+	}
+	defer node.Close()
+
+	node.HostRoom("1111-jump-test")
+	initialPort := node.Port
+	if initialPort <= 0 {
+		t.Fatalf("Expected valid initial port, got %d", initialPort)
+	}
+
+	// Verify NextHopRemaining is valid
+	rem := node.NextHopRemaining()
+	if rem <= 0 || rem > 31*time.Minute {
+		t.Fatalf("Expected remaining hop time ~30m, got %v", rem)
+	}
+
+	// Setup peer node
+	peerEngine := NewAudioEngine()
+	peerNode := NewP2PNode("test-peer-node", "Peer", peerEngine)
+	err = peerNode.Start()
+	if err != nil {
+		t.Fatalf("Failed to start peerNode: %v", err)
+	}
+	defer peerNode.Close()
+	peerNode.HostRoom("1111-jump-test")
+
+	// Interconnect nodes over local loopback
+	hostAddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", initialPort))
+	peerAddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", peerNode.Port))
+
+	node.Peers[peerNode.LocalID] = &PeerInfo{
+		ID:        peerNode.LocalID,
+		Nickname:  peerNode.Nickname,
+		Addr:      peerAddr,
+		LocalPort: peerNode.Port,
+		LastSeen:  time.Now(),
+	}
+
+	peerNode.Peers[node.LocalID] = &PeerInfo{
+		ID:        node.LocalID,
+		Nickname:  node.Nickname,
+		Addr:      hostAddr,
+		LocalPort: initialPort,
+		LastSeen:  time.Now(),
+	}
+
+	// Trigger RotatePort on Host
+	var hoppedPort int
+	var hoppedEpoch uint32
+	node.OnPortHopped = func(newPort int, epoch uint32) {
+		hoppedPort = newPort
+		hoppedEpoch = epoch
+	}
+
+	err = node.RotatePort()
+	if err != nil {
+		t.Fatalf("RotatePort failed: %v", err)
+	}
+
+	if node.Port == initialPort {
+		t.Fatalf("Expected port to rotate to new value, got %d", node.Port)
+	}
+	if node.currentEpoch != 1 {
+		t.Fatalf("Expected epoch to increment to 1, got %d", node.currentEpoch)
+	}
+	if hoppedEpoch != 1 || hoppedPort != node.Port {
+		t.Fatalf("Expected OnPortHopped callback with port %d and epoch 1, got port %d epoch %d", node.Port, hoppedPort, hoppedEpoch)
+	}
+
+	// Give UDP packets a brief moment to be transmitted and received on loopback
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify that peerNode dynamically updated Host's address to the new hopped port
+	peerNode.mu.RLock()
+	updatedHostPeer := peerNode.Peers[node.LocalID]
+	peerNode.mu.RUnlock()
+
+	if updatedHostPeer == nil {
+		t.Fatalf("Host peer not found in peerNode")
+	}
+	if updatedHostPeer.LocalPort != node.Port {
+		t.Fatalf("Expected peer's stored Host LocalPort to update to %d, got %d", node.Port, updatedHostPeer.LocalPort)
+	}
+	if updatedHostPeer.Addr.Port != node.Port {
+		t.Fatalf("Expected peer's stored Host Addr.Port to update to %d, got %d", node.Port, updatedHostPeer.Addr.Port)
+	}
+	if time.Since(updatedHostPeer.LastSeen) > 2*time.Second {
+		t.Fatalf("Expected peer LastSeen to be updated, but was %v ago", time.Since(updatedHostPeer.LastSeen))
+	}
+
+	// Test sending chat message from peerNode to node on the new port
+	var receivedChat string
+	var chatReceivedChan = make(chan struct{}, 1)
+	node.OnChatMessage = func(senderID, nickname, message string, timestamp time.Time) {
+		receivedChat = message
+		select {
+		case chatReceivedChan <- struct{}{}:
+		default:
+		}
+	}
+
+	peerNode.SendChatMessage("Hello after port hop!")
+
+	select {
+	case <-chatReceivedChan:
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	if receivedChat != "Hello after port hop!" {
+		t.Fatalf("Expected chat 'Hello after port hop!' after port rotation, got '%s'", receivedChat)
+	}
+}
+
+func TestChatMultilineAndSlashCommands(t *testing.T) {
+	room := NewRoomView()
+
+	// 1. Test unread count badge
+	room.SetChatFocused(false)
+	room.AddChatMessage("Alice", "alice-id", "Hello there!", false, time.Now())
+	room.AddChatMessage("Bob", "bob-id", "How are you?", false, time.Now())
+	if room.UnreadChatCount != 2 {
+		t.Fatalf("Expected UnreadChatCount=2, got %d", room.UnreadChatCount)
+	}
+
+	// Focusing chat clears unread count
+	room.SetChatFocused(true)
+	if room.UnreadChatCount != 0 {
+		t.Fatalf("Expected UnreadChatCount to reset to 0 after focus, got %d", room.UnreadChatCount)
+	}
+
+	// 2. Test multi-line message wrapping
+	longMsg := "This is a very long text message that should automatically wrap across multiple lines nicely!"
+	room.AddChatMessage("Alice", "alice-id", longMsg, false, time.Now())
+
+	lines := room.buildDisplayLines(room.Messages, 30)
+	if len(lines) < 3 {
+		t.Fatalf("Expected long message to wrap into at least 3 display lines, got %d", len(lines))
+	}
+	if !lines[len(lines)-1].IsContinuation {
+		t.Fatalf("Expected subsequent wrapped line to be marked as continuation")
+	}
+
+	// 3. Test chat history recall
+	room.ChatInputState.SetValue("First sent message")
+	room.SendCurrentChat()
+	room.ChatInputState.SetValue("Second sent message")
+	room.SendCurrentChat()
+
+	room.HistoryUp()
+	if room.ChatInputState.Value() != "Second sent message" {
+		t.Fatalf("Expected HistoryUp to recall 'Second sent message', got '%s'", room.ChatInputState.Value())
+	}
+	room.HistoryUp()
+	if room.ChatInputState.Value() != "First sent message" {
+		t.Fatalf("Expected HistoryUp to recall 'First sent message', got '%s'", room.ChatInputState.Value())
+	}
+	room.HistoryDown()
+	if room.ChatInputState.Value() != "Second sent message" {
+		t.Fatalf("Expected HistoryDown to return to 'Second sent message', got '%s'", room.ChatInputState.Value())
+	}
+
+	// 4. Test slash commands
+	// /clear
+	room.ChatInputState.SetValue("/clear")
+	room.SendCurrentChat()
+	if len(room.Messages) != 0 {
+		t.Fatalf("Expected /clear to clear all room messages, got %d", len(room.Messages))
+	}
+
+	// 5. Test /mute slash command
+	muteTriggered := false
+	room.OnTriggerMute = func() {
+		muteTriggered = true
+	}
+	room.ChatInputState.SetValue("/mute")
+	room.SendCurrentChat()
+	if !muteTriggered {
+		t.Fatalf("Expected /mute to invoke OnTriggerMute")
+	}
+
+	// Test /m shortcut
+	muteTriggered = false
+	room.ChatInputState.SetValue("/m")
+	room.SendCurrentChat()
+	if !muteTriggered {
+		t.Fatalf("Expected /m to invoke OnTriggerMute")
+	}
+
+	// 6. Test /mute sfx / /sfx slash command
+	sfxTriggered := false
+	room.OnTriggerSFX = func() {
+		sfxTriggered = true
+	}
+	room.ChatInputState.SetValue("/mute sfx")
+	room.SendCurrentChat()
+	if !sfxTriggered {
+		t.Fatalf("Expected /mute sfx to invoke OnTriggerSFX")
+	}
+
+	sfxTriggered = false
+	room.ChatInputState.SetValue("/sfx")
+	room.SendCurrentChat()
+	if !sfxTriggered {
+		t.Fatalf("Expected /sfx to invoke OnTriggerSFX")
+	}
+
+	// 7. Test /deafen / /d slash command
+	deafenTriggered := false
+	room.OnTriggerDeafen = func() {
+		deafenTriggered = true
+	}
+	room.ChatInputState.SetValue("/deafen")
+	room.SendCurrentChat()
+	if !deafenTriggered {
+		t.Fatalf("Expected /deafen to invoke OnTriggerDeafen")
+	}
+
+	// 8. Test /nick
+	nickChanged := ""
+	room.OnChangeNick = func(newNick string) {
+		nickChanged = newNick
+	}
+	room.ChatInputState.SetValue("/nick SuperUser")
+	room.SendCurrentChat()
+	time.Sleep(20 * time.Millisecond)
+	if nickChanged != "SuperUser" {
+		t.Fatalf("Expected /nick to invoke OnChangeNick with 'SuperUser', got '%s'", nickChanged)
+	}
+
+	// 9. Test AudioEngine SFXMuted
+	audioEngine := NewAudioEngine()
+	if audioEngine.SFXMuted {
+		t.Fatalf("Expected SFXMuted to start false")
+	}
+	audioEngine.ToggleSFXMute()
+	if !audioEngine.SFXMuted {
+		t.Fatalf("Expected SFXMuted to be true after toggle")
+	}
+	audioEngine.PlaySound(SoundChat)
+	if len(audioEngine.sfxQueue) != 0 {
+		t.Fatalf("Expected sfxQueue to be empty when SFXMuted is true, got %d chunks", len(audioEngine.sfxQueue))
 	}
 }
 

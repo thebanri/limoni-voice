@@ -283,7 +283,18 @@ func main() {
 		AddDebugLog("[NET] " + msg)
 	}
 
+	node.OnPeerEvent = func(event string, peer *PeerInfo) {
+		if event == "join" {
+			audio.PlaySound(SoundJoin)
+			room.AddLog(fmt.Sprintf("[+] %s joined the room.", peer.Nickname))
+		} else if event == "leave" {
+			audio.PlaySound(SoundLeave)
+			room.AddLog(fmt.Sprintf("[-] %s left the room.", peer.Nickname))
+		}
+	}
+
 	node.OnChatMessage = func(senderID string, nickname string, text string, ts time.Time) {
+		audio.PlaySound(SoundChat)
 		room.AddChatMessage(nickname, senderID, text, false, ts)
 	}
 
@@ -301,6 +312,7 @@ func main() {
 		node.HostRoom(lobby.CurrentCode)
 		room = NewRoomView()
 		currentScreen = ScreenRoom
+		audio.PlaySound(SoundJoin)
 	}
 
 	joinRoom := func(code string) {
@@ -323,7 +335,8 @@ func main() {
 				lobby.IsConnecting = false
 				room = NewRoomView()
 				currentScreen = ScreenRoom
-			room.AddLog(fmt.Sprintf("[+] Successfully joined room %s! (Host: %s)", cleanCode, hostNick))
+				audio.PlaySound(SoundJoin)
+				room.AddLog(fmt.Sprintf("[+] Successfully joined room %s! (Host: %s)", cleanCode, hostNick))
 				room.SetToast(fmt.Sprintf("Joined Room! Host: %s", hostNick))
 			},
 			func(reason string) {
@@ -340,6 +353,7 @@ func main() {
 	}
 
 	leaveRoom := func() {
+		audio.PlaySound(SoundLeave)
 		node.LeaveRoom()
 		lobby.CurrentCode = GenerateRoomCode()
 		currentScreen = ScreenLobby
@@ -776,19 +790,27 @@ func main() {
 					if room.IsChatFocused {
 						switch e.Type {
 						case backend.KeyEsc:
-							room.IsChatFocused = false
+							room.SetChatFocused(false)
 						case backend.KeyEnter:
 							if strings.TrimSpace(room.ChatInputState.Value()) != "" {
 								room.SendCurrentChat()
 							} else {
-								room.IsChatFocused = false
+								room.SetChatFocused(false)
 							}
 						case backend.KeyTab:
-							room.IsChatFocused = false
+							room.SetChatFocused(false)
 						case backend.KeyArrowUp:
-							room.ScrollChat(1)
+							if e.Alt || e.Ctrl {
+								room.ScrollChat(1)
+							} else {
+								room.HistoryUp()
+							}
 						case backend.KeyArrowDown:
-							room.ScrollChat(-1)
+							if e.Alt || e.Ctrl {
+								room.ScrollChat(-1)
+							} else {
+								room.HistoryDown()
+							}
 						case backend.KeyPageUp:
 							room.ScrollChat(5)
 						case backend.KeyPageDown:
@@ -801,10 +823,10 @@ func main() {
 
 					switch e.Type {
 					case backend.KeyEnter:
-						room.IsChatFocused = true
+						room.SetChatFocused(true)
 
 					case backend.KeyTab:
-						room.IsChatFocused = true
+						room.SetChatFocused(true)
 
 					case backend.KeyPageUp, backend.KeyArrowUp:
 						room.ScrollChat(1)
@@ -834,7 +856,7 @@ func main() {
 
 					case backend.KeyRune:
 						if e.Ch == '/' {
-							room.IsChatFocused = true
+							room.SetChatFocused(true)
 							continue
 						}
 
@@ -1070,6 +1092,46 @@ func main() {
 				room.OnSendChat = func(text string) {
 					node.SendChatMessage(text)
 					room.AddChatMessage(node.Nickname, node.LocalID, text, true, time.Now())
+				}
+				room.OnTriggerHop = func() {
+					_ = node.RotatePort()
+				}
+				room.OnChangeNick = func(newNick string) {
+					node.Nickname = newNick
+					node.SendMuteState(audio.Muted)
+				}
+				room.OnTriggerMute = func() {
+					isMuted := audio.ToggleMute()
+					node.SendMuteState(isMuted)
+					if isMuted {
+						room.SetToast("Microphone Off (Muted)")
+						room.AddLog("🎙️ Microphone muted")
+					} else {
+						room.SetToast("Microphone On")
+						room.AddLog("🎙️ Microphone unmuted")
+					}
+				}
+				room.OnTriggerDeafen = func() {
+					isDeaf := audio.ToggleDeafen()
+					node.SendDeafenState(isDeaf)
+					node.SendMuteState(audio.Muted)
+					if isDeaf {
+						room.SetToast("Audio Off (Deafened)")
+						room.AddLog("🔇 Audio deafened (Sound & Mic off)")
+					} else {
+						room.SetToast("Audio On")
+						room.AddLog("🔊 Audio undeafened")
+					}
+				}
+				room.OnTriggerSFX = func() {
+					isMuted := audio.ToggleSFXMute()
+					if isMuted {
+						room.SetToast("🔔 Sound Effects Muted")
+						room.AddLog("🔔 Sound effects (join/leave/chat) muted")
+					} else {
+						room.SetToast("🔔 Sound Effects Enabled")
+						room.AddLog("🔔 Sound effects enabled")
+					}
 				}
 				room.Update()
 				_ = t.Draw(func(f *terminal.Frame) {

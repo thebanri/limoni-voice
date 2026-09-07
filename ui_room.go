@@ -35,10 +35,19 @@ type RoomView struct {
 	ChatInputState         *widgets.TextInputState
 	IsChatFocused          bool
 	ChatScrollOffset       int
+	UnreadChatCount        int
+	chatHistory            []string
+	historyIndex           int
+	savedCurrentChat       string
 	OnLeave                func()
 	OnOpenTestModal        func()
 	OnOpenScreenShareModal func()
 	OnSendChat             func(text string)
+	OnTriggerHop           func()
+	OnChangeNick           func(newNick string)
+	OnTriggerMute          func()
+	OnTriggerDeafen        func()
+	OnTriggerSFX           func()
 	LastStageArea          cell.Rect
 	LastLogArea            cell.Rect
 }
@@ -49,6 +58,7 @@ func NewRoomView() *RoomView {
 		Logs:           make([]string, 0),
 		Messages:       make([]RoomMessage, 0, 64),
 		ChatInputState: widgets.NewTextInputState(),
+		chatHistory:    make([]string, 0, 32),
 	}
 }
 
@@ -99,7 +109,50 @@ func (r *RoomView) AddChatMessage(nickname string, senderID string, text string,
 	if len(r.Messages) > 300 {
 		r.Messages = r.Messages[len(r.Messages)-200:]
 	}
+	if !r.IsChatFocused && !isSelf {
+		r.UnreadChatCount++
+	}
 	r.ChatScrollOffset = 0
+}
+
+func (r *RoomView) SetChatFocused(focused bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.IsChatFocused = focused
+	if focused {
+		r.UnreadChatCount = 0
+		r.historyIndex = len(r.chatHistory)
+		r.savedCurrentChat = ""
+	}
+}
+
+func (r *RoomView) HistoryUp() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.chatHistory) == 0 {
+		return
+	}
+	if r.historyIndex == len(r.chatHistory) {
+		r.savedCurrentChat = r.ChatInputState.Value()
+	}
+	if r.historyIndex > 0 {
+		r.historyIndex--
+		r.ChatInputState.SetValue(r.chatHistory[r.historyIndex])
+	}
+}
+
+func (r *RoomView) HistoryDown() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.chatHistory) == 0 || r.historyIndex >= len(r.chatHistory) {
+		return
+	}
+	r.historyIndex++
+	if r.historyIndex < len(r.chatHistory) {
+		r.ChatInputState.SetValue(r.chatHistory[r.historyIndex])
+	} else {
+		r.ChatInputState.SetValue(r.savedCurrentChat)
+	}
 }
 
 func (r *RoomView) SendCurrentChat() {
@@ -110,6 +163,108 @@ func (r *RoomView) SendCurrentChat() {
 		return
 	}
 	r.ChatInputState.SetValue("")
+	r.chatHistory = append(r.chatHistory, text)
+	if len(r.chatHistory) > 100 {
+		r.chatHistory = r.chatHistory[len(r.chatHistory)-50:]
+	}
+	r.historyIndex = len(r.chatHistory)
+	r.savedCurrentChat = ""
+
+	// Slash commands
+	if strings.HasPrefix(text, "/") {
+		parts := strings.Fields(text)
+		cmd := strings.ToLower(parts[0])
+		switch cmd {
+		case "/clear", "/c":
+			r.Messages = make([]RoomMessage, 0, 64)
+			r.Logs = make([]string, 0)
+			r.ToastMsg = "Chat & room logs cleared"
+			r.ToastTimer = 60
+			r.mu.Unlock()
+			return
+
+		case "/help", "/?":
+			r.Messages = append(r.Messages, RoomMessage{
+				Timestamp: time.Now(),
+				Text:      "💡 Commands: /mute [sfx|all], /deafen, /sfx, /hop, /nick <name>, /clear",
+				IsChat:    false,
+			})
+			r.mu.Unlock()
+			return
+
+		case "/mute", "/m":
+			if len(parts) >= 2 {
+				sub := strings.ToLower(parts[1])
+				if sub == "sfx" || sub == "sound" || sub == "chat" {
+					sfxCb := r.OnTriggerSFX
+					r.mu.Unlock()
+					if sfxCb != nil {
+						sfxCb()
+					}
+					return
+				} else if sub == "deafen" || sub == "all" {
+					deafenCb := r.OnTriggerDeafen
+					r.mu.Unlock()
+					if deafenCb != nil {
+						deafenCb()
+					}
+					return
+				}
+			}
+			muteCb := r.OnTriggerMute
+			r.mu.Unlock()
+			if muteCb != nil {
+				muteCb()
+			}
+			return
+
+		case "/deafen", "/d":
+			deafenCb := r.OnTriggerDeafen
+			r.mu.Unlock()
+			if deafenCb != nil {
+				deafenCb()
+			}
+			return
+
+		case "/sound", "/sfx":
+			sfxCb := r.OnTriggerSFX
+			r.mu.Unlock()
+			if sfxCb != nil {
+				sfxCb()
+			}
+			return
+
+		case "/hop":
+			hopCb := r.OnTriggerHop
+			r.ToastMsg = "🛡️ Port hop triggered"
+			r.ToastTimer = 90
+			r.mu.Unlock()
+			if hopCb != nil {
+				go hopCb()
+			}
+			return
+		case "/nick":
+			if len(parts) >= 2 {
+				newNick := strings.Join(parts[1:], " ")
+				changeNick := r.OnChangeNick
+				r.ToastMsg = fmt.Sprintf("Nickname changed to %s", newNick)
+				r.ToastTimer = 90
+				r.mu.Unlock()
+				if changeNick != nil {
+					go changeNick(newNick)
+				}
+				return
+			}
+			r.Messages = append(r.Messages, RoomMessage{
+				Timestamp: time.Now(),
+				Text:      "⚠️ Usage: /nick <new_name>",
+				IsChat:    false,
+			})
+			r.mu.Unlock()
+			return
+		}
+	}
+
 	onSend := r.OnSendChat
 	r.mu.Unlock()
 
@@ -247,16 +402,27 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		})
 	}
 
-	e2eeBadge := " [E2EE: AES-256] "
-	if inner.Width > countX+30 {
-		buf.SetString(countX+16, inner.Y, e2eeBadge, cell.Style{
+	// Anti-Tracking & Port Hopping Shield Badge
+	remHop := node.NextHopRemaining()
+	var hopMin int
+	if remHop > 0 {
+		hopMin = int(remHop.Minutes())
+	}
+	shieldBadge := fmt.Sprintf(" 🛡️ :%d (%dm) ", node.Port, hopMin)
+	shieldX := countX + uint16(len([]rune(countStr))) + 2
+	shieldLen := uint16(len([]rune(shieldBadge)))
+	durStr := fmt.Sprintf("Duration: %s", duration)
+	if shieldX+shieldLen < inner.X+inner.Width-uint16(len([]rune(durStr)))-2 {
+		buf.SetString(shieldX, inner.Y, shieldBadge, cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Bg:       cell.NewColorRGB(0x13, 0x27, 0x22),
 			Modifier: cell.ModifierBold,
 		})
+		frame.RegisterClickHandler(cell.NewRect(shieldX, inner.Y, shieldLen, 1), func(_ backend.MouseEvent) {
+			r.SetToast(fmt.Sprintf("🛡️ Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.currentEpoch))
+		})
 	}
 
-	durStr := fmt.Sprintf("Duration: %s", duration)
 	if inner.Width > uint16(len([]rune(durStr)))+2 {
 		buf.SetString(inner.X+inner.Width-uint16(len([]rune(durStr)))-2, inner.Y, durStr, cell.Style{
 			Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9),
@@ -1466,74 +1632,47 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		availRows--
 	}
 
-	if len(messagesCopy) > 0 && availRows > 0 {
+	lines := r.buildDisplayLines(messagesCopy, maxW)
+
+	if len(lines) > 0 && availRows > 0 {
 		startIdx := 0
-		if len(messagesCopy) > availRows {
-			startIdx = len(messagesCopy) - availRows - scrollOffset
+		if len(lines) > availRows {
+			startIdx = len(lines) - availRows - scrollOffset
 			if startIdx < 0 {
 				startIdx = 0
 			}
 		}
 		endIdx := startIdx + availRows
-		if endIdx > len(messagesCopy) {
-			endIdx = len(messagesCopy)
+		if endIdx > len(lines) {
+			endIdx = len(lines)
 		}
 
-		visibleMsgs := messagesCopy[startIdx:endIdx]
-		for i, msg := range visibleMsgs {
+		visibleLines := lines[startIdx:endIdx]
+		for i, line := range visibleLines {
 			rowY := startRow + uint16(i)
 			if hasInputLine && rowY >= inputY {
 				break
 			}
-			tsStr := fmt.Sprintf("[%s] ", msg.Timestamp.Format("15:04:05"))
 			timeStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
 
 			curX := logInner.X + 1
-			buf.SetString(curX, rowY, tsStr, timeStyle)
-			curX += uint16(len([]rune(tsStr)))
+			buf.SetString(curX, rowY, line.Timestamp, timeStyle)
+			curX += uint16(len([]rune(line.Timestamp)))
+
+			if line.Badge != "" {
+				buf.SetString(curX, rowY, line.Badge, line.BadgeStyle)
+				curX += uint16(len([]rune(line.Badge)))
+			}
+
 			remW := int(logInner.X+logInner.Width) - int(curX) - 1
-			if remW < 3 {
+			if remW <= 0 {
 				continue
 			}
 
-			if msg.IsChat {
-				var senderBadge string
-				var senderStyle cell.Style
-				if msg.IsSelf {
-					senderBadge = "You: "
-					senderStyle = cell.Style{
-						Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-						Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
-						Modifier: cell.ModifierBold,
-					}
-				} else {
-					senderBadge = msg.Sender + ": "
-					senderStyle = cell.Style{
-						Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
-						Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
-						Modifier: cell.ModifierBold,
-					}
-				}
-				buf.SetString(curX, rowY, senderBadge, senderStyle)
-				curX += uint16(len([]rune(senderBadge)))
-				remW = int(logInner.X+logInner.Width) - int(curX) - 1
-				if remW > 0 {
-					r.renderChatTextWithLinks(frame, buf, curX, rowY, msg.Text, remW)
-				}
+			if line.IsChat {
+				r.renderChatTextWithLinks(frame, buf, curX, rowY, line.Text, remW)
 			} else {
-				bodyText := truncate(msg.Text, remW)
-				logColor := cell.NewColorRGB(0xB2, 0xBE, 0xC3)
-				if strings.Contains(msg.Text, "[+]") || strings.Contains(msg.Text, "joined") {
-					logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)
-				} else if strings.Contains(msg.Text, "[-]") || strings.Contains(msg.Text, "left") {
-					logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
-				} else if strings.Contains(msg.Text, "⚠️") || strings.Contains(msg.Text, "❌") {
-					logColor = cell.NewColorRGB(0xFF, 0xE6, 0x6D)
-				}
-				buf.SetString(curX, rowY, bodyText, cell.Style{
-					Fg: logColor,
-					Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
-				})
+				buf.SetString(curX, rowY, line.Text, line.TextStyle)
 			}
 		}
 
@@ -1549,7 +1688,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				})
 			}
 		}
-	} else if len(messagesCopy) == 0 && toastMsg == "" && availRows > 0 {
+	} else if len(lines) == 0 && toastMsg == "" && availRows > 0 {
 		placeholder := truncate("Waiting for connections... Messages & events will appear here.", maxW)
 		buf.SetString(logInner.X+1, startRow, placeholder, cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
 	}
@@ -1585,13 +1724,147 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				frame.RenderWidget(chatInput, inputArea)
 			}
 		} else {
-			unfocusedPrompt := "💬 [ Press Enter or / to Chat ]"
-			buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
-				Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
-				Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
-			})
+			if r.UnreadChatCount > 0 {
+				unfocusedPrompt := fmt.Sprintf(" 💬 %d New Messages - [Enter] to Chat ", r.UnreadChatCount)
+				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
+					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+					Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+					Modifier: cell.ModifierBold,
+				})
+			} else {
+				unfocusedPrompt := "💬 [ Press Enter or / to Chat ]"
+				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
+					Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+					Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+				})
+			}
 		}
 	}
+}
+
+type roomDisplayLine struct {
+	Timestamp      string
+	Badge          string
+	BadgeStyle     cell.Style
+	Text           string
+	TextStyle      cell.Style
+	IsChat         bool
+	IsContinuation bool
+}
+
+func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDisplayLine {
+	var lines []roomDisplayLine
+	if maxW < 10 {
+		maxW = 10
+	}
+
+	for _, msg := range messages {
+		tsStr := fmt.Sprintf("[%s] ", msg.Timestamp.Format("15:04:05"))
+		tsLen := len([]rune(tsStr))
+
+		if msg.IsChat {
+			var senderBadge string
+			var senderStyle cell.Style
+			if msg.IsSelf {
+				senderBadge = "You: "
+				senderStyle = cell.Style{
+					Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+					Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+					Modifier: cell.ModifierBold,
+				}
+			} else {
+				senderBadge = msg.Sender + ": "
+				senderStyle = cell.Style{
+					Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+					Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+					Modifier: cell.ModifierBold,
+				}
+			}
+
+			badgeLen := tsLen + len([]rune(senderBadge))
+			availFirst := maxW - badgeLen
+			if availFirst < 10 {
+				availFirst = 10
+			}
+
+			runes := []rune(msg.Text)
+			if len(runes) <= availFirst {
+				lines = append(lines, roomDisplayLine{
+					Timestamp:  tsStr,
+					Badge:      senderBadge,
+					BadgeStyle: senderStyle,
+					Text:       msg.Text,
+					IsChat:     true,
+				})
+			} else {
+				lines = append(lines, roomDisplayLine{
+					Timestamp:  tsStr,
+					Badge:      senderBadge,
+					BadgeStyle: senderStyle,
+					Text:       string(runes[:availFirst]),
+					IsChat:     true,
+				})
+				remRunes := runes[availFirst:]
+				indentSpaces := strings.Repeat(" ", tsLen+len([]rune(senderBadge)))
+				for len(remRunes) > 0 {
+					chunkLen := min(len(remRunes), availFirst)
+					lines = append(lines, roomDisplayLine{
+						Timestamp:      indentSpaces,
+						Text:           string(remRunes[:chunkLen]),
+						IsChat:         true,
+						IsContinuation: true,
+					})
+					remRunes = remRunes[chunkLen:]
+				}
+			}
+		} else {
+			logColor := cell.NewColorRGB(0xB2, 0xBE, 0xC3)
+			if strings.Contains(msg.Text, "[+]") || strings.Contains(msg.Text, "joined") {
+				logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)
+			} else if strings.Contains(msg.Text, "[-]") || strings.Contains(msg.Text, "left") {
+				logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
+			} else if strings.Contains(msg.Text, "⚠️") || strings.Contains(msg.Text, "❌") || strings.Contains(msg.Text, "🛡️") {
+				logColor = cell.NewColorRGB(0xFF, 0xE6, 0x6D)
+			}
+
+			availFirst := maxW - tsLen
+			if availFirst < 10 {
+				availFirst = 10
+			}
+
+			runes := []rune(msg.Text)
+			if len(runes) <= availFirst {
+				lines = append(lines, roomDisplayLine{
+					Timestamp: tsStr,
+					Text:      msg.Text,
+					TextStyle: cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+					IsChat:    false,
+				})
+			} else {
+				lines = append(lines, roomDisplayLine{
+					Timestamp: tsStr,
+					Text:      string(runes[:availFirst]),
+					TextStyle: cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+					IsChat:    false,
+				})
+				remRunes := runes[availFirst:]
+				indentSpaces := strings.Repeat(" ", tsLen)
+				for len(remRunes) > 0 {
+					chunkLen := min(len(remRunes), availFirst)
+					lines = append(lines, roomDisplayLine{
+						Timestamp:      indentSpaces,
+						Text:           string(remRunes[:chunkLen]),
+						TextStyle:      cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+						IsChat:         false,
+						IsContinuation: true,
+					})
+					remRunes = remRunes[chunkLen:]
+				}
+			}
+		}
+	}
+
+	return lines
 }
 
 var reChatURL = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)

@@ -391,9 +391,201 @@ type AudioEngine struct {
 
 	// Mixing buffer for incoming peer streams with jitter compensation
 	peerJitterBuffers map[string]*PeerJitterBuffer
+	sfxQueue          [][]byte
+	SFXMuted          bool
 	mixChan           chan []byte
 	stopChan          chan struct{}
 	running           bool
+}
+
+type SoundEffect int
+
+const (
+	SoundJoin SoundEffect = iota + 1
+	SoundLeave
+	SoundChat
+)
+
+var (
+	cachedJoinPCM  []byte
+	cachedLeavePCM []byte
+	cachedChatPCM  []byte
+	sfxOnce        sync.Once
+)
+
+func initSFXCache() {
+	cachedJoinPCM = generateJoinSoundPCM()
+	cachedLeavePCM = generateLeaveSoundPCM()
+	cachedChatPCM = generateChatSoundPCM()
+}
+
+// generateJoinSoundPCM generates a rich, ascending multi-tone chime (C5 -> E5 -> G5 -> C6)
+func generateJoinSoundPCM() []byte {
+	numSamples := 6400 // 400ms @ 16000Hz
+	pcm := make([]byte, numSamples*2)
+
+	type note struct {
+		start, end   float64
+		freq1, freq2 float64
+	}
+	notes := []note{
+		{start: 0.00, end: 0.18, freq1: 523.25, freq2: 659.25},
+		{start: 0.08, end: 0.26, freq1: 659.25, freq2: 783.99},
+		{start: 0.16, end: 0.40, freq1: 783.99, freq2: 1046.50},
+	}
+
+	for i := 0; i < numSamples; i++ {
+		t := float64(i) / 16000.0
+		var sample float64
+		for _, n := range notes {
+			if t >= n.start && t < n.end {
+				noteT := t - n.start
+				dur := n.end - n.start
+
+				env := 1.0
+				if noteT < 0.012 {
+					env = noteT / 0.012
+				} else {
+					env = math.Exp(-7.0 * (noteT - 0.012) / dur)
+				}
+
+				val := math.Sin(2*math.Pi*n.freq1*noteT)*0.70 +
+					math.Sin(2*math.Pi*n.freq2*noteT)*0.35 +
+					math.Sin(4*math.Pi*n.freq1*noteT)*0.10
+				sample += val * env
+			}
+		}
+
+		amp := sample * 14000.0
+		if amp > 32767 {
+			amp = 32767
+		} else if amp < -32768 {
+			amp = -32768
+		}
+		binary.LittleEndian.PutUint16(pcm[i*2:i*2+2], uint16(int16(amp)))
+	}
+
+	return pcm
+}
+
+// generateLeaveSoundPCM generates a gentle, descending multi-tone chime (G5 -> E5 -> C5)
+func generateLeaveSoundPCM() []byte {
+	numSamples := 6080 // 380ms @ 16000Hz
+	pcm := make([]byte, numSamples*2)
+
+	type note struct {
+		start, end   float64
+		freq1, freq2 float64
+	}
+	notes := []note{
+		{start: 0.00, end: 0.16, freq1: 783.99, freq2: 659.25},
+		{start: 0.08, end: 0.25, freq1: 659.25, freq2: 523.25},
+		{start: 0.16, end: 0.38, freq1: 523.25, freq2: 392.00},
+	}
+
+	for i := 0; i < numSamples; i++ {
+		t := float64(i) / 16000.0
+		var sample float64
+		for _, n := range notes {
+			if t >= n.start && t < n.end {
+				noteT := t - n.start
+				dur := n.end - n.start
+
+				env := 1.0
+				if noteT < 0.012 {
+					env = noteT / 0.012
+				} else {
+					env = math.Exp(-7.5 * (noteT - 0.012) / dur)
+				}
+
+				val := math.Sin(2*math.Pi*n.freq1*noteT)*0.65 +
+					math.Sin(2*math.Pi*n.freq2*noteT)*0.35 +
+					math.Sin(4*math.Pi*n.freq1*noteT)*0.08
+				sample += val * env
+			}
+		}
+
+		amp := sample * 13500.0
+		if amp > 32767 {
+			amp = 32767
+		} else if amp < -32768 {
+			amp = -32768
+		}
+		binary.LittleEndian.PutUint16(pcm[i*2:i*2+2], uint16(int16(amp)))
+	}
+
+	return pcm
+}
+
+// generateChatSoundPCM generates a subtle, pleasant message notification blip
+func generateChatSoundPCM() []byte {
+	numSamples := 1600 // 100ms @ 16000Hz (5 chunks of 640 bytes)
+	pcm := make([]byte, numSamples*2)
+
+	for i := 0; i < numSamples; i++ {
+		t := float64(i) / 16000.0
+		freq := 650.0 + (300.0 * (t / 0.10))
+
+		env := 1.0
+		if t < 0.004 {
+			env = t / 0.004
+		} else {
+			env = math.Exp(-22.0 * (t - 0.004))
+		}
+
+		val := math.Sin(2*math.Pi*freq*t)*0.85 + math.Sin(4*math.Pi*freq*t)*0.15
+		amp := val * env * 11000.0
+		if amp > 32767 {
+			amp = 32767
+		} else if amp < -32768 {
+			amp = -32768
+		}
+		binary.LittleEndian.PutUint16(pcm[i*2:i*2+2], uint16(int16(amp)))
+	}
+
+	return pcm
+}
+
+// PlaySound enqueues a synthesized sound effect for real-time playback
+func (a *AudioEngine) PlaySound(sfx SoundEffect) {
+	if a == nil {
+		return
+	}
+	sfxOnce.Do(initSFXCache)
+
+	var raw []byte
+	switch sfx {
+	case SoundJoin:
+		raw = cachedJoinPCM
+	case SoundLeave:
+		raw = cachedLeavePCM
+	case SoundChat:
+		raw = cachedChatPCM
+	default:
+		return
+	}
+
+	a.mu.Lock()
+	if a.Deafened || a.SFXMuted {
+		a.mu.Unlock()
+		return
+	}
+
+	for i := 0; i < len(raw); i += AudioChunkSize {
+		end := i + AudioChunkSize
+		if end > len(raw) {
+			end = len(raw)
+		}
+		chunk := make([]byte, AudioChunkSize)
+		copy(chunk, raw[i:end])
+		a.sfxQueue = append(a.sfxQueue, chunk)
+	}
+	hasPipe := a.playbackPipe != nil
+	a.mu.Unlock()
+
+	if !hasPipe {
+		go a.startPlayback()
+	}
 }
 
 func NewAudioEngine() *AudioEngine {
@@ -420,6 +612,7 @@ func NewAudioEngine() *AudioEngine {
 		LocalWave:         make([]float64, 40),
 		PeerWaves:         make(map[string][]float64),
 		peerJitterBuffers: make(map[string]*PeerJitterBuffer),
+		sfxQueue:          make([][]byte, 0),
 		mixChan:           make(chan []byte, 64),
 		stopChan:          make(chan struct{}),
 		InputDevices:      inputDevs,
@@ -1470,6 +1663,13 @@ func (a *AudioEngine) playbackMixerLoop() {
 					streams = append(streams, chunk)
 				}
 			}
+
+			// Mix system sound effect chunks if queued
+			if len(a.sfxQueue) > 0 {
+				streams = append(streams, a.sfxQueue[0])
+				a.sfxQueue = a.sfxQueue[1:]
+			}
+
 			pipe := a.playbackPipe
 			a.mu.Unlock()
 
@@ -1573,6 +1773,25 @@ func (a *AudioEngine) ToggleDeafen() bool {
 		a.IsSpeaking = false
 	}
 	return a.Deafened
+}
+
+func (a *AudioEngine) ToggleSFXMute() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.SFXMuted = !a.SFXMuted
+	if a.SFXMuted {
+		a.sfxQueue = a.sfxQueue[:0]
+	}
+	return a.SFXMuted
+}
+
+func (a *AudioEngine) SetSFXMuted(val bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.SFXMuted = val
+	if a.SFXMuted {
+		a.sfxQueue = a.sfxQueue[:0]
+	}
 }
 
 func (a *AudioEngine) ToggleLoopback() bool {
