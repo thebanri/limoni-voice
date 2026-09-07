@@ -1929,13 +1929,6 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 	}
 
-	// Register click handler to focus chat when clicking the area
-	frame.RegisterClickHandler(logArea, func(_ backend.MouseEvent) {
-		r.mu.Lock()
-		r.IsChatFocused = true
-		r.mu.Unlock()
-	})
-
 	maxW := int(logInner.Width) - 2
 	if maxW < 5 {
 		maxW = 5
@@ -2670,40 +2663,8 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 
 		if span.IsCopy {
 			buf.SetString(curX, rowY, string(sRunes), copyStyle)
-			copyVal := span.CopyText
-			if copyVal == "" {
-				copyVal = span.Text
-			}
-			copyRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
-			frame.RegisterClickHandler(copyRect, func(_ backend.MouseEvent) {
-				r.mu.Lock()
-				r.SelectionActive = false
-				r.SelectionDragging = false
-				r.SelectedText = ""
-				r.mu.Unlock()
-
-				CopyToClipboard(copyVal)
-				r.SetToast(fmt.Sprintf("📋 Kopyalandı: %s", copyVal))
-				r.AddLog(fmt.Sprintf("[CLIPBOARD] Copied to clipboard: %s", copyVal))
-			})
 		} else if span.IsLink {
 			buf.SetString(curX, rowY, string(sRunes), linkStyle)
-			clickURL := span.ClickURL
-			if clickURL == "" {
-				clickURL = span.Text
-			}
-			linkRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
-			frame.RegisterClickHandler(linkRect, func(_ backend.MouseEvent) {
-				r.mu.Lock()
-				r.SelectionActive = false
-				r.SelectionDragging = false
-				r.SelectedText = ""
-				r.mu.Unlock()
-
-				_ = OpenBrowserURL(clickURL)
-				CopyToClipboard(clickURL)
-				r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURL))
-			})
 		} else {
 			buf.SetString(curX, rowY, string(sRunes), plainStyle)
 		}
