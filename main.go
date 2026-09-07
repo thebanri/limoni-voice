@@ -1294,7 +1294,10 @@ func main() {
 								}
 							} else {
 								if inChatLog {
-									room.HandleMousePress(ev.Mouse.X, ev.Mouse.Y)
+									// Immediate one-click copy on message/copy elements!
+									if !room.HandleChatClick(ev.Mouse.X, ev.Mouse.Y) {
+										room.HandleMousePress(ev.Mouse.X, ev.Mouse.Y)
+									}
 								} else {
 									room.ClearSelection()
 								}

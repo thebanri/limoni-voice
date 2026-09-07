@@ -2308,8 +2308,8 @@ func TestMultilinePasteAndBackslashContinuation(t *testing.T) {
 	if lines[0].Badge != "You: " || lines[0].IsContinuation {
 		t.Fatalf("Expected line 0 to be initial message with badge 'You: ', got %+v", lines[0])
 	}
-	if !lines[1].IsContinuation || lines[1].Badge != "" {
-		t.Fatalf("Expected line 1 to be continuation line with empty badge, got %+v", lines[1])
+	if lines[1].Badge != "" {
+		t.Fatalf("Expected line 1 to have empty badge, got %+v", lines[1])
 	}
 
 	// 3. Test backslash continuation logic
@@ -2322,6 +2322,49 @@ func TestMultilinePasteAndBackslashContinuation(t *testing.T) {
 		t.Fatalf("Expected backslash continuation to convert to newline, got %q", val)
 	}
 }
+
+func TestDirectChatClickAndNoResizeNewline(t *testing.T) {
+	room := NewRoomView()
+	audio := NewAudioEngine()
+	node := NewP2PNode("local_user", "You", audio)
+
+	rawCmd := "reg add \"HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\TimeZoneInformation\" /v RealTimeIsUniversal /t REG_DWORD /d 1 /f"
+	room.AddChatMessage("Alice", "peer_alice", "📋 [Kopyala: "+rawCmd+"]", false, time.Now())
+
+	// Render in a narrow 50-column buffer so the line wraps into multiple visual lines
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 50, 20))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 50, 20), node, audio)
+
+	room.mu.Lock()
+	rLines := room.renderedLines
+	room.mu.Unlock()
+
+	if len(rLines) < 2 {
+		t.Fatalf("Expected message to wrap into at least 2 rendered lines in 50-col width, got %d", len(rLines))
+	}
+
+	// 1. Direct HandleChatClick on the message row should copy rawCmd without \n
+	clicked := room.HandleChatClick(10, rLines[0].RowY)
+	if !clicked {
+		t.Fatalf("Expected HandleChatClick to succeed on rendered message row")
+	}
+	if room.ToastMsg == "" || !strings.Contains(room.ToastMsg, "reg add") {
+		t.Fatalf("Expected toast message with copied text, got %q", room.ToastMsg)
+	}
+
+	// 2. Drag-selecting across all wrapped lines must NOT insert fake \n due to window resize
+	room.HandleMousePress(rLines[0].StartX, rLines[0].RowY)
+	lastLine := rLines[len(rLines)-1]
+	room.HandleMouseDrag(lastLine.EndX, lastLine.RowY)
+	extracted := room.HandleMouseRelease(lastLine.EndX, lastLine.RowY)
+
+	// Verify that extracted text does NOT have newline breaking words
+	if strings.Contains(extracted, "Control\n") || strings.Contains(extracted, "Control\\\n") {
+		t.Fatalf("Extracted text has unwanted newline from window resize wrapping: %q", extracted)
+	}
+}
+
 
 
 

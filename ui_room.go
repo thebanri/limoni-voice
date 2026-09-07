@@ -85,10 +85,14 @@ type renderedChatChar struct {
 }
 
 type renderedChatLine struct {
-	RowY   uint16
-	StartX uint16
-	EndX   uint16
-	Chars  []renderedChatChar
+	RowY           uint16
+	StartX         uint16
+	EndX           uint16
+	Chars          []renderedChatChar
+	IsContinuation bool
+	RawMessage     string
+	CopyText       string
+	ClickURL       string
 }
 
 func NewRoomView() *RoomView {
@@ -2033,11 +2037,27 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				}
 			}
 
+			var lineCopyText, lineClickURL string
+			if line.IsChat {
+				for _, s := range line.Spans {
+					if s.IsCopy && lineCopyText == "" {
+						lineCopyText = s.CopyText
+					}
+					if s.IsLink && lineClickURL == "" {
+						lineClickURL = s.ClickURL
+					}
+				}
+			}
+
 			currentRenderedLines = append(currentRenderedLines, renderedChatLine{
-				RowY:   rowY,
-				StartX: startX,
-				EndX:   curX,
-				Chars:  lineChars,
+				RowY:           rowY,
+				StartX:         startX,
+				EndX:           curX,
+				Chars:          lineChars,
+				IsContinuation: line.IsContinuation,
+				RawMessage:     line.RawMessage,
+				CopyText:       lineCopyText,
+				ClickURL:       lineClickURL,
 			})
 		}
 
@@ -2144,6 +2164,7 @@ type roomDisplayLine struct {
 	Spans          []chatSpan
 	IsChat         bool
 	IsContinuation bool
+	RawMessage     string
 }
 
 var (
@@ -2513,7 +2534,8 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 				spans := parseMessageSpans(para)
 				wrappedLines := wrapSpansToLines(spans, availFirst)
 
-				for _, lSpans := range wrappedLines {
+				for wrapIdx, lSpans := range wrappedLines {
+					isContinuation := (wrapIdx > 0)
 					if firstLineOverall {
 						lines = append(lines, roomDisplayLine{
 							Timestamp:      tsStr,
@@ -2522,6 +2544,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 							Spans:          lSpans,
 							IsChat:         true,
 							IsContinuation: false,
+							RawMessage:     msg.Text,
 						})
 						firstLineOverall = false
 					} else {
@@ -2529,7 +2552,8 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 							Timestamp:      indentSpaces,
 							Spans:          lSpans,
 							IsChat:         true,
-							IsContinuation: true,
+							IsContinuation: isContinuation,
+							RawMessage:     msg.Text,
 						})
 					}
 				}
@@ -2560,6 +2584,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 						TextStyle:      cell.Style{Fg: logColor, Bg: theme.SurfaceBg},
 						IsChat:         false,
 						IsContinuation: false,
+						RawMessage:     msg.Text,
 					})
 				} else {
 					lines = append(lines, roomDisplayLine{
@@ -2568,6 +2593,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 						TextStyle:      cell.Style{Fg: logColor, Bg: theme.SurfaceBg},
 						IsChat:         false,
 						IsContinuation: true,
+						RawMessage:     msg.Text,
 					})
 				}
 			}
@@ -2710,6 +2736,8 @@ func (r *RoomView) extractSelectedText() string {
 	}
 
 	var result strings.Builder
+	firstLine := true
+
 	for _, rl := range r.renderedLines {
 		iy := int(rl.RowY)
 		if iy < sY || iy > eY {
@@ -2732,15 +2760,74 @@ func (r *RoomView) extractSelectedText() string {
 				lineStr.WriteRune(ch.R)
 			}
 		}
-		extracted := strings.TrimRight(lineStr.String(), " ")
+		extracted := lineStr.String()
 		if extracted != "" {
-			if result.Len() > 0 {
-				result.WriteRune('\n')
+			if firstLine {
+				result.WriteString(extracted)
+				firstLine = false
+			} else {
+				if rl.IsContinuation {
+					// Soft wrap line continuation (window resize wrap): do NOT insert fake \n!
+					if !strings.HasSuffix(result.String(), " ") && !strings.HasPrefix(extracted, " ") {
+						result.WriteRune(' ')
+					}
+					result.WriteString(extracted)
+				} else {
+					// Actual separate paragraph or message
+					result.WriteRune('\n')
+					result.WriteString(extracted)
+				}
 			}
-			result.WriteString(extracted)
 		}
 	}
-	return result.String()
+	return strings.TrimSpace(result.String())
+}
+
+func (r *RoomView) HandleChatClick(x, y uint16) bool {
+	r.mu.Lock()
+	var copyTextToUse, clickURLToUse string
+	for _, rl := range r.renderedLines {
+		if rl.RowY == y {
+			if rl.CopyText != "" {
+				copyTextToUse = rl.CopyText
+				break
+			} else if rl.ClickURL != "" {
+				clickURLToUse = rl.ClickURL
+				break
+			} else if rl.RawMessage != "" {
+				copyTextToUse = rl.RawMessage
+				if m := reChatCopy1.FindStringSubmatch(copyTextToUse); len(m) > 1 {
+					copyTextToUse = m[1]
+				} else if m := reChatCopy2.FindStringSubmatch(copyTextToUse); len(m) > 1 {
+					copyTextToUse = m[1]
+				} else if m := reChatCopy3.FindStringSubmatch(copyTextToUse); len(m) > 1 {
+					copyTextToUse = m[1]
+				}
+				break
+			}
+		}
+	}
+	r.mu.Unlock()
+
+	if copyTextToUse != "" {
+		r.ClearSelection()
+		CopyToClipboard(copyTextToUse)
+		previewStr := copyTextToUse
+		if len([]rune(previewStr)) > 35 {
+			previewStr = string([]rune(previewStr)[:35]) + "…"
+		}
+		r.SetToast(fmt.Sprintf("📋 Kopyalandı: %s", previewStr))
+		r.AddLog(fmt.Sprintf("[CLIPBOARD] Copied: %s", previewStr))
+		return true
+	}
+	if clickURLToUse != "" {
+		r.ClearSelection()
+		_ = OpenBrowserURL(clickURLToUse)
+		CopyToClipboard(clickURLToUse)
+		r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURLToUse))
+		return true
+	}
+	return false
 }
 
 func (r *RoomView) HandleMousePress(x, y uint16) {
