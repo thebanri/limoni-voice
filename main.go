@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"os/signal"
@@ -298,6 +299,53 @@ func main() {
 		room.AddChatMessage(nickname, senderID, text, false, ts)
 	}
 
+	node.OnFileTransferProgress = func(transferID string, fileName string, transferred int64, total int64, speed float64, isUpload bool, done bool, err error) {
+		if err != nil {
+			room.SetToast(fmt.Sprintf("File error (%s): %v", fileName, err))
+			room.AddLog(fmt.Sprintf("[FILE] Transfer error for %s: %v", fileName, err))
+			return
+		}
+		pct := 0
+		if total > 0 {
+			pct = int(transferred * 100 / total)
+		}
+		speedKB := speed / 1024.0
+		barLen := 10
+		filled := pct * barLen / 100
+		if filled > barLen {
+			filled = barLen
+		}
+		bar := strings.Repeat("=", filled) + strings.Repeat(" ", barLen-filled)
+		direction := "Downloading"
+		if isUpload {
+			direction = "Uploading"
+		}
+		if done {
+			room.SetToast(fmt.Sprintf("✓ %s completed: %s", direction, fileName))
+			room.AddLog(fmt.Sprintf("[FILE] %s '%s' completed (%s)", direction, fileName, formatBytes(total)))
+		} else {
+			room.SetToast(fmt.Sprintf("%s %s [%s] %d%% (%.1f KB/s)", direction, fileName, bar, pct, speedKB))
+		}
+	}
+
+	node.OnFileReceived = func(transferID string, fileName string, filePath string, isCode bool, content string) {
+		audio.PlaySound(SoundChat)
+		var size int64
+		if fi, err := os.Stat(filePath); err == nil {
+			size = fi.Size()
+		}
+		if isCode {
+			room.AddLog(fmt.Sprintf("[CODE] Received code snippet '%s' (%s) saved to %s", fileName, formatBytes(size), filePath))
+			room.SetToast(fmt.Sprintf("Code snippet received: %s", fileName))
+		} else if strings.HasSuffix(fileName, ".quarantined") {
+			room.AddLog(fmt.Sprintf("[SECURITY] ⚠️ Potential executable received. File was quarantined for security: %s (%s)", fileName, filePath))
+			room.SetToast(fmt.Sprintf("⚠️ Quarantined: %s", fileName))
+		} else {
+			room.AddLog(fmt.Sprintf("[FILE] Received file '%s' (%s) saved to %s", fileName, formatBytes(size), filePath))
+			room.SetToast(fmt.Sprintf("File received: %s", fileName))
+		}
+	}
+
 	// Room Transition Helpers
 	startHost := func() {
 		nick := strings.TrimSpace(lobby.NickState.Value())
@@ -310,6 +358,13 @@ func main() {
 		}
 		node.Nickname = nick
 		node.HostRoom(lobby.CurrentCode)
+		if lobby.IsPinProtected {
+			pinVal := strings.TrimSpace(lobby.PinState.Value())
+			if pinVal == "" {
+				pinVal = "1234"
+			}
+			node.LockRoom(pinVal)
+		}
 		room = NewRoomView()
 		currentScreen = ScreenRoom
 		audio.PlaySound(SoundJoin)
@@ -783,6 +838,13 @@ func main() {
 								openExitModal()
 							}
 						}
+
+					case 3: // Host PIN Input Focused
+						if e.Type == backend.KeyEsc || e.Type == backend.KeyEnter {
+							lobby.ActiveInput = 2
+						} else {
+							lobby.PinState.HandleKey(e)
+						}
 					}
 
 				} else {
@@ -881,6 +943,15 @@ func main() {
 
 						case 't', 'T':
 							openTestModal()
+
+						case 'h', 'H':
+							newVal := ToggleCompactHUD()
+							room.IsCompactMode = newVal
+							if newVal {
+								room.SetToast("Mini HUD Mode ON")
+							} else {
+								room.SetToast("Full UI Restored")
+							}
 
 						case 'n', 'N':
 							audio.CycleSuppressionMode()
@@ -1131,6 +1202,92 @@ func main() {
 					} else {
 						room.SetToast("Sound Effects Enabled")
 						room.AddLog("[SFX] Sound effects enabled")
+					}
+				}
+				room.OnSetPeerVolume = func(target string, vol float64) {
+					peers := node.GetPeersList()
+					if len(peers) == 0 {
+						room.SetToast("No other users in the room")
+						return
+					}
+					var matched *PeerInfo
+					if target == "" {
+						if len(peers) == 1 {
+							matched = peers[0]
+						} else {
+							room.SetToast("Multiple peers in room. Use: /vol <nickname> <0-200>")
+							return
+						}
+					} else {
+						tLower := strings.ToLower(target)
+						for _, p := range peers {
+							if strings.ToLower(p.Nickname) == tLower || strings.HasPrefix(strings.ToLower(p.Nickname), tLower) || p.ID == target {
+								matched = p
+								break
+							}
+						}
+					}
+					if matched == nil {
+						room.SetToast(fmt.Sprintf("User '%s' not found", target))
+						return
+					}
+					audio.SetPeerVolume(matched.ID, vol)
+					pct := int(math.Round(vol * 100))
+					room.SetToast(fmt.Sprintf("Volume for %s set to %d%%", matched.Nickname, pct))
+					room.AddLog(fmt.Sprintf("[VOL] Volume for %s set to %d%%", matched.Nickname, pct))
+				}
+				room.OnSendFile = func(filePath string) {
+					room.AddLog(fmt.Sprintf("[FILE] Sending %s...", filePath))
+					go func() {
+						err := node.SendFile(filePath)
+						if err != nil {
+							room.SetToast(fmt.Sprintf("Send error: %v", err))
+							room.AddLog(fmt.Sprintf("[FILE] Error sending %s: %v", filePath, err))
+						} else {
+							room.SetToast("File transfer started")
+						}
+					}()
+				}
+				room.OnSendCode = func(title, code string) {
+					room.AddLog(fmt.Sprintf("[CODE] Sharing code snippet (%d bytes)...", len(code)))
+					go func() {
+						err := node.SendCodeSnippet(title, code)
+						if err != nil {
+							room.SetToast(fmt.Sprintf("Code send error: %v", err))
+						} else {
+							room.SetToast("Code snippet sent to room")
+						}
+					}()
+				}
+				room.OnLockRoom = func(pin string) {
+					if !node.IsHost {
+						room.SetToast("Only the room host can lock the room")
+						return
+					}
+					node.LockRoom(pin)
+					if pin != "" {
+						room.SetToast(fmt.Sprintf("Room locked with PIN: %s", pin))
+						room.AddLog(fmt.Sprintf("[ROOM] Room locked with PIN: %s", pin))
+					} else {
+						room.SetToast("Room locked")
+						room.AddLog("[ROOM] Room locked by host")
+					}
+				}
+				room.OnUnlockRoom = func() {
+					if !node.IsHost {
+						room.SetToast("Only the room host can unlock the room")
+						return
+					}
+					node.UnlockRoom()
+					room.SetToast("Room unlocked")
+					room.AddLog("[ROOM] Room unlocked by host")
+				}
+				room.OnOpenEditor = func(filePath string) {
+					err := OpenInEditor(filePath)
+					if err != nil {
+						room.SetToast(fmt.Sprintf("Could not open editor: %v", err))
+					} else {
+						room.SetToast(fmt.Sprintf("Opened %s in editor", filePath))
 					}
 				}
 				room.Update()

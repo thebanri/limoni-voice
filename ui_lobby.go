@@ -33,9 +33,11 @@ type LobbyView struct {
 	CurrentCode      string
 	NickState        *widgets.TextInputState
 	CodeState        *widgets.TextInputState
+	PinState         *widgets.TextInputState
+	IsPinProtected   bool
 	ToastMsg         string
 	ToastTimer       int
-	ActiveInput      int // 0: Nickname, 1: RoomCode to Join, 2: Host / General
+	ActiveInput      int // 0: Nickname, 1: RoomCode to Join, 2: Host / General, 3: Host PIN
 	IsConnecting     bool
 	ConnectingTarget string
 
@@ -218,6 +220,8 @@ func NewLobbyView() *LobbyView {
 	nickState.SetValue("User_" + code[:4])
 
 	codeState := widgets.NewTextInputState()
+	pinState := widgets.NewTextInputState()
+	pinState.SetValue("1234")
 
 	return &LobbyView{
 		MicModel:        loadMicrophoneModel(),
@@ -231,6 +235,7 @@ func NewLobbyView() *LobbyView {
 		CurrentCode:     code,
 		NickState:       nickState,
 		CodeState:       codeState,
+		PinState:        pinState,
 		ActiveInput:     2,
 	}
 }
@@ -271,12 +276,13 @@ func (l *LobbyView) Render(frame *terminal.Frame, area cell.Rect) {
 }
 
 func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
+	theme := CurrentTheme()
 	block := widgets.Block{
 		Title:         " 3D STUDIO MICROPHONE (OBJ) ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)},
+		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(block, area)
 	innerArea := block.Inner(area)
@@ -284,7 +290,7 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 	buf := frame.Buffer
 	for y := innerArea.Y; y < innerArea.Y+innerArea.Height; y++ {
 		for x := innerArea.X; x < innerArea.X+innerArea.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
@@ -319,12 +325,13 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 }
 
 func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
+	theme := CurrentTheme()
 	mainBlock := widgets.Block{
 		Title:         " P2P ROOM & CONNECTION (CROC ENGINE) ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(mainBlock, area)
 	inner := mainBlock.Inner(area)
@@ -332,13 +339,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	buf := frame.Buffer
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
 	vl := layout.NewFlexLayout(layout.Vertical, 0,
-		layout.Fixed(5), // Nickname block
-		layout.Fixed(6), // Host room block
+		layout.Fixed(4), // Nickname block
+		layout.Fixed(7), // Host room block (Key + PIN + Buttons)
 		layout.Fixed(6), // Join room block
 		layout.Fill(),   // Information block
 	)
@@ -351,8 +358,8 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	hostArea := vSplits[1]
 	joinArea := vSplits[2]
 
-	unfocusedBorder := cell.Style{Fg: cell.NewColorRGB(0x4A, 0x55, 0x68)}
-	unfocusedBg := cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	unfocusedBorder := cell.Style{Fg: theme.Border}
+	unfocusedBg := cell.Style{Bg: theme.SurfaceBg}
 
 	// 1. Nickname Block
 	isNickFocused := (l.ActiveInput == 0)
@@ -362,10 +369,10 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	if isNickFocused {
 		nickTitle = " ► [1] YOUR NICKNAME (FOCUSED) ◄ "
 		nickBorderStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Fg:       theme.BorderFocused,
 			Modifier: cell.ModifierBold,
 		}
-		nickBgStyle = cell.Style{Bg: cell.NewColorRGB(0x13, 0x1E, 0x28)}
+		nickBgStyle = cell.Style{Bg: theme.InputBg}
 	}
 
 	nickBlock := widgets.Block{
@@ -396,33 +403,33 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	})
 
 	// 2. Host Room Block
-	isHostFocused := (l.ActiveInput == 2)
+	isHostFocused := (l.ActiveInput == 2 || l.ActiveInput == 3)
 	hostTitle := " [2] CREATE ROOM (YOU HOST) "
 	hostBorderStyle := unfocusedBorder
 	hostBgStyle := unfocusedBg
 	keyStyle := cell.Style{
-		Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
-		Bg: cell.NewColorRGB(0x22, 0x28, 0x34),
+		Fg: theme.TextMuted,
+		Bg: theme.CardBg,
 	}
 	hostBtnStyle := cell.Style{
-		Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+		Fg: theme.TextMuted,
 		Bg: nickBgStyle.Bg,
 	}
 
 	if isHostFocused {
 		hostTitle = " ► [2] CREATE ROOM (YOU HOST) [SELECTED] ◄ "
 		hostBorderStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Fg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
-		hostBgStyle = cell.Style{Bg: cell.NewColorRGB(0x1A, 0x1D, 0x26)}
+		hostBgStyle = cell.Style{Bg: theme.CardBg}
 		keyStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Bg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
 		hostBtnStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Fg:       theme.Accent,
 			Bg:       hostBgStyle.Bg,
 			Modifier: cell.ModifierBold,
 		}
@@ -445,9 +452,9 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	codeLabel := "Your Room Key (Share with Friends):"
-	codeLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: hostBgStyle.Bg}
+	codeLabelStyle := cell.Style{Fg: theme.TextMuted, Bg: hostBgStyle.Bg}
 	if isHostFocused {
-		codeLabelStyle = cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: hostBgStyle.Bg}
+		codeLabelStyle = cell.Style{Fg: theme.Text, Bg: hostBgStyle.Bg}
 	}
 	buf.SetString(hostInner.X, hostInner.Y, codeLabel, codeLabelStyle)
 
@@ -461,22 +468,60 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	})
 
-	hostBtns := "[Enter] Open This Room   •   [F2] Copy Code   •   [F3] New Code"
-	buf.SetString(hostInner.X, hostInner.Y+3, hostBtns, hostBtnStyle)
+	// PIN Protection Checkbox row
+	pinCheckStr := "[ ] PIN / Password Protected (4 Digits)"
+	pinCheckStyle := cell.Style{Fg: theme.TextMuted, Bg: hostBgStyle.Bg}
+	if l.IsPinProtected {
+		pinCheckStr = "[X] PIN Protected (4 Digits):"
+		pinCheckStyle = cell.Style{
+			Fg:       theme.Accent,
+			Bg:       hostBgStyle.Bg,
+			Modifier: cell.ModifierBold,
+		}
+	}
+	buf.SetString(hostInner.X, hostInner.Y+3, pinCheckStr, pinCheckStyle)
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, uint16(len([]rune(pinCheckStr))), 1), func(_ backend.MouseEvent) {
+		l.ActiveInput = 2
+		l.IsPinProtected = !l.IsPinProtected
+		if l.IsPinProtected && l.PinState.Value() == "" {
+			l.PinState.SetValue("1234")
+		}
+	})
 
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, 19, 1), func(_ backend.MouseEvent) {
+	if l.IsPinProtected {
+		pinInputRect := cell.Rect{
+			X:      hostInner.X + uint16(len([]rune(pinCheckStr))) + 1,
+			Y:      hostInner.Y + 3,
+			Width:  8,
+			Height: 1,
+		}
+		pinInput := widgets.TextInput{
+			ID:          "host_pin_input",
+			State:       l.PinState,
+			Placeholder: "1234",
+		}
+		frame.RenderWidget(pinInput, pinInputRect)
+		frame.RegisterClickHandler(pinInputRect, func(_ backend.MouseEvent) {
+			l.ActiveInput = 3
+		})
+	}
+
+	hostBtns := "[Enter] Open This Room   •   [F2] Copy Code   •   [F3] New Code"
+	buf.SetString(hostInner.X, hostInner.Y+4, hostBtns, hostBtnStyle)
+
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+4, 19, 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnStartHost != nil {
 			l.OnStartHost()
 		}
 	})
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+22, hostInner.Y+3, 17, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X+22, hostInner.Y+4, 17, 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
 			l.OnCopyCode(l.CurrentCode)
 		}
 	})
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+42, hostInner.Y+3, 14, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X+42, hostInner.Y+4, 14, 1), func(_ backend.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnNewCode != nil {
 			l.OnNewCode()
@@ -493,31 +538,31 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	joinBorderStyle := unfocusedBorder
 	joinBgStyle := unfocusedBg
 	joinBtnStyle := cell.Style{
-		Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+		Fg: theme.TextMuted,
 		Bg: joinBgStyle.Bg,
 	}
 
 	if l.IsConnecting {
 		joinTitle = fmt.Sprintf(" ► [3] CONNECTING TO ROOM (Verifying Host: %s) ◄ ", l.ConnectingTarget)
 		joinBorderStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+			Fg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
-		joinBgStyle = cell.Style{Bg: cell.NewColorRGB(0x22, 0x1A, 0x14)}
+		joinBgStyle = cell.Style{Bg: theme.CardBg}
 		joinBtnStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Fg:       theme.Warning,
 			Bg:       joinBgStyle.Bg,
 			Modifier: cell.ModifierBold,
 		}
 	} else if isJoinFocused {
 		joinTitle = " ► [3] JOIN EXISTING ROOM (FOCUSED - Paste with Ctrl+V) ◄ "
 		joinBorderStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Fg:       theme.Accent,
 			Modifier: cell.ModifierBold,
 		}
-		joinBgStyle = cell.Style{Bg: cell.NewColorRGB(0x11, 0x20, 0x24)}
+		joinBgStyle = cell.Style{Bg: theme.InputBg}
 		joinBtnStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Fg:       theme.Accent,
 			Bg:       joinBgStyle.Bg,
 			Modifier: cell.ModifierBold,
 		}
@@ -543,9 +588,9 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	if l.IsConnecting {
 		joinLabel = "Verifying room, searching host and establishing E2EE connection..."
 	}
-	joinLabelStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: joinBgStyle.Bg}
+	joinLabelStyle := cell.Style{Fg: theme.TextMuted, Bg: joinBgStyle.Bg}
 	if isJoinFocused || l.IsConnecting {
-		joinLabelStyle = cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: joinBgStyle.Bg}
+		joinLabelStyle = cell.Style{Fg: theme.Text, Bg: joinBgStyle.Bg}
 	}
 	buf.SetString(joinInner.X, joinInner.Y, joinLabel, joinLabelStyle)
 
@@ -559,7 +604,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	codeInput := widgets.TextInput{
 		ID:          "roomcode_input",
 		State:       l.CodeState,
-		Placeholder: "e.g. 7492-neon-falcon",
+		Placeholder: "e.g. 7492-neon-falcon (or 7492-neon-falcon:1234)",
 	}
 	frame.RenderWidget(codeInput, joinInputRect)
 
@@ -601,30 +646,30 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		Title:         " INFO & SHORTCUTS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x3B, 0x42, 0x52)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A)},
+		BorderStyle:   cell.Style{Fg: theme.Border},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(botBlock, bottomArea)
 	botInner := botBlock.Inner(bottomArea)
 
 	for y := botInner.Y; y < botInner.Y+botInner.Height; y++ {
 		for x := botInner.X; x < botInner.X+botInner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
 	if l.ToastMsg != "" {
 		toastStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Bg:       theme.Accent,
 			Modifier: cell.ModifierBold,
 		}
 		buf.SetString(botInner.X+1, botInner.Y, "  "+l.ToastMsg+"  ", toastStyle)
 	} else {
 		testBtn := "[T] Microphone & Sound Test Panel (Echo / Input Test)"
 		buf.SetString(botInner.X+1, botInner.Y, testBtn, cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg:       theme.Accent,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		})
 		frame.RegisterClickHandler(cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ backend.MouseEvent) {
@@ -642,7 +687,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 		for i, h := range helpLines {
 			if uint16(i+1) < botInner.Height {
-				buf.SetString(botInner.X+1, botInner.Y+uint16(i+1), h, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+				buf.SetString(botInner.X+1, botInner.Y+uint16(i+1), h, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 			}
 		}
 	}

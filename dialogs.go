@@ -22,30 +22,32 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 		return
 	}
 
+	theme := CurrentTheme()
+
 	// 1. Live Input Level & Status Indicator
 	pct := int(math.Min(rms*350.0, 100.0))
 	if isMuted {
 		pct = 0
 	}
 
-	topStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+	topStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	var badgeText string
 	var badgeStyle cell.Style
 
 	if isMuted {
 		badgeText = "[ MUTED ]"
-		badgeStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A), Modifier: cell.ModifierBold}
+		badgeStyle = cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	} else if isSpeaking {
 		topStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			Fg:       theme.Success,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		}
 		badgeText = "[ ● VOICE ACTIVE (GATE OPEN) ]"
-		badgeStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A), Modifier: cell.ModifierBold}
+		badgeStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	} else {
 		badgeText = "[ ○ NOISE GATED (GATE CLOSED) ]"
-		badgeStyle = cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+		badgeStyle = cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg}
 	}
 
 	headerText := fmt.Sprintf("%s: [ %2d%% ]", label, pct)
@@ -57,11 +59,11 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 	if badgeX+badgeLen <= area.X+area.Width {
 		buf.SetString(badgeX, area.Y, badgeText, badgeStyle)
 		for x := badgeX + badgeLen; x < area.X+area.Width; x++ {
-			buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+			buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	} else {
 		for x := area.X + headerLen; x < area.X+area.Width; x++ {
-			buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+			buf.SetCell(x, area.Y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
@@ -87,34 +89,34 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 		if isSpeaking {
 			if rowThreshold < 0.50 {
 				activeStyle = cell.Style{
-					Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-					Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+					Fg:       theme.WaveColor,
+					Bg:       theme.SurfaceBg,
 					Modifier: cell.ModifierBold,
 				}
 			} else if rowThreshold < 0.80 {
 				activeStyle = cell.Style{
-					Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
-					Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+					Fg:       theme.Warning,
+					Bg:       theme.SurfaceBg,
 					Modifier: cell.ModifierBold,
 				}
 			} else {
 				activeStyle = cell.Style{
-					Fg:       cell.NewColorRGB(0xFF, 0x55, 0x77),
-					Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+					Fg:       theme.Danger,
+					Bg:       theme.SurfaceBg,
 					Modifier: cell.ModifierBold,
 				}
 			}
 		} else {
-			// Dim blue-cyan bars showing ambient room sound below threshold
+			// Dim bars showing ambient room sound below threshold
 			activeStyle = cell.Style{
-				Fg: cell.NewColorRGB(0x4A, 0x69, 0x84),
-				Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A),
+				Fg: theme.Border,
+				Bg: theme.SurfaceBg,
 			}
 		}
 
 		dimStyle := cell.Style{
-			Fg: cell.NewColorRGB(0x23, 0x2A, 0x3B),
-			Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			Fg: theme.Border,
+			Bg: theme.SurfaceBg,
 		}
 
 		for c := 0; c < numCols; c++ {
@@ -143,7 +145,7 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 
 // DrawTestModal renders the interactive Microphone & Audio Device Settings panel without any icons or emojis.
 func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onClose func()) {
-	modalW, modalH := uint16(68), uint16(24)
+	modalW, modalH := uint16(68), uint16(26)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -156,13 +158,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	frame.RegisterModal("sound_test_modal", modalArea, onClose)
 
+	theme := CurrentTheme()
 	mainBlock := widgets.Block{
 		Title:          " MICROPHONE & AUDIO SETTINGS ",
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
-		BorderStyle:    cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4)},
-		Style:          cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)},
+		BorderStyle:    cell.Style{Fg: theme.BorderFocused},
+		Style:          cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(mainBlock, modalArea)
 
@@ -171,30 +174,30 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
 	// 1. Status Indicator
 	statusText := "[IDLE (SILENT)]"
-	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
+	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.Muted {
 		statusText = "[MIC OFF (MUTED)]"
-		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
+		statusStyle = cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	} else if audio.InputMode == InputModePushToTalk {
 		if audio.IsTransmitting() {
 			statusText = "[PTT ACTIVE (TRANSMITTING...)]"
-			statusStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
+			statusStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 		} else {
 			statusText = "[PTT IDLE (PRESS SPACE/P TO TALK)]"
-			statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
+			statusStyle = cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg}
 		}
 	} else if audio.IsSpeaking {
 		statusText = "[SPEAKING (AUDIO ACTIVE...)]"
-		statusStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x13, 0x17, 0x22), Modifier: cell.ModifierBold}
+		statusStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)})
+	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
 	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
 
 	// 2. Vertical VU Level Meter
@@ -209,8 +212,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 3. Microphone Input Device Selection Row
 	micDevY := inner.Y + 4
 	buf.SetString(inner.X+1, micDevY, "Microphone [1]:", cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Fg:       theme.Accent,
+		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
@@ -218,7 +221,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	nextBtn := "[▶]"
 	micBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+		Bg:       theme.Accent,
 		Modifier: cell.ModifierBold,
 	}
 
@@ -250,8 +253,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		}
 	}
 	nameStyle := cell.Style{
-		Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-		Bg: cell.NewColorRGB(0x22, 0x27, 0x36),
+		Fg: theme.Text,
+		Bg: theme.InputBg,
 	}
 	for x := micNameX; x < micNameX+boxWidth; x++ {
 		buf.SetCell(x, micDevY, cell.Cell{Content: ' ', Style: nameStyle})
@@ -270,14 +273,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 4. Output (Speaker/Headphone) Device Selection Row
 	outDevY := inner.Y + 6
 	buf.SetString(inner.X+1, outDevY, "Output Dev [2]:", cell.Style{
-		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
-		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Fg:       theme.Secondary,
+		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
 	outBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+		Bg:       theme.Secondary,
 		Modifier: cell.ModifierBold,
 	}
 
@@ -322,8 +325,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	gainPct := int(math.Round(audio.Gain * 100))
 	gainLabel := fmt.Sprintf("Mic Volume:    [ %3d%% ]", gainPct)
 	buf.SetString(inner.X+1, gainY, gainLabel, cell.Style{
-		Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
-		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Fg:       theme.Warning,
+		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
@@ -349,22 +352,22 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Min:   0,
 		Max:   300,
 		TrackStyle: cell.Style{
-			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
-			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg: theme.Border,
+			Bg: theme.SurfaceBg,
 		},
 		FilledStyle: cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg:       theme.Accent,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		},
 		ThumbStyle: cell.Style{
 			Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		},
 		FocusedStyle: cell.Style{
-			Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4),
-			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg: theme.Success,
+			Bg: theme.SurfaceBg,
 		},
 		OnChange: func(value int) {
 			audio.mu.Lock()
@@ -379,8 +382,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	outPct := int(math.Round(audio.OutputVolume * 100))
 	outVolLabel := fmt.Sprintf("Speaker Vol:   [ %3d%% ]", outPct)
 	buf.SetString(inner.X+1, outVolY, outVolLabel, cell.Style{
-		Fg:       cell.NewColorRGB(0xA2, 0x9B, 0xFE),
-		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Fg:       theme.Secondary,
+		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
@@ -402,22 +405,22 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Min:   0,
 		Max:   200,
 		TrackStyle: cell.Style{
-			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
-			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg: theme.Border,
+			Bg: theme.SurfaceBg,
 		},
 		FilledStyle: cell.Style{
-			Fg:       cell.NewColorRGB(0xA2, 0x9B, 0xFE),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg:       theme.Secondary,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		},
 		ThumbStyle: cell.Style{
 			Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		},
 		FocusedStyle: cell.Style{
-			Fg: cell.NewColorRGB(0xFD, 0x79, 0xA8),
-			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg: theme.Accent,
+			Bg: theme.SurfaceBg,
 		},
 		OnChange: func(value int) {
 			audio.mu.Lock()
@@ -430,8 +433,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 7. Suppression Mode Toggle Buttons [N]
 	noiseY := inner.Y + 12
 	buf.SetString(inner.X+1, noiseY, "Noise Filter [N]:", cell.Style{
-		Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4),
-		Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+		Fg: theme.Success,
+		Bg: theme.SurfaceBg,
 	})
 
 	optOff := " [ OFF ] "
@@ -439,13 +442,13 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	optHi := " [ HIGH ] "
 
 	curMode := audio.SuppressionMode
-	styleOff := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
-	styleStd := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
-	styleHi := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	styleOff := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
+	styleStd := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
+	styleHi := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
 
 	activeStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+		Bg:       theme.Success,
 		Modifier: cell.ModifierBold,
 	}
 
@@ -480,19 +483,19 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 8. Input Mode Selection Row [P]
 	inputModeY := inner.Y + 14
 	buf.SetString(inner.X+1, inputModeY, "Input Mode [P]:", cell.Style{
-		Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
-		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Fg:       theme.Warning,
+		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
 	modeVa := " [ Voice ] "
 	modePtt := " [ PTT ] "
 
-	styleVa := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
-	stylePtt := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x22, 0x27, 0x36)}
+	styleVa := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
+	stylePtt := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
 	activeModeStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+		Bg:       theme.Warning,
 		Modifier: cell.ModifierBold,
 	}
 
@@ -517,15 +520,15 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	if audio.InputMode == InputModePushToTalk {
 		keyLabel := fmt.Sprintf(" [ Key [K]: %s ] ", audio.GetPTTKeyName())
 		keyStyle := cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-			Bg:       cell.NewColorRGB(0x22, 0x27, 0x36),
+			Fg:       theme.Accent,
+			Bg:       theme.InputBg,
 			Modifier: cell.ModifierBold,
 		}
 		if audio.PTTListeningKey {
 			keyLabel = " [ Press Key... ] "
 			keyStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
-				Bg:       cell.NewColorRGB(0x3B, 0x2A, 0x1E),
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       theme.Warning,
 				Modifier: cell.ModifierBold,
 			}
 		}
@@ -545,8 +548,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	vadSens := audio.GetVADSensitivity()
 	vadLabel := fmt.Sprintf("Sensitivity:   [ %3d%% ]", vadSens)
 	buf.SetString(inner.X+1, vadY, vadLabel, cell.Style{
-		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
-		Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+		Fg:       theme.Secondary,
+		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
@@ -568,22 +571,22 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Min:   1,
 		Max:   100,
 		TrackStyle: cell.Style{
-			Fg: cell.NewColorRGB(0x3B, 0x42, 0x52),
-			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg: theme.Border,
+			Bg: theme.SurfaceBg,
 		},
 		FilledStyle: cell.Style{
-			Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg:       theme.Secondary,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		},
 		ThumbStyle: cell.Style{
 			Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		},
 		FocusedStyle: cell.Style{
-			Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3),
-			Bg: cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg: theme.Accent,
+			Bg: theme.SurfaceBg,
 		},
 		OnChange: func(value int) {
 			audio.SetVADSensitivity(value)
@@ -594,12 +597,12 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 10. Loopback / Echo test toggle
 	loopbackY := inner.Y + 18
 	loopBox := "[ ] Hear My Own Voice (Loopback Test) [L]"
-	loopStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x13, 0x17, 0x22)}
+	loopStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.Loopback {
 		loopBox = "[X] Hear My Own Voice (Loopback ACTIVE) [L]"
 		loopStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-			Bg:       cell.NewColorRGB(0x13, 0x17, 0x22),
+			Fg:       theme.Accent,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -608,19 +611,77 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.ToggleLoopback()
 	})
 
-	// 11. Action Buttons (Mute, Deafen, Close)
-	btnY := inner.Y + 20
+	// 11. Theme & Mini HUD Options
+	themeY := inner.Y + 20
+	buf.SetString(inner.X+1, themeY, "Theme [T]:", cell.Style{
+		Fg:       theme.Accent,
+		Bg:       theme.SurfaceBg,
+		Modifier: cell.ModifierBold,
+	})
+
+	themeBtnStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       theme.Accent,
+		Modifier: cell.ModifierBold,
+	}
+
+	curTheme := CurrentTheme()
+	themeDisplay := curTheme.Name
+	themeBoxW := uint16(18)
+
+	themePrevX := inner.X + 13
+	buf.SetString(themePrevX, themeY, prevBtn, themeBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(themePrevX, themeY, uint16(len([]rune(prevBtn))), 1), func(_ backend.MouseEvent) {
+		CycleTheme()
+	})
+
+	themeNameX := themePrevX + uint16(len([]rune(prevBtn))) + 1
+	for x := themeNameX; x < themeNameX+themeBoxW; x++ {
+		buf.SetCell(x, themeY, cell.Cell{Content: ' ', Style: nameStyle})
+	}
+	buf.SetString(themeNameX, themeY, themeDisplay, nameStyle)
+	frame.RegisterClickHandler(cell.NewRect(themeNameX, themeY, themeBoxW, 1), func(_ backend.MouseEvent) {
+		CycleTheme()
+	})
+
+	themeNextX := themeNameX + themeBoxW + 1
+	buf.SetString(themeNextX, themeY, nextBtn, themeBtnStyle)
+	frame.RegisterClickHandler(cell.NewRect(themeNextX, themeY, uint16(len([]rune(nextBtn))), 1), func(_ backend.MouseEvent) {
+		CycleTheme()
+	})
+
+	// Compact HUD mode toggle
+	hudOptX := themeNextX + uint16(len([]rune(nextBtn))) + 2
+	if hudOptX+16 <= inner.X+inner.Width {
+		hudLabel := "[ ] Mini HUD [H]"
+		hudStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+		if GetCompactHUD() {
+			hudLabel = "[X] Mini HUD ON"
+			hudStyle = cell.Style{
+				Fg:       theme.Accent,
+				Bg:       theme.SurfaceBg,
+				Modifier: cell.ModifierBold,
+			}
+		}
+		buf.SetString(hudOptX, themeY, hudLabel, hudStyle)
+		frame.RegisterClickHandler(cell.NewRect(hudOptX, themeY, uint16(len([]rune(hudLabel))), 1), func(_ backend.MouseEvent) {
+			ToggleCompactHUD()
+		})
+	}
+
+	// 12. Action Buttons (Mute, Deafen, Close)
+	btnY := inner.Y + 22
 	muteBtn := "[M] Mute Mic"
 	muteBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
+		Bg:       theme.Success,
 		Modifier: cell.ModifierBold,
 	}
 	if audio.Muted {
 		muteBtn = "[M] Unmute Mic"
 		muteBtnStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+			Bg:       theme.Danger,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -635,14 +696,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	deafBtn := "[D] Deafen"
 	deafBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
+		Bg:       theme.Secondary,
 		Modifier: cell.ModifierBold,
 	}
 	if audio.Deafened {
 		deafBtn = "[D] Undeafen"
 		deafBtnStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
+			Bg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -659,7 +720,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	closeBtn := "[ Close (Esc) ]"
 	closeBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-		Bg:       cell.NewColorRGB(0x6C, 0x5C, 0xE7),
+		Bg:       theme.BorderFocused,
 		Modifier: cell.ModifierBold,
 	}
 	closeX := inner.X + inner.Width - uint16(len([]rune(closeBtn))) - 2
@@ -687,18 +748,19 @@ func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float6
 
 	frame.RegisterModal("leave_room_dialog", animatedArea, onCancel)
 
+	theme := CurrentTheme()
 	leaveDialog := widgets.Dialog{
 		ID:          "leave_room_dialog",
 		Title:       " LEAVE ROOM ",
 		Message:     "Do you want to leave the current voice room?",
 		SubMessage:  "Your voice connection with other participants will be terminated.",
-		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
-		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: cell.NewColorRGB(235, 94, 40)},
-		BorderStyle: cell.Style{Fg: cell.NewColorRGB(235, 94, 40)},
-		ButtonStyle: cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(45, 45, 45)},
+		Style:       cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg},
+		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: theme.Danger},
+		BorderStyle: cell.Style{Fg: theme.Danger},
+		ButtonStyle: cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		ButtonFocusedStyle: cell.Style{
 			Fg:       cell.NewColorRGB(255, 255, 255),
-			Bg:       cell.NewColorRGB(235, 94, 40),
+			Bg:       theme.Danger,
 			Modifier: cell.ModifierBold,
 		},
 		Shadow: true,
@@ -734,18 +796,19 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 
 	frame.RegisterModal("exit_app_dialog", animatedArea, onCancel)
 
+	theme := CurrentTheme()
 	exitDialog := widgets.Dialog{
 		ID:          "exit_app_dialog",
 		Title:       " EXIT APPLICATION ",
 		Message:     "Do you want to exit Limoni Voice?",
 		SubMessage:  "Your current session and voice connection will be terminated.",
-		Style:       cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(20, 22, 28)},
-		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: cell.NewColorRGB(220, 60, 60)},
-		BorderStyle: cell.Style{Fg: cell.NewColorRGB(220, 60, 60)},
-		ButtonStyle: cell.Style{Fg: cell.NewColorRGB(220, 220, 220), Bg: cell.NewColorRGB(45, 45, 45)},
+		Style:       cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg},
+		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: theme.Danger},
+		BorderStyle: cell.Style{Fg: theme.Danger},
+		ButtonStyle: cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		ButtonFocusedStyle: cell.Style{
 			Fg:       cell.NewColorRGB(255, 255, 255),
-			Bg:       cell.NewColorRGB(220, 60, 60),
+			Bg:       theme.Danger,
 			Modifier: cell.ModifierBold,
 		},
 		Shadow: true,
@@ -791,7 +854,8 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 
 	frame.RegisterModal("screenshare_select_dialog", animatedArea, onCancel)
 
-	dialogBg := cell.NewColorRGB(0x13, 0x17, 0x22)
+	theme := CurrentTheme()
+	dialogBg := theme.SurfaceBg
 	buf := frame.Buffer
 
 	// 2. Clear entire dialog area with solid dark background
@@ -807,7 +871,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
-		BorderStyle:    cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Modifier: cell.ModifierBold},
+		BorderStyle:    cell.Style{Fg: theme.BorderFocused, Modifier: cell.ModifierBold},
 		Style:          cell.Style{Bg: dialogBg},
 	}
 	frame.RenderWidget(block, animatedArea)
@@ -823,7 +887,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		headerText = string([]rune(headerText)[:maxH])
 	}
 	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{
-		Fg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
+		Fg:       theme.Accent,
 		Bg:       dialogBg,
 		Modifier: cell.ModifierBold,
 	})
@@ -856,14 +920,14 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		isSel := (i == selectedIdx)
 
 		itemStyle := cell.Style{
-			Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9),
-			Bg: cell.NewColorRGB(0x1B, 0x20, 0x2E),
+			Fg: theme.Text,
+			Bg: theme.InputBg,
 		}
 		prefix := "  "
 		if isSel {
 			itemStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+				Bg:       theme.Accent,
 				Modifier: cell.ModifierBold,
 			}
 			prefix = "▶ "
@@ -909,16 +973,16 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		for r := 0; r < trackHeight; r++ {
 			curY := listY + uint16(r)
 			if r >= thumbY && r < thumbY+thumbHeight {
-				// Scrollbar Thumb (Cyan bar)
+				// Scrollbar Thumb
 				buf.SetCell(scrollX, curY, cell.Cell{
 					Content: '█',
-					Style:   cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: dialogBg},
+					Style:   cell.Style{Fg: theme.BorderFocused, Bg: dialogBg},
 				})
 			} else {
 				// Scrollbar Track
 				buf.SetCell(scrollX, curY, cell.Cell{
 					Content: '░',
-					Style:   cell.Style{Fg: cell.NewColorRGB(0x2D, 0x37, 0x48), Bg: dialogBg},
+					Style:   cell.Style{Fg: theme.Border, Bg: dialogBg},
 				})
 			}
 		}
@@ -934,7 +998,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		guideText = string([]rune(guideText)[:maxG])
 	}
 	buf.SetString(inner.X+1, bottomY, guideText, cell.Style{
-		Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
+		Fg: theme.TextMuted,
 		Bg: dialogBg,
 	})
 }
@@ -993,12 +1057,13 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 	y := (area.Height - dialogH) / 2
 	dialogArea := cell.NewRect(area.X+x, area.Y+y, dialogW, dialogH)
 
-	dialogBg := cell.NewColorRGB(0x0E, 0x11, 0x1B)
+	theme := CurrentTheme()
+	dialogBg := theme.SurfaceBg
 	block := widgets.Block{
 		Title:         " DEBUG & SYSTEM LOGS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0xA2, 0x9B, 0xFE), Modifier: cell.ModifierBold},
+		BorderStyle:   cell.Style{Fg: theme.BorderFocused, Modifier: cell.ModifierBold},
 		Style:         cell.Style{Bg: dialogBg},
 	}
 	frame.RenderWidget(block, dialogArea)
@@ -1019,7 +1084,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 	closeLen := uint16(len([]rune(closeBtn)))
 	buf.SetString(inner.X+1, inner.Y, closeBtn, cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+		Bg:       theme.Danger,
 		Modifier: cell.ModifierBold,
 	})
 	frame.RegisterClickHandler(cell.NewRect(inner.X+1, inner.Y, closeLen, 1), func(_ backend.MouseEvent) {
@@ -1034,7 +1099,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 	copyX := inner.X + closeLen + 3
 	buf.SetString(copyX, inner.Y, copyBtn, cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+		Bg:       theme.Secondary,
 		Modifier: cell.ModifierBold,
 	})
 	frame.RegisterClickHandler(cell.NewRect(copyX, inner.Y, copyLen, 1), func(_ backend.MouseEvent) {
@@ -1049,7 +1114,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 	clearX := copyX + copyLen + 2
 	buf.SetString(clearX, inner.Y, clearBtn, cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
+		Bg:       theme.Warning,
 		Modifier: cell.ModifierBold,
 	})
 	frame.RegisterClickHandler(cell.NewRect(clearX, inner.Y, clearLen, 1), func(_ backend.MouseEvent) {
@@ -1063,7 +1128,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 	countLen := uint16(len([]rune(countInfo)))
 	if inner.Width > countLen+2 {
 		buf.SetString(inner.X+inner.Width-countLen-1, inner.Y, countInfo, cell.Style{
-			Fg: cell.NewColorRGB(0x88, 0x92, 0xB0),
+			Fg: theme.TextMuted,
 			Bg: dialogBg,
 		})
 	}
@@ -1073,7 +1138,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 	for dx := inner.X; dx < inner.X+inner.Width; dx++ {
 		buf.SetCell(dx, divY, cell.Cell{
 			Content: '─',
-			Style:   cell.Style{Fg: cell.NewColorRGB(0x2D, 0x37, 0x48), Bg: dialogBg},
+			Style:   cell.Style{Fg: theme.Border, Bg: dialogBg},
 		})
 	}
 
@@ -1092,7 +1157,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 
 	if len(logs) == 0 {
 		buf.SetString(inner.X+2, listY, "No debug logs recorded yet.", cell.Style{
-			Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+			Fg: theme.TextMuted,
 			Bg: dialogBg,
 		})
 	} else {
@@ -1111,17 +1176,17 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		visibleLogs := logs[startIdx:endIdx]
 		for i, line := range visibleLogs {
 			rowY := listY + uint16(i)
-			logColor := cell.NewColorRGB(0xDF, 0xE6, 0xE9)
+			logColor := theme.Text
 			if strings.Contains(line, "[ERROR]") || strings.Contains(line, "[ERR]") || strings.Contains(line, "failed") {
-				logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
+				logColor = theme.Danger
 			} else if strings.Contains(line, "[WARN]") {
-				logColor = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+				logColor = theme.Warning
 			} else if strings.Contains(line, "[SCREEN]") || strings.Contains(line, "[SHARE]") || strings.Contains(line, "[WATCH]") || strings.Contains(line, "[VIEWER]") {
-				logColor = cell.NewColorRGB(0x00, 0xD2, 0xD3)
+				logColor = theme.Secondary
 			} else if strings.Contains(line, "[NET]") || strings.Contains(line, "[RELAY]") || strings.Contains(line, "[UDP]") || strings.Contains(line, "[TCP]") || strings.Contains(line, "[SECURITY]") || strings.Contains(line, "[HOST]") {
-				logColor = cell.NewColorRGB(0xA2, 0x9B, 0xFE)
+				logColor = theme.BorderFocused
 			} else if strings.Contains(line, "[+]") || strings.Contains(line, "joined") {
-				logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)
+				logColor = theme.Success
 			}
 
 			rLine := []rune(line)
@@ -1153,12 +1218,12 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 				if r >= thumbY && r < thumbY+thumbHeight {
 					buf.SetCell(scrollX, curY, cell.Cell{
 						Content: '█',
-						Style:   cell.Style{Fg: cell.NewColorRGB(0xA2, 0x9B, 0xFE), Bg: dialogBg},
+						Style:   cell.Style{Fg: theme.BorderFocused, Bg: dialogBg},
 					})
 				} else {
 					buf.SetCell(scrollX, curY, cell.Cell{
 						Content: '░',
-						Style:   cell.Style{Fg: cell.NewColorRGB(0x2D, 0x37, 0x48), Bg: dialogBg},
+						Style:   cell.Style{Fg: theme.Border, Bg: dialogBg},
 					})
 				}
 			}
@@ -1175,7 +1240,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		guide = string([]rune(guide)[:maxG])
 	}
 	buf.SetString(inner.X+1, bottomY, guide, cell.Style{
-		Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
+		Fg: theme.TextMuted,
 		Bg: dialogBg,
 	})
 }

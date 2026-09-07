@@ -357,6 +357,7 @@ type AudioEngine struct {
 	LocalRMS          float64
 	LocalWave         []float64 // Last 40 samples for visualizer
 	PeerWaves         map[string][]float64
+	PeerVolumes       map[string]float64 // Per-user volume scaling (0.0 to 2.0, default 1.0)
 	VADThreshold      float64
 
 	// Devices
@@ -622,6 +623,7 @@ func NewAudioEngine() *AudioEngine {
 		VADThreshold:      0.0031, // Natural default voice detection threshold (~65% sensitivity, -50dB)
 		LocalWave:         make([]float64, 40),
 		PeerWaves:         make(map[string][]float64),
+		PeerVolumes:       make(map[string]float64),
 		peerJitterBuffers: make(map[string]*PeerJitterBuffer),
 		sfxQueue:          make([][]byte, 0),
 		lastSFXTime:       make(map[SoundEffect]time.Time),
@@ -1757,12 +1759,69 @@ func (a *AudioEngine) PlayPeerPCM(peerID string, pcm []byte, rms float64, speaki
 		}
 	}
 
+	// Apply individual per-user volume scaling (0% to 200%)
+	if a.PeerVolumes != nil {
+		if vol, ok := a.PeerVolumes[peerID]; ok && vol != 1.0 {
+			pcm = applyGain(pcm, vol)
+		}
+	}
+
 	jb, exists := a.peerJitterBuffers[peerID]
 	if !exists {
 		jb = newPeerJitterBuffer(2) // 2 chunks (40ms) jitter cushion to eliminate pops and stutter
 		a.peerJitterBuffers[peerID] = jb
 	}
 	jb.Push(pcm)
+}
+
+// SetPeerVolume sets the volume multiplier for a specific peer (0.0 = 0% to 2.0 = 200%).
+func (a *AudioEngine) SetPeerVolume(peerID string, vol float64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.PeerVolumes == nil {
+		a.PeerVolumes = make(map[string]float64)
+	}
+	if vol < 0 {
+		vol = 0
+	} else if vol > 2.0 {
+		vol = 2.0
+	}
+	a.PeerVolumes[peerID] = vol
+}
+
+// GetPeerVolume returns the volume multiplier for a specific peer (defaults to 1.0).
+func (a *AudioEngine) GetPeerVolume(peerID string) float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.PeerVolumes == nil {
+		return 1.0
+	}
+	vol, ok := a.PeerVolumes[peerID]
+	if !ok {
+		return 1.0
+	}
+	return vol
+}
+
+// AdjustPeerVolume adjusts a peer's volume by delta and clamps between 0.0 and 2.0.
+func (a *AudioEngine) AdjustPeerVolume(peerID string, delta float64) float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.PeerVolumes == nil {
+		a.PeerVolumes = make(map[string]float64)
+	}
+	vol, ok := a.PeerVolumes[peerID]
+	if !ok {
+		vol = 1.0
+	}
+	vol += delta
+	if vol < 0 {
+		vol = 0
+	} else if vol > 2.0 {
+		vol = 2.0
+	}
+	a.PeerVolumes[peerID] = vol
+	return vol
 }
 
 func (a *AudioEngine) ToggleMute() bool {

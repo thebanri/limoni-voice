@@ -10,12 +10,14 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -50,25 +52,50 @@ const (
 	PacketScreenShareData
 	PacketChatMessage
 	PacketPortHop
+	PacketRoomLocked // Host rejects join request because room is locked or PIN is invalid
+	PacketFileHeader // Initiates an E2EE direct file or code snippet transfer
+	PacketFileChunk  // Chunks of encrypted file data
+	PacketFileAck    // Transfer delivery completion or cancellation
 )
 
+type FileMetadata struct {
+	TransferID  string `json:"transfer_id"`
+	FileName    string `json:"file_name"`
+	FileSize    int64  `json:"file_size"`
+	TotalChunks int    `json:"total_chunks"`
+	ChunkIndex  int    `json:"chunk_index"`
+	IsCode      bool   `json:"is_code"`
+	Checksum    string `json:"checksum"`
+}
+
+var DangerousFileExtensions = map[string]bool{
+	".exe": true, ".bat": true, ".cmd": true, ".sh": true,
+	".vbs": true, ".scr": true, ".msi": true, ".jar": true,
+	".bin": true, ".elf": true, ".com": true, ".ps1": true,
+	".apk": true, ".appimage": true, ".pif": true, ".hta": true,
+	".cpl": true, ".reg": true, ".wsf": true, ".vb": true,
+	".so": true, ".dll": true,
+}
+
 type P2PPacket struct {
-	Type            PacketType
-	RoomCode        string
-	SenderID        string
-	Nickname        string
-	IsMuted         bool
-	IsDeafened      bool
-	Speaking        bool
-	RMS             float64
-	Seq             uint32
-	Timestamp       int64
-	Payload         []byte
-	IsSharingScreen bool
-	VideoPort       int           // Port used for UDP screen streaming
-	LocalPort       int           // Local listening UDP port of the sender
-	Peers           []PeerSummary // for Welcome message
-	Padding         []byte        // Anti-DPI randomized padding
+	Type            PacketType    `json:"type"`
+	RoomCode        string        `json:"room_code"`
+	SenderID        string        `json:"sender_id"`
+	Nickname        string        `json:"nickname"`
+	IsMuted         bool          `json:"is_muted"`
+	IsDeafened      bool          `json:"is_deafened"`
+	Speaking        bool          `json:"speaking"`
+	RMS             float64       `json:"rms"`
+	Seq             uint32        `json:"seq"`
+	Timestamp       int64         `json:"timestamp"`
+	Payload         []byte        `json:"payload"`
+	IsSharingScreen bool          `json:"is_sharing_screen"`
+	VideoPort       int           `json:"video_port"` // Port used for UDP screen streaming
+	LocalPort       int           `json:"local_port"` // Local listening UDP port of the sender
+	PIN             string        `json:"pin,omitempty"`
+	FileMeta        *FileMetadata `json:"file_meta,omitempty"`
+	Peers           []PeerSummary `json:"peers,omitempty"` // for Welcome message
+	Padding         []byte        `json:"padding,omitempty"`   // Anti-DPI randomized padding
 }
 
 type PeerSummary struct {
@@ -188,6 +215,28 @@ type P2PNode struct {
 	OnScreenShare      func(peerID string, isSharing bool, videoPort int)
 	OnChatMessage      func(senderID string, nickname string, text string, ts time.Time)
 	OnDebugLog         func(msg string)
+
+	// Room Security (Lock & PIN Protection)
+	IsLocked     bool
+	RoomPIN      string
+	OnRoomLocked func(isLocked bool, pin string)
+
+	// P2P E2EE Direct File & Code Sharing
+	incomingTransfers      map[string]*IncomingFileTransfer
+	OnFileTransferProgress func(transferID string, fileName string, transferred int64, total int64, speed float64, isUpload bool, done bool, err error)
+	OnFileReceived         func(transferID string, fileName string, filePath string, isCode bool, content string)
+}
+
+type IncomingFileTransfer struct {
+	TransferID  string
+	FileName    string
+	FileSize    int64
+	TotalChunks int
+	Received    int64
+	Chunks      map[int][]byte
+	StartTime   time.Time
+	IsCode      bool
+	Checksum    string
 }
 
 // AudioDeduplicator prevents duplicate audio packets from being played
@@ -404,6 +453,7 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 		bcastSendConn:       bcastConn,
 		AntiTrackingEnabled: true,
 		hopInterval:         hopInterval,
+		incomingTransfers:   make(map[string]*IncomingFileTransfer),
 	}
 	if peerEnv := os.Getenv("LIMONI_PEER"); peerEnv != "" {
 		node.SetTargetPeer(peerEnv)
@@ -570,6 +620,18 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 		n.SetTargetPeer(customPeerIP)
 	}
 
+	// Check if input contains an optional PIN, e.g. "5289-lunar-voice:1234" or "5289-lunar-voice#1234"
+	var customPIN string
+	if strings.Contains(roomCode, ":") {
+		parts := strings.SplitN(roomCode, ":", 2)
+		roomCode = parts[0]
+		customPIN = strings.TrimSpace(parts[1])
+	} else if strings.Contains(roomCode, "#") {
+		parts := strings.SplitN(roomCode, "#", 2)
+		roomCode = parts[0]
+		customPIN = strings.TrimSpace(parts[1])
+	}
+
 	cleanCode := NormalizeCode(roomCode)
 	if cleanCode == "" {
 		if onFailed != nil {
@@ -595,6 +657,7 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.IsHost = false
 	n.HostID = ""
 	n.HostNick = ""
+	n.RoomPIN = customPIN
 	n.ConnectTargetRoom = cleanCode
 	n.RoomCode = cleanCode
 	n.RoomKey = deriveRoomKey(cleanCode)
@@ -1650,6 +1713,7 @@ func (n *P2PNode) broadcastJoinRequest() {
 	isConnecting := n.Connecting
 	localPort := n.Port
 	targetPeer := n.TargetPeerAddr
+	pin := n.RoomPIN
 	n.mu.RUnlock()
 
 	if !isConnecting || room == "" {
@@ -1664,6 +1728,7 @@ func (n *P2PNode) broadcastJoinRequest() {
 		LocalPort:  localPort,
 		IsMuted:    n.audio.Muted,
 		IsDeafened: n.audio.Deafened,
+		PIN:        pin,
 		Timestamp:  time.Now().UnixMilli(),
 	}
 
@@ -2133,6 +2198,39 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			return
 		}
 
+		// Check Room Lock & PIN Protection
+		if n.IsLocked {
+			if n.RoomPIN != "" && strings.TrimSpace(pkt.PIN) != n.RoomPIN {
+				lockPkt := P2PPacket{
+					Type:      PacketRoomLocked,
+					RoomCode:  n.RoomCode,
+					SenderID:  n.LocalID,
+					Nickname:  n.Nickname,
+					Payload:   []byte("PIN_REQUIRED"),
+					Timestamp: time.Now().UnixMilli(),
+				}
+				if peerAddr != nil {
+					go n.sendDirectUDPPacket(peerAddr, &lockPkt)
+				}
+				n.sendAudioToPeers(&lockPkt)
+				return
+			} else if n.RoomPIN == "" {
+				lockPkt := P2PPacket{
+					Type:      PacketRoomLocked,
+					RoomCode:  n.RoomCode,
+					SenderID:  n.LocalID,
+					Nickname:  n.Nickname,
+					Payload:   []byte("ROOM_LOCKED"),
+					Timestamp: time.Now().UnixMilli(),
+				}
+				if peerAddr != nil {
+					go n.sendDirectUDPPacket(peerAddr, &lockPkt)
+				}
+				n.sendAudioToPeers(&lockPkt)
+				return
+			}
+		}
+
 		// Check peer limit (Max 4 people: Host + 3 peers)
 		if len(n.Peers) >= MaxPeers-1 && n.Peers[pkt.SenderID] == nil {
 			fullPkt := P2PPacket{
@@ -2519,6 +2617,140 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				}()
 			}
 		}
+
+	case PacketRoomLocked:
+		reason := "Room is locked by host"
+		if string(pkt.Payload) == "PIN_REQUIRED" {
+			reason = "Room is protected by PIN (join with code:PIN)"
+		}
+		n.log(fmt.Sprintf("[SECURITY] %s", reason))
+		if n.OnJoinFailed != nil {
+			go n.OnJoinFailed(reason)
+		}
+
+	case PacketFileHeader:
+		meta := pkt.FileMeta
+		if meta != nil && meta.TransferID != "" {
+			transfer := &IncomingFileTransfer{
+				TransferID:  meta.TransferID,
+				FileName:    meta.FileName,
+				FileSize:    meta.FileSize,
+				TotalChunks: meta.TotalChunks,
+				Chunks:      make(map[int][]byte),
+				StartTime:   time.Now(),
+				IsCode:      meta.IsCode,
+				Checksum:    meta.Checksum,
+			}
+			if n.incomingTransfers == nil {
+				n.incomingTransfers = make(map[string]*IncomingFileTransfer)
+			}
+			n.incomingTransfers[meta.TransferID] = transfer
+			if n.OnFileTransferProgress != nil {
+				go n.OnFileTransferProgress(meta.TransferID, meta.FileName, 0, meta.FileSize, 0, false, false, nil)
+			}
+		}
+
+	case PacketFileChunk:
+		meta := pkt.FileMeta
+		if meta != nil && meta.TransferID != "" {
+			if n.incomingTransfers == nil {
+				n.incomingTransfers = make(map[string]*IncomingFileTransfer)
+			}
+			transfer, exists := n.incomingTransfers[meta.TransferID]
+			if !exists {
+				transfer = &IncomingFileTransfer{
+					TransferID:  meta.TransferID,
+					FileName:    meta.FileName,
+					FileSize:    meta.FileSize,
+					TotalChunks: meta.TotalChunks,
+					Chunks:      make(map[int][]byte),
+					StartTime:   time.Now(),
+					IsCode:      meta.IsCode,
+					Checksum:    meta.Checksum,
+				}
+				n.incomingTransfers[meta.TransferID] = transfer
+			}
+
+			if _, already := transfer.Chunks[meta.ChunkIndex]; !already {
+				transfer.Chunks[meta.ChunkIndex] = pkt.Payload
+				transfer.Received += int64(len(pkt.Payload))
+			}
+
+			elapsed := time.Since(transfer.StartTime).Seconds()
+			var speed float64
+			if elapsed > 0.05 {
+				speed = float64(transfer.Received) / elapsed
+			}
+
+			isDone := len(transfer.Chunks) >= transfer.TotalChunks || transfer.Received >= transfer.FileSize
+			if isDone {
+				var assembled bytes.Buffer
+				for idx := 0; idx < transfer.TotalChunks; idx++ {
+					if chunk, ok := transfer.Chunks[idx]; ok {
+						assembled.Write(chunk)
+					}
+				}
+				fullData := assembled.Bytes()
+				delete(n.incomingTransfers, meta.TransferID)
+
+				// 1. Verify Checksum
+				if transfer.Checksum != "" {
+					sum := sha256.Sum256(fullData)
+					actualChecksum := hex.EncodeToString(sum[:])
+					if actualChecksum != transfer.Checksum {
+						if n.OnFileTransferProgress != nil {
+							go n.OnFileTransferProgress(meta.TransferID, meta.FileName, transfer.Received, transfer.FileSize, 0, false, true, fmt.Errorf("checksum mismatch (corrupted or tampered)"))
+						}
+						return
+					}
+				}
+
+				if transfer.IsCode {
+					codeStr := string(fullData)
+					tmpFile, err := os.CreateTemp("", "limoni-snippet-*.txt")
+					var tmpPath string
+					if err == nil {
+						_, _ = tmpFile.Write(fullData)
+						_ = tmpFile.Close()
+						tmpPath = tmpFile.Name()
+					}
+					if n.OnFileReceived != nil {
+						go n.OnFileReceived(meta.TransferID, meta.FileName, tmpPath, true, codeStr)
+					}
+				} else {
+					homeDir, _ := os.UserHomeDir()
+					dlDir := filepath.Join(homeDir, "Downloads", "LimoniTransfers")
+					if homeDir == "" {
+						dlDir = "downloads"
+					}
+					_ = os.MkdirAll(dlDir, 0755)
+
+					safeName := filepath.Base(meta.FileName)
+					if safeName == "" || safeName == "." {
+						safeName = "received_file"
+					}
+
+					// Extension safety check
+					ext := strings.ToLower(filepath.Ext(safeName))
+					if DangerousFileExtensions[ext] {
+						safeName = safeName + ".quarantined"
+					}
+
+					destPath := filepath.Join(dlDir, safeName)
+					_ = os.WriteFile(destPath, fullData, 0644)
+					if n.OnFileReceived != nil {
+						go n.OnFileReceived(meta.TransferID, safeName, destPath, false, "")
+					}
+				}
+			}
+
+			if n.OnFileTransferProgress != nil {
+				go n.OnFileTransferProgress(meta.TransferID, meta.FileName, transfer.Received, transfer.FileSize, speed, false, isDone, nil)
+			}
+		}
+
+	case PacketFileAck:
+		// Transfer acknowledgment received
 	}
 }
 
@@ -3303,4 +3535,150 @@ func decryptAndDecodePacket(data []byte, pkt *P2PPacket, aead cipher.AEAD) error
 	decBuf := bytes.NewBuffer(plaintext)
 	dec := gob.NewDecoder(decBuf)
 	return dec.Decode(pkt)
+}
+
+// LockRoom locks the current room against new joiners, optionally requiring a 4-digit PIN (Host only).
+func (n *P2PNode) LockRoom(pin string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.IsHost {
+		n.log("[SECURITY] Non-host attempted to lock room - ignored.")
+		return
+	}
+	n.IsLocked = true
+	n.RoomPIN = strings.TrimSpace(pin)
+	if n.RoomPIN != "" {
+		n.log(fmt.Sprintf("[SECURITY] Room locked with 4-digit PIN: %s", n.RoomPIN))
+	} else {
+		n.log("[SECURITY] Room locked. No new members can join.")
+	}
+	if n.OnRoomLocked != nil {
+		go n.OnRoomLocked(true, n.RoomPIN)
+	}
+}
+
+// UnlockRoom unlocks the room for open joining (Host only).
+func (n *P2PNode) UnlockRoom() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.IsHost {
+		n.log("[SECURITY] Non-host attempted to unlock room - ignored.")
+		return
+	}
+	n.IsLocked = false
+	n.RoomPIN = ""
+	n.log("[SECURITY] Room unlocked. Open for new members.")
+	if n.OnRoomLocked != nil {
+		go n.OnRoomLocked(false, "")
+	}
+}
+
+// SendFile streams a local file to all peers in the room with E2EE chunking
+func (n *P2PNode) SendFile(filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	fileName := filepath.Base(filePath)
+	return n.SendFileBytes(fileName, data, false)
+}
+
+// SendCodeSnippet shares a syntax code snippet with peers in the room
+func (n *P2PNode) SendCodeSnippet(title string, codeContent string) error {
+	if title == "" {
+		title = "snippet.txt"
+	}
+	return n.SendFileBytes(title, []byte(codeContent), true)
+}
+
+// SendFileBytes streams raw file or code bytes to all peers with E2EE chunking
+func (n *P2PNode) SendFileBytes(fileName string, data []byte, isCode bool) error {
+	n.mu.Lock()
+	if !n.IsConnected || len(n.Peers) == 0 {
+		n.mu.Unlock()
+		return errors.New("cannot transfer: not connected to room or no peers")
+	}
+	room := n.RoomCode
+	senderID := n.LocalID
+	nickname := n.Nickname
+	fileSum := sha256.Sum256([]byte(fileName))
+	transferID := fmt.Sprintf("tf_%d_%x", time.Now().UnixNano(), fileSum[:4])
+	const chunkSize = 16384 // 16 KB per chunk
+	fileSize := int64(len(data))
+	totalChunks := (len(data) + chunkSize - 1) / chunkSize
+	if totalChunks == 0 {
+		totalChunks = 1
+	}
+
+	h := sha256.New()
+	h.Write(data)
+	checksum := hex.EncodeToString(h.Sum(nil))
+
+	headerPkt := P2PPacket{
+		Type:     PacketFileHeader,
+		RoomCode: room,
+		SenderID: senderID,
+		Nickname: nickname,
+		FileMeta: &FileMetadata{
+			TransferID:  transferID,
+			FileName:    fileName,
+			FileSize:    fileSize,
+			TotalChunks: totalChunks,
+			IsCode:      isCode,
+			Checksum:    checksum,
+		},
+		Timestamp: time.Now().UnixMilli(),
+	}
+
+	n.sendAudioToPeers(&headerPkt)
+
+	// Stream chunks in background goroutine
+	go func() {
+		startTime := time.Now()
+		var sentBytes int64
+
+		for i := 0; i < totalChunks; i++ {
+			start := i * chunkSize
+			end := start + chunkSize
+			if end > len(data) {
+				end = len(data)
+			}
+			chunkData := data[start:end]
+			sentBytes += int64(len(chunkData))
+
+			chunkPkt := P2PPacket{
+				Type:     PacketFileChunk,
+				RoomCode: room,
+				SenderID: senderID,
+				Nickname: nickname,
+				FileMeta: &FileMetadata{
+					TransferID:  transferID,
+					FileName:    fileName,
+					FileSize:    fileSize,
+					TotalChunks: totalChunks,
+					ChunkIndex:  i,
+					IsCode:      isCode,
+					Checksum:    checksum,
+				},
+				Payload:   chunkData,
+				Timestamp: time.Now().UnixMilli(),
+			}
+
+			n.sendAudioToPeers(&chunkPkt)
+
+			elapsed := time.Since(startTime).Seconds()
+			var speed float64
+			if elapsed > 0.05 {
+				speed = float64(sentBytes) / elapsed
+			}
+
+			isDone := i == totalChunks-1
+			if n.OnFileTransferProgress != nil {
+				n.OnFileTransferProgress(transferID, fileName, sentBytes, fileSize, speed, true, isDone, nil)
+			}
+			time.Sleep(6 * time.Millisecond) // smooth pacing
+		}
+	}()
+
+	return nil
 }

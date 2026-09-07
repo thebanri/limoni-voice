@@ -3,10 +3,13 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -1496,6 +1499,331 @@ func TestChatMultilineAndSlashCommands(t *testing.T) {
 		t.Fatalf("Expected sfxQueue to be empty when SFXMuted is true, got %d chunks", len(audioEngine.sfxQueue))
 	}
 }
+
+func TestPerUserVolumeAdjustment(t *testing.T) {
+	audio := NewAudioEngine()
+	peerID := "peer_alice_123"
+
+	// 1. Default volume should be 1.0 (100%)
+	if vol := audio.GetPeerVolume(peerID); vol != 1.0 {
+		t.Fatalf("Expected default peer volume to be 1.0, got %f", vol)
+	}
+
+	// 2. Setting peer volume
+	audio.SetPeerVolume(peerID, 1.50)
+	if vol := audio.GetPeerVolume(peerID); math.Abs(vol-1.50) > 0.001 {
+		t.Fatalf("Expected peer volume 1.50, got %f", vol)
+	}
+
+	// 3. Clamping: negative volume clamped to 0.0, >2.0 clamped to 2.0
+	audio.SetPeerVolume(peerID, -0.5)
+	if vol := audio.GetPeerVolume(peerID); vol != 0.0 {
+		t.Fatalf("Expected volume clamped to 0.0, got %f", vol)
+	}
+	audio.SetPeerVolume(peerID, 2.5)
+	if vol := audio.GetPeerVolume(peerID); vol != 2.0 {
+		t.Fatalf("Expected volume clamped to 2.0, got %f", vol)
+	}
+
+	// 4. AdjustPeerVolume delta
+	audio.SetPeerVolume(peerID, 1.0)
+	audio.AdjustPeerVolume(peerID, 0.25)
+	if vol := audio.GetPeerVolume(peerID); math.Abs(vol-1.25) > 0.001 {
+		t.Fatalf("Expected peer volume 1.25 after +0.25 delta, got %f", vol)
+	}
+
+	// 5. Test applyGain with per-peer volume
+	rawPCM := make([]byte, 320*2)
+	for i := 0; i < 320; i++ {
+		binary.LittleEndian.PutUint16(rawPCM[i*2:i*2+2], uint16(1000))
+	}
+
+	// 0% volume should silence the audio completely
+	silenced := applyGain(rawPCM, 0.0)
+	for i := 0; i < 320; i++ {
+		v := int16(binary.LittleEndian.Uint16(silenced[i*2 : i*2+2]))
+		if v != 0 {
+			t.Fatalf("Expected sample %d to be 0 at 0%% volume, got %d", i, v)
+		}
+	}
+
+	// 150% volume should amplify samples
+	boosted := applyGain(rawPCM, 1.50)
+	vBoosted := int16(binary.LittleEndian.Uint16(boosted[0:2]))
+	if vBoosted != 1500 {
+		t.Fatalf("Expected amplified sample to be 1500 at 150%% gain, got %d", vBoosted)
+	}
+}
+
+func TestE2EEFileTransfer(t *testing.T) {
+	// 1. Create a dummy file
+	tmpFile, err := os.CreateTemp("", "limoni_test_file_*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	testContent := "Hello from Limoni Voice P2P Direct File Transfer! Testing Chunking and Checksum validation."
+	if _, err := tmpFile.WriteString(testContent); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// 2. Test FileMetadata and chunk hashing
+	fileBytes := []byte(testContent)
+	sum := sha256.Sum256(fileBytes)
+	checksumHex := hex.EncodeToString(sum[:])
+
+	meta := &FileMetadata{
+		TransferID:  "tx_123",
+		FileName:    "test.txt",
+		FileSize:    int64(len(fileBytes)),
+		TotalChunks: 4,
+		ChunkIndex:  0,
+		Checksum:    checksumHex,
+		IsCode:      false,
+	}
+
+	if meta.TotalChunks != 4 {
+		t.Fatalf("Expected 4 chunks for 89 bytes, got %d", meta.TotalChunks)
+	}
+
+	// 3. Test AEAD packet serialization and deserialization
+	roomKey := deriveRoomKey("test-room-key-file")
+	block, err := aes.NewCipher(roomKey)
+	if err != nil {
+		t.Fatalf("aes.NewCipher failed: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("cipher.NewGCM failed: %v", err)
+	}
+
+	headerPacket := &P2PPacket{
+		Type:     PacketFileHeader,
+		FileMeta: meta,
+	}
+	enc, err := encodeAndEncryptPacket(headerPacket, aead)
+	if err != nil {
+		t.Fatalf("encodeAndEncryptPacket failed: %v", err)
+	}
+
+	var dec P2PPacket
+	if err := decryptAndDecodePacket(enc, &dec, aead); err != nil {
+		t.Fatalf("decryptAndDecodePacket failed: %v", err)
+	}
+	if dec.Type != PacketFileHeader || dec.FileMeta == nil || dec.FileMeta.TransferID != "tx_123" {
+		t.Fatalf("Decoded file header does not match original: %+v", dec.FileMeta)
+	}
+
+	// 4. Test code snippet packet
+	codeSnippet := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello World!\")\n}"
+	snippetMeta := &FileMetadata{
+		TransferID:  "tx_code_456",
+		FileName:    "snippet.go",
+		FileSize:    int64(len(codeSnippet)),
+		TotalChunks: 1,
+		ChunkIndex:  0,
+		IsCode:      true,
+	}
+	codePacket := &P2PPacket{
+		Type:     PacketFileChunk,
+		FileMeta: snippetMeta,
+		Payload:  []byte(codeSnippet),
+	}
+	codeEnc, err := encodeAndEncryptPacket(codePacket, aead)
+	if err != nil {
+		t.Fatalf("Code packet marshal failed: %v", err)
+	}
+	var codeDec P2PPacket
+	if err := decryptAndDecodePacket(codeEnc, &codeDec, aead); err != nil {
+		t.Fatalf("Code packet unmarshal failed: %v", err)
+	}
+	if string(codeDec.Payload) != codeSnippet || !codeDec.FileMeta.IsCode {
+		t.Fatalf("Decoded code snippet does not match original: %s", string(codeDec.Payload))
+	}
+}
+
+func TestRoomLockAndPIN(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("host_lock_test", "LockHost", audio)
+	defer node.Close()
+
+	// 1. Host room
+	roomCode := "987654"
+	node.HostRoom(roomCode)
+	if node.IsLocked || node.RoomPIN != "" {
+		t.Fatalf("Expected new room to be unlocked by default")
+	}
+
+	// 2. Lock room with 4-digit PIN
+	node.LockRoom("4321")
+	if !node.IsLocked || node.RoomPIN != "4321" {
+		t.Fatalf("Expected room to be locked with PIN 4321, got isLocked=%v, pin=%s", node.IsLocked, node.RoomPIN)
+	}
+
+	// 3. Unlock room
+	node.UnlockRoom()
+	if node.IsLocked || node.RoomPIN != "" {
+		t.Fatalf("Expected room to be unlocked after UnlockRoom()")
+	}
+
+	// 4. Lock room without PIN (rejects all new participants)
+	node.LockRoom("")
+	if !node.IsLocked || node.RoomPIN != "" {
+		t.Fatalf("Expected room to be locked without PIN")
+	}
+}
+
+func TestThemeEngine(t *testing.T) {
+	// 1. Check all available themes
+	if len(AvailableThemes) < 5 {
+		t.Fatalf("Expected at least 5 curated themes, got %d", len(AvailableThemes))
+	}
+
+	themeNames := make(map[string]bool)
+	for _, theme := range AvailableThemes {
+		if theme.ID == "" || theme.Name == "" {
+			t.Fatalf("Theme has empty ID or Name: %+v", theme)
+		}
+		themeNames[theme.ID] = true
+	}
+
+	expectedThemes := []string{"cyberpunk", "dracula", "catppuccin", "nord", "tokyonight"}
+	for _, exp := range expectedThemes {
+		if !themeNames[exp] {
+			t.Fatalf("Expected theme '%s' to be available in ThemeEngine", exp)
+		}
+	}
+
+	// 2. Test SetThemeByID and CycleTheme
+	if !SetThemeByID("dracula") {
+		t.Fatalf("SetThemeByID('dracula') failed")
+	}
+	if cur := CurrentTheme(); cur.ID != "dracula" {
+		t.Fatalf("Expected CurrentTheme() to be 'dracula', got '%s'", cur.ID)
+	}
+
+	nextThemeName := CycleTheme()
+	if nextThemeName == "" || CurrentTheme().ID == "dracula" {
+		t.Fatalf("Expected CycleTheme to switch to next theme, got %s", nextThemeName)
+	}
+}
+
+func TestLobbyPinProtection(t *testing.T) {
+	lobby := NewLobbyView()
+	if lobby.IsPinProtected {
+		t.Fatalf("Expected LobbyView.IsPinProtected to start as false")
+	}
+
+	// Toggle PIN protection ON
+	lobby.IsPinProtected = true
+	lobby.PinState.SetValue("4321")
+
+	if !lobby.IsPinProtected {
+		t.Fatalf("Expected IsPinProtected to be true")
+	}
+	if lobby.PinState.Value() != "4321" {
+		t.Fatalf("Expected PinState value to be '4321', got %s", lobby.PinState.Value())
+	}
+}
+
+func TestHostOnlyRoomLocking(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// 1. Peer / Non-Host Node
+	peerNode := NewP2PNode("peer_id_1", "RegularPeer", audio)
+	defer peerNode.Close()
+	peerNode.IsHost = false
+
+	// Attempt to lock room as peer (should be rejected/ignored)
+	peerNode.LockRoom("1234")
+	if peerNode.IsLocked {
+		t.Fatalf("Non-host peer should not be able to lock room")
+	}
+
+	// 2. Host Node
+	hostNode := NewP2PNode("host_id_1", "HostUser", audio)
+	defer hostNode.Close()
+	hostNode.HostRoom("test-host-code")
+	if !hostNode.IsHost {
+		t.Fatalf("Expected hostNode to have IsHost = true")
+	}
+
+	// Lock room as host
+	hostNode.LockRoom("9876")
+	if !hostNode.IsLocked {
+		t.Fatalf("Expected room to be locked by host")
+	}
+	if hostNode.RoomPIN != "9876" {
+		t.Fatalf("Expected RoomPIN to be '9876', got '%s'", hostNode.RoomPIN)
+	}
+
+	// Unlock room as host
+	hostNode.UnlockRoom()
+	if hostNode.IsLocked {
+		t.Fatalf("Expected room to be unlocked by host")
+	}
+	if hostNode.RoomPIN != "" {
+		t.Fatalf("Expected RoomPIN to be cleared after unlock")
+	}
+}
+
+func TestDangerousFileQuarantine(t *testing.T) {
+	dangerousList := []string{
+		"virus.exe", "script.sh", "setup.bat", "run.cmd", "macro.vbs",
+		"installer.msi", "app.jar", "binary.bin", "trojan.scr", "payload.ps1",
+		"lib.so", "driver.dll", "package.apk", "game.appimage",
+	}
+
+	for _, filename := range dangerousList {
+		ext := strings.ToLower(filename[strings.LastIndex(filename, "."):])
+		if !DangerousFileExtensions[ext] {
+			t.Fatalf("Expected DangerousFileExtensions to contain %s", ext)
+		}
+	}
+
+	safeList := []string{
+		"document.pdf", "image.png", "photo.jpg", "notes.txt", "music.mp3",
+		"video.mp4", "archive.zip", "data.json", "source.go",
+	}
+
+	for _, filename := range safeList {
+		ext := strings.ToLower(filename[strings.LastIndex(filename, "."):])
+		if DangerousFileExtensions[ext] {
+			t.Fatalf("Expected safe file %s to NOT be in DangerousFileExtensions", ext)
+		}
+	}
+}
+
+func TestCompactHUDScreenShareButton(t *testing.T) {
+	room := NewRoomView()
+	room.IsCompactMode = true
+
+	audio := NewAudioEngine()
+	node := NewP2PNode("hud_share_test", "ShareUser", audio)
+	defer node.Close()
+	node.HostRoom("998877")
+
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 100, 5))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 100, 5), node, audio)
+
+	var renderedText strings.Builder
+	for y := uint16(0); y < 5; y++ {
+		for x := uint16(0); x < 100; x++ {
+			c := buf.Get(x, y)
+			if c != nil && c.Content != 0 {
+				renderedText.WriteRune(c.Content)
+			}
+		}
+	}
+	bufStr := renderedText.String()
+	if !strings.Contains(bufStr, "SHARE [V]") {
+		t.Fatalf("Expected Compact HUD to render Screen Share button [SHARE [V]], got:\n%s", bufStr)
+	}
+}
+
 
 
 

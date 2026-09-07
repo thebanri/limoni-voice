@@ -2,7 +2,11 @@ package main
 
 import (
 	"fmt"
+	"math"
+	"os"
+	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,10 +44,18 @@ type RoomView struct {
 	chatHistory            []string
 	historyIndex           int
 	savedCurrentChat       string
+	IsCompactMode          bool
 	OnLeave                func()
 	OnOpenTestModal        func()
 	OnOpenScreenShareModal func()
 	OnSendChat             func(text string)
+	OnSendFile             func(filePath string)
+	OnSendCode             func(title, code string)
+	OnLockRoom             func(pin string)
+	OnUnlockRoom           func()
+	OnSetPeerVolume        func(target string, vol float64)
+	OnAdjustPeerVolume     func(peerID string, delta float64)
+	OnOpenEditor           func(filePath string)
 	OnTriggerHop           func()
 	OnChangeNick           func(newNick string)
 	OnTriggerMute          func()
@@ -187,9 +199,121 @@ func (r *RoomView) SendCurrentChat() {
 		case "/help", "/?":
 			r.Messages = append(r.Messages, RoomMessage{
 				Timestamp: time.Now(),
-				Text:      "💡 Commands: /mute [sfx|all], /deafen, /sfx, /hop, /nick <name>, /clear",
+				Text:      "Commands: /vol [user] [0-200], /send <path>, /code <snippet>, /lock [pin], /unlock, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
 				IsChat:    false,
 			})
+			r.mu.Unlock()
+			return
+
+		case "/vol", "/volume":
+			if len(parts) < 2 {
+				r.Messages = append(r.Messages, RoomMessage{
+					Timestamp: time.Now(),
+					Text:      "Usage: /vol <user> <0-200> (e.g. /vol alice 150) or /vol <0-200>",
+					IsChat:    false,
+				})
+				r.mu.Unlock()
+				return
+			}
+			var target string
+			var volVal int
+			var err error
+			if len(parts) == 2 {
+				volVal, err = strconv.Atoi(parts[1])
+				if err != nil {
+					target = strings.TrimPrefix(parts[1], "@")
+					volVal = 100
+				}
+			} else {
+				target = strings.TrimPrefix(parts[1], "@")
+				volVal, err = strconv.Atoi(parts[2])
+				if err != nil {
+					r.Messages = append(r.Messages, RoomMessage{
+						Timestamp: time.Now(),
+						Text:      "Invalid volume percentage. Use 0 - 200.",
+						IsChat:    false,
+					})
+					r.mu.Unlock()
+					return
+				}
+			}
+			if volVal < 0 {
+				volVal = 0
+			} else if volVal > 200 {
+				volVal = 200
+			}
+			setPeerVol := r.OnSetPeerVolume
+			r.mu.Unlock()
+			if setPeerVol != nil {
+				setPeerVol(target, float64(volVal)/100.0)
+			}
+			return
+
+		case "/send", "/file":
+			if len(parts) < 2 {
+				r.Messages = append(r.Messages, RoomMessage{
+					Timestamp: time.Now(),
+					Text:      "Usage: /send <file_path> (e.g. /send ./main.go)",
+					IsChat:    false,
+				})
+				r.mu.Unlock()
+				return
+			}
+			filePath := strings.Join(parts[1:], " ")
+			sendFileCb := r.OnSendFile
+			r.mu.Unlock()
+			if sendFileCb != nil {
+				go sendFileCb(filePath)
+			}
+			return
+
+		case "/code", "/paste":
+			if len(parts) < 2 {
+				r.Messages = append(r.Messages, RoomMessage{
+					Timestamp: time.Now(),
+					Text:      "Usage: /code <snippet_or_file> (e.g. /code fmt.Println(\"hi\"))",
+					IsChat:    false,
+				})
+				r.mu.Unlock()
+				return
+			}
+			rawSnippet := strings.TrimPrefix(text, parts[0]+" ")
+			sendCodeCb := r.OnSendCode
+			r.mu.Unlock()
+			if sendCodeCb != nil {
+				go sendCodeCb("Snippet", rawSnippet)
+			}
+			return
+
+		case "/lock":
+			var pin string
+			if len(parts) >= 2 {
+				pin = parts[1]
+			}
+			lockCb := r.OnLockRoom
+			r.mu.Unlock()
+			if lockCb != nil {
+				lockCb(pin)
+			}
+			return
+
+		case "/unlock":
+			unlockCb := r.OnUnlockRoom
+			r.mu.Unlock()
+			if unlockCb != nil {
+				unlockCb()
+			}
+			return
+
+		case "/compact", "/hud", "/mini":
+			newVal := ToggleCompactHUD()
+			r.IsCompactMode = newVal
+			if newVal {
+				r.ToastMsg = "Compact HUD Mode Enabled"
+			} else {
+				r.ToastMsg = "Full UI Restored"
+			}
+			r.ToastTimer = 90
 			r.mu.Unlock()
 			return
 
@@ -305,6 +429,11 @@ func (r *RoomView) Update() {
 }
 
 func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
+	if r.IsCompactMode || GetCompactHUD() || area.Height <= 6 {
+		r.renderCompactHUD(frame, area, node, audio)
+		return
+	}
+
 	footerHeight := uint16(8)
 	if node.IsWatchingScreen {
 		footerHeight = 4 // Compact footer when watching stream so Stage gets maximum height!
@@ -326,12 +455,13 @@ func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *P2PNode, 
 }
 
 func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2PNode) {
+	theme := CurrentTheme()
 	block := widgets.Block{
 		Title:         " LIMONI VOICE ROOM ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
+		Style:         cell.Style{Bg: theme.HeaderBg},
 	}
 
 	inner := block.Inner(area)
@@ -340,7 +470,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	buf := frame.Buffer
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.HeaderBg}})
 		}
 	}
 
@@ -353,8 +483,8 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	if inner.Width > durLen+4 {
 		buf.SetString(durX, inner.Y, durStr, cell.Style{
-			Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9),
-			Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+			Fg: theme.TextMuted,
+			Bg: theme.HeaderBg,
 		})
 	}
 
@@ -369,8 +499,8 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	titleLen := uint16(len([]rune(titleStr)))
 	if curX+titleLen <= limitX {
 		buf.SetString(curX, inner.Y, titleStr, cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
-			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+			Fg:       theme.Accent,
+			Bg:       theme.HeaderBg,
 			Modifier: cell.ModifierBold,
 		})
 		curX += titleLen + 2
@@ -382,7 +512,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	if curX+codeLen <= limitX {
 		buf.SetString(curX, inner.Y, codeBadge, cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Bg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		})
 		badgeRect := cell.NewRect(curX, inner.Y, codeLen, 1)
@@ -400,7 +530,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		roleBadge = " HOST (YOU) "
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+			Bg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
 	} else {
@@ -411,7 +541,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		roleBadge = fmt.Sprintf(" MEMBER (Host: %s) ", hostName)
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
+			Bg:       theme.Secondary,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -426,8 +556,8 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	countLen := uint16(len([]rune(countStr)))
 	if curX+countLen <= limitX {
 		buf.SetString(curX, inner.Y, countStr, cell.Style{
-			Fg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
-			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+			Fg:       theme.Success,
+			Bg:       theme.HeaderBg,
 			Modifier: cell.ModifierBold,
 		})
 		curX += countLen + 2
@@ -443,8 +573,8 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	portLen := uint16(len([]rune(portBadge)))
 	if curX+portLen <= limitX {
 		buf.SetString(curX, inner.Y, portBadge, cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-			Bg:       cell.NewColorRGB(0x13, 0x27, 0x22),
+			Fg:       theme.Accent,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		})
 		pRect := cell.NewRect(curX, inner.Y, portLen, 1)
@@ -452,6 +582,34 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 			r.SetToast(fmt.Sprintf("Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.currentEpoch))
 		})
 		curX += portLen + 2
+	}
+
+	// 6. Lock Status Badge
+	if node.IsLocked {
+		var lockBadge string
+		if node.IsHost && node.RoomPIN != "" {
+			lockBadge = fmt.Sprintf(" LOCKED (PIN: %s) ", node.RoomPIN)
+		} else {
+			lockBadge = " LOCKED "
+		}
+		lockLen := uint16(len([]rune(lockBadge)))
+		if curX+lockLen <= limitX {
+			buf.SetString(curX, inner.Y, lockBadge, cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       theme.Danger,
+				Modifier: cell.ModifierBold,
+			})
+			lRect := cell.NewRect(curX, inner.Y, lockLen, 1)
+			frame.RegisterClickHandler(lRect, func(_ backend.MouseEvent) {
+				if node.IsHost {
+					node.UnlockRoom()
+					r.SetToast("Room unlocked")
+				} else {
+					r.SetToast("Room is locked by host")
+				}
+			})
+			curX += lockLen + 2
+		}
 	}
 }
 
@@ -535,12 +693,13 @@ func (r *RoomView) renderClassicGrid(frame *terminal.Frame, area cell.Rect, node
 }
 
 func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine, peers []*PeerInfo) {
+	theme := CurrentTheme()
 	block := widgets.Block{
 		Title:         " VOICE CHANNEL MEMBERS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A)},
+		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(block, area)
 	inner := block.Inner(area)
@@ -548,7 +707,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 	buf := frame.Buffer
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
@@ -616,34 +775,35 @@ func formatDuration(d time.Duration) string {
 }
 
 func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, name string, rms float64, isSpeaking, isMuted, isDeafened, isSharing, isBeingWatched bool, pingMs int64, isReconnecting bool, isSelf bool) {
+	theme := CurrentTheme()
 	buf := frame.Buffer
 
 	// Icon & Color
 	var icon string
-	nameStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A), Modifier: cell.ModifierBold}
+	nameStyle := cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 
 	if isSelf {
-		nameStyle.Fg = cell.NewColorRGB(0x00, 0xD2, 0xD3)
+		nameStyle.Fg = theme.Accent
 	}
 
 	if isReconnecting {
 		icon = "[!]"
-		nameStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+		nameStyle.Fg = theme.Warning
 	} else if isBeingWatched {
 		icon = "[W]"
-		nameStyle.Fg = cell.NewColorRGB(0x00, 0xF5, 0xD4)
+		nameStyle.Fg = theme.Secondary
 	} else if isSharing {
 		icon = "[*]"
-		nameStyle.Fg = cell.NewColorRGB(0x00, 0xFF, 0x88)
+		nameStyle.Fg = theme.Accent
 	} else if isSpeaking {
 		icon = "●"
-		nameStyle.Fg = cell.NewColorRGB(0x55, 0xEF, 0xC4)
+		nameStyle.Fg = theme.Success
 	} else if isDeafened {
 		icon = "[D]"
-		nameStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+		nameStyle.Fg = theme.Warning
 	} else if isMuted {
 		icon = "[M]"
-		nameStyle.Fg = cell.NewColorRGB(0xFF, 0x76, 0x75)
+		nameStyle.Fg = theme.Danger
 	} else {
 		icon = "○"
 	}
@@ -658,19 +818,19 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 
 	// Status Line / Ping
 	statusStr := ""
-	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A)}
+	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if isReconnecting {
 		statusStr = "[Reconnecting...]"
-		statusStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+		statusStyle.Fg = theme.Warning
 	} else if isDeafened {
 		statusStr = "[Deafened]"
-		statusStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+		statusStyle.Fg = theme.Warning
 	} else if isMuted {
 		statusStr = "[Muted]"
-		statusStyle.Fg = cell.NewColorRGB(0xFF, 0x76, 0x75)
+		statusStyle.Fg = theme.Danger
 	} else if isSpeaking {
 		statusStr = "[Speaking]"
-		statusStyle.Fg = cell.NewColorRGB(0x00, 0xFF, 0x88)
+		statusStyle.Fg = theme.Success
 	} else {
 		statusStr = "[Connected]"
 	}
@@ -691,10 +851,11 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 }
 
 func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeers []*PeerInfo, node *P2PNode) {
+	theme := CurrentTheme()
 	stageTitle := " LIVE STREAM STAGE "
-	borderCol := cell.NewColorRGB(0x00, 0xFF, 0x88)
+	borderCol := theme.Accent
 	if !node.IsWatchingScreen && !node.IsSharingScreen {
-		borderCol = cell.NewColorRGB(0x6C, 0x5C, 0xE7)
+		borderCol = theme.BorderFocused
 	}
 
 	block := widgets.Block{
@@ -702,7 +863,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: borderCol, Modifier: cell.ModifierBold},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(block, area)
 	inner := block.Inner(area)
@@ -712,7 +873,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
@@ -730,15 +891,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		}
 
 		topBarText := fmt.Sprintf(" %s'S LIVE STREAM ACTIVE (HD 60 FPS) ", strings.ToUpper(watchedNick))
-		buf.SetString(inner.X+3, inner.Y+1, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
+		buf.SetString(inner.X+3, inner.Y+1, topBarText, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 
 		msg1 := "Playing in high-performance hardware-accelerated video window."
 		msg2 := "Press [W] / [Esc] to close viewer, or click the stop button below."
-		buf.SetString(inner.X+3, inner.Y+3, msg1, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
-		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+		buf.SetString(inner.X+3, inner.Y+3, msg1, cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg})
+		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 
 		btnText := "   [W] STOP WATCHING (Click)   "
-		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0xFF, 0x76, 0x75), Modifier: cell.ModifierBold}
+		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
 		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
@@ -756,7 +917,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 		if len(otherPeers) > 0 {
 			switchY := inner.Y + 8
-			buf.SetString(inner.X+3, switchY, "Switch to another live stream:", cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
+			buf.SetString(inner.X+3, switchY, "Switch to another live stream:", cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 			switchY += 1
 			for idx, p := range otherPeers {
 				btnRowY := switchY + uint16(idx*2)
@@ -764,7 +925,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 					break
 				}
 				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream (HD 60 FPS)   ", p.Nickname)
-				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Modifier: cell.ModifierBold}
+				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
 				targetPeer := p
@@ -797,10 +958,10 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		msg2 := "All room participants can watch your screen with ultra-low latency."
 		btnText := "   [V] STOP BROADCAST (Click)   "
 
-		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
-		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 
-		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0xFF, 0x76, 0x75), Modifier: cell.ModifierBold}
+		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
 		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
@@ -811,7 +972,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		// If other peers are ALSO broadcasting, allow watching them too
 		if len(streamingPeers) > 0 {
 			switchY := inner.Y + 9
-			buf.SetString(inner.X+3, switchY, "Other Members Streaming in Room (Click to watch):", cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
+			buf.SetString(inner.X+3, switchY, "Other Members Streaming in Room (Click to watch):", cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 			switchY += 1
 			for idx, p := range streamingPeers {
 				if switchY+uint16(idx*2) >= inner.Y+inner.Height {
@@ -819,7 +980,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				}
 				btnRowY := switchY + uint16(idx*2)
 				swBtnText := fmt.Sprintf("   ► Watch %s's Stream   ", p.Nickname)
-				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
+				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
 				targetPeer := p
@@ -853,10 +1014,10 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		msg2 := "Click the button below to watch with 20ms ultra-low latency:"
 		btnText := fmt.Sprintf("   ► [W] WATCH %s STREAM (Click)   ", strings.ToUpper(p.Nickname))
 
-		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
-		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
 
-		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
+		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
 		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
@@ -882,8 +1043,8 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		msg1 := fmt.Sprintf("%d MEMBERS ARE SHARING SCREEN IN THIS ROOM", len(streamingPeers))
 		msg2 := "Select which member's live stream you want to watch:"
 
-		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
-		buf.SetString(inner.X+3, inner.Y+3, msg2, cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
+		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+		buf.SetString(inner.X+3, inner.Y+3, msg2, cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
 
 		listY := inner.Y + 5
 		for idx, p := range streamingPeers {
@@ -892,7 +1053,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			}
 			btnRowY := listY + uint16(idx*2)
 			btnText := fmt.Sprintf("   ► WATCH %s'S LIVE STREAM (HD 60 FPS)   ", strings.ToUpper(p.Nickname))
-			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
+			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 			buf.SetString(inner.X+3, btnRowY, btnText, btnStyle)
 
 			targetPeer := p
@@ -925,16 +1086,17 @@ func DrawHorizontalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, i
 		return
 	}
 
+	theme := CurrentTheme()
 	filled := int(rms * float64(area.Width))
 	if filled > int(area.Width) {
 		filled = int(area.Width)
 	}
 
-	meterStyle := cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x1A, 0x22, 0x32)}
+	meterStyle := cell.Style{Fg: theme.WaveColor, Bg: theme.SurfaceBg}
 	if isMuted {
-		meterStyle.Fg = cell.NewColorRGB(0x63, 0x6E, 0x72)
+		meterStyle.Fg = theme.Border
 	} else if isSpeaking {
-		meterStyle.Fg = cell.NewColorRGB(0x00, 0xFF, 0x88)
+		meterStyle.Fg = theme.Success
 	}
 
 	for x := 0; x < int(area.Width); x++ {
@@ -949,47 +1111,48 @@ func DrawHorizontalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, i
 }
 
 func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
-	borderStyle := cell.Style{Fg: cell.NewColorRGB(0x4E, 0xCD, 0xC4)}
+	theme := CurrentTheme()
+	borderStyle := cell.Style{Fg: theme.BorderFocused}
 	statusText := "[LISTENING]"
-	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.CardBg}
 
 	if audio.Deafened {
-		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E)}
+		borderStyle = cell.Style{Fg: theme.Warning}
 		statusText = "[DEAFENED]"
-		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+		statusStyle = cell.Style{Fg: theme.Warning, Bg: theme.CardBg}
 	} else if audio.Muted {
-		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75)}
+		borderStyle = cell.Style{Fg: theme.Danger}
 		statusText = "[MIC OFF]"
-		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+		statusStyle = cell.Style{Fg: theme.Danger, Bg: theme.CardBg}
 	} else if audio.InputMode == InputModePushToTalk {
 		if audio.IsTransmitting() {
 			borderStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+				Fg:       theme.Success,
 				Modifier: cell.ModifierBold,
 			}
 			statusText = "[PTT TALKING...]"
 			statusStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-				Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+				Fg:       theme.Success,
+				Bg:       theme.CardBg,
 				Modifier: cell.ModifierBold,
 			}
 		} else {
-			borderStyle = cell.Style{Fg: cell.NewColorRGB(0x4E, 0xCD, 0xC4)}
+			borderStyle = cell.Style{Fg: theme.BorderFocused}
 			statusText = "[PTT IDLE (SPACE)]"
 			statusStyle = cell.Style{
-				Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D),
-				Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A),
+				Fg: theme.Warning,
+				Bg: theme.CardBg,
 			}
 		}
 	} else if audio.IsSpeaking {
 		borderStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Fg:       theme.Success,
 			Modifier: cell.ModifierBold,
 		}
 		statusText = "[SPEAKING...]"
 		statusStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			Fg:       theme.Success,
+			Bg:       theme.CardBg,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -1000,7 +1163,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   borderStyle,
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)},
+		Style:         cell.Style{Bg: theme.CardBg},
 	}
 
 	inner := block.Inner(area)
@@ -1009,16 +1172,16 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 	buf := frame.Buffer
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.CardBg}})
 		}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: theme.Text, Bg: theme.CardBg})
 	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
 
 	gainStr := fmt.Sprintf("Vol: %.0f%%", audio.Gain*100)
 	if inner.Width > uint16(len([]rune(gainStr)))+1 {
-		buf.SetString(inner.X+inner.Width-uint16(len([]rune(gainStr)))-1, inner.Y, gainStr, cell.Style{Fg: cell.NewColorRGB(0x74, 0xB9, 0xFF), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+		buf.SetString(inner.X+inner.Width-uint16(len([]rune(gainStr)))-1, inner.Y, gainStr, cell.Style{Fg: theme.Secondary, Bg: theme.CardBg})
 	}
 
 	// If self is sharing screen, show live broadcasting banner inside the card
@@ -1039,8 +1202,8 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		bannerY := inner.Y + meterHeight + 1
 		bannerW := inner.Width - 2
 		bannerStyle := cell.Style{
-			Fg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
-			Bg:       cell.NewColorRGB(0x22, 0x14, 0x16),
+			Fg:       theme.Danger,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		}
 		for bx := uint16(0); bx < bannerW; bx++ {
@@ -1057,7 +1220,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		bAction := "   [V] Stop Broadcast (Click)   "
 		bActionStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+			Bg:       theme.Danger,
 			Modifier: cell.ModifierBold,
 		}
 		buf.SetString(inner.X+2, bannerY+1, bAction, bActionStyle)
@@ -1079,42 +1242,43 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 }
 
 func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *PeerInfo, node *P2PNode, audio *AudioEngine, slotNum int) {
-	borderStyle := cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)}
+	theme := CurrentTheme()
+	borderStyle := cell.Style{Fg: theme.Border}
 	statusText := "[LISTENING]"
-	statusStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.CardBg}
 
 	if peer.IsSharingScreen {
 		borderStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Fg:       theme.Accent,
 			Modifier: cell.ModifierBold,
 		}
 	}
 
 	if time.Since(peer.LastSeen) > 3500*time.Millisecond {
-		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E)}
+		borderStyle = cell.Style{Fg: theme.Warning}
 		statusText = "[RECONNECTING...]"
 		statusStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
-			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			Fg:       theme.Warning,
+			Bg:       theme.CardBg,
 			Modifier: cell.ModifierBold,
 		}
 	} else if peer.IsDeafened {
-		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E)}
+		borderStyle = cell.Style{Fg: theme.Warning}
 		statusText = "[DEAFENED]"
-		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFD, 0xCB, 0x6E), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+		statusStyle = cell.Style{Fg: theme.Warning, Bg: theme.CardBg}
 	} else if peer.IsMuted {
-		borderStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75)}
+		borderStyle = cell.Style{Fg: theme.Danger}
 		statusText = "[MIC OFF]"
-		statusStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}
+		statusStyle = cell.Style{Fg: theme.Danger, Bg: theme.CardBg}
 	} else if peer.Speaking {
 		borderStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Fg:       theme.Success,
 			Modifier: cell.ModifierBold,
 		}
 		statusText = "[SPEAKING...]"
 		statusStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-			Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+			Fg:       theme.Success,
+			Bg:       theme.CardBg,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -1129,7 +1293,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   borderStyle,
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)},
+		Style:         cell.Style{Bg: theme.CardBg},
 	}
 
 	inner := block.Inner(area)
@@ -1138,16 +1302,69 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 	buf := frame.Buffer
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.CardBg}})
 		}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: theme.Text, Bg: theme.CardBg})
 	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
 
 	pingStr := fmt.Sprintf("PING: %dms", peer.PingMs)
-	if inner.Width > uint16(len([]rune(pingStr)))+1 {
-		buf.SetString(inner.X+inner.Width-uint16(len([]rune(pingStr)))-1, inner.Y, pingStr, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+	volVal := 1.0
+	if audio != nil {
+		volVal = audio.GetPeerVolume(peer.ID)
+	}
+	volPct := int(math.Round(volVal * 100))
+	volStr := fmt.Sprintf("[VOL: %d%%]", volPct)
+	volLen := uint16(len([]rune(volStr)))
+	pingLen := uint16(len([]rune(pingStr)))
+
+	if inner.Width > pingLen+volLen+4 {
+		volX := inner.X + inner.Width - pingLen - volLen - 2
+		volStyle := cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Secondary,
+			Modifier: cell.ModifierBold,
+		}
+		if volPct == 0 {
+			volStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
+				Bg:       theme.Danger,
+				Modifier: cell.ModifierBold,
+			}
+		} else if volPct > 100 {
+			volStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       theme.Accent,
+				Modifier: cell.ModifierBold,
+			}
+		}
+		buf.SetString(volX, inner.Y, volStr, volStyle)
+		frame.RegisterClickHandler(cell.NewRect(volX, inner.Y, volLen, 1), func(_ backend.MouseEvent) {
+			if audio != nil {
+				curV := int(math.Round(audio.GetPeerVolume(peer.ID) * 100))
+				var nextV float64
+				switch {
+				case curV >= 200:
+					nextV = 0.0
+				case curV == 0:
+					nextV = 0.50
+				case curV < 100:
+					nextV = float64(curV+25) / 100.0
+				default:
+					nextV = float64(curV+25) / 100.0
+					if nextV > 2.0 {
+						nextV = 2.0
+					}
+				}
+				audio.SetPeerVolume(peer.ID, nextV)
+				r.SetToast(fmt.Sprintf("Volume for %s set to %d%%", peer.Nickname, int(math.Round(nextV*100))))
+			}
+		})
+
+		buf.SetString(inner.X+inner.Width-pingLen-1, inner.Y, pingStr, cell.Style{Fg: theme.Success, Bg: theme.CardBg})
+	} else if inner.Width > pingLen+1 {
+		buf.SetString(inner.X+inner.Width-pingLen-1, inner.Y, pingStr, cell.Style{Fg: theme.Success, Bg: theme.CardBg})
 	}
 
 	// Discord-style Stream Preview Banner if peer is sharing screen
@@ -1169,8 +1386,8 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		bannerW := inner.Width - 2
 
 		bannerBg := cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-			Bg:       cell.NewColorRGB(0x13, 0x22, 0x28),
+			Fg:       theme.Accent,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		}
 
@@ -1189,7 +1406,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			bBtnText := "   [W] Stop Watching (Click)   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+				Bg:       theme.Danger,
 				Modifier: cell.ModifierBold,
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
@@ -1197,7 +1414,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			bBtnText := "   ► Switch to Stream (Click)   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+				Bg:       theme.Secondary,
 				Modifier: cell.ModifierBold,
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
@@ -1205,7 +1422,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			bBtnText := "   ► [W] WATCH STREAM (Click)   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+				Bg:       theme.Accent,
 				Modifier: cell.ModifierBold,
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
@@ -1250,12 +1467,13 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 }
 
 func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCode string, slotNum int) {
+	theme := CurrentTheme()
 	block := widgets.Block{
 		Title:         fmt.Sprintf(" [%d] EMPTY SLOT (WAITING) ", slotNum),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x4A, 0x4B, 0x6E)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)},
+		BorderStyle:   cell.Style{Fg: theme.Border},
+		Style:         cell.Style{Bg: theme.CardBg},
 	}
 
 	inner := block.Inner(area)
@@ -1264,7 +1482,7 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 	buf := frame.Buffer
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.CardBg}})
 		}
 	}
 
@@ -1282,13 +1500,13 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 		yCenter--
 	}
 
-	buf.SetString(inner.X+2, yCenter, txt1, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+	buf.SetString(inner.X+2, yCenter, txt1, cell.Style{Fg: theme.TextMuted, Bg: theme.CardBg})
 	buf.SetString(inner.X+2, yCenter+1, txt2, cell.Style{
-		Fg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
-		Bg:       cell.NewColorRGB(0x0F, 0x11, 0x1A),
+		Fg:       theme.Warning,
+		Bg:       theme.CardBg,
 		Modifier: cell.ModifierBold,
 	})
-	buf.SetString(inner.X+2, yCenter+2, txt3, cell.Style{Fg: cell.NewColorRGB(0x74, 0xB9, 0xFF), Bg: cell.NewColorRGB(0x0F, 0x11, 0x1A)})
+	buf.SetString(inner.X+2, yCenter+2, txt3, cell.Style{Fg: theme.Secondary, Bg: theme.CardBg})
 }
 
 func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
@@ -1303,14 +1521,15 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	ctrlArea := cols[0]
 	logArea := cols[1]
+	theme := CurrentTheme()
 
 	// 1. Controls Panel
 	ctrlBlock := widgets.Block{
 		Title:         " CONTROLS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
-		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7)},
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+		BorderStyle:   cell.Style{Fg: theme.Accent},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(ctrlBlock, ctrlArea)
 	ctrlInner := ctrlBlock.Inner(ctrlArea)
@@ -1318,7 +1537,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	buf := frame.Buffer
 	for y := ctrlInner.Y; y < ctrlInner.Y+ctrlInner.Height; y++ {
 		for x := ctrlInner.X; x < ctrlInner.X+ctrlInner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
@@ -1331,12 +1550,12 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	// --- ROW 1: Audio Toggles & Noise Filter ---
 	// Mute Button
 	muteLabel := "[M] Mute Mic"
-	muteStyle := cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	muteStyle := cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg}
 	if audio.Muted {
 		muteLabel = "[M] Unmute Mic"
 		muteStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+			Bg:       theme.Danger,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -1355,12 +1574,12 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	// Deafen Button
 	deafenLabel := "[D] Deafen"
-	deafenStyle := cell.Style{Fg: cell.NewColorRGB(0x74, 0xB9, 0xFF), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	deafenStyle := cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg}
 	if audio.Deafened {
 		deafenLabel = "[D] Undeafen"
 		deafenStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFD, 0xCB, 0x6E),
+			Bg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -1382,19 +1601,19 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	// Push-to-Talk / Voice Activity Mode Button [P]
 	modeLabel := "[P] Voice"
-	modeStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	modeStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.InputMode == InputModePushToTalk {
 		modeLabel = "[P] PTT"
 		if audio.IsTransmitting() {
 			modeStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+				Bg:       theme.Success,
 				Modifier: cell.ModifierBold,
 			}
 		} else {
 			modeStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+				Bg:       theme.Warning,
 				Modifier: cell.ModifierBold,
 			}
 		}
@@ -1416,11 +1635,11 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	// Noise Suppression Button [N]
 	noiseStr := audio.SuppressionModeString()
 	noiseLabel := fmt.Sprintf("[N] Noise: %s", noiseStr)
-	noiseStyle := cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	noiseStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.SuppressionMode > 0 {
 		noiseStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
-			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+			Fg:       theme.Success,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -1436,12 +1655,12 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 
 	// Screen Share Button [V]
 	screenLabel := "[V] Share Screen"
-	screenStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+	screenStyle := cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg}
 	if node.IsSharingScreen {
 		screenLabel = "[V] Stop Sharing"
 		screenStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
+			Bg:       theme.Danger,
 			Modifier: cell.ModifierBold,
 		}
 	}
@@ -1480,19 +1699,19 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 
 		watchLabel := "[W] Watch Screen"
-		watchStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+		watchStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 		if node.IsWatchingScreen {
 			watchLabel = "[W] Stop Watching"
 			watchStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
+				Bg:       theme.Warning,
 				Modifier: cell.ModifierBold,
 			}
 		} else if streamingPeer != nil {
 			watchLabel = fmt.Sprintf("[W] Watch %s", streamingPeer.Nickname)
 			watchStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
+				Bg:       theme.Success,
 				Modifier: cell.ModifierBold,
 			}
 		}
@@ -1531,8 +1750,8 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		// Sound Test Panel Button [T]
 		testLabel := "[T] Test"
 		testStyle := cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
-			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+			Fg:       theme.Secondary,
+			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		}
 		testX := watchX + watchLen + 2
@@ -1551,7 +1770,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		gainX := testX + testLen + 2
 		gainLen := uint16(len([]rune(gainText)))
 		if gainX+gainLen <= ctrlInner.X+ctrlInner.Width {
-			buf.SetString(gainX, row2Y, gainText, cell.Style{Fg: cell.NewColorRGB(0xFF, 0xE6, 0x6D), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+			buf.SetString(gainX, row2Y, gainText, cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg})
 			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, gainLen, 1), func(_ backend.MouseEvent) {
 				gain := audio.AdjustGain(0.1)
 				if gain > 3.0 {
@@ -1566,7 +1785,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		copyX := gainX + gainLen + 2
 		copyLen := uint16(len([]rune(copyText)))
 		if copyX+copyLen <= ctrlInner.X+ctrlInner.Width {
-			buf.SetString(copyX, row2Y, copyText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+			buf.SetString(copyX, row2Y, copyText, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg})
 			frame.RegisterClickHandler(cell.NewRect(copyX, row2Y, copyLen, 1), func(_ backend.MouseEvent) {
 				CopyToClipboard(node.RoomCode)
 				r.SetToast(fmt.Sprintf("Room Code Copied: %s", node.RoomCode))
@@ -1581,7 +1800,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			if ctrlInner.X+ctrlInner.Width-leaveLen-1 > leaveX {
 				leaveX = ctrlInner.X + ctrlInner.Width - leaveLen - 1
 			}
-			buf.SetString(leaveX, row2Y, leaveText, cell.Style{Fg: cell.NewColorRGB(0xD6, 0x30, 0x31), Bg: cell.NewColorRGB(0x10, 0x14, 0x20), Modifier: cell.ModifierBold})
+			buf.SetString(leaveX, row2Y, leaveText, cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 			frame.RegisterClickHandler(cell.NewRect(leaveX, row2Y, leaveLen, 1), func(_ backend.MouseEvent) {
 				if r.OnLeave != nil {
 					r.OnLeave()
@@ -1601,10 +1820,10 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	r.mu.Unlock()
 
 	blockTitle := " CHAT & ROOM LOG "
-	borderStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72)}
+	borderStyle := cell.Style{Fg: theme.Border}
 	if isFocused {
 		blockTitle = " CHAT & LOG [Enter: Send | Esc: Exit] "
-		borderStyle = cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7), Modifier: cell.ModifierBold}
+		borderStyle = cell.Style{Fg: theme.BorderFocused, Modifier: cell.ModifierBold}
 	}
 
 	logBlock := widgets.Block{
@@ -1612,14 +1831,14 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   borderStyle,
-		Style:         cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(logBlock, logArea)
 	logInner := logBlock.Inner(logArea)
 
 	for y := logInner.Y; y < logInner.Y+logInner.Height; y++ {
 		for x := logInner.X; x < logInner.X+logInner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}})
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
 
@@ -1657,7 +1876,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	if toastMsg != "" && msgHeight > 0 {
 		toastStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Bg:       theme.Success,
 			Modifier: cell.ModifierBold,
 		}
 		toastText := truncate(" 🔔 "+toastMsg+" ", maxW)
@@ -1693,7 +1912,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			if hasInputLine && rowY >= inputY {
 				break
 			}
-			timeStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)}
+			timeStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 
 			curX := logInner.X + 1
 			buf.SetString(curX, rowY, line.Timestamp, timeStyle)
@@ -1723,28 +1942,28 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				badgeX := logInner.X + logInner.Width - badgeLen - 1
 				buf.SetString(badgeX, logInner.Y, scrollBadge, cell.Style{
 					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-					Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+					Bg:       theme.Warning,
 					Modifier: cell.ModifierBold,
 				})
 			}
 		}
 	} else if len(lines) == 0 && toastMsg == "" && availRows > 0 {
 		placeholder := truncate("Waiting for connections... Messages & events will appear here.", maxW)
-		buf.SetString(logInner.X+1, startRow, placeholder, cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x10, 0x14, 0x20)})
+		buf.SetString(logInner.X+1, startRow, placeholder, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 	}
 
 	// Bottom Input Row
 	if hasInputLine {
 		if isFocused {
-			inputBg := cell.Style{Bg: cell.NewColorRGB(0x18, 0x1E, 0x2E)}
+			inputBg := cell.Style{Bg: theme.InputBg}
 			for x := logInner.X; x < logInner.X+logInner.Width; x++ {
 				buf.SetCell(x, inputY, cell.Cell{Content: ' ', Style: inputBg})
 			}
 			prompt := "> "
 			promptLen := uint16(len([]rune(prompt)))
 			buf.SetString(logInner.X+1, inputY, prompt, cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
-				Bg:       cell.NewColorRGB(0x18, 0x1E, 0x2E),
+				Fg:       theme.Accent,
+				Bg:       theme.InputBg,
 				Modifier: cell.ModifierBold,
 			})
 			if logInner.Width > promptLen+3 {
@@ -1753,13 +1972,13 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 					ID:          "room_chat_input",
 					State:       r.ChatInputState,
 					Placeholder: "Type message... (Enter: Send, Esc: Exit)",
-					Style:       cell.Style{Fg: cell.NewColorRGB(0xF1, 0xF2, 0xF6), Bg: cell.NewColorRGB(0x18, 0x1E, 0x2E)},
+					Style:       cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 					FocusedStyle: cell.Style{
-						Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-						Bg:       cell.NewColorRGB(0x18, 0x1E, 0x2E),
+						Fg:       theme.Text,
+						Bg:       theme.InputBg,
 						Modifier: cell.ModifierBold,
 					},
-					PlaceholderStyle: cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72), Bg: cell.NewColorRGB(0x18, 0x1E, 0x2E)},
+					PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 				}
 				frame.RenderWidget(chatInput, inputArea)
 			}
@@ -1768,14 +1987,14 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				unfocusedPrompt := fmt.Sprintf(" %d New Messages - [Enter] to Chat ", r.UnreadChatCount)
 				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
 					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-					Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+					Bg:       theme.Warning,
 					Modifier: cell.ModifierBold,
 				})
 			} else {
 				unfocusedPrompt := "[ Press Enter or / to Chat ]"
 				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
-					Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
-					Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+					Fg: theme.TextMuted,
+					Bg: theme.SurfaceBg,
 				})
 			}
 		}
@@ -2045,6 +2264,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 	if maxW < 10 {
 		maxW = 10
 	}
+	theme := CurrentTheme()
 
 	for _, msg := range messages {
 		tsStr := fmt.Sprintf("[%s] ", msg.Timestamp.Format("15:04:05"))
@@ -2056,15 +2276,15 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 			if msg.IsSelf {
 				senderBadge = "You: "
 				senderStyle = cell.Style{
-					Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
-					Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+					Fg:       theme.Success,
+					Bg:       theme.SurfaceBg,
 					Modifier: cell.ModifierBold,
 				}
 			} else {
 				senderBadge = msg.Sender + ": "
 				senderStyle = cell.Style{
-					Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
-					Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+					Fg:       theme.Accent,
+					Bg:       theme.SurfaceBg,
 					Modifier: cell.ModifierBold,
 				}
 			}
@@ -2105,13 +2325,13 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 				}
 			}
 		} else {
-			logColor := cell.NewColorRGB(0xB2, 0xBE, 0xC3)
+			logColor := theme.TextMuted
 			if strings.Contains(msg.Text, "[+]") || strings.Contains(msg.Text, "joined") {
-				logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)
+				logColor = theme.Success
 			} else if strings.Contains(msg.Text, "[-]") || strings.Contains(msg.Text, "left") {
-				logColor = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+				logColor = theme.Warning
 			} else if strings.Contains(msg.Text, "[WARN]") || strings.Contains(msg.Text, "[ERROR]") || strings.Contains(msg.Text, "[SECURITY]") {
-				logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
+				logColor = theme.Danger
 			}
 
 			availFirst := maxW - tsLen
@@ -2127,7 +2347,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 					lines = append(lines, roomDisplayLine{
 						Timestamp:      tsStr,
 						Text:           lText,
-						TextStyle:      cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+						TextStyle:      cell.Style{Fg: logColor, Bg: theme.SurfaceBg},
 						IsChat:         false,
 						IsContinuation: false,
 					})
@@ -2135,7 +2355,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 					lines = append(lines, roomDisplayLine{
 						Timestamp:      indentSpaces,
 						Text:           lText,
-						TextStyle:      cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+						TextStyle:      cell.Style{Fg: logColor, Bg: theme.SurfaceBg},
 						IsChat:         false,
 						IsContinuation: true,
 					})
@@ -2151,13 +2371,14 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 	if maxW <= 0 || len(spans) == 0 {
 		return
 	}
+	theme := CurrentTheme()
 	plainStyle := cell.Style{
-		Fg: cell.NewColorRGB(0xF1, 0xF2, 0xF6),
-		Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+		Fg: theme.Text,
+		Bg: theme.SurfaceBg,
 	}
 	linkStyle := cell.Style{
-		Fg:       cell.NewColorRGB(0x74, 0xB9, 0xFF),
-		Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+		Fg:       theme.Secondary,
+		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierUnderline | cell.ModifierBold,
 	}
 
@@ -2197,4 +2418,298 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 
 		curX += uint16(drawnLen)
 	}
+}
+
+func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
+	theme := CurrentTheme()
+	block := widgets.Block{
+		Title:         " LIMONI MINI HUD ",
+		Borders:       widgets.BorderAll,
+		BorderSymbols: widgets.SymbolsRounded,
+		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
+	}
+	inner := block.Inner(area)
+	frame.RenderWidget(block, area)
+
+	buf := frame.Buffer
+	for y := inner.Y; y < inner.Y+inner.Height; y++ {
+		for x := inner.X; x < inner.X+inner.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
+		}
+	}
+
+	if inner.Height < 1 || inner.Width < 10 {
+		return
+	}
+
+	peers := node.GetPeersList()
+	totalCount := len(peers) + 1
+
+	// Row 1: App Info + Room Code + Members + Ping + Mic Status + Audio VU
+	row1Y := inner.Y
+	curX := inner.X + 1
+
+	// Room badge
+	roomBadge := fmt.Sprintf(" Room: %s ", node.RoomCode)
+	roomLen := uint16(len([]rune(roomBadge)))
+	if curX+roomLen < inner.X+inner.Width {
+		buf.SetString(curX, row1Y, roomBadge, cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Warning,
+			Modifier: cell.ModifierBold,
+		})
+		frame.RegisterClickHandler(cell.NewRect(curX, row1Y, roomLen, 1), func(_ backend.MouseEvent) {
+			CopyToClipboard(node.RoomCode)
+			r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
+		})
+		curX += roomLen + 1
+	}
+
+	// Members
+	memBadge := fmt.Sprintf("Members: %d/4", totalCount)
+	memLen := uint16(len([]rune(memBadge)))
+	if curX+memLen < inner.X+inner.Width {
+		buf.SetString(curX, row1Y, memBadge, cell.Style{
+			Fg:       theme.Success,
+			Bg:       theme.SurfaceBg,
+			Modifier: cell.ModifierBold,
+		})
+		curX += memLen + 1
+	}
+
+	// Lock badge if locked
+	if node.IsLocked {
+		lockBadge := " [LOCKED] "
+		if node.RoomPIN != "" && node.IsHost {
+			lockBadge = fmt.Sprintf(" [PIN: %s] ", node.RoomPIN)
+		}
+		lockLen := uint16(len([]rune(lockBadge)))
+		if curX+lockLen < inner.X+inner.Width {
+			buf.SetString(curX, row1Y, lockBadge, cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       theme.Danger,
+				Modifier: cell.ModifierBold,
+			})
+			curX += lockLen + 1
+		}
+	}
+
+	// Mic status button
+	micLabel := " [MIC: ON] "
+	micStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       theme.Success,
+		Modifier: cell.ModifierBold,
+	}
+	if audio != nil && audio.Muted {
+		micLabel = " [MIC: OFF] "
+		micStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Danger,
+			Modifier: cell.ModifierBold,
+		}
+	} else if audio != nil && audio.IsSpeaking {
+		micLabel = " [SPEAKING] "
+		micStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
+			Modifier: cell.ModifierBold,
+		}
+	}
+	micLen := uint16(len([]rune(micLabel)))
+	if curX+micLen < inner.X+inner.Width {
+		buf.SetString(curX, row1Y, micLabel, micStyle)
+		frame.RegisterClickHandler(cell.NewRect(curX, row1Y, micLen, 1), func(_ backend.MouseEvent) {
+			if audio != nil {
+				isMuted := audio.ToggleMute()
+				node.SendMuteState(isMuted)
+			}
+		})
+		curX += micLen + 1
+	}
+
+	// Deafen button
+	deafLabel := " [SPK: ON] "
+	deafStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       theme.Secondary,
+		Modifier: cell.ModifierBold,
+	}
+	if audio != nil && audio.Deafened {
+		deafLabel = " [DEAFENED] "
+		deafStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Warning,
+			Modifier: cell.ModifierBold,
+		}
+	}
+	deafLen := uint16(len([]rune(deafLabel)))
+	if curX+deafLen < inner.X+inner.Width {
+		buf.SetString(curX, row1Y, deafLabel, deafStyle)
+		frame.RegisterClickHandler(cell.NewRect(curX, row1Y, deafLen, 1), func(_ backend.MouseEvent) {
+			if audio != nil {
+				isDeaf := audio.ToggleDeafen()
+				node.SendDeafenState(isDeaf)
+				node.SendMuteState(audio.Muted)
+			}
+		})
+		curX += deafLen + 1
+	}
+
+	// Screen Share / Stream Viewer button in HUD
+	var streamBtn string
+	var streamStyle cell.Style
+	var streamAction func()
+
+	var streamingPeers []*PeerInfo
+	for _, p := range peers {
+		if p.IsSharingScreen {
+			streamingPeers = append(streamingPeers, p)
+		}
+	}
+
+	if node.IsSharingScreen {
+		streamBtn = " [📺 SHARING [V]] "
+		streamStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Accent,
+			Modifier: cell.ModifierBold,
+		}
+		streamAction = func() {
+			_ = node.StopScreenShare()
+			r.SetToast("Screen share stopped")
+		}
+	} else if node.IsWatchingScreen {
+		streamBtn = " [📺 WATCHING [W]] "
+		streamStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Secondary,
+			Modifier: cell.ModifierBold,
+		}
+		streamAction = func() {
+			_ = node.StopWatchingScreen()
+			r.SetToast("Stream viewer closed")
+		}
+	} else if len(streamingPeers) > 0 {
+		targetPeer := streamingPeers[0]
+		streamBtn = fmt.Sprintf(" [🔴 WATCH %s [W]] ", targetPeer.Nickname)
+		streamStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Danger,
+			Modifier: cell.ModifierBold,
+		}
+		streamAction = func() {
+			port := targetPeer.VideoPort
+			if port <= 0 {
+				port = 50100
+			}
+			opts := screenshare.ReceiverOptions{
+				WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", targetPeer.Nickname),
+			}
+			r.SetToast(fmt.Sprintf("Opening %s stream...", targetPeer.Nickname))
+			go func() {
+				_ = node.StartWatchingScreen(targetPeer.ID, port, opts)
+			}()
+		}
+	} else {
+		streamBtn = " [📺 SHARE [V]] "
+		streamStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Secondary,
+			Modifier: cell.ModifierBold,
+		}
+		streamAction = func() {
+			if r.OnOpenScreenShareModal != nil {
+				r.OnOpenScreenShareModal()
+			}
+		}
+	}
+
+	streamLen := uint16(len([]rune(streamBtn)))
+	if curX+streamLen < inner.X+inner.Width {
+		buf.SetString(curX, row1Y, streamBtn, streamStyle)
+		frame.RegisterClickHandler(cell.NewRect(curX, row1Y, streamLen, 1), func(_ backend.MouseEvent) {
+			if streamAction != nil {
+				streamAction()
+			}
+		})
+		curX += streamLen + 1
+	}
+
+	// Full UI restore button
+	hudExitLabel := " [▲ FULL UI [H]] "
+	hudExitStyle := cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       theme.Accent,
+		Modifier: cell.ModifierBold,
+	}
+	hudExitLen := uint16(len([]rune(hudExitLabel)))
+	if curX+hudExitLen <= inner.X+inner.Width {
+		buf.SetString(curX, row1Y, hudExitLabel, hudExitStyle)
+		frame.RegisterClickHandler(cell.NewRect(curX, row1Y, hudExitLen, 1), func(_ backend.MouseEvent) {
+			ToggleCompactHUD()
+			r.IsCompactMode = false
+		})
+	}
+
+	// Row 2 (if height >= 2): Live VU meter / Active speakers line
+	if inner.Height >= 2 {
+		row2Y := inner.Y + 1
+		meterW := inner.Width - 2
+		if meterW > 10 {
+			var spkNames []string
+			if audio != nil && audio.IsSpeaking && !audio.Muted {
+				spkNames = append(spkNames, "You")
+			}
+			for _, p := range peers {
+				if p.Speaking && !p.IsMuted {
+					spkNames = append(spkNames, p.Nickname)
+				}
+			}
+			spkText := "Voice: [IDLE]"
+			if len(spkNames) > 0 {
+				spkText = fmt.Sprintf("Talking: ● %s", strings.Join(spkNames, ", "))
+			}
+			buf.SetString(inner.X+1, row2Y, spkText, cell.Style{
+				Fg:       theme.Accent,
+				Bg:       theme.SurfaceBg,
+				Modifier: cell.ModifierBold,
+			})
+		}
+	}
+}
+
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func OpenInEditor(filePath string) error {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		for _, cand := range []string{"nano", "vim", "vi", "code", "xdg-open"} {
+			if p, err := exec.LookPath(cand); err == nil && p != "" {
+				editor = cand
+				break
+			}
+		}
+	}
+	if editor == "" {
+		editor = "xdg-open"
+	}
+
+	cmd := exec.Command(editor, filePath)
+	return cmd.Start()
 }
