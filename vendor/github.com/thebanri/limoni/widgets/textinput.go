@@ -86,6 +86,9 @@ func (state *TextInputState) HandleKey(key backend.KeyEvent) bool {
 }
 
 func (state *TextInputState) insert(r rune) {
+	if r == '\r' {
+		return
+	}
 	// Araya karakter ekleme
 	state.Text = append(state.Text, 0)
 	copy(state.Text[state.Cursor+1:], state.Text[state.Cursor:])

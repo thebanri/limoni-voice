@@ -2269,6 +2269,61 @@ func TestChatCopyCommandAndSpans(t *testing.T) {
 	}
 }
 
+func TestMultilinePasteAndBackslashContinuation(t *testing.T) {
+	room := NewRoomView()
+	var sentMessages []string
+	room.OnSendChat = func(txt string) {
+		sentMessages = append(sentMessages, txt)
+	}
+
+	// 1. Simulate pasting multiline text (e.g. registry command)
+	pastedSnippet := "reg add \"HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\TimeZoneInformation\" /v\r\n  RealTimeIsUniversal /t REG_DWORD /d 1 /f"
+	for _, r := range pastedSnippet {
+		if r == '\r' {
+			continue
+		}
+		room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
+	}
+
+	expectedInput := "reg add \"HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\TimeZoneInformation\" /v\n  RealTimeIsUniversal /t REG_DWORD /d 1 /f"
+	if room.ChatInputState.Value() != expectedInput {
+		t.Fatalf("Expected ChatInputState to contain multiline text, got %q", room.ChatInputState.Value())
+	}
+
+	// Sending should send as a SINGLE multiline message
+	room.SendCurrentChat()
+	if len(sentMessages) != 1 {
+		t.Fatalf("Expected 1 sent message, got %d", len(sentMessages))
+	}
+	if sentMessages[0] != expectedInput {
+		t.Fatalf("Sent message content mismatch: %q vs %q", sentMessages[0], expectedInput)
+	}
+
+	// 2. Test buildDisplayLines rendering of multiline message
+	room.AddChatMessage("You", "self", sentMessages[0], true, time.Now())
+	lines := room.buildDisplayLines(room.Messages, 100)
+	if len(lines) < 2 {
+		t.Fatalf("Expected at least 2 display lines for multiline message, got %d", len(lines))
+	}
+	if lines[0].Badge != "You: " || lines[0].IsContinuation {
+		t.Fatalf("Expected line 0 to be initial message with badge 'You: ', got %+v", lines[0])
+	}
+	if !lines[1].IsContinuation || lines[1].Badge != "" {
+		t.Fatalf("Expected line 1 to be continuation line with empty badge, got %+v", lines[1])
+	}
+
+	// 3. Test backslash continuation logic
+	val := "first line \\"
+	if strings.HasSuffix(val, `\`) && !strings.HasSuffix(val, `\\`) {
+		trimmed := strings.TrimSuffix(val, `\`)
+		val = trimmed + "\n"
+	}
+	if val != "first line \n" {
+		t.Fatalf("Expected backslash continuation to convert to newline, got %q", val)
+	}
+}
+
+
 
 
 

@@ -594,20 +594,23 @@ func main() {
 			switch ev.Type {
 			case backend.EventPaste:
 				// Terminal bracketed paste event
-				pasted := strings.TrimSpace(ev.Paste.Text)
+				pasted := ev.Paste.Text
 				if currentScreen == ScreenLobby && pasted != "" && !showTestModal && !showExitModal {
+					cleanPasted := strings.TrimSpace(pasted)
 					if lobby.ActiveInput == 0 {
-						lobby.NickState.SetValue(pasted)
+						lobby.NickState.SetValue(cleanPasted)
 						lobby.SetToast("Username pasted")
 					} else if lobby.ActiveInput == 1 {
-						lobby.CodeState.SetValue(NormalizeCode(pasted))
-						lobby.SetToast(fmt.Sprintf("Room key pasted: %s", NormalizeCode(pasted)))
+						lobby.CodeState.SetValue(NormalizeCode(cleanPasted))
+						lobby.SetToast(fmt.Sprintf("Room key pasted: %s", NormalizeCode(cleanPasted)))
 					}
 				} else if currentScreen == ScreenRoom && pasted != "" && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal {
-					if room.IsChatFocused {
-						for _, r := range pasted {
-							room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
+					room.SetChatFocused(true)
+					for _, r := range pasted {
+						if r == '\r' {
+							continue
 						}
+						room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
 					}
 				}
 
@@ -644,9 +647,13 @@ func main() {
 
 				// Ctrl+V in active room chat
 				if e.Ctrl && (e.Ch == 'v' || e.Ch == 'V') {
-					if currentScreen == ScreenRoom && room.IsChatFocused && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
+					if currentScreen == ScreenRoom && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
+						room.SetChatFocused(true)
 						clipText := GetClipboardText()
 						for _, r := range clipText {
+							if r == '\r' {
+								continue
+							}
 							room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
 						}
 						continue
@@ -1032,10 +1039,20 @@ func main() {
 							if e.Shift || e.Alt || e.Ctrl {
 								room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: '\n'})
 							} else {
-								if strings.TrimSpace(room.ChatInputState.Value()) != "" {
-									room.SendCurrentChat()
+								val := room.ChatInputState.Value()
+								if strings.HasSuffix(val, `\`) && !strings.HasSuffix(val, `\\`) {
+									// Trailing backslash line continuation: continue on new line!
+									trimmed := strings.TrimSuffix(val, `\`)
+									room.ChatInputState.SetValue(trimmed + "\n")
 								} else {
-									room.SetChatFocused(false)
+									if strings.HasSuffix(val, `\\`) {
+										room.ChatInputState.SetValue(strings.TrimSuffix(val, `\`))
+									}
+									if strings.TrimSpace(room.ChatInputState.Value()) != "" {
+										room.SendCurrentChat()
+									} else {
+										room.SetChatFocused(false)
+									}
 								}
 							}
 						case backend.KeyTab:
