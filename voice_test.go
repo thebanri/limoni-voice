@@ -1899,6 +1899,16 @@ func TestCodeSnippetTransferNoDeadlock(t *testing.T) {
 	node.mu.Unlock()
 }
 
+func TestCrossPlatformTransfersDir(t *testing.T) {
+	dlDir := GetLimoniTransfersDir()
+	if dlDir == "" {
+		t.Fatalf("Expected non-empty LimoniTransfersDir")
+	}
+	if !strings.Contains(dlDir, "LimoniTransfers") {
+		t.Fatalf("Expected path to contain 'LimoniTransfers', got: %s", dlDir)
+	}
+}
+
 
 
 

@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -3689,37 +3690,43 @@ func (n *P2PNode) SendFileBytes(fileName string, data []byte, isCode bool) error
 	return nil
 }
 
-// SaveAcceptedFile saves an accepted file transfer to the user's Downloads/LimoniTransfers directory, or a temporary code file.
+// GetLimoniTransfersDir returns the cross-platform path to ~/Downloads/LimoniTransfers/
+func GetLimoniTransfersDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		if runtime.GOOS == "windows" {
+			homeDir = os.Getenv("USERPROFILE")
+			if homeDir == "" {
+				homeDir = os.Getenv("HOMEDRIVE") + os.Getenv("HOMEPATH")
+			}
+		} else {
+			homeDir = os.Getenv("HOME")
+		}
+	}
+	if homeDir == "" {
+		homeDir = "."
+	}
+	return filepath.Join(homeDir, "Downloads", "LimoniTransfers")
+}
+
+// SaveAcceptedFile saves an accepted file transfer or code snippet to the user's Downloads/LimoniTransfers directory.
 func SaveAcceptedFile(offer *FileOffer) (string, error) {
 	if offer == nil || len(offer.Data) == 0 {
 		return "", errors.New("empty file offer data")
 	}
 
-	if offer.IsCode {
-		tmpFile, err := os.CreateTemp("", "limoni-snippet-*.txt")
-		if err != nil {
-			return "", err
-		}
-		_, err = tmpFile.Write(offer.Data)
-		_ = tmpFile.Close()
-		if err != nil {
-			return "", err
-		}
-		return tmpFile.Name(), nil
-	}
-
-	homeDir, _ := os.UserHomeDir()
-	dlDir := filepath.Join(homeDir, "Downloads", "LimoniTransfers")
-	if homeDir == "" {
-		dlDir = "downloads"
-	}
+	dlDir := GetLimoniTransfersDir()
 	if err := os.MkdirAll(dlDir, 0755); err != nil {
 		return "", err
 	}
 
 	safeName := filepath.Base(offer.FileName)
 	if safeName == "" || safeName == "." {
-		safeName = "received_file"
+		if offer.IsCode {
+			safeName = "snippet.txt"
+		} else {
+			safeName = "received_file"
+		}
 	}
 
 	destPath := filepath.Join(dlDir, safeName)

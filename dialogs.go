@@ -1374,7 +1374,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 		})
 		curRow++
 	} else {
-		saveLoc := "Destination: ~/Downloads/LimoniTransfers/"
+		saveLoc := fmt.Sprintf("Save to: %s", GetLimoniTransfersDir())
 		if maxW := int(inner.Width - 2); len([]rune(saveLoc)) > maxW {
 			saveLoc = string([]rune(saveLoc)[:maxW])
 		}

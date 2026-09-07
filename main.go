@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -1430,7 +1431,15 @@ func main() {
 					if err != nil {
 						room.SetToast(fmt.Sprintf("Could not open editor: %v", err))
 					} else {
-						room.SetToast(fmt.Sprintf("Opened %s in editor", filePath))
+						room.SetToast(fmt.Sprintf("Opened %s in editor", filepath.Base(filePath)))
+					}
+				}
+				room.OnOpenFolder = func(dirPath string) {
+					err := OpenFolder(dirPath)
+					if err != nil {
+						room.SetToast(fmt.Sprintf("Could not open folder: %v", err))
+					} else {
+						room.SetToast(fmt.Sprintf("Opened folder: %s", dirPath))
 					}
 				}
 				room.Update()
