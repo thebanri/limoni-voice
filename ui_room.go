@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
@@ -236,7 +237,7 @@ func (r *RoomView) SendCurrentChat() {
 
 		case "/hop":
 			hopCb := r.OnTriggerHop
-			r.ToastMsg = "🛡️ Port hop triggered"
+			r.ToastMsg = "[SECURITY] Port hop triggered"
 			r.ToastTimer = 90
 			r.mu.Unlock()
 			if hopCb != nil {
@@ -343,34 +344,60 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		}
 	}
 
-	duration := time.Since(r.StartTime).Round(time.Second)
-
 	peers := node.GetPeersList()
 	totalCount := len(peers) + 1 // +1 for self
 
-	titleStr := "LIMONI VOICE ROOM"
-	buf.SetString(inner.X+1, inner.Y, titleStr, cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
-		Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
-		Modifier: cell.ModifierBold,
-	})
+	durStr := fmt.Sprintf("Duration: %s", formatDuration(time.Since(r.StartTime)))
+	durLen := uint16(len([]rune(durStr)))
+	durX := inner.X + inner.Width - durLen - 1
 
+	if inner.Width > durLen+4 {
+		buf.SetString(durX, inner.Y, durStr, cell.Style{
+			Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9),
+			Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
+		})
+	}
+
+	curX := inner.X + 1
+	limitX := durX - 2
+	if inner.Width <= durLen+4 {
+		limitX = inner.X + inner.Width
+	}
+
+	// 1. App Title
+	titleStr := "LIMONI VOICE"
+	titleLen := uint16(len([]rune(titleStr)))
+	if curX+titleLen <= limitX {
+		buf.SetString(curX, inner.Y, titleStr, cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
+			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
+			Modifier: cell.ModifierBold,
+		})
+		curX += titleLen + 2
+	}
+
+	// 2. Room Code Badge
 	codeBadge := fmt.Sprintf(" Room: %s ", node.RoomCode)
-	codeX := inner.X + 22
-	buf.SetString(codeX, inner.Y, codeBadge, cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
-		Modifier: cell.ModifierBold,
-	})
-	frame.RegisterClickHandler(cell.NewRect(codeX, inner.Y, uint16(len([]rune(codeBadge))), 1), func(_ backend.MouseEvent) {
-		CopyToClipboard(node.RoomCode)
-		r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
-	})
+	codeLen := uint16(len([]rune(codeBadge)))
+	if curX+codeLen <= limitX {
+		buf.SetString(curX, inner.Y, codeBadge, cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
+			Modifier: cell.ModifierBold,
+		})
+		badgeRect := cell.NewRect(curX, inner.Y, codeLen, 1)
+		frame.RegisterClickHandler(badgeRect, func(_ backend.MouseEvent) {
+			CopyToClipboard(node.RoomCode)
+			r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
+		})
+		curX += codeLen + 2
+	}
 
+	// 3. Role Badge
 	var roleBadge string
 	var roleStyle cell.Style
 	if node.IsHost {
-		roleBadge = " 👑 HOST (YOU) "
+		roleBadge = " HOST (YOU) "
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFF, 0x9F, 0x43),
@@ -381,53 +408,50 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		if hostName == "" {
 			hostName = "Host"
 		}
-		roleBadge = fmt.Sprintf(" 👤 MEMBER (Host: %s) ", hostName)
+		roleBadge = fmt.Sprintf(" MEMBER (Host: %s) ", hostName)
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0x00, 0xF5, 0xD4),
 			Modifier: cell.ModifierBold,
 		}
 	}
+	roleLen := uint16(len([]rune(roleBadge)))
+	if curX+roleLen <= limitX {
+		buf.SetString(curX, inner.Y, roleBadge, roleStyle)
+		curX += roleLen + 2
+	}
 
-	roleX := codeX + uint16(len([]rune(codeBadge))) + 2
-	buf.SetString(roleX, inner.Y, roleBadge, roleStyle)
-
+	// 4. Member Count
 	countStr := fmt.Sprintf("Members: %d/4", totalCount)
-	countX := roleX + uint16(len([]rune(roleBadge))) + 2
-	if countX+14 <= inner.X+inner.Width {
-		buf.SetString(countX, inner.Y, countStr, cell.Style{
+	countLen := uint16(len([]rune(countStr)))
+	if curX+countLen <= limitX {
+		buf.SetString(curX, inner.Y, countStr, cell.Style{
 			Fg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
 			Bg:       cell.NewColorRGB(0x10, 0x14, 0x20),
 			Modifier: cell.ModifierBold,
 		})
+		curX += countLen + 2
 	}
 
-	// Anti-Tracking & Port Hopping Shield Badge
+	// 5. Port / Security Badge
 	remHop := node.NextHopRemaining()
 	var hopMin int
 	if remHop > 0 {
 		hopMin = int(remHop.Minutes())
 	}
-	shieldBadge := fmt.Sprintf(" 🛡️ :%d (%dm) ", node.Port, hopMin)
-	shieldX := countX + uint16(len([]rune(countStr))) + 2
-	shieldLen := uint16(len([]rune(shieldBadge)))
-	durStr := fmt.Sprintf("Duration: %s", duration)
-	if shieldX+shieldLen < inner.X+inner.Width-uint16(len([]rune(durStr)))-2 {
-		buf.SetString(shieldX, inner.Y, shieldBadge, cell.Style{
+	portBadge := fmt.Sprintf(" Port: :%d (%dm) ", node.Port, hopMin)
+	portLen := uint16(len([]rune(portBadge)))
+	if curX+portLen <= limitX {
+		buf.SetString(curX, inner.Y, portBadge, cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
 			Bg:       cell.NewColorRGB(0x13, 0x27, 0x22),
 			Modifier: cell.ModifierBold,
 		})
-		frame.RegisterClickHandler(cell.NewRect(shieldX, inner.Y, shieldLen, 1), func(_ backend.MouseEvent) {
-			r.SetToast(fmt.Sprintf("🛡️ Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.currentEpoch))
+		pRect := cell.NewRect(curX, inner.Y, portLen, 1)
+		frame.RegisterClickHandler(pRect, func(_ backend.MouseEvent) {
+			r.SetToast(fmt.Sprintf("Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.currentEpoch))
 		})
-	}
-
-	if inner.Width > uint16(len([]rune(durStr)))+2 {
-		buf.SetString(inner.X+inner.Width-uint16(len([]rune(durStr)))-2, inner.Y, durStr, cell.Style{
-			Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9),
-			Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
-		})
+		curX += portLen + 2
 	}
 }
 
@@ -562,7 +586,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 				opts := screenshare.ReceiverOptions{
 					WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", targetPeer.Nickname),
 				}
-				r.SetToast(fmt.Sprintf("🎬 Starting %s stream...", targetPeer.Nickname))
+				r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
 				go func() {
 					err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 					if err != nil {
@@ -577,11 +601,25 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 	}
 }
 
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	totalSec := int(d.Seconds())
+	hours := totalSec / 3600
+	minutes := (totalSec % 3600) / 60
+	seconds := totalSec % 60
+	if hours > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%02d:%02d", minutes, seconds)
+}
+
 func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, name string, rms float64, isSpeaking, isMuted, isDeafened, isSharing, isBeingWatched bool, pingMs int64, isReconnecting bool, isSelf bool) {
 	buf := frame.Buffer
 
 	// Icon & Color
-	icon := "👤"
+	var icon string
 	nameStyle := cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0E, 0x11, 0x1A), Modifier: cell.ModifierBold}
 
 	if isSelf {
@@ -589,30 +627,32 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	}
 
 	if isReconnecting {
-		icon = "🟡"
+		icon = "[!]"
 		nameStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
 	} else if isBeingWatched {
-		icon = "🎬"
+		icon = "[W]"
 		nameStyle.Fg = cell.NewColorRGB(0x00, 0xF5, 0xD4)
 	} else if isSharing {
-		icon = "🔴"
+		icon = "[*]"
 		nameStyle.Fg = cell.NewColorRGB(0x00, 0xFF, 0x88)
 	} else if isSpeaking {
-		icon = "🟢"
+		icon = "●"
 		nameStyle.Fg = cell.NewColorRGB(0x55, 0xEF, 0xC4)
 	} else if isDeafened {
-		icon = "🔇"
+		icon = "[D]"
 		nameStyle.Fg = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
 	} else if isMuted {
-		icon = "🎙️"
+		icon = "[M]"
 		nameStyle.Fg = cell.NewColorRGB(0xFF, 0x76, 0x75)
+	} else {
+		icon = "○"
 	}
 
 	titleText := fmt.Sprintf("%s %s", icon, name)
 	if isBeingWatched {
-		titleText += " 📺 [WATCHING]"
+		titleText += " [WATCHING]"
 	} else if isSharing {
-		titleText += " 📺 [LIVE]"
+		titleText += " [LIVE]"
 	}
 	buf.SetString(area.X+1, area.Y, titleText, nameStyle)
 
@@ -651,7 +691,7 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 }
 
 func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeers []*PeerInfo, node *P2PNode) {
-	stageTitle := " 🔴 LIVE STREAM STAGE "
+	stageTitle := " LIVE STREAM STAGE "
 	borderCol := cell.NewColorRGB(0x00, 0xFF, 0x88)
 	if !node.IsWatchingScreen && !node.IsSharingScreen {
 		borderCol = cell.NewColorRGB(0x6C, 0x5C, 0xE7)
@@ -689,15 +729,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			}
 		}
 
-		topBarText := fmt.Sprintf(" 🎬 %s'S LIVE STREAM ACTIVE (HD 60 FPS) ", strings.ToUpper(watchedNick))
+		topBarText := fmt.Sprintf(" %s'S LIVE STREAM ACTIVE (HD 60 FPS) ", strings.ToUpper(watchedNick))
 		buf.SetString(inner.X+3, inner.Y+1, topBarText, cell.Style{Fg: cell.NewColorRGB(0x00, 0xF5, 0xD4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 
-		msg1 := "📺 Playing in high-performance hardware-accelerated video window."
+		msg1 := "Playing in high-performance hardware-accelerated video window."
 		msg2 := "Press [W] / [Esc] to close viewer, or click the stop button below."
 		buf.SetString(inner.X+3, inner.Y+3, msg1, cell.Style{Fg: cell.NewColorRGB(0x55, 0xEF, 0xC4), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
 		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
 
-		btnText := "   ⏹️ [W] STOP WATCHING (Click)   "
+		btnText := "   [W] STOP WATCHING (Click)   "
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0xFF, 0x76, 0x75), Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
@@ -723,7 +763,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				if btnRowY >= inner.Y+inner.Height {
 					break
 				}
-				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream 📺 (HD 60 FPS)   ", p.Nickname)
+				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream (HD 60 FPS)   ", p.Nickname)
 				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xD2, 0xD3), Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
@@ -736,7 +776,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 					opts := screenshare.ReceiverOptions{
 						WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", targetPeer.Nickname),
 					}
-					r.SetToast(fmt.Sprintf("🎬 Switching to %s...", targetPeer.Nickname))
+					r.SetToast(fmt.Sprintf("Switching to %s...", targetPeer.Nickname))
 					go func() {
 						err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 						if err != nil {
@@ -753,9 +793,9 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 	// 2. Case: Local User is Broadcasting
 	if node.IsSharingScreen {
-		msg1 := "🔴 YOUR SCREEN IS LIVE (60 FPS - 1080p Full HD)"
+		msg1 := "YOUR SCREEN IS LIVE (60 FPS - 1080p Full HD)"
 		msg2 := "All room participants can watch your screen with ultra-low latency."
-		btnText := "   ⏹️ [V] STOP BROADCAST (Click)   "
+		btnText := "   [V] STOP BROADCAST (Click)   "
 
 		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: cell.NewColorRGB(0xFF, 0x76, 0x75), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: cell.NewColorRGB(0x88, 0x92, 0xB0), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
@@ -778,7 +818,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 					break
 				}
 				btnRowY := switchY + uint16(idx*2)
-				swBtnText := fmt.Sprintf("   ► Watch %s's Stream 📺   ", p.Nickname)
+				swBtnText := fmt.Sprintf("   ► Watch %s's Stream   ", p.Nickname)
 				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
@@ -791,7 +831,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 					opts := screenshare.ReceiverOptions{
 						WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", targetPeer.Nickname),
 					}
-					r.SetToast(fmt.Sprintf("🎬 Starting %s stream...", targetPeer.Nickname))
+					r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
 					go func() {
 						err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 						if err != nil {
@@ -809,9 +849,9 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 	// 3. Case: One or More Peers are Broadcasting (Idle watcher)
 	if len(streamingPeers) == 1 {
 		p := streamingPeers[0]
-		msg1 := fmt.Sprintf("🔴 %s IS SHARING SCREEN (60 FPS)", strings.ToUpper(p.Nickname))
+		msg1 := fmt.Sprintf("%s IS SHARING SCREEN (60 FPS)", strings.ToUpper(p.Nickname))
 		msg2 := "Click the button below to watch with 20ms ultra-low latency:"
-		btnText := fmt.Sprintf("   ► [W] WATCH %s STREAM (Click) 📺   ", strings.ToUpper(p.Nickname))
+		btnText := fmt.Sprintf("   ► [W] WATCH %s STREAM (Click)   ", strings.ToUpper(p.Nickname))
 
 		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
 		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: cell.NewColorRGB(0xDF, 0xE6, 0xE9), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17)})
@@ -827,7 +867,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			opts := screenshare.ReceiverOptions{
 				WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", p.Nickname),
 			}
-			r.SetToast("🎬 Starting stream viewer...")
+			r.SetToast("Starting stream viewer...")
 			go func() {
 				err := node.StartWatchingScreen(p.ID, port, opts)
 				if err != nil {
@@ -839,7 +879,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		})
 		return
 	} else if len(streamingPeers) > 1 {
-		msg1 := fmt.Sprintf("🔴 %d MEMBERS ARE SHARING SCREEN IN THIS ROOM", len(streamingPeers))
+		msg1 := fmt.Sprintf("%d MEMBERS ARE SHARING SCREEN IN THIS ROOM", len(streamingPeers))
 		msg2 := "Select which member's live stream you want to watch:"
 
 		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: cell.NewColorRGB(0x0A, 0x0E, 0x17), Modifier: cell.ModifierBold})
@@ -851,7 +891,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				break
 			}
 			btnRowY := listY + uint16(idx*2)
-			btnText := fmt.Sprintf("   ► WATCH %s'S LIVE STREAM 📺 (HD 60 FPS)   ", strings.ToUpper(p.Nickname))
+			btnText := fmt.Sprintf("   ► WATCH %s'S LIVE STREAM (HD 60 FPS)   ", strings.ToUpper(p.Nickname))
 			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
 			buf.SetString(inner.X+3, btnRowY, btnText, btnStyle)
 
@@ -864,7 +904,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				opts := screenshare.ReceiverOptions{
 					WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", targetPeer.Nickname),
 				}
-				r.SetToast(fmt.Sprintf("🎬 Starting %s stream...", targetPeer.Nickname))
+				r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
 				go func() {
 					err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 					if err != nil {
@@ -1008,13 +1048,13 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			buf.SetCell(inner.X+1+bx, bannerY+1, cell.Cell{Content: ' ', Style: bannerStyle})
 		}
 
-		bTitle := " 🔴 LIVE: Sharing Your Screen (60 FPS) "
+		bTitle := " LIVE: Sharing Your Screen (60 FPS) "
 		if uint16(len([]rune(bTitle))) > bannerW {
-			bTitle = " 🔴 LIVE STREAMING "
+			bTitle = " LIVE STREAMING "
 		}
 		buf.SetString(inner.X+2, bannerY, bTitle, bannerStyle)
 
-		bAction := "   ⏹️ [V] Stop Broadcast (Click)   "
+		bAction := "   [V] Stop Broadcast (Click)   "
 		bActionStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
@@ -1139,14 +1179,14 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			buf.SetCell(inner.X+1+bx, bannerY+1, cell.Cell{Content: ' ', Style: bannerBg})
 		}
 
-		bTitle := fmt.Sprintf(" 🔴 %s Sharing Screen (60 FPS)", peer.Nickname)
+		bTitle := fmt.Sprintf(" %s Sharing Screen (60 FPS)", peer.Nickname)
 		if uint16(len([]rune(bTitle))) > bannerW {
-			bTitle = fmt.Sprintf(" 🔴 %s LIVE STREAM", peer.Nickname)
+			bTitle = fmt.Sprintf(" %s LIVE STREAM", peer.Nickname)
 		}
 		buf.SetString(inner.X+2, bannerY, bTitle, bannerBg)
 
 		if node.IsWatchingScreen && node.WatchingPeerID == peer.ID {
-			bBtnText := "   ⏹️ [W] Stop Watching (Click)   "
+			bBtnText := "   [W] Stop Watching (Click)   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0xFF, 0x76, 0x75),
@@ -1154,7 +1194,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
 		} else if node.IsWatchingScreen {
-			bBtnText := "   ► Switch to Stream (Click) 📺   "
+			bBtnText := "   ► Switch to Stream (Click)   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
@@ -1162,7 +1202,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
 		} else {
-			bBtnText := "   ► [W] WATCH STREAM (Click) 📺   "
+			bBtnText := "   ► [W] WATCH STREAM (Click)   "
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0x00, 0xFF, 0x88),
@@ -1449,7 +1489,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				Modifier: cell.ModifierBold,
 			}
 		} else if streamingPeer != nil {
-			watchLabel = fmt.Sprintf("[W] Watch %s 🔴", streamingPeer.Nickname)
+			watchLabel = fmt.Sprintf("[W] Watch %s", streamingPeer.Nickname)
 			watchStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       cell.NewColorRGB(0x55, 0xEF, 0xC4),
@@ -1474,7 +1514,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				opts := screenshare.ReceiverOptions{
 					WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", streamingPeer.Nickname),
 				}
-				r.SetToast("🎬 Starting stream viewer...")
+				r.SetToast("Starting stream viewer...")
 				go func() {
 					err := node.StartWatchingScreen(streamingPeer.ID, port, opts)
 					if err != nil {
@@ -1560,10 +1600,10 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	scrollOffset := r.ChatScrollOffset
 	r.mu.Unlock()
 
-	blockTitle := " 💬 CHAT & ROOM LOG "
+	blockTitle := " CHAT & ROOM LOG "
 	borderStyle := cell.Style{Fg: cell.NewColorRGB(0x63, 0x6E, 0x72)}
 	if isFocused {
-		blockTitle = " 💬 CHAT & LOG [Enter: Send | Esc: Exit] "
+		blockTitle = " CHAT & LOG [Enter: Send | Esc: Exit] "
 		borderStyle = cell.Style{Fg: cell.NewColorRGB(0x6C, 0x5C, 0xE7), Modifier: cell.ModifierBold}
 	}
 
@@ -1670,7 +1710,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			}
 
 			if line.IsChat {
-				r.renderChatTextWithLinks(frame, buf, curX, rowY, line.Text, remW)
+				r.renderChatSpans(frame, buf, curX, rowY, line.Spans, remW)
 			} else {
 				buf.SetString(curX, rowY, line.Text, line.TextStyle)
 			}
@@ -1700,7 +1740,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			for x := logInner.X; x < logInner.X+logInner.Width; x++ {
 				buf.SetCell(x, inputY, cell.Cell{Content: ' ', Style: inputBg})
 			}
-			prompt := "💬 > "
+			prompt := "> "
 			promptLen := uint16(len([]rune(prompt)))
 			buf.SetString(logInner.X+1, inputY, prompt, cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0xD2, 0xD3),
@@ -1725,14 +1765,14 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			}
 		} else {
 			if r.UnreadChatCount > 0 {
-				unfocusedPrompt := fmt.Sprintf(" 💬 %d New Messages - [Enter] to Chat ", r.UnreadChatCount)
+				unfocusedPrompt := fmt.Sprintf(" %d New Messages - [Enter] to Chat ", r.UnreadChatCount)
 				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
 					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 					Bg:       cell.NewColorRGB(0xFF, 0xE6, 0x6D),
 					Modifier: cell.ModifierBold,
 				})
 			} else {
-				unfocusedPrompt := "💬 [ Press Enter or / to Chat ]"
+				unfocusedPrompt := "[ Press Enter or / to Chat ]"
 				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
 					Fg: cell.NewColorRGB(0x63, 0x6E, 0x72),
 					Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
@@ -1742,14 +1782,262 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	}
 }
 
+type chatSpan struct {
+	Text     string
+	IsLink   bool
+	ClickURL string
+}
+
 type roomDisplayLine struct {
 	Timestamp      string
 	Badge          string
 	BadgeStyle     cell.Style
 	Text           string
 	TextStyle      cell.Style
+	Spans          []chatSpan
 	IsChat         bool
 	IsContinuation bool
+}
+
+var reChatURL = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)
+
+func cleanClickURL(raw string) string {
+	clean := strings.TrimSpace(raw)
+	for len(clean) > 0 {
+		last := clean[len(clean)-1]
+		if last == '.' || last == ',' || last == '!' || last == '?' || last == ';' || last == ':' || last == ')' || last == ']' || last == '>' || last == '"' || last == '\'' {
+			clean = clean[:len(clean)-1]
+		} else {
+			break
+		}
+	}
+	return clean
+}
+
+func splitWordsAndSpaces(s string) []string {
+	var tokens []string
+	var current strings.Builder
+	var inSpace bool
+
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			if !inSpace && current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+			inSpace = true
+			current.WriteRune(r)
+		} else {
+			if inSpace && current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+			inSpace = false
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		tokens = append(tokens, current.String())
+	}
+	return tokens
+}
+
+func parseMessageSpans(text string) []chatSpan {
+	locs := reChatURL.FindAllStringIndex(text, -1)
+	if len(locs) == 0 {
+		return []chatSpan{{Text: text, IsLink: false}}
+	}
+
+	var spans []chatSpan
+	lastIdx := 0
+	for _, loc := range locs {
+		if loc[0] > lastIdx {
+			spans = append(spans, chatSpan{
+				Text:   text[lastIdx:loc[0]],
+				IsLink: false,
+			})
+		}
+		rawLink := text[loc[0]:loc[1]]
+		clickURL := cleanClickURL(rawLink)
+		spans = append(spans, chatSpan{
+			Text:     rawLink,
+			IsLink:   true,
+			ClickURL: clickURL,
+		})
+		lastIdx = loc[1]
+	}
+	if lastIdx < len(text) {
+		spans = append(spans, chatSpan{
+			Text:   text[lastIdx:],
+			IsLink: false,
+		})
+	}
+	return spans
+}
+
+func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
+	if availWidth < 5 {
+		availWidth = 5
+	}
+
+	var lines [][]chatSpan
+	var currentLine []chatSpan
+	currentWidth := 0
+
+	flushLine := func() {
+		if len(currentLine) > 0 {
+			lines = append(lines, currentLine)
+			currentLine = nil
+			currentWidth = 0
+		}
+	}
+
+	appendSpan := func(span chatSpan, width int) {
+		if len(currentLine) > 0 && !currentLine[len(currentLine)-1].IsLink && !span.IsLink {
+			currentLine[len(currentLine)-1].Text += span.Text
+		} else {
+			currentLine = append(currentLine, span)
+		}
+		currentWidth += width
+	}
+
+	for _, span := range spans {
+		if !span.IsLink {
+			tokens := splitWordsAndSpaces(span.Text)
+			for _, tok := range tokens {
+				tRunes := []rune(tok)
+				tLen := len(tRunes)
+
+				if unicode.IsSpace(tRunes[0]) && currentWidth == 0 {
+					continue
+				}
+
+				if currentWidth+tLen <= availWidth {
+					appendSpan(chatSpan{Text: tok, IsLink: false}, tLen)
+				} else {
+					if currentWidth > 0 {
+						flushLine()
+					}
+					if unicode.IsSpace(tRunes[0]) {
+						continue
+					}
+					if tLen <= availWidth {
+						appendSpan(chatSpan{Text: tok, IsLink: false}, tLen)
+					} else {
+						for len(tRunes) > 0 {
+							chunkLen := min(len(tRunes), availWidth)
+							chunkStr := string(tRunes[:chunkLen])
+							if len(tRunes) > availWidth {
+								lines = append(lines, []chatSpan{{Text: chunkStr, IsLink: false}})
+								tRunes = tRunes[chunkLen:]
+							} else {
+								appendSpan(chatSpan{Text: chunkStr, IsLink: false}, chunkLen)
+								tRunes = tRunes[chunkLen:]
+							}
+						}
+					}
+				}
+			}
+		} else {
+			lRunes := []rune(span.Text)
+			lLen := len(lRunes)
+
+			if currentWidth+lLen <= availWidth {
+				appendSpan(span, lLen)
+			} else {
+				if currentWidth > 0 {
+					flushLine()
+				}
+				if lLen <= availWidth {
+					appendSpan(span, lLen)
+				} else {
+					for len(lRunes) > 0 {
+						chunkLen := min(len(lRunes), availWidth)
+						chunkStr := string(lRunes[:chunkLen])
+						if len(lRunes) > availWidth {
+							lines = append(lines, []chatSpan{{
+								Text:     chunkStr,
+								IsLink:   true,
+								ClickURL: span.ClickURL,
+							}})
+							lRunes = lRunes[chunkLen:]
+						} else {
+							appendSpan(chatSpan{
+								Text:     chunkStr,
+								IsLink:   true,
+								ClickURL: span.ClickURL,
+							}, chunkLen)
+							lRunes = lRunes[chunkLen:]
+						}
+					}
+				}
+			}
+		}
+	}
+
+	flushLine()
+	if len(lines) == 0 {
+		lines = append(lines, []chatSpan{{Text: "", IsLink: false}})
+	}
+	return lines
+}
+
+func wrapWordsToLines(text string, maxW int) []string {
+	if maxW < 5 {
+		maxW = 5
+	}
+	tokens := splitWordsAndSpaces(text)
+	var lines []string
+	var cur strings.Builder
+	curLen := 0
+
+	flush := func() {
+		if cur.Len() > 0 {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			curLen = 0
+		}
+	}
+
+	for _, tok := range tokens {
+		tRunes := []rune(tok)
+		tLen := len(tRunes)
+		if unicode.IsSpace(tRunes[0]) && curLen == 0 {
+			continue
+		}
+		if curLen+tLen <= maxW {
+			cur.WriteString(tok)
+			curLen += tLen
+		} else {
+			if curLen > 0 {
+				flush()
+			}
+			if unicode.IsSpace(tRunes[0]) {
+				continue
+			}
+			if tLen <= maxW {
+				cur.WriteString(tok)
+				curLen = tLen
+			} else {
+				for len(tRunes) > 0 {
+					cLen := min(len(tRunes), maxW)
+					if len(tRunes) > maxW {
+						lines = append(lines, string(tRunes[:cLen]))
+						tRunes = tRunes[cLen:]
+					} else {
+						cur.WriteString(string(tRunes[:cLen]))
+						curLen = cLen
+						tRunes = tRunes[cLen:]
+					}
+				}
+			}
+		}
+	}
+	flush()
+	if len(lines) == 0 {
+		lines = append(lines, "")
+	}
+	return lines
 }
 
 func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDisplayLine {
@@ -1787,34 +2075,33 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 				availFirst = 10
 			}
 
-			runes := []rune(msg.Text)
-			if len(runes) <= availFirst {
-				lines = append(lines, roomDisplayLine{
-					Timestamp:  tsStr,
-					Badge:      senderBadge,
-					BadgeStyle: senderStyle,
-					Text:       msg.Text,
-					IsChat:     true,
-				})
-			} else {
-				lines = append(lines, roomDisplayLine{
-					Timestamp:  tsStr,
-					Badge:      senderBadge,
-					BadgeStyle: senderStyle,
-					Text:       string(runes[:availFirst]),
-					IsChat:     true,
-				})
-				remRunes := runes[availFirst:]
-				indentSpaces := strings.Repeat(" ", tsLen+len([]rune(senderBadge)))
-				for len(remRunes) > 0 {
-					chunkLen := min(len(remRunes), availFirst)
-					lines = append(lines, roomDisplayLine{
-						Timestamp:      indentSpaces,
-						Text:           string(remRunes[:chunkLen]),
-						IsChat:         true,
-						IsContinuation: true,
-					})
-					remRunes = remRunes[chunkLen:]
+			indentSpaces := strings.Repeat(" ", badgeLen)
+			paragraphs := strings.Split(msg.Text, "\n")
+			firstLineOverall := true
+
+			for _, para := range paragraphs {
+				spans := parseMessageSpans(para)
+				wrappedLines := wrapSpansToLines(spans, availFirst)
+
+				for _, lSpans := range wrappedLines {
+					if firstLineOverall {
+						lines = append(lines, roomDisplayLine{
+							Timestamp:      tsStr,
+							Badge:          senderBadge,
+							BadgeStyle:     senderStyle,
+							Spans:          lSpans,
+							IsChat:         true,
+							IsContinuation: false,
+						})
+						firstLineOverall = false
+					} else {
+						lines = append(lines, roomDisplayLine{
+							Timestamp:      indentSpaces,
+							Spans:          lSpans,
+							IsChat:         true,
+							IsContinuation: true,
+						})
+					}
 				}
 			}
 		} else {
@@ -1822,9 +2109,9 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 			if strings.Contains(msg.Text, "[+]") || strings.Contains(msg.Text, "joined") {
 				logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)
 			} else if strings.Contains(msg.Text, "[-]") || strings.Contains(msg.Text, "left") {
+				logColor = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
+			} else if strings.Contains(msg.Text, "[WARN]") || strings.Contains(msg.Text, "[ERROR]") || strings.Contains(msg.Text, "[SECURITY]") {
 				logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
-			} else if strings.Contains(msg.Text, "⚠️") || strings.Contains(msg.Text, "❌") || strings.Contains(msg.Text, "🛡️") {
-				logColor = cell.NewColorRGB(0xFF, 0xE6, 0x6D)
 			}
 
 			availFirst := maxW - tsLen
@@ -1832,33 +2119,26 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 				availFirst = 10
 			}
 
-			runes := []rune(msg.Text)
-			if len(runes) <= availFirst {
-				lines = append(lines, roomDisplayLine{
-					Timestamp: tsStr,
-					Text:      msg.Text,
-					TextStyle: cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
-					IsChat:    false,
-				})
-			} else {
-				lines = append(lines, roomDisplayLine{
-					Timestamp: tsStr,
-					Text:      string(runes[:availFirst]),
-					TextStyle: cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
-					IsChat:    false,
-				})
-				remRunes := runes[availFirst:]
-				indentSpaces := strings.Repeat(" ", tsLen)
-				for len(remRunes) > 0 {
-					chunkLen := min(len(remRunes), availFirst)
+			logLines := wrapWordsToLines(msg.Text, availFirst)
+			indentSpaces := strings.Repeat(" ", tsLen)
+
+			for idx, lText := range logLines {
+				if idx == 0 {
+					lines = append(lines, roomDisplayLine{
+						Timestamp:      tsStr,
+						Text:           lText,
+						TextStyle:      cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
+						IsChat:         false,
+						IsContinuation: false,
+					})
+				} else {
 					lines = append(lines, roomDisplayLine{
 						Timestamp:      indentSpaces,
-						Text:           string(remRunes[:chunkLen]),
+						Text:           lText,
 						TextStyle:      cell.Style{Fg: logColor, Bg: cell.NewColorRGB(0x10, 0x14, 0x20)},
 						IsChat:         false,
 						IsContinuation: true,
 					})
-					remRunes = remRunes[chunkLen:]
 				}
 			}
 		}
@@ -1867,13 +2147,10 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 	return lines
 }
 
-var reChatURL = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)
-
-func (r *RoomView) renderChatTextWithLinks(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, text string, maxW int) {
-	if maxW <= 0 {
+func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, spans []chatSpan, maxW int) {
+	if maxW <= 0 || len(spans) == 0 {
 		return
 	}
-	locs := reChatURL.FindAllStringIndex(text, -1)
 	plainStyle := cell.Style{
 		Fg: cell.NewColorRGB(0xF1, 0xF2, 0xF6),
 		Bg: cell.NewColorRGB(0x10, 0x14, 0x20),
@@ -1884,82 +2161,40 @@ func (r *RoomView) renderChatTextWithLinks(frame *terminal.Frame, buf *buffer.Bu
 		Modifier: cell.ModifierUnderline | cell.ModifierBold,
 	}
 
-	if len(locs) == 0 {
-		runes := []rune(text)
-		if len(runes) > maxW {
-			if maxW > 3 {
-				text = string(runes[:maxW-1]) + "…"
-			} else {
-				text = string(runes[:maxW])
-			}
-		}
-		buf.SetString(startX, rowY, text, plainStyle)
-		return
-	}
-
 	curX := startX
-	lastIdx := 0
 	endX := startX + uint16(maxW)
 
-	for _, loc := range locs {
+	for _, span := range spans {
 		if curX >= endX {
 			break
 		}
-		// 1. Text before link
-		if loc[0] > lastIdx {
-			prefix := text[lastIdx:loc[0]]
-			pRunes := []rune(prefix)
-			rem := int(endX - curX)
-			if len(pRunes) > rem {
-				pRunes = pRunes[:rem]
-			}
-			buf.SetString(curX, rowY, string(pRunes), plainStyle)
-			curX += uint16(len(pRunes))
-		}
-
-		if curX >= endX {
-			break
-		}
-
-		// 2. Link text (underlined + clickable)
-		rawLink := text[loc[0]:loc[1]]
-		lRunes := []rune(rawLink)
+		sRunes := []rune(span.Text)
 		rem := int(endX - curX)
-		drawnLen := len(lRunes)
+		drawnLen := len(sRunes)
 		if drawnLen > rem {
-			lRunes = lRunes[:rem]
+			sRunes = sRunes[:rem]
 			drawnLen = rem
 		}
-		buf.SetString(curX, rowY, string(lRunes), linkStyle)
-
-		clickURL := rawLink
-		for len(clickURL) > 0 {
-			lastChar := clickURL[len(clickURL)-1]
-			if lastChar == '.' || lastChar == ',' || lastChar == '!' || lastChar == '?' || lastChar == ';' || lastChar == ':' || lastChar == ')' || lastChar == ']' {
-				clickURL = clickURL[:len(clickURL)-1]
-			} else {
-				break
-			}
+		if drawnLen <= 0 {
+			continue
 		}
-		linkRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
-		frame.RegisterClickHandler(linkRect, func(_ backend.MouseEvent) {
-			_ = OpenBrowserURL(clickURL)
-			CopyToClipboard(clickURL)
-			r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURL))
-		})
+
+		if span.IsLink {
+			buf.SetString(curX, rowY, string(sRunes), linkStyle)
+			clickURL := span.ClickURL
+			if clickURL == "" {
+				clickURL = span.Text
+			}
+			linkRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
+			frame.RegisterClickHandler(linkRect, func(_ backend.MouseEvent) {
+				_ = OpenBrowserURL(clickURL)
+				CopyToClipboard(clickURL)
+				r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURL))
+			})
+		} else {
+			buf.SetString(curX, rowY, string(sRunes), plainStyle)
+		}
 
 		curX += uint16(drawnLen)
-		lastIdx = loc[1]
-	}
-
-	// 3. Trailing text after last link
-	if lastIdx < len(text) && curX < endX {
-		tail := text[lastIdx:]
-		tRunes := []rune(tail)
-		rem := int(endX - curX)
-		if len(tRunes) > rem {
-			tRunes = tRunes[:rem]
-		}
-		buf.SetString(curX, rowY, string(tRunes), plainStyle)
 	}
 }

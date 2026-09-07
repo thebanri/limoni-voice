@@ -995,7 +995,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 
 	dialogBg := cell.NewColorRGB(0x0E, 0x11, 0x1B)
 	block := widgets.Block{
-		Title:         " 🐛 DEBUG & SYSTEM LOGS ",
+		Title:         " DEBUG & SYSTEM LOGS ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: cell.NewColorRGB(0xA2, 0x9B, 0xFE), Modifier: cell.ModifierBold},
@@ -1112,13 +1112,13 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		for i, line := range visibleLogs {
 			rowY := listY + uint16(i)
 			logColor := cell.NewColorRGB(0xDF, 0xE6, 0xE9)
-			if strings.Contains(line, "[ERROR]") || strings.Contains(line, "❌") || strings.Contains(line, "failed") {
+			if strings.Contains(line, "[ERROR]") || strings.Contains(line, "[ERR]") || strings.Contains(line, "failed") {
 				logColor = cell.NewColorRGB(0xFF, 0x76, 0x75)
-			} else if strings.Contains(line, "[WARN]") || strings.Contains(line, "⚠️") {
+			} else if strings.Contains(line, "[WARN]") {
 				logColor = cell.NewColorRGB(0xFD, 0xCB, 0x6E)
-			} else if strings.Contains(line, "[SCREEN]") || strings.Contains(line, "[SHARE]") || strings.Contains(line, "[WATCH]") {
+			} else if strings.Contains(line, "[SCREEN]") || strings.Contains(line, "[SHARE]") || strings.Contains(line, "[WATCH]") || strings.Contains(line, "[VIEWER]") {
 				logColor = cell.NewColorRGB(0x00, 0xD2, 0xD3)
-			} else if strings.Contains(line, "[NET]") || strings.Contains(line, "[RELAY]") || strings.Contains(line, "[UDP]") || strings.Contains(line, "[TCP]") {
+			} else if strings.Contains(line, "[NET]") || strings.Contains(line, "[RELAY]") || strings.Contains(line, "[UDP]") || strings.Contains(line, "[TCP]") || strings.Contains(line, "[SECURITY]") || strings.Contains(line, "[HOST]") {
 				logColor = cell.NewColorRGB(0xA2, 0x9B, 0xFE)
 			} else if strings.Contains(line, "[+]") || strings.Contains(line, "joined") {
 				logColor = cell.NewColorRGB(0x55, 0xEF, 0xC4)

@@ -1090,18 +1090,37 @@ func TestPeerLeaveNoDeadlock(t *testing.T) {
 
 func TestChatClickableLinks(t *testing.T) {
 	room := NewRoomView()
-	room.AddChatMessage("Alice", "peer_alice", "Check out https://github.com/thebanri/limoni and www.google.com for info!", false, time.Now())
+	fullURL := "https://github.com/thebanri/limoni-voice"
+	room.AddChatMessage("Alice", "peer_alice", "Check "+fullURL, false, time.Now())
 
-	buf := buffer.NewBuffer(cell.NewRect(0, 0, 120, 30))
-	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	// Test 1: Wide layout
+	bufWide := buffer.NewBuffer(cell.NewRect(0, 0, 120, 30))
+	frameWide := terminal.NewFrame(bufWide, terminal.NewFocusManager())
 	audio := NewAudioEngine()
 	node := NewP2PNode("local_user", "You", audio)
+	room.Render(frameWide, cell.NewRect(0, 0, 120, 30), node, audio)
 
-	room.Render(frame, cell.NewRect(0, 0, 120, 30), node, audio)
+	// Test 2: Narrow layout where link is wrapped across lines
+	// buildDisplayLines with small width (e.g. maxW = 28)
+	lines := room.buildDisplayLines(room.Messages, 28)
+	if len(lines) < 2 {
+		t.Fatalf("Expected message to wrap into at least 2 lines at width 28, got %d", len(lines))
+	}
 
-	// Verify click handler registered on frame
-	if frame == nil {
-		t.Fatalf("Frame is nil")
+	// Verify that wrapped link chunks all retain the exact full ClickURL
+	foundLinkSpans := 0
+	for _, l := range lines {
+		for _, s := range l.Spans {
+			if s.IsLink {
+				foundLinkSpans++
+				if s.ClickURL != fullURL {
+					t.Fatalf("Expected ClickURL to be full URL %q, got %q (text: %q)", fullURL, s.ClickURL, s.Text)
+				}
+			}
+		}
+	}
+	if foundLinkSpans == 0 {
+		t.Fatalf("Expected at least one link span in wrapped lines")
 	}
 
 	// Test OpenBrowserURL edge cases
@@ -1208,11 +1227,18 @@ func TestSoundEffectsSynthesis(t *testing.T) {
 		t.Fatalf("Chat sound PCM length must be non-zero multiple of AudioChunkSize, got %d", len(chatPCM))
 	}
 
-	// 4. Test PlaySound queuing in AudioEngine
+	// 4. Test PlaySound queuing and duplicate debouncing in AudioEngine
 	engine := NewAudioEngine()
 	engine.PlaySound(SoundJoin)
-	if len(engine.sfxQueue) == 0 {
+	initialLen := len(engine.sfxQueue)
+	if initialLen == 0 {
 		t.Fatalf("Expected sfxQueue to have queued chunks after PlaySound(SoundJoin)")
+	}
+
+	// Immediate second PlaySound(SoundJoin) must be debounced and ignored
+	engine.PlaySound(SoundJoin)
+	if len(engine.sfxQueue) != initialLen {
+		t.Fatalf("Expected duplicate SoundJoin within 400ms to be debounced, got queue len %d vs initial %d", len(engine.sfxQueue), initialLen)
 	}
 
 	engine.PlaySound(SoundLeave)

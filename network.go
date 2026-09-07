@@ -428,7 +428,7 @@ func (n *P2PNode) SetTargetPeer(addrStr string) {
 		n.mu.Lock()
 		n.TargetPeerAddr = uaddr
 		n.mu.Unlock()
-		n.log(fmt.Sprintf("[🎯] Configured direct LAN peer: %s", uaddr.String()))
+		n.log(fmt.Sprintf("[DIRECT] Configured direct LAN peer: %s", uaddr.String()))
 	}
 }
 
@@ -545,9 +545,9 @@ func (n *P2PNode) HostRoom(roomCode string) {
 	go n.portHopSupervisor(hopCancel)
 
 	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
-		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | LAN Mode | Anti-Tracking Active)", n.RoomCode, n.Port))
+		n.log(fmt.Sprintf("[HOST] Room opened: %s (Port: %d | LAN Mode | Anti-Tracking Active)", n.RoomCode, n.Port))
 	} else {
-		n.log(fmt.Sprintf("[👑] Room opened (HOST): %s (Port: %d | E2EE Secure | Anti-Tracking Active)", n.RoomCode, n.Port))
+		n.log(fmt.Sprintf("[HOST] Room opened: %s (Port: %d | E2EE Secure | Anti-Tracking Active)", n.RoomCode, n.Port))
 	}
 	n.broadcastHello()
 	n.connectRelay("host", n.RoomCode)
@@ -614,9 +614,9 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	go n.portHopSupervisor(hopCancel)
 
 	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
-		n.log(fmt.Sprintf("[⏳] Searching room '%s' on local network (LAN)...", cleanCode))
+		n.log(fmt.Sprintf("[CONNECT] Searching room '%s' on local network (LAN)...", cleanCode))
 	} else {
-		n.log(fmt.Sprintf("[⏳] Searching room '%s' and verifying host...", cleanCode))
+		n.log(fmt.Sprintf("[CONNECT] Searching room '%s' and verifying host...", cleanCode))
 	}
 
 	// Connect to internet relay server for cross-network join
@@ -658,7 +658,7 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 					failedCb := n.OnJoinFailed
 					n.mu.Unlock()
 
-					n.log(fmt.Sprintf("❌ Room '%s' not found (Host offline or room not created).", cleanCode))
+					n.log(fmt.Sprintf("[ERROR] Room '%s' not found (Host offline or room not created).", cleanCode))
 					if failedCb != nil {
 						failedCb("This room is not currently open! Make sure your friend has opened the room by clicking [2] CREATE ROOM.")
 					}
@@ -823,7 +823,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		conn, _, err := dialer.Dial(relayURL, nil)
 		if err != nil {
 			if firstConnect {
-				n.log(fmt.Sprintf("[☁️] Failed to connect to relay server (%v). LAN mode active.", err))
+				n.log(fmt.Sprintf("[RELAY] Failed to connect to relay server (%v). LAN mode active.", err))
 				firstConnect = false
 			}
 			// Fast retry when disconnected (e.g. switching to VPN)
@@ -854,10 +854,10 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		if firstConnect {
-			n.log(fmt.Sprintf("[☁️] Connected to relay server (%s | Internet Active)", relayURL))
+			n.log(fmt.Sprintf("[RELAY] Connected to relay server (%s | Internet Active)", relayURL))
 			firstConnect = false
 		} else {
-			n.log("[☁️] Relay connection automatically re-established.")
+			n.log("[RELAY] Relay connection automatically re-established.")
 		}
 
 		connCancel := make(chan struct{})
@@ -1147,7 +1147,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 
 	switch msg.Type {
 	case "room_created":
-		n.log(fmt.Sprintf("[☁️] Room '%s' created on relay (Internet E2EE)", msg.RoomCode))
+		n.log(fmt.Sprintf("[RELAY] Room '%s' created on relay (Internet E2EE)", msg.RoomCode))
 
 	case "welcome":
 		if !n.IsConnected && n.Connecting {
@@ -1180,9 +1180,6 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 					LastSeen: time.Now(),
 				}
 				n.Peers[msg.SenderID] = hostPeer
-				if n.OnPeerEvent != nil {
-					go n.OnPeerEvent("join", hostPeer)
-				}
 			}
 
 			// Trigger direct UDP hole-punching to Host
@@ -1216,7 +1213,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				}
 			}
 
-			n.log(fmt.Sprintf("[☁️] Connected to room %s! (Host: %s | Internet E2EE)", n.RoomCode, msg.Nickname))
+			n.log(fmt.Sprintf("[RELAY] Connected to room %s! (Host: %s | Internet E2EE)", n.RoomCode, msg.Nickname))
 			successCb := n.OnJoinSuccess
 			if successCb != nil {
 				go successCb(msg.Nickname)
@@ -1297,7 +1294,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				}
 			}
 			peer.LastSeen = time.Now()
-			n.log(fmt.Sprintf("🛡️ [Anti-Tracking] Peer %s rotated endpoint via relay: :%d", msg.Nickname, msg.Port))
+			n.log(fmt.Sprintf("[SECURITY] Peer %s rotated endpoint via relay: :%d", msg.Nickname, msg.Port))
 
 			// Trigger direct UDP hole-punching to the rotated port
 			pubIP := msg.PublicIP
@@ -1329,16 +1326,16 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 		n.HostNick = msg.Nickname
 		if msg.SenderID == n.LocalID {
 			n.IsHost = true
-			n.log("👑 Former host left, you are now the room HOST!")
+			n.log("[HOST] Former host left, you are now the room HOST!")
 		} else {
 			n.IsHost = false
-			n.log(fmt.Sprintf("👑 New room HOST: %s", msg.Nickname))
+			n.log(fmt.Sprintf("[HOST] New room HOST: %s", msg.Nickname))
 		}
 
 	case "host_left":
 		// Only close if no new host was elected
 		if n.HostID == msg.SenderID && !n.IsHost {
-			n.log("❌ Host left, room closed.")
+			n.log("[ERROR] Host left, room closed.")
 			if n.IsWatchingScreen {
 				go func() {
 					_ = n.StopWatchingScreen()
@@ -1361,7 +1358,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			n.aead = nil
 			n.RoomCode = ""
 			failedCb := n.OnJoinFailed
-			n.log("❌ Room join rejected: Room full (Max 4 people).")
+			n.log("[ERROR] Room join rejected: Room full (Max 4 people).")
 			if failedCb != nil {
 				go failedCb("This room is full! (Maximum 4 people)")
 			}
@@ -1381,7 +1378,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			if msgText == "" {
 				msgText = "This room is not currently open! Make sure your friend has opened the room by clicking [2] CREATE ROOM."
 			}
-			n.log(fmt.Sprintf("❌ Failed to join room: %s", msgText))
+			n.log(fmt.Sprintf("[ERROR] Failed to join room: %s", msgText))
 			if failedCb != nil {
 				go failedCb(msgText)
 			}
@@ -1401,7 +1398,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			if msgText == "" {
 				msgText = "Server connection error occurred."
 			}
-			n.log(fmt.Sprintf("❌ Server error: %s", msgText))
+			n.log(fmt.Sprintf("[ERROR] Server error: %s", msgText))
 			if failedCb != nil {
 				go failedCb(msgText)
 			}
@@ -2340,9 +2337,6 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if successCb != nil {
 				go successCb(pkt.Nickname)
 			}
-			if n.OnPeerEvent != nil {
-				go n.OnPeerEvent("join", hostPeer)
-			}
 			return
 		}
 
@@ -2440,7 +2434,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = true
 			peer.VideoPort = pkt.VideoPort
-			n.log(fmt.Sprintf("📺 %s started screen sharing (Port: %d)", peer.Nickname, pkt.VideoPort))
+			n.log(fmt.Sprintf("[SCREEN] %s started screen sharing (Port: %d)", peer.Nickname, pkt.VideoPort))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, true, pkt.VideoPort)
 			}
@@ -2450,7 +2444,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = false
 			peer.VideoPort = 0
-			n.log(fmt.Sprintf("⏹️ %s stopped screen sharing.", peer.Nickname))
+			n.log(fmt.Sprintf("[SCREEN] %s stopped screen sharing.", peer.Nickname))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, false, 0)
 			}
@@ -2491,7 +2485,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				}
 			}
 			peer.LastSeen = time.Now()
-			n.log(fmt.Sprintf("🛡️ [Anti-Tracking] Peer %s rotated endpoint to port :%d (Epoch %d)", pkt.Nickname, pkt.LocalPort, pkt.Seq))
+			n.log(fmt.Sprintf("[SECURITY] Peer %s rotated endpoint to port :%d (Epoch %d)", pkt.Nickname, pkt.LocalPort, pkt.Seq))
 
 			// Immediately respond with a PacketPong so NAT hole-punching succeeds bidirectionally
 			if peer.Addr != nil {
@@ -2652,7 +2646,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		VideoPort:       localAssignedPort,
 	}
 	n.broadcastToPeers(&startPkt)
-	n.log("📺 Screen share started (1080p 60 FPS - Internet)")
+	n.log("[SCREEN] Screen share started (1080p 60 FPS - Internet)")
 
 	// 2. Read raw MPEG-TS video chunks and broadcast to all room peers over WebSocket Relay (Internet)
 	go func() {
@@ -2664,7 +2658,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		for {
 			nBytes, _, err := captureConn.ReadFromUDP(buf)
 			if err != nil || nBytes <= 0 {
-				n.debugLog(fmt.Sprintf("⚠️ [SHARE] UDP capture read ended: %v", err))
+				n.debugLog(fmt.Sprintf("[WARN] [SHARE] UDP capture read ended: %v", err))
 				break
 			}
 
@@ -2685,9 +2679,9 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 			totalPackets++
 			totalBytes += int64(nBytes)
 			if totalPackets == 1 {
-				n.debugLog(fmt.Sprintf("📺 [SHARE] First video chunk captured (%d bytes)! Broadcasting...", nBytes))
+				n.debugLog(fmt.Sprintf("[SCREEN] [SHARE] First video chunk captured (%d bytes)! Broadcasting...", nBytes))
 			} else if totalPackets%120 == 0 {
-				n.debugLog(fmt.Sprintf("📺 [SHARE] Stream active: %d chunks (%d KB) sent", totalPackets, totalBytes/1024))
+				n.debugLog(fmt.Sprintf("[SCREEN] [SHARE] Stream active: %d chunks (%d KB) sent", totalPackets, totalBytes/1024))
 			}
 
 			chunk := make([]byte, nBytes)
@@ -2709,9 +2703,9 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	go func() {
 		select {
 		case err := <-session.Err():
-			n.log(fmt.Sprintf("⚠️ Screen stream closed: %v", err))
+			n.log(fmt.Sprintf("[WARN] Screen stream closed: %v", err))
 		case <-session.Done():
-			n.log("ℹ️ Screen stream ended.")
+			n.log("[INFO] Screen stream ended.")
 		}
 
 		_ = captureConn.Close()
@@ -2770,7 +2764,7 @@ func (n *P2PNode) StopScreenShare() error {
 		VideoPort:       0,
 	}
 	n.broadcastToPeers(&stopPkt)
-	n.log("⏹️ Screen share stopped.")
+	n.log("[SCREEN] Screen share stopped.")
 	return nil
 }
 
@@ -2829,10 +2823,10 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	go func() {
 		conn, err := tcpLn.Accept()
 		if err != nil {
-			n.debugLog(fmt.Sprintf("⚠️ [WATCH] Player TCP accept error: %v", err))
+			n.debugLog(fmt.Sprintf("[WARN] [WATCH] Player TCP accept error: %v", err))
 			return
 		}
-		n.debugLog(fmt.Sprintf("🎬 [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
+		n.debugLog(fmt.Sprintf("[VIEWER] [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
 			_ = tcp.SetWriteBuffer(4 * 1024 * 1024)
@@ -2870,15 +2864,15 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	n.receiverSession = session
 	n.mu.Unlock()
 
-	n.log("🎬 Live screen stream viewer window opened (HD 60 FPS).")
+	n.log("[VIEWER] Live screen stream viewer window opened (HD 60 FPS).")
 
 	// 4. Monitor receiver session lifecycle
 	go func(curSession *screenshare.Session) {
 		select {
 		case err := <-curSession.Err():
-			n.log(fmt.Sprintf("⚠️ Screen viewer closed/error: %v", err))
+			n.log(fmt.Sprintf("[WARN] Screen viewer closed/error: %v", err))
 		case <-curSession.Done():
-			n.log("ℹ️ Screen viewer window closed.")
+			n.log("[INFO] Screen viewer window closed.")
 		}
 
 		n.mu.Lock()
@@ -2929,7 +2923,7 @@ func (n *P2PNode) StopWatchingScreen() error {
 		_ = session.Stop()
 	}
 
-	n.log("⏹️ Screen viewer closed.")
+	n.log("[VIEWER] Screen viewer closed.")
 	return nil
 }
 
@@ -3184,7 +3178,7 @@ func (n *P2PNode) RotatePort() error {
 		})
 	}()
 
-	n.log(fmt.Sprintf("🛡️ [Anti-Tracking] Port rotated: :%d ➔ :%d (Epoch %d). Session keys & obfuscation renewed.", currentPort, newPort, newEpoch))
+	n.log(fmt.Sprintf("[SECURITY] Port rotated: :%d -> :%d (Epoch %d). Session keys & obfuscation renewed.", currentPort, newPort, newEpoch))
 
 	if onHopCb != nil {
 		onHopCb(newPort, newEpoch)

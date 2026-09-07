@@ -392,6 +392,7 @@ type AudioEngine struct {
 	// Mixing buffer for incoming peer streams with jitter compensation
 	peerJitterBuffers map[string]*PeerJitterBuffer
 	sfxQueue          [][]byte
+	lastSFXTime       map[SoundEffect]time.Time
 	SFXMuted          bool
 	mixChan           chan []byte
 	stopChan          chan struct{}
@@ -571,6 +572,16 @@ func (a *AudioEngine) PlaySound(sfx SoundEffect) {
 		return
 	}
 
+	if a.lastSFXTime == nil {
+		a.lastSFXTime = make(map[SoundEffect]time.Time)
+	}
+	// Debounce identical sound effects triggered within 400ms to prevent double audio playback
+	if last, exists := a.lastSFXTime[sfx]; exists && time.Since(last) < 400*time.Millisecond {
+		a.mu.Unlock()
+		return
+	}
+	a.lastSFXTime[sfx] = time.Now()
+
 	for i := 0; i < len(raw); i += AudioChunkSize {
 		end := i + AudioChunkSize
 		if end > len(raw) {
@@ -613,6 +624,7 @@ func NewAudioEngine() *AudioEngine {
 		PeerWaves:         make(map[string][]float64),
 		peerJitterBuffers: make(map[string]*PeerJitterBuffer),
 		sfxQueue:          make([][]byte, 0),
+		lastSFXTime:       make(map[SoundEffect]time.Time),
 		mixChan:           make(chan []byte, 64),
 		stopChan:          make(chan struct{}),
 		InputDevices:      inputDevs,

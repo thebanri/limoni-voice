@@ -265,7 +265,7 @@ func main() {
 	node.OnLog = func(msg string) {
 		AddDebugLog("[ROOM] " + msg)
 		isUserEvent := strings.HasPrefix(msg, "[+]") || strings.HasPrefix(msg, "[-]") ||
-			strings.HasPrefix(msg, "👑") || strings.HasPrefix(msg, "❌") ||
+			strings.HasPrefix(msg, "[HOST]") || strings.HasPrefix(msg, "[ERROR]") ||
 			strings.Contains(msg, "joined") || strings.Contains(msg, "left")
 		if isUserEvent {
 			room.AddLog(msg)
@@ -273,7 +273,7 @@ func main() {
 		if currentScreen == ScreenLobby {
 			lobby.SetToast(msg)
 		} else {
-			if strings.HasPrefix(msg, "⚠️") || strings.HasPrefix(msg, "❌") {
+			if strings.HasPrefix(msg, "[WARN]") || strings.HasPrefix(msg, "[ERROR]") || strings.HasPrefix(msg, "⚠️") || strings.HasPrefix(msg, "❌") {
 				room.SetToast(msg)
 			}
 		}
@@ -1105,10 +1105,10 @@ func main() {
 					node.SendMuteState(isMuted)
 					if isMuted {
 						room.SetToast("Microphone Off (Muted)")
-						room.AddLog("🎙️ Microphone muted")
+						room.AddLog("[MIC] Microphone muted")
 					} else {
 						room.SetToast("Microphone On")
-						room.AddLog("🎙️ Microphone unmuted")
+						room.AddLog("[MIC] Microphone unmuted")
 					}
 				}
 				room.OnTriggerDeafen = func() {
@@ -1117,20 +1117,20 @@ func main() {
 					node.SendMuteState(audio.Muted)
 					if isDeaf {
 						room.SetToast("Audio Off (Deafened)")
-						room.AddLog("🔇 Audio deafened (Sound & Mic off)")
+						room.AddLog("[AUDIO] Audio deafened (Sound & Mic off)")
 					} else {
 						room.SetToast("Audio On")
-						room.AddLog("🔊 Audio undeafened")
+						room.AddLog("[AUDIO] Audio undeafened")
 					}
 				}
 				room.OnTriggerSFX = func() {
 					isMuted := audio.ToggleSFXMute()
 					if isMuted {
-						room.SetToast("🔔 Sound Effects Muted")
-						room.AddLog("🔔 Sound effects (join/leave/chat) muted")
+						room.SetToast("Sound Effects Muted")
+						room.AddLog("[SFX] Sound effects (join/leave/chat) muted")
 					} else {
-						room.SetToast("🔔 Sound Effects Enabled")
-						room.AddLog("🔔 Sound effects enabled")
+						room.SetToast("Sound Effects Enabled")
+						room.AddLog("[SFX] Sound effects enabled")
 					}
 				}
 				room.Update()
