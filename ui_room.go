@@ -2767,7 +2767,7 @@ func (r *RoomView) extractSelectedText() string {
 			}
 		}
 	}
-	return strings.TrimSpace(result.String())
+	return SanitizeClipboardText(result.String())
 }
 
 func (r *RoomView) HandleChatClick(x, y uint16) bool {

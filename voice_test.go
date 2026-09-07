@@ -2402,6 +2402,24 @@ func TestMultilineCopyCommandAndNoIndentationArtifacts(t *testing.T) {
 	}
 }
 
+func TestSanitizeClipboardText(t *testing.T) {
+	dirty := "\x1b[200~reg add HKLM\\System\\CurrentControlSet\\Control\\TimeZoneInformation /v RealTimeIsUniversal /t REG_DWORD /d 1 /f\x1b[201~\x07\x00\x1b"
+	clean := SanitizeClipboardText(dirty)
+	expected := "reg add HKLM\\System\\CurrentControlSet\\Control\\TimeZoneInformation /v RealTimeIsUniversal /t REG_DWORD /d 1 /f"
+	if clean != expected {
+		t.Fatalf("Sanitization failed, got %q, expected %q", clean, expected)
+	}
+
+	for _, r := range clean {
+		if r < 32 && r != '\n' && r != '\t' {
+			t.Fatalf("Cleaned text contains unprintable control char: %d", r)
+		}
+		if r == 127 || r == '\uFFFD' {
+			t.Fatalf("Cleaned text contains invalid character: %c", r)
+		}
+	}
+}
+
 
 
 

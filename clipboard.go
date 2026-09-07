@@ -5,12 +5,31 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 )
 
+var reANSI = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[NOPXYZ_]|\x1b`)
+
+// SanitizeClipboardText removes ANSI escape sequences (bracketed paste markers, OSC codes, colors)
+// and unprintable ASCII control characters to ensure compatibility with web browsers and text editors.
+func SanitizeClipboardText(s string) string {
+	s = reANSI.ReplaceAllString(s, "")
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == '\t' || r >= 32 {
+			if r != 127 && r != '\uFEFF' && r != '\u200B' && r != '\u200C' && r != '\u200D' {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // CopyToClipboard attempts to copy text to system clipboard using OSC 52 and system utilities.
 func CopyToClipboard(text string) bool {
+	text = SanitizeClipboardText(text)
 	if text == "" {
 		return false
 	}
@@ -52,12 +71,17 @@ func CopyToClipboard(text string) bool {
 		}
 	}
 
-	// 4. Linux: Wayland wl-copy
+	// 4. Linux: Wayland wl-copy (with UTF-8 text MIME type for browser compatibility)
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
 		if path, err := exec.LookPath("wl-copy"); err == nil {
-			cmd := exec.Command(path)
+			cmd := exec.Command(path, "--type", "text/plain;charset=utf-8")
 			cmd.Stdin = strings.NewReader(text)
 			if err := cmd.Run(); err == nil {
+				return true
+			}
+			cmd2 := exec.Command(path)
+			cmd2.Stdin = strings.NewReader(text)
+			if err := cmd2.Run(); err == nil {
 				return true
 			}
 		}
@@ -108,54 +132,64 @@ func CopyToClipboard(text string) bool {
 
 // GetClipboardText reads text from system clipboard using system utilities.
 func GetClipboardText() string {
+	var raw string
+
 	// 1. Try Windows PowerShell Get-Clipboard
 	if runtime.GOOS == "windows" {
 		if path, err := exec.LookPath("powershell"); err == nil {
 			cmd := exec.Command(path, "-NoProfile", "-Command", "Get-Clipboard")
 			out, err := cmd.Output()
 			if err == nil && len(out) > 0 {
-				return strings.TrimSpace(string(out))
+				raw = string(out)
 			}
 		}
 	}
 
 	// 2. Try pbpaste (macOS)
-	if path, err := exec.LookPath("pbpaste"); err == nil {
-		cmd := exec.Command(path)
-		out, err := cmd.Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(string(out))
+	if raw == "" && runtime.GOOS == "darwin" {
+		if path, err := exec.LookPath("pbpaste"); err == nil {
+			cmd := exec.Command(path)
+			out, err := cmd.Output()
+			if err == nil && len(out) > 0 {
+				raw = string(out)
+			}
 		}
 	}
 
 	// 3. Try wl-paste (Wayland)
-	if path, err := exec.LookPath("wl-paste"); err == nil {
-		cmd := exec.Command(path, "--no-newline")
-		out, err := cmd.Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(string(out))
+	if raw == "" && os.Getenv("WAYLAND_DISPLAY") != "" {
+		if path, err := exec.LookPath("wl-paste"); err == nil {
+			cmd := exec.Command(path, "--no-newline")
+			out, err := cmd.Output()
+			if err == nil && len(out) > 0 {
+				raw = string(out)
+			}
 		}
 	}
 
 	// 4. Try xclip (X11)
-	if path, err := exec.LookPath("xclip"); err == nil {
-		cmd := exec.Command(path, "-selection", "clipboard", "-o")
-		out, err := cmd.Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(string(out))
+	if raw == "" && os.Getenv("DISPLAY") != "" {
+		if path, err := exec.LookPath("xclip"); err == nil {
+			cmd := exec.Command(path, "-selection", "clipboard", "-o")
+			out, err := cmd.Output()
+			if err == nil && len(out) > 0 {
+				raw = string(out)
+			}
 		}
 	}
 
 	// 5. Try xsel (X11)
-	if path, err := exec.LookPath("xsel"); err == nil {
-		cmd := exec.Command(path, "--clipboard", "--output")
-		out, err := cmd.Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(string(out))
+	if raw == "" && os.Getenv("DISPLAY") != "" {
+		if path, err := exec.LookPath("xsel"); err == nil {
+			cmd := exec.Command(path, "--clipboard", "--output")
+			out, err := cmd.Output()
+			if err == nil && len(out) > 0 {
+				raw = string(out)
+			}
 		}
 	}
 
-	return ""
+	return SanitizeClipboardText(raw)
 }
 
 // OpenBrowserURL opens a web URL in the user's default browser.
