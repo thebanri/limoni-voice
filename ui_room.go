@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -271,17 +272,40 @@ func (r *RoomView) SendCurrentChat() {
 			if len(parts) < 2 {
 				r.Messages = append(r.Messages, RoomMessage{
 					Timestamp: time.Now(),
-					Text:      "Usage: /code <snippet_or_file> (e.g. /code fmt.Println(\"hi\"))",
+					Text:      "Usage: /code <snippet_or_file> (e.g. /code main.go or /code fmt.Println(\"hi\"))",
 					IsChat:    false,
 				})
 				r.mu.Unlock()
 				return
 			}
-			rawSnippet := strings.TrimPrefix(text, parts[0]+" ")
+			rawSnippet := strings.TrimSpace(strings.TrimPrefix(text, parts[0]+" "))
 			sendCodeCb := r.OnSendCode
 			r.mu.Unlock()
 			if sendCodeCb != nil {
-				go sendCodeCb("Snippet", rawSnippet)
+				// Check if rawSnippet is a path to an existing local file
+				trimmedPath := strings.Trim(rawSnippet, "\"'")
+				if fi, err := os.Stat(trimmedPath); err == nil && !fi.IsDir() {
+					if content, err := os.ReadFile(trimmedPath); err == nil {
+						go sendCodeCb(filepath.Base(trimmedPath), string(content))
+						return
+					}
+				}
+
+				// Infer file extension from snippet content
+				title := "snippet.txt"
+				if strings.Contains(rawSnippet, "package ") || strings.Contains(rawSnippet, "func ") {
+					title = "snippet.go"
+				} else if strings.Contains(rawSnippet, "def ") || strings.Contains(rawSnippet, "import ") {
+					title = "snippet.py"
+				} else if strings.Contains(rawSnippet, "#include") {
+					title = "snippet.c"
+				} else if strings.Contains(rawSnippet, "function") || strings.Contains(rawSnippet, "const ") || strings.Contains(rawSnippet, "let ") {
+					title = "snippet.js"
+				} else if strings.Contains(rawSnippet, "<html>") || strings.Contains(rawSnippet, "</div>") {
+					title = "snippet.html"
+				}
+
+				go sendCodeCb(title, rawSnippet)
 			}
 			return
 

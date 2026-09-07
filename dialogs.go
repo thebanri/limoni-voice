@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1243,4 +1244,201 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		Fg: theme.TextMuted,
 		Bg: dialogBg,
 	})
+}
+
+// DrawFileOfferModal renders an interactive confirmation modal for incoming P2P file transfers and code snippets
+func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, offer *FileOffer, onAccept func(), onDecline func(), onOpenEditor func()) {
+	if progress <= 0.001 || offer == nil {
+		return
+	}
+
+	modalW, modalH := uint16(64), uint16(11)
+	if offer.IsCode {
+		modalH = 12
+	}
+	if screenArea.Width < modalW+2 {
+		modalW = screenArea.Width - 2
+	}
+	if screenArea.Height < modalH+2 {
+		modalH = screenArea.Height - 2
+	}
+
+	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
+	animatedArea := terminal.ScaleRect(modalArea, progress)
+
+	if animatedArea.Width < 8 || animatedArea.Height < 5 {
+		return
+	}
+
+	// 1. Drop shadow behind the dialog
+	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
+
+	frame.RegisterModal("file_offer_dialog", animatedArea, onDecline)
+
+	theme := CurrentTheme()
+	dialogBg := theme.SurfaceBg
+	buf := frame.Buffer
+
+	// 2. Clear entire dialog area
+	for y := animatedArea.Y; y < animatedArea.Y+animatedArea.Height; y++ {
+		for x := animatedArea.X; x < animatedArea.X+animatedArea.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
+		}
+	}
+
+	// 3. Dialog block
+	title := " 📥 INCOMING FILE TRANSFER "
+	if offer.IsCode {
+		title = " 📥 INCOMING CODE SNIPPET "
+	}
+	block := widgets.Block{
+		Title:          title,
+		TitleAlignment: widgets.AlignCenter,
+		Borders:        widgets.BorderAll,
+		BorderSymbols:  widgets.SymbolsRounded,
+		BorderStyle:    cell.Style{Fg: theme.BorderFocused, Modifier: cell.ModifierBold},
+		Style:          cell.Style{Bg: dialogBg},
+	}
+	frame.RenderWidget(block, animatedArea)
+
+	inner := block.Inner(animatedArea)
+	if inner.Height < 3 || inner.Width < 4 {
+		return
+	}
+
+	// 4. Content lines
+	// Sender
+	senderText := fmt.Sprintf("From: %s", offer.SenderNick)
+	buf.SetString(inner.X+1, inner.Y, senderText, cell.Style{
+		Fg:       theme.Accent,
+		Bg:       dialogBg,
+		Modifier: cell.ModifierBold,
+	})
+
+	// File name and size
+	fileInfo := fmt.Sprintf("File: %s  (%s)", offer.FileName, formatBytes(offer.FileSize))
+	if maxW := int(inner.Width - 2); len([]rune(fileInfo)) > maxW {
+		fileInfo = string([]rune(fileInfo)[:maxW])
+	}
+	buf.SetString(inner.X+1, inner.Y+1, fileInfo, cell.Style{
+		Fg:       theme.Text,
+		Bg:       dialogBg,
+		Modifier: cell.ModifierBold,
+	})
+
+	// Checksum SHA-256
+	hashStr := offer.Checksum
+	if len(hashStr) > 16 {
+		hashStr = hashStr[:16] + "..."
+	}
+	hashText := fmt.Sprintf("SHA-256: %s", hashStr)
+	buf.SetString(inner.X+1, inner.Y+2, hashText, cell.Style{
+		Fg: theme.TextMuted,
+		Bg: dialogBg,
+	})
+
+	// Warning or Preview
+	ext := strings.ToLower(filepath.Ext(offer.FileName))
+	isDangerous := DangerousFileExtensions[ext]
+
+	curRow := inner.Y + 3
+	if isDangerous {
+		warnText := "⚠️ Caution: Executable file. Accept only if you trust the sender."
+		if maxW := int(inner.Width - 2); len([]rune(warnText)) > maxW {
+			warnText = string([]rune(warnText)[:maxW])
+		}
+		buf.SetString(inner.X+1, curRow, warnText, cell.Style{
+			Fg:       theme.Danger,
+			Bg:       dialogBg,
+			Modifier: cell.ModifierBold,
+		})
+		curRow++
+	} else if offer.IsCode {
+		// Code preview
+		codePreview := strings.TrimSpace(string(offer.Data))
+		lines := strings.Split(codePreview, "\n")
+		previewLine := ""
+		if len(lines) > 0 {
+			previewLine = strings.TrimSpace(lines[0])
+		}
+		if len(lines) > 1 {
+			previewLine += "  |  " + strings.TrimSpace(lines[1])
+		}
+		if maxW := int(inner.Width - 6); len([]rune(previewLine)) > maxW {
+			previewLine = string([]rune(previewLine)[:maxW]) + "..."
+		}
+		previewStr := fmt.Sprintf("Code: %s", previewLine)
+		buf.SetString(inner.X+1, curRow, previewStr, cell.Style{
+			Fg: theme.Secondary,
+			Bg: dialogBg,
+		})
+		curRow++
+	} else {
+		saveLoc := "Destination: ~/Downloads/LimoniTransfers/"
+		if maxW := int(inner.Width - 2); len([]rune(saveLoc)) > maxW {
+			saveLoc = string([]rune(saveLoc)[:maxW])
+		}
+		buf.SetString(inner.X+1, curRow, saveLoc, cell.Style{
+			Fg: theme.TextMuted,
+			Bg: dialogBg,
+		})
+		curRow++
+	}
+
+	// 5. Action Buttons at the bottom
+	btnRow := inner.Y + inner.Height - 1
+	if btnRow <= curRow {
+		btnRow = curRow + 1
+	}
+
+	// Accept Button
+	acceptLabel := " [Y] Accept & Save "
+	acceptLen := uint16(len([]rune(acceptLabel)))
+	acceptX := inner.X + 1
+	buf.SetString(acceptX, btnRow, acceptLabel, cell.Style{
+		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+		Bg:       theme.Success,
+		Modifier: cell.ModifierBold,
+	})
+	frame.RegisterClickHandler(cell.NewRect(acceptX, btnRow, acceptLen, 1), func(_ backend.MouseEvent) {
+		if onAccept != nil {
+			onAccept()
+		}
+	})
+
+	// Decline Button
+	declineLabel := " [N] Decline "
+	declineLen := uint16(len([]rune(declineLabel)))
+	declineX := acceptX + acceptLen + 2
+	if declineX+declineLen <= inner.X+inner.Width {
+		buf.SetString(declineX, btnRow, declineLabel, cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Danger,
+			Modifier: cell.ModifierBold,
+		})
+		frame.RegisterClickHandler(cell.NewRect(declineX, btnRow, declineLen, 1), func(_ backend.MouseEvent) {
+			if onDecline != nil {
+				onDecline()
+			}
+		})
+	}
+
+	// Optional Open in Editor button for code
+	if offer.IsCode {
+		editorLabel := " [O] Open Editor "
+		editorLen := uint16(len([]rune(editorLabel)))
+		editorX := declineX + declineLen + 2
+		if editorX+editorLen <= inner.X+inner.Width {
+			buf.SetString(editorX, btnRow, editorLabel, cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       theme.Accent,
+				Modifier: cell.ModifierBold,
+			})
+			frame.RegisterClickHandler(cell.NewRect(editorX, btnRow, editorLen, 1), func(_ backend.MouseEvent) {
+				if onOpenEditor != nil {
+					onOpenEditor()
+				}
+			})
+		}
+	}
 }

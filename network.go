@@ -225,6 +225,18 @@ type P2PNode struct {
 	incomingTransfers      map[string]*IncomingFileTransfer
 	OnFileTransferProgress func(transferID string, fileName string, transferred int64, total int64, speed float64, isUpload bool, done bool, err error)
 	OnFileReceived         func(transferID string, fileName string, filePath string, isCode bool, content string)
+	OnFileOfferReceived    func(offer *FileOffer)
+}
+
+type FileOffer struct {
+	TransferID string
+	SenderID   string
+	SenderNick string
+	FileName   string
+	FileSize   int64
+	IsCode     bool
+	Checksum   string
+	Data       []byte
 }
 
 type IncomingFileTransfer struct {
@@ -2705,41 +2717,33 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					}
 				}
 
-				if transfer.IsCode {
-					codeStr := string(fullData)
-					tmpFile, err := os.CreateTemp("", "limoni-snippet-*.txt")
-					var tmpPath string
-					if err == nil {
-						_, _ = tmpFile.Write(fullData)
-						_ = tmpFile.Close()
-						tmpPath = tmpFile.Name()
-					}
-					if n.OnFileReceived != nil {
-						go n.OnFileReceived(meta.TransferID, meta.FileName, tmpPath, true, codeStr)
-					}
-				} else {
-					homeDir, _ := os.UserHomeDir()
-					dlDir := filepath.Join(homeDir, "Downloads", "LimoniTransfers")
-					if homeDir == "" {
-						dlDir = "downloads"
-					}
-					_ = os.MkdirAll(dlDir, 0755)
-
-					safeName := filepath.Base(meta.FileName)
-					if safeName == "" || safeName == "." {
+				safeName := filepath.Base(meta.FileName)
+				if safeName == "" || safeName == "." {
+					if transfer.IsCode {
+						safeName = "snippet.txt"
+					} else {
 						safeName = "received_file"
 					}
+				}
 
-					// Extension safety check
-					ext := strings.ToLower(filepath.Ext(safeName))
-					if DangerousFileExtensions[ext] {
-						safeName = safeName + ".quarantined"
-					}
+				offer := &FileOffer{
+					TransferID: meta.TransferID,
+					SenderID:   pkt.SenderID,
+					SenderNick: pkt.Nickname,
+					FileName:   safeName,
+					FileSize:   int64(len(fullData)),
+					IsCode:     transfer.IsCode,
+					Checksum:   transfer.Checksum,
+					Data:       fullData,
+				}
 
-					destPath := filepath.Join(dlDir, safeName)
-					_ = os.WriteFile(destPath, fullData, 0644)
-					if n.OnFileReceived != nil {
-						go n.OnFileReceived(meta.TransferID, safeName, destPath, false, "")
+				if n.OnFileOfferReceived != nil {
+					go n.OnFileOfferReceived(offer)
+				} else if n.OnFileReceived != nil {
+					// Fallback if no interactive offer handler registered
+					savedPath, err := SaveAcceptedFile(offer)
+					if err == nil {
+						go n.OnFileReceived(meta.TransferID, safeName, savedPath, transfer.IsCode, string(fullData))
 					}
 				}
 			}
@@ -3593,14 +3597,16 @@ func (n *P2PNode) SendCodeSnippet(title string, codeContent string) error {
 
 // SendFileBytes streams raw file or code bytes to all peers with E2EE chunking
 func (n *P2PNode) SendFileBytes(fileName string, data []byte, isCode bool) error {
-	n.mu.Lock()
+	n.mu.RLock()
 	if !n.IsConnected || len(n.Peers) == 0 {
-		n.mu.Unlock()
+		n.mu.RUnlock()
 		return errors.New("cannot transfer: not connected to room or no peers")
 	}
 	room := n.RoomCode
 	senderID := n.LocalID
 	nickname := n.Nickname
+	n.mu.RUnlock()
+
 	fileSum := sha256.Sum256([]byte(fileName))
 	transferID := fmt.Sprintf("tf_%d_%x", time.Now().UnixNano(), fileSum[:4])
 	const chunkSize = 16384 // 16 KB per chunk
@@ -3681,4 +3687,56 @@ func (n *P2PNode) SendFileBytes(fileName string, data []byte, isCode bool) error
 	}()
 
 	return nil
+}
+
+// SaveAcceptedFile saves an accepted file transfer to the user's Downloads/LimoniTransfers directory, or a temporary code file.
+func SaveAcceptedFile(offer *FileOffer) (string, error) {
+	if offer == nil || len(offer.Data) == 0 {
+		return "", errors.New("empty file offer data")
+	}
+
+	if offer.IsCode {
+		tmpFile, err := os.CreateTemp("", "limoni-snippet-*.txt")
+		if err != nil {
+			return "", err
+		}
+		_, err = tmpFile.Write(offer.Data)
+		_ = tmpFile.Close()
+		if err != nil {
+			return "", err
+		}
+		return tmpFile.Name(), nil
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	dlDir := filepath.Join(homeDir, "Downloads", "LimoniTransfers")
+	if homeDir == "" {
+		dlDir = "downloads"
+	}
+	if err := os.MkdirAll(dlDir, 0755); err != nil {
+		return "", err
+	}
+
+	safeName := filepath.Base(offer.FileName)
+	if safeName == "" || safeName == "." {
+		safeName = "received_file"
+	}
+
+	destPath := filepath.Join(dlDir, safeName)
+	if _, err := os.Stat(destPath); err == nil {
+		ext := filepath.Ext(safeName)
+		base := strings.TrimSuffix(safeName, ext)
+		for i := 1; i < 1000; i++ {
+			altPath := filepath.Join(dlDir, fmt.Sprintf("%s (%d)%s", base, i, ext))
+			if _, err := os.Stat(altPath); os.IsNotExist(err) {
+				destPath = altPath
+				break
+			}
+		}
+	}
+
+	if err := os.WriteFile(destPath, offer.Data, 0644); err != nil {
+		return "", err
+	}
+	return destPath, nil
 }

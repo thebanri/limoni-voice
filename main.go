@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
@@ -170,6 +171,100 @@ func main() {
 	exitDialogAnim := animation.NewFloat(0.0)
 	leaveDialogAnim := animation.NewFloat(0.0)
 	screenShareDialogAnim := animation.NewFloat(0.0)
+	fileOfferDialogAnim := animation.NewFloat(0.0)
+
+	var currentFileOffer *FileOffer
+	var pendingFileOffers []*FileOffer
+	var fileOfferMu sync.Mutex
+
+	showNextFileOffer := func() {
+		fileOfferMu.Lock()
+		if len(pendingFileOffers) > 0 {
+			currentFileOffer = pendingFileOffers[0]
+			pendingFileOffers = pendingFileOffers[1:]
+			fileOfferDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
+		} else {
+			currentFileOffer = nil
+			fileOfferDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
+		}
+		fileOfferMu.Unlock()
+		t.ForceFullRedraw()
+	}
+
+	enqueueFileOffer := func(offer *FileOffer) {
+		fileOfferMu.Lock()
+		pendingFileOffers = append(pendingFileOffers, offer)
+		if currentFileOffer == nil {
+			currentFileOffer = pendingFileOffers[0]
+			pendingFileOffers = pendingFileOffers[1:]
+			fileOfferDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
+		}
+		fileOfferMu.Unlock()
+		audio.PlaySound(SoundChat)
+		targetLabel := "file"
+		if offer.IsCode {
+			targetLabel = "code snippet"
+		}
+		if currentScreen == ScreenRoom {
+			room.SetToast(fmt.Sprintf("📥 Incoming %s from %s: %s", targetLabel, offer.SenderNick, offer.FileName))
+		} else {
+			lobby.SetToast(fmt.Sprintf("📥 Incoming %s from %s: %s", targetLabel, offer.SenderNick, offer.FileName))
+		}
+		t.ForceFullRedraw()
+	}
+
+	acceptCurrentOffer := func(openInEditor bool) {
+		fileOfferMu.Lock()
+		offer := currentFileOffer
+		fileOfferMu.Unlock()
+		if offer == nil {
+			return
+		}
+		savedPath, err := SaveAcceptedFile(offer)
+		if err != nil {
+			if currentScreen == ScreenRoom {
+				room.SetToast(fmt.Sprintf("Save error: %v", err))
+				room.AddLog(fmt.Sprintf("[FILE] Error saving '%s': %v", offer.FileName, err))
+			} else {
+				lobby.SetToast(fmt.Sprintf("Save error: %v", err))
+			}
+		} else {
+			if offer.IsCode {
+				if currentScreen == ScreenRoom {
+					room.AddLog(fmt.Sprintf("[CODE] ✓ Accepted code snippet '%s' from %s (saved to %s)", offer.FileName, offer.SenderNick, savedPath))
+					room.SetToast(fmt.Sprintf("✓ Code snippet saved: %s", offer.FileName))
+				} else {
+					lobby.SetToast(fmt.Sprintf("✓ Code snippet saved: %s", offer.FileName))
+				}
+				if openInEditor {
+					_ = OpenInEditor(savedPath)
+				}
+			} else {
+				if currentScreen == ScreenRoom {
+					room.AddLog(fmt.Sprintf("[FILE] ✓ Accepted file '%s' (%s) from %s (saved to %s)", offer.FileName, formatBytes(offer.FileSize), offer.SenderNick, savedPath))
+					room.SetToast(fmt.Sprintf("✓ File saved to Downloads: %s", offer.FileName))
+				} else {
+					lobby.SetToast(fmt.Sprintf("✓ File saved to Downloads: %s", offer.FileName))
+				}
+			}
+		}
+		showNextFileOffer()
+	}
+
+	declineCurrentOffer := func() {
+		fileOfferMu.Lock()
+		offer := currentFileOffer
+		fileOfferMu.Unlock()
+		if offer != nil {
+			if currentScreen == ScreenRoom {
+				room.AddLog(fmt.Sprintf("[FILE] ✗ Declined file transfer '%s' from %s", offer.FileName, offer.SenderNick))
+				room.SetToast(fmt.Sprintf("✗ Declined: %s", offer.FileName))
+			} else {
+				lobby.SetToast(fmt.Sprintf("✗ Declined: %s", offer.FileName))
+			}
+		}
+		showNextFileOffer()
+	}
 
 	openTestModal := func() {
 		audio.EnterTestMode()
@@ -328,6 +423,8 @@ func main() {
 		}
 	}
 
+	node.OnFileOfferReceived = enqueueFileOffer
+
 	node.OnFileReceived = func(transferID string, fileName string, filePath string, isCode bool, content string) {
 		audio.PlaySound(SoundChat)
 		var size int64
@@ -337,9 +434,6 @@ func main() {
 		if isCode {
 			room.AddLog(fmt.Sprintf("[CODE] Received code snippet '%s' (%s) saved to %s", fileName, formatBytes(size), filePath))
 			room.SetToast(fmt.Sprintf("Code snippet received: %s", fileName))
-		} else if strings.HasSuffix(fileName, ".quarantined") {
-			room.AddLog(fmt.Sprintf("[SECURITY] ⚠️ Potential executable received. File was quarantined for security: %s (%s)", fileName, filePath))
-			room.SetToast(fmt.Sprintf("⚠️ Quarantined: %s", fileName))
 		} else {
 			room.AddLog(fmt.Sprintf("[FILE] Received file '%s' (%s) saved to %s", fileName, formatBytes(size), filePath))
 			room.SetToast(fmt.Sprintf("File received: %s", fileName))
@@ -565,6 +659,24 @@ func main() {
 				}
 
 				// --- 1. Handle Active Modals First ---
+				if currentFileOffer != nil {
+					switch e.Type {
+					case backend.KeyEnter:
+						acceptCurrentOffer(false)
+					case backend.KeyEsc:
+						declineCurrentOffer()
+					case backend.KeyRune:
+						if e.Ch == 'y' || e.Ch == 'Y' {
+							acceptCurrentOffer(false)
+						} else if e.Ch == 'n' || e.Ch == 'N' {
+							declineCurrentOffer()
+						} else if (e.Ch == 'o' || e.Ch == 'O') && currentFileOffer.IsCode {
+							acceptCurrentOffer(true)
+						}
+					}
+					continue
+				}
+
 				if showExitModal {
 					focused := t.FocusManager().Focused()
 					switch e.Type {
@@ -779,10 +891,14 @@ func main() {
 
 					// Tab Navigation
 					if e.Type == backend.KeyTab {
+						numInputs := 3
+						if lobby.IsPinProtected {
+							numInputs = 4
+						}
 						if e.Shift {
-							lobby.ActiveInput = (lobby.ActiveInput + 2) % 3
+							lobby.ActiveInput = (lobby.ActiveInput + numInputs - 1) % numInputs
 						} else {
-							lobby.ActiveInput = (lobby.ActiveInput + 1) % 3
+							lobby.ActiveInput = (lobby.ActiveInput + 1) % numInputs
 						}
 						continue
 					}
@@ -826,6 +942,18 @@ func main() {
 								startHost()
 							case '3':
 								lobby.ActiveInput = 1
+							case 'p', 'P', 'x', 'X':
+								lobby.IsPinProtected = !lobby.IsPinProtected
+								if lobby.IsPinProtected {
+									if lobby.PinState.Value() == "" {
+										lobby.PinState.SetValue("1234")
+									}
+									lobby.ActiveInput = 3
+									lobby.SetToast("PIN Protection Enabled (4 Digits)")
+								} else {
+									lobby.ActiveInput = 2
+									lobby.SetToast("PIN Protection Disabled")
+								}
 							case 'c', 'C':
 								CopyToClipboard(lobby.CurrentCode)
 								lobby.SetToast(fmt.Sprintf("Room key copied: %s", lobby.CurrentCode))
@@ -840,8 +968,10 @@ func main() {
 						}
 
 					case 3: // Host PIN Input Focused
-						if e.Type == backend.KeyEsc || e.Type == backend.KeyEnter {
+						if e.Type == backend.KeyEsc {
 							lobby.ActiveInput = 2
+						} else if e.Type == backend.KeyEnter {
+							startHost()
 						} else {
 							lobby.PinState.HandleKey(e)
 						}
@@ -1101,6 +1231,7 @@ func main() {
 			exitDialogAnim.Update(now)
 			leaveDialogAnim.Update(now)
 			screenShareDialogAnim.Update(now)
+			fileOfferDialogAnim.Update(now)
 
 			exitProg := exitDialogAnim.Value()
 			if exitProg <= 0.001 && !exitDialogAnim.IsAnimating() {
@@ -1116,6 +1247,8 @@ func main() {
 			if screenShareProg <= 0.001 && !screenShareDialogAnim.IsAnimating() {
 				showScreenShareModal = false
 			}
+
+			fileOfferProg := fileOfferDialogAnim.Value()
 
 			if currentScreen == ScreenLobby {
 				if !showTestModal && !showExitModal {
@@ -1144,6 +1277,16 @@ func main() {
 							cleanExit()
 						}, func() {
 							closeExitModal()
+						})
+					}
+
+					if currentFileOffer != nil || fileOfferProg > 0.001 {
+						DrawFileOfferModal(f, f.Area(), fileOfferProg, currentFileOffer, func() {
+							acceptCurrentOffer(false)
+						}, func() {
+							declineCurrentOffer()
+						}, func() {
+							acceptCurrentOffer(true)
 						})
 					}
 				})
@@ -1312,6 +1455,16 @@ func main() {
 							startSelectedScreenShare(target)
 						}, func() {
 							closeScreenShareModal()
+						})
+					}
+
+					if currentFileOffer != nil || fileOfferProg > 0.001 {
+						DrawFileOfferModal(f, f.Area(), fileOfferProg, currentFileOffer, func() {
+							acceptCurrentOffer(false)
+						}, func() {
+							declineCurrentOffer()
+						}, func() {
+							acceptCurrentOffer(true)
 						})
 					}
 				})

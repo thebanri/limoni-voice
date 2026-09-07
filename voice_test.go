@@ -1824,6 +1824,81 @@ func TestCompactHUDScreenShareButton(t *testing.T) {
 	}
 }
 
+func TestFileOfferApproval(t *testing.T) {
+	// 1. Test SaveAcceptedFile for normal file
+	testData := []byte("Limoni Voice Binary File Test Data")
+	offer := &FileOffer{
+		TransferID: "offer_test_1",
+		SenderID:   "peer_99",
+		SenderNick: "Alice",
+		FileName:   "test_document.txt",
+		FileSize:   int64(len(testData)),
+		IsCode:     false,
+		Checksum:   "abc123456",
+		Data:       testData,
+	}
+
+	savedPath, err := SaveAcceptedFile(offer)
+	if err != nil {
+		t.Fatalf("SaveAcceptedFile failed: %v", err)
+	}
+	defer os.Remove(savedPath)
+
+	readBack, err := os.ReadFile(savedPath)
+	if err != nil {
+		t.Fatalf("Failed to read back saved file: %v", err)
+	}
+	if string(readBack) != string(testData) {
+		t.Fatalf("Read back data does not match original: %s", string(readBack))
+	}
+
+	// 2. Test SaveAcceptedFile for code snippet
+	codeData := []byte("package main\n\nfunc main() {\n\tprintln(\"Hello Limoni!\")\n}")
+	codeOffer := &FileOffer{
+		TransferID: "offer_test_2",
+		SenderID:   "peer_99",
+		SenderNick: "Alice",
+		FileName:   "snippet.go",
+		FileSize:   int64(len(codeData)),
+		IsCode:     true,
+		Checksum:   "code123456",
+		Data:       codeData,
+	}
+
+	codePath, err := SaveAcceptedFile(codeOffer)
+	if err != nil {
+		t.Fatalf("SaveAcceptedFile for code failed: %v", err)
+	}
+	defer os.Remove(codePath)
+
+	codeReadBack, err := os.ReadFile(codePath)
+	if err != nil {
+		t.Fatalf("Failed to read back code snippet: %v", err)
+	}
+	if string(codeReadBack) != string(codeData) {
+		t.Fatalf("Code snippet read back does not match original: %s", string(codeReadBack))
+	}
+}
+
+func TestCodeSnippetTransferNoDeadlock(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("sender_node", "Sender", audio)
+	defer node.Close()
+
+	// Setting up local room
+	node.HostRoom("code-deadlock-test")
+
+	// Verify calling SendCodeSnippet or SendFileBytes when no peers are connected returns error cleanly without deadlock
+	err := node.SendCodeSnippet("test.go", "package main")
+	if err == nil {
+		t.Fatalf("Expected error when sending code with 0 peers connected")
+	}
+
+	// Verify node mutex is still usable and not deadlocked
+	node.mu.Lock()
+	node.mu.Unlock()
+}
+
 
 
 

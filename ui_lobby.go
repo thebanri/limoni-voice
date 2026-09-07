@@ -367,13 +367,17 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	nickBorderStyle := unfocusedBorder
 	nickBgStyle := unfocusedBg
 	if isNickFocused {
-		nickTitle = " ► [1] YOUR NICKNAME (FOCUSED) ◄ "
+		nickTitle = " ► [1] YOUR NICKNAME (FOCUSED - Type to Change) ◄ "
 		nickBorderStyle = cell.Style{
-			Fg:       theme.BorderFocused,
+			Fg:       theme.Accent,
 			Modifier: cell.ModifierBold,
 		}
 		nickBgStyle = cell.Style{Bg: theme.InputBg}
 	}
+
+	frame.RegisterClickHandler(nickArea, func(_ backend.MouseEvent) {
+		l.ActiveInput = 0
+	})
 
 	nickBlock := widgets.Block{
 		Title:         nickTitle,
@@ -397,10 +401,6 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		Placeholder: "Enter your nickname...",
 	}
 	frame.RenderWidget(nickInput, nickInner)
-
-	frame.RegisterClickHandler(nickArea, func(_ backend.MouseEvent) {
-		l.ActiveInput = 0
-	})
 
 	// 2. Host Room Block
 	isHostFocused := (l.ActiveInput == 2 || l.ActiveInput == 3)
@@ -434,6 +434,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Modifier: cell.ModifierBold,
 		}
 	}
+
+	// Register card container click handler FIRST so child widgets take priority
+	frame.RegisterClickHandler(hostArea, func(_ backend.MouseEvent) {
+		if l.ActiveInput != 3 {
+			l.ActiveInput = 2
+		}
+	})
 
 	hostBlock := widgets.Block{
 		Title:         hostTitle,
@@ -481,10 +488,14 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 	buf.SetString(hostInner.X, hostInner.Y+3, pinCheckStr, pinCheckStyle)
 	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, uint16(len([]rune(pinCheckStr))), 1), func(_ backend.MouseEvent) {
-		l.ActiveInput = 2
 		l.IsPinProtected = !l.IsPinProtected
-		if l.IsPinProtected && l.PinState.Value() == "" {
-			l.PinState.SetValue("1234")
+		if l.IsPinProtected {
+			if l.PinState.Value() == "" {
+				l.PinState.SetValue("1234")
+			}
+			l.ActiveInput = 3
+		} else {
+			l.ActiveInput = 2
 		}
 	})
 
@@ -528,10 +539,6 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	})
 
-	frame.RegisterClickHandler(hostArea, func(_ backend.MouseEvent) {
-		l.ActiveInput = 2
-	})
-
 	// 3. Join Room Block
 	isJoinFocused := (l.ActiveInput == 1)
 	joinTitle := " [3] JOIN EXISTING ROOM "
@@ -567,6 +574,11 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Modifier: cell.ModifierBold,
 		}
 	}
+
+	// Register card container click handler FIRST so input and buttons take priority
+	frame.RegisterClickHandler(joinArea, func(_ backend.MouseEvent) {
+		l.ActiveInput = 1
+	})
 
 	joinBlock := widgets.Block{
 		Title:         joinTitle,
@@ -633,10 +645,6 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	})
 
 	frame.RegisterClickHandler(joinInputRect, func(_ backend.MouseEvent) {
-		l.ActiveInput = 1
-	})
-
-	frame.RegisterClickHandler(joinArea, func(_ backend.MouseEvent) {
 		l.ActiveInput = 1
 	})
 
