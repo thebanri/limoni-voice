@@ -2365,6 +2365,43 @@ func TestDirectChatClickAndNoResizeNewline(t *testing.T) {
 	}
 }
 
+func TestMultilineCopyCommandAndNoIndentationArtifacts(t *testing.T) {
+	room := NewRoomView()
+	audio := NewAudioEngine()
+	node := NewP2PNode("local_user", "You", audio)
+
+	rawCmd := "reg add \"HKLM\\System\\CurrentControlSet\\Control\\TimeZoneInformation\" /v RealTimeIsUniversal /t REG_DWORD /d 1 /f"
+	room.AddChatMessage("Banri", "peer_banri", rawCmd, false, time.Now())
+
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 45, 20))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 45, 20), node, audio)
+
+	room.mu.Lock()
+	rLines := room.renderedLines
+	room.mu.Unlock()
+
+	if len(rLines) < 2 {
+		t.Fatalf("Expected at least 2 lines, got %d", len(rLines))
+	}
+	clicked := room.HandleChatClick(10, rLines[1].RowY)
+	if !clicked {
+		t.Fatalf("Expected HandleChatClick on 2nd wrapped line to succeed")
+	}
+
+	ok := CopyToClipboard(rawCmd)
+	if !ok {
+		t.Fatalf("Expected CopyToClipboard to succeed")
+	}
+
+	room.HandleMousePress(rLines[0].StartX, rLines[0].RowY)
+	room.HandleMouseDrag(rLines[1].EndX, rLines[1].RowY)
+	selected := room.HandleMouseRelease(rLines[1].EndX, rLines[1].RowY)
+	if strings.Contains(selected, "            ") {
+		t.Fatalf("Selected text contains multiple visual indentation spaces: %q", selected)
+	}
+}
+
 
 
 

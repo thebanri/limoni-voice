@@ -2019,7 +2019,11 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 			}
 
 			buf.SetString(curX, rowY, line.Timestamp, timeStyle)
-			curX = appendChars(line.Timestamp, curX)
+			if !line.IsContinuation {
+				curX = appendChars(line.Timestamp, curX)
+			} else {
+				curX += uint16(len([]rune(line.Timestamp)))
+			}
 
 			if line.Badge != "" {
 				buf.SetString(curX, rowY, line.Badge, line.BadgeStyle)
@@ -2169,8 +2173,8 @@ type roomDisplayLine struct {
 
 var (
 	reChatURL   = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)
-	reChatCopy1 = regexp.MustCompile(`📋\s*\[(?:Kopyala|Copy|COPY):\s*([^\]]+)\]`)
-	reChatCopy2 = regexp.MustCompile(`\[(?:kopyala|copy|KOPYALA|COPY|Kopyala|Copy):\s*([^\]]+)\]`)
+	reChatCopy1 = regexp.MustCompile(`(?s)📋\s*\[(?:Kopyala|Copy|COPY):\s*([^\]]+)\]`)
+	reChatCopy2 = regexp.MustCompile(`(?s)\[(?:kopyala|copy|KOPYALA|COPY|Kopyala|Copy):\s*([^\]]+)\]`)
 	reChatCopy3 = regexp.MustCompile(`copy://([^\s<>"]+)`)
 )
 
@@ -2527,13 +2531,35 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 			}
 
 			indentSpaces := strings.Repeat(" ", badgeLen)
-			paragraphs := strings.Split(msg.Text, "\n")
+			rawSpans := parseMessageSpans(msg.Text)
+
+			var paragraphs [][]chatSpan
+			var curPara []chatSpan
+			for _, span := range rawSpans {
+				parts := strings.Split(span.Text, "\n")
+				for pIdx, part := range parts {
+					if pIdx > 0 {
+						paragraphs = append(paragraphs, curPara)
+						curPara = nil
+					}
+					if part != "" || len(parts) == 1 {
+						curPara = append(curPara, chatSpan{
+							Text:     part,
+							IsLink:   span.IsLink,
+							ClickURL: span.ClickURL,
+							IsCopy:   span.IsCopy,
+							CopyText: span.CopyText,
+						})
+					}
+				}
+			}
+			if len(curPara) > 0 || len(paragraphs) == 0 {
+				paragraphs = append(paragraphs, curPara)
+			}
+
 			firstLineOverall := true
-
 			for _, para := range paragraphs {
-				spans := parseMessageSpans(para)
-				wrappedLines := wrapSpansToLines(spans, availFirst)
-
+				wrappedLines := wrapSpansToLines(para, availFirst)
 				for wrapIdx, lSpans := range wrappedLines {
 					isContinuation := (wrapIdx > 0)
 					if firstLineOverall {

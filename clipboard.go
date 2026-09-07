@@ -18,76 +18,88 @@ func CopyToClipboard(text string) bool {
 	// 1. Try OSC 52 ANSI escape sequence (works seamlessly in modern terminals)
 	b64 := base64.StdEncoding.EncodeToString([]byte(text))
 	fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", b64)
+	if os.Getenv("TMUX") != "" {
+		fmt.Fprintf(os.Stdout, "\x1bPtmux;\x1b\x1b]52;c;%s\x07\x1b\\", b64)
+	}
+	_ = os.Stdout.Sync()
 
-	// 2. Try clip (Windows)
+	// 2. Windows: clip or PowerShell
 	if runtime.GOOS == "windows" {
 		if path, err := exec.LookPath("clip"); err == nil {
 			cmd := exec.Command(path)
-			stdin, err := cmd.StdinPipe()
-			if err == nil {
-				if err := cmd.Start(); err == nil {
-					stdin.Write([]byte(text))
-					stdin.Close()
-					_ = cmd.Wait()
-					return true
-				}
+			cmd.Stdin = strings.NewReader(text)
+			if err := cmd.Run(); err == nil {
+				return true
 			}
 		}
-	}
-
-	// 3. Try pbcopy (macOS)
-	if path, err := exec.LookPath("pbcopy"); err == nil {
-		cmd := exec.Command(path)
-		stdin, err := cmd.StdinPipe()
-		if err == nil {
-			if err := cmd.Start(); err == nil {
-				stdin.Write([]byte(text))
-				stdin.Close()
-				_ = cmd.Wait()
+		if path, err := exec.LookPath("powershell"); err == nil {
+			cmd := exec.Command(path, "-NoProfile", "-Command", "Set-Clipboard -Value $input")
+			cmd.Stdin = strings.NewReader(text)
+			if err := cmd.Run(); err == nil {
 				return true
 			}
 		}
 	}
 
-	// 4. Try wl-copy (Wayland)
+	// 3. macOS: pbcopy
+	if runtime.GOOS == "darwin" {
+		if path, err := exec.LookPath("pbcopy"); err == nil {
+			cmd := exec.Command(path)
+			cmd.Stdin = strings.NewReader(text)
+			if err := cmd.Run(); err == nil {
+				return true
+			}
+		}
+	}
+
+	// 4. Linux: Wayland wl-copy
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		if path, err := exec.LookPath("wl-copy"); err == nil {
+			cmd := exec.Command(path)
+			cmd.Stdin = strings.NewReader(text)
+			if err := cmd.Run(); err == nil {
+				return true
+			}
+		}
+	}
+
+	// 5. Linux: X11 xclip
+	if os.Getenv("DISPLAY") != "" {
+		if path, err := exec.LookPath("xclip"); err == nil {
+			cmd := exec.Command(path, "-selection", "clipboard", "-in")
+			cmd.Stdin = strings.NewReader(text)
+			if err := cmd.Run(); err == nil {
+				return true
+			}
+		}
+	}
+
+	// 6. Linux: X11 xsel
+	if os.Getenv("DISPLAY") != "" {
+		if path, err := exec.LookPath("xsel"); err == nil {
+			cmd := exec.Command(path, "--clipboard", "--input")
+			cmd.Stdin = strings.NewReader(text)
+			if err := cmd.Run(); err == nil {
+				return true
+			}
+		}
+	}
+
+	// 7. WSL fallback (clip.exe)
+	if path, err := exec.LookPath("clip.exe"); err == nil {
+		cmd := exec.Command(path)
+		cmd.Stdin = strings.NewReader(text)
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+
+	// 8. General fallback to wl-copy
 	if path, err := exec.LookPath("wl-copy"); err == nil {
 		cmd := exec.Command(path)
-		stdin, err := cmd.StdinPipe()
-		if err == nil {
-			if err := cmd.Start(); err == nil {
-				stdin.Write([]byte(text))
-				stdin.Close()
-				_ = cmd.Wait()
-				return true
-			}
-		}
-	}
-
-	// 5. Try xclip (X11)
-	if path, err := exec.LookPath("xclip"); err == nil {
-		cmd := exec.Command(path, "-selection", "clipboard")
-		stdin, err := cmd.StdinPipe()
-		if err == nil {
-			if err := cmd.Start(); err == nil {
-				stdin.Write([]byte(text))
-				stdin.Close()
-				_ = cmd.Wait()
-				return true
-			}
-		}
-	}
-
-	// 6. Try xsel (X11)
-	if path, err := exec.LookPath("xsel"); err == nil {
-		cmd := exec.Command(path, "--clipboard", "--input")
-		stdin, err := cmd.StdinPipe()
-		if err == nil {
-			if err := cmd.Start(); err == nil {
-				stdin.Write([]byte(text))
-				stdin.Close()
-				_ = cmd.Wait()
-				return true
-			}
+		cmd.Stdin = strings.NewReader(text)
+		if err := cmd.Run(); err == nil {
+			return true
 		}
 	}
 
