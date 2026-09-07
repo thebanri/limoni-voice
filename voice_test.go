@@ -2193,6 +2193,83 @@ func TestRoomChatMouseSelection(t *testing.T) {
 	}
 }
 
+func TestChatCopyCommandAndSpans(t *testing.T) {
+	// 1. Test parseMessageSpans for 📋 [Kopyala: ...]
+	spans1 := parseMessageSpans("Server: 📋 [Kopyala: 192.168.1.50:9000] (connect now)")
+	if len(spans1) != 3 {
+		t.Fatalf("Expected 3 spans, got %d", len(spans1))
+	}
+	if spans1[0].Text != "Server: " || spans1[0].IsCopy || spans1[0].IsLink {
+		t.Fatalf("Span 0 mismatch: %+v", spans1[0])
+	}
+	if spans1[1].Text != "📋 [Kopyala: 192.168.1.50:9000]" || !spans1[1].IsCopy || spans1[1].CopyText != "192.168.1.50:9000" {
+		t.Fatalf("Span 1 copy mismatch: %+v", spans1[1])
+	}
+	if spans1[2].Text != " (connect now)" {
+		t.Fatalf("Span 2 mismatch: %+v", spans1[2])
+	}
+
+	// 2. Test parseMessageSpans for [copy: ...]
+	spans2 := parseMessageSpans("Run this: [copy: git pull origin main]")
+	if len(spans2) != 2 || !spans2[1].IsCopy || spans2[1].CopyText != "git pull origin main" {
+		t.Fatalf("Span 2 copy mismatch: %+v", spans2)
+	}
+
+	// 3. Test parseMessageSpans for copy://...
+	spans3 := parseMessageSpans("Secret: copy://token-xyz-12345")
+	if len(spans3) != 2 || !spans3[1].IsCopy || spans3[1].CopyText != "token-xyz-12345" {
+		t.Fatalf("Span 3 copy mismatch: %+v", spans3)
+	}
+
+	// 4. Test SendCurrentChat with /copy
+	room := NewRoomView()
+	var sentMessage string
+	room.OnSendChat = func(txt string) {
+		sentMessage = txt
+	}
+
+	room.ChatInputState.SetValue("/copy 192.168.1.100:3000")
+	room.SendCurrentChat()
+
+	expectedSent := "📋 [Kopyala: 192.168.1.100:3000]"
+	if sentMessage != expectedSent {
+		t.Fatalf("Expected sent chat message %q, got %q", expectedSent, sentMessage)
+	}
+
+	// 5. Test SendCurrentChat with /copy empty shows usage
+	room.ChatInputState.SetValue("/copy")
+	room.SendCurrentChat()
+	if len(room.Messages) == 0 || !strings.Contains(room.Messages[len(room.Messages)-1].Text, "Usage: /copy") {
+		t.Fatalf("Expected usage message for empty /copy, got: %+v", room.Messages)
+	}
+
+	// 6. Test rendering and wrapping of copy spans
+	room.AddChatMessage("Bob", "peer_bob", "Token: 📋 [Kopyala: very-long-token-secret-key-1234567890]", false, time.Now())
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 120, 30))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	audio := NewAudioEngine()
+	node := NewP2PNode("local_user", "You", audio)
+	room.Render(frame, cell.NewRect(0, 0, 120, 30), node, audio)
+
+	// Test wrapping with narrow width
+	wrappedLines := room.buildDisplayLines(room.Messages, 30)
+	foundCopySpan := false
+	for _, l := range wrappedLines {
+		for _, s := range l.Spans {
+			if s.IsCopy {
+				foundCopySpan = true
+				if s.CopyText != "very-long-token-secret-key-1234567890" {
+					t.Fatalf("Expected CopyText to be preserved, got %q", s.CopyText)
+				}
+			}
+		}
+	}
+	if !foundCopySpan {
+		t.Fatalf("Expected to find copy span in wrapped lines")
+	}
+}
+
+
 
 
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -225,10 +226,33 @@ func (r *RoomView) SendCurrentChat() {
 		case "/help", "/?":
 			r.Messages = append(r.Messages, RoomMessage{
 				Timestamp: time.Now(),
-				Text:      "Commands: /vol [user] [0-200], /send <path>, /code <snippet>, /folder, /lock [pin], /unlock, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
+				Text:      "Commands: /copy <text>, /vol [user] [0-200], /send <path>, /code <snippet>, /folder, /lock [pin], /unlock, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
 				IsChat:    false,
 			})
 			r.mu.Unlock()
+			return
+
+		case "/copy", "/cp", "/kopyala":
+			if len(parts) < 2 {
+				r.Messages = append(r.Messages, RoomMessage{
+					Timestamp: time.Now(),
+					Text:      "📋 Usage: /copy <text_to_copy> (e.g. /copy 192.168.1.50:9000 or /copy git clone ...)",
+					IsChat:    false,
+				})
+				r.mu.Unlock()
+				return
+			}
+			rawCopyText := strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
+			if rawCopyText == "" {
+				r.mu.Unlock()
+				return
+			}
+			formattedMsg := fmt.Sprintf("📋 [Kopyala: %s]", rawCopyText)
+			onSend := r.OnSendChat
+			r.mu.Unlock()
+			if onSend != nil {
+				onSend(formattedMsg)
+			}
 			return
 
 		case "/folder", "/downloads", "/files", "/dir":
@@ -2107,6 +2131,8 @@ type chatSpan struct {
 	Text     string
 	IsLink   bool
 	ClickURL string
+	IsCopy   bool
+	CopyText string
 }
 
 type roomDisplayLine struct {
@@ -2120,7 +2146,12 @@ type roomDisplayLine struct {
 	IsContinuation bool
 }
 
-var reChatURL = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)
+var (
+	reChatURL   = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)
+	reChatCopy1 = regexp.MustCompile(`📋\s*\[(?:Kopyala|Copy|COPY):\s*([^\]]+)\]`)
+	reChatCopy2 = regexp.MustCompile(`\[(?:kopyala|copy|KOPYALA|COPY|Kopyala|Copy):\s*([^\]]+)\]`)
+	reChatCopy3 = regexp.MustCompile(`copy://([^\s<>"]+)`)
+)
 
 func cleanClickURL(raw string) string {
 	clean := strings.TrimSpace(raw)
@@ -2163,34 +2194,111 @@ func splitWordsAndSpaces(s string) []string {
 	return tokens
 }
 
+type spanMatch struct {
+	start    int
+	end      int
+	isLink   bool
+	clickURL string
+	isCopy   bool
+	copyText string
+}
+
 func parseMessageSpans(text string) []chatSpan {
-	locs := reChatURL.FindAllStringIndex(text, -1)
-	if len(locs) == 0 {
-		return []chatSpan{{Text: text, IsLink: false}}
+	var matches []spanMatch
+
+	// 1. Copy patterns (A: 📋 [Kopyala: ...], B: [copy: ...], C: copy://...)
+	copyLocs1 := reChatCopy1.FindAllStringSubmatchIndex(text, -1)
+	for _, loc := range copyLocs1 {
+		copyVal := text[loc[2]:loc[3]]
+		matches = append(matches, spanMatch{
+			start:    loc[0],
+			end:      loc[1],
+			isCopy:   true,
+			copyText: copyVal,
+		})
+	}
+
+	copyLocs2 := reChatCopy2.FindAllStringSubmatchIndex(text, -1)
+	for _, loc := range copyLocs2 {
+		copyVal := text[loc[2]:loc[3]]
+		matches = append(matches, spanMatch{
+			start:    loc[0],
+			end:      loc[1],
+			isCopy:   true,
+			copyText: copyVal,
+		})
+	}
+
+	copyLocs3 := reChatCopy3.FindAllStringSubmatchIndex(text, -1)
+	for _, loc := range copyLocs3 {
+		copyVal := text[loc[2]:loc[3]]
+		matches = append(matches, spanMatch{
+			start:    loc[0],
+			end:      loc[1],
+			isCopy:   true,
+			copyText: copyVal,
+		})
+	}
+
+	// 2. URLs
+	urlLocs := reChatURL.FindAllStringIndex(text, -1)
+	for _, loc := range urlLocs {
+		raw := text[loc[0]:loc[1]]
+		clean := cleanClickURL(raw)
+		matches = append(matches, spanMatch{
+			start:    loc[0],
+			end:      loc[1],
+			isLink:   true,
+			clickURL: clean,
+		})
+	}
+
+	if len(matches) == 0 {
+		return []chatSpan{{Text: text, IsLink: false, IsCopy: false}}
+	}
+
+	// Sort matches by start index ascending; longer match first if starts match
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].start == matches[j].start {
+			return (matches[i].end - matches[i].start) > (matches[j].end - matches[j].start)
+		}
+		return matches[i].start < matches[j].start
+	})
+
+	// Filter out overlapping matches
+	var filtered []spanMatch
+	lastEnd := 0
+	for _, m := range matches {
+		if m.start >= lastEnd {
+			filtered = append(filtered, m)
+			lastEnd = m.end
+		}
 	}
 
 	var spans []chatSpan
 	lastIdx := 0
-	for _, loc := range locs {
-		if loc[0] > lastIdx {
+	for _, m := range filtered {
+		if m.start > lastIdx {
 			spans = append(spans, chatSpan{
-				Text:   text[lastIdx:loc[0]],
+				Text:   text[lastIdx:m.start],
 				IsLink: false,
+				IsCopy: false,
 			})
 		}
-		rawLink := text[loc[0]:loc[1]]
-		clickURL := cleanClickURL(rawLink)
 		spans = append(spans, chatSpan{
-			Text:     rawLink,
-			IsLink:   true,
-			ClickURL: clickURL,
+			Text:     text[m.start:m.end],
+			IsLink:   m.isLink,
+			ClickURL: m.clickURL,
+			IsCopy:   m.isCopy,
+			CopyText: m.copyText,
 		})
-		lastIdx = loc[1]
+		lastIdx = m.end
 	}
 	if lastIdx < len(text) {
 		spans = append(spans, chatSpan{
 			Text:   text[lastIdx:],
 			IsLink: false,
+			IsCopy: false,
 		})
 	}
 	return spans
@@ -2214,7 +2322,7 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
 	}
 
 	appendSpan := func(span chatSpan, width int) {
-		if len(currentLine) > 0 && !currentLine[len(currentLine)-1].IsLink && !span.IsLink {
+		if len(currentLine) > 0 && !currentLine[len(currentLine)-1].IsLink && !currentLine[len(currentLine)-1].IsCopy && !span.IsLink && !span.IsCopy {
 			currentLine[len(currentLine)-1].Text += span.Text
 		} else {
 			currentLine = append(currentLine, span)
@@ -2223,7 +2331,7 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
 	}
 
 	for _, span := range spans {
-		if !span.IsLink {
+		if !span.IsLink && !span.IsCopy {
 			tokens := splitWordsAndSpaces(span.Text)
 			for _, tok := range tokens {
 				tRunes := []rune(tok)
@@ -2234,7 +2342,7 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
 				}
 
 				if currentWidth+tLen <= availWidth {
-					appendSpan(chatSpan{Text: tok, IsLink: false}, tLen)
+					appendSpan(chatSpan{Text: tok, IsLink: false, IsCopy: false}, tLen)
 				} else {
 					if currentWidth > 0 {
 						flushLine()
@@ -2243,16 +2351,16 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
 						continue
 					}
 					if tLen <= availWidth {
-						appendSpan(chatSpan{Text: tok, IsLink: false}, tLen)
+						appendSpan(chatSpan{Text: tok, IsLink: false, IsCopy: false}, tLen)
 					} else {
 						for len(tRunes) > 0 {
 							chunkLen := min(len(tRunes), availWidth)
 							chunkStr := string(tRunes[:chunkLen])
 							if len(tRunes) > availWidth {
-								lines = append(lines, []chatSpan{{Text: chunkStr, IsLink: false}})
+								lines = append(lines, []chatSpan{{Text: chunkStr, IsLink: false, IsCopy: false}})
 								tRunes = tRunes[chunkLen:]
 							} else {
-								appendSpan(chatSpan{Text: chunkStr, IsLink: false}, chunkLen)
+								appendSpan(chatSpan{Text: chunkStr, IsLink: false, IsCopy: false}, chunkLen)
 								tRunes = tRunes[chunkLen:]
 							}
 						}
@@ -2260,6 +2368,7 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
 				}
 			}
 		} else {
+			// Interactive span (Link or Copy)
 			lRunes := []rune(span.Text)
 			lLen := len(lRunes)
 
@@ -2275,19 +2384,18 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
 					for len(lRunes) > 0 {
 						chunkLen := min(len(lRunes), availWidth)
 						chunkStr := string(lRunes[:chunkLen])
+						newSpan := chatSpan{
+							Text:     chunkStr,
+							IsLink:   span.IsLink,
+							ClickURL: span.ClickURL,
+							IsCopy:   span.IsCopy,
+							CopyText: span.CopyText,
+						}
 						if len(lRunes) > availWidth {
-							lines = append(lines, []chatSpan{{
-								Text:     chunkStr,
-								IsLink:   true,
-								ClickURL: span.ClickURL,
-							}})
+							lines = append(lines, []chatSpan{newSpan})
 							lRunes = lRunes[chunkLen:]
 						} else {
-							appendSpan(chatSpan{
-								Text:     chunkStr,
-								IsLink:   true,
-								ClickURL: span.ClickURL,
-							}, chunkLen)
+							appendSpan(newSpan, chunkLen)
 							lRunes = lRunes[chunkLen:]
 						}
 					}
@@ -2298,7 +2406,7 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
 
 	flushLine()
 	if len(lines) == 0 {
-		lines = append(lines, []chatSpan{{Text: "", IsLink: false}})
+		lines = append(lines, []chatSpan{{Text: "", IsLink: false, IsCopy: false}})
 	}
 	return lines
 }
@@ -2484,6 +2592,11 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierUnderline | cell.ModifierBold,
 	}
+	copyStyle := cell.Style{
+		Fg:       theme.Warning,
+		Bg:       theme.SurfaceBg,
+		Modifier: cell.ModifierUnderline | cell.ModifierBold,
+	}
 
 	curX := startX
 	endX := startX + uint16(maxW)
@@ -2503,7 +2616,25 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			continue
 		}
 
-		if span.IsLink {
+		if span.IsCopy {
+			buf.SetString(curX, rowY, string(sRunes), copyStyle)
+			copyVal := span.CopyText
+			if copyVal == "" {
+				copyVal = span.Text
+			}
+			copyRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
+			frame.RegisterClickHandler(copyRect, func(_ backend.MouseEvent) {
+				r.mu.Lock()
+				isSelActive := r.SelectionActive
+				r.mu.Unlock()
+				if isSelActive {
+					return
+				}
+				CopyToClipboard(copyVal)
+				r.SetToast(fmt.Sprintf("📋 Kopyalandı: %s", copyVal))
+				r.AddLog(fmt.Sprintf("[CLIPBOARD] Copied to clipboard: %s", copyVal))
+			})
+		} else if span.IsLink {
 			buf.SetString(curX, rowY, string(sRunes), linkStyle)
 			clickURL := span.ClickURL
 			if clickURL == "" {
