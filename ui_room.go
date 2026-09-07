@@ -2625,11 +2625,11 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			copyRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
 			frame.RegisterClickHandler(copyRect, func(_ backend.MouseEvent) {
 				r.mu.Lock()
-				isSelActive := r.SelectionActive
+				r.SelectionActive = false
+				r.SelectionDragging = false
+				r.SelectedText = ""
 				r.mu.Unlock()
-				if isSelActive {
-					return
-				}
+
 				CopyToClipboard(copyVal)
 				r.SetToast(fmt.Sprintf("📋 Kopyalandı: %s", copyVal))
 				r.AddLog(fmt.Sprintf("[CLIPBOARD] Copied to clipboard: %s", copyVal))
@@ -2643,11 +2643,11 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			linkRect := cell.NewRect(curX, rowY, uint16(drawnLen), 1)
 			frame.RegisterClickHandler(linkRect, func(_ backend.MouseEvent) {
 				r.mu.Lock()
-				isSelActive := r.SelectionActive
+				r.SelectionActive = false
+				r.SelectionDragging = false
+				r.SelectedText = ""
 				r.mu.Unlock()
-				if isSelActive {
-					return
-				}
+
 				_ = OpenBrowserURL(clickURL)
 				CopyToClipboard(clickURL)
 				r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURL))
@@ -2778,8 +2778,12 @@ func (r *RoomView) HandleMouseRelease(x, y uint16) string {
 	if r.SelectionActive {
 		r.SelectionEndX = int(x)
 		r.SelectionEndY = int(y)
-		r.SelectedText = r.extractSelectedText()
-		return r.SelectedText
+		if r.SelectionStartX != r.SelectionEndX || r.SelectionStartY != r.SelectionEndY {
+			r.SelectedText = r.extractSelectedText()
+			return r.SelectedText
+		}
+		r.SelectionActive = false
+		r.SelectedText = ""
 	}
 	return ""
 }
