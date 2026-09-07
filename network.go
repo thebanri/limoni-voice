@@ -94,6 +94,7 @@ type P2PPacket struct {
 	VideoPort       int           `json:"video_port"` // Port used for UDP screen streaming
 	LocalPort       int           `json:"local_port"` // Local listening UDP port of the sender
 	PIN             string        `json:"pin,omitempty"`
+	IsLocked        bool          `json:"is_locked,omitempty"`
 	FileMeta        *FileMetadata `json:"file_meta,omitempty"`
 	Peers           []PeerSummary `json:"peers,omitempty"` // for Welcome message
 	Padding         []byte        `json:"padding,omitempty"`   // Anti-DPI randomized padding
@@ -136,6 +137,8 @@ type RelayControlMessage struct {
 	PublicIP   string      `json:"public_ip,omitempty"`
 	PublicPort int         `json:"public_port,omitempty"`
 	YourIP     string      `json:"your_ip,omitempty"`
+	PIN        string      `json:"pin,omitempty"`
+	IsLocked   bool        `json:"is_locked,omitempty"`
 	Peers      []RelayPeer `json:"peers,omitempty"`
 }
 
@@ -941,9 +944,10 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		// Start write pump with dedicated priority vs video scheduling
 		go n.relayWritePump(conn, wsPriorityCh, wsVideoCh, connCancel)
 
-		// Send initial action (host or join) with local UDP port for direct P2P hole-punching
 		n.mu.RLock()
 		localPort := n.Port
+		currentPIN := n.RoomPIN
+		currentLocked := n.IsLocked
 		n.mu.RUnlock()
 
 		if action == "host" {
@@ -953,6 +957,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 				SenderID: n.LocalID,
 				Nickname: n.Nickname,
 				Port:     localPort,
+				PIN:      currentPIN,
+				IsLocked: currentLocked || currentPIN != "",
 			})
 		} else if action == "join" {
 			n.sendRelayControl(RelayControlMessage{
@@ -961,6 +967,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 				SenderID: n.LocalID,
 				Nickname: n.Nickname,
 				Port:     localPort,
+				PIN:      currentPIN,
 			})
 		}
 
@@ -1289,6 +1296,13 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				}
 			}
 
+			if msg.PIN != "" {
+				n.RoomPIN = msg.PIN
+				n.IsLocked = true
+			} else if msg.IsLocked {
+				n.IsLocked = true
+			}
+
 			n.log(fmt.Sprintf("[RELAY] Connected to room %s! (Host: %s | Internet E2EE)", n.RoomCode, msg.Nickname))
 			successCb := n.OnJoinSuccess
 			if successCb != nil {
@@ -1400,12 +1414,45 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 	case "new_host":
 		n.HostID = msg.SenderID
 		n.HostNick = msg.Nickname
+		if msg.PIN != "" {
+			n.RoomPIN = msg.PIN
+			n.IsLocked = true
+		} else if msg.IsLocked {
+			n.IsLocked = true
+		}
 		if msg.SenderID == n.LocalID {
 			n.IsHost = true
-			n.log("[HOST] Former host left, you are now the room HOST!")
+			if n.RoomPIN != "" {
+				n.log(fmt.Sprintf("[HOST] Former host left, you are now the room HOST! (Room PIN: %s)", n.RoomPIN))
+			} else {
+				n.log("[HOST] Former host left, you are now the room HOST!")
+			}
+			if n.OnRoomLocked != nil && n.IsLocked {
+				go n.OnRoomLocked(true, n.RoomPIN)
+			}
 		} else {
 			n.IsHost = false
 			n.log(fmt.Sprintf("[HOST] New room HOST: %s", msg.Nickname))
+		}
+
+	case "room_locked":
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.aead = nil
+			n.RoomCode = ""
+			failedCb := n.OnJoinFailed
+			reason := "Room is locked by host"
+			if msg.Message == "PIN_REQUIRED" || strings.Contains(strings.ToUpper(msg.Message), "PIN") {
+				reason = "Room is protected by PIN (join with code:PIN)"
+			}
+			n.log(fmt.Sprintf("[ERROR] Room join rejected: %s", reason))
+			if failedCb != nil {
+				go failedCb(reason)
+			}
 		}
 
 	case "host_left":
@@ -2163,10 +2210,26 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	}
 
 	// Auto-register or refresh peer on any valid authenticated packet from this room
-	if pkt.Type != PacketJoinRequest && pkt.Type != PacketRoomFull && pkt.Type != PacketLeave {
+	if pkt.Type != PacketJoinRequest && pkt.Type != PacketRoomFull && pkt.Type != PacketLeave && pkt.Type != PacketRoomLocked {
 		if n.IsConnected {
 			peer, exists := n.Peers[pkt.SenderID]
 			if !exists {
+				// Strict PIN & Lock check: If host is locked, reject any unexpected incoming packet from unregistered peer
+				if n.IsHost && n.IsLocked {
+					lockPkt := P2PPacket{
+						Type:      PacketRoomLocked,
+						RoomCode:  n.RoomCode,
+						SenderID:  n.LocalID,
+						Nickname:  n.Nickname,
+						Payload:   []byte("PIN_REQUIRED"),
+						Timestamp: time.Now().UnixMilli(),
+					}
+					if peerAddr != nil {
+						go n.sendDirectUDPPacket(peerAddr, &lockPkt)
+					}
+					return
+				}
+
 				if len(n.Peers) < MaxPeers-1 {
 					nick := pkt.Nickname
 					if nick == "" {
@@ -2225,7 +2288,6 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				if peerAddr != nil {
 					go n.sendDirectUDPPacket(peerAddr, &lockPkt)
 				}
-				n.sendAudioToPeers(&lockPkt)
 				return
 			} else if n.RoomPIN == "" {
 				lockPkt := P2PPacket{
@@ -2239,7 +2301,6 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				if peerAddr != nil {
 					go n.sendDirectUDPPacket(peerAddr, &lockPkt)
 				}
-				n.sendAudioToPeers(&lockPkt)
 				return
 			}
 		}
@@ -2289,7 +2350,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			peer.IsDeafened = pkt.IsDeafened
 		}
 
-		// Reply with Welcome containing current peers
+		// Reply with Welcome containing current peers, PIN, and lock status
 		summaries := make([]PeerSummary, 0, len(n.Peers))
 		for _, p := range n.Peers {
 			if p.ID != pkt.SenderID {
@@ -2317,6 +2378,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			IsMuted:    n.audio.Muted,
 			IsDeafened: n.audio.Deafened,
 			Peers:      summaries,
+			PIN:        n.RoomPIN,
+			IsLocked:   n.IsLocked,
 			Timestamp:  time.Now().UnixMilli(),
 		}
 		if peerAddr != nil {
@@ -2328,6 +2391,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		// in our target room → send a JoinRequest DIRECTLY to that host (unicast, bypasses broadcast issues)
 		if n.Connecting && !n.IsConnected {
 			room := n.ConnectTargetRoom
+			pin := n.RoomPIN
 			if NormalizeCode(pkt.RoomCode) == room {
 				joinPkt := P2PPacket{
 					Type:       PacketJoinRequest,
@@ -2337,6 +2401,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					LocalPort:  n.Port,
 					IsMuted:    n.audio.Muted,
 					IsDeafened: n.audio.Deafened,
+					PIN:        pin,
 					Timestamp:  time.Now().UnixMilli(),
 				}
 				if peerAddr != nil {
@@ -2377,6 +2442,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			IsMuted:    n.audio.Muted,
 			IsDeafened: n.audio.Deafened,
 			Peers:      summaries,
+			PIN:        n.RoomPIN,
+			IsLocked:   n.IsLocked,
 			Timestamp:  time.Now().UnixMilli(),
 		}
 		if peerAddr != nil {
@@ -2396,6 +2463,12 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			n.HostID = pkt.SenderID
 			n.HostNick = pkt.Nickname
 			n.RoomCode = n.ConnectTargetRoom
+			if pkt.PIN != "" {
+				n.RoomPIN = pkt.PIN
+				n.IsLocked = true
+			} else if pkt.IsLocked {
+				n.IsLocked = true
+			}
 
 			hostPeer := &PeerInfo{
 				ID:         pkt.SenderID,
@@ -2618,10 +2691,39 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	case PacketLeave:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			wasSharing := peer.IsSharingScreen
+			isHostLeaving := (pkt.SenderID == n.HostID)
 			delete(n.Peers, pkt.SenderID)
 			n.log(fmt.Sprintf("[-] %s left the room.", peer.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
+			}
+			if isHostLeaving {
+				// Deterministic LAN host election among remaining peers
+				electedID := n.LocalID
+				electedNick := n.Nickname
+				for pid, p := range n.Peers {
+					if pid < electedID {
+						electedID = pid
+						electedNick = p.Nickname
+					}
+				}
+				n.HostID = electedID
+				n.HostNick = electedNick
+				if electedID == n.LocalID {
+					n.IsHost = true
+					if n.RoomPIN != "" {
+						n.IsLocked = true
+						n.log(fmt.Sprintf("[HOST] Former host left, you are now the room HOST! (Room PIN: %s)", n.RoomPIN))
+					} else {
+						n.log("[HOST] Former host left, you are now the room HOST!")
+					}
+					if n.OnRoomLocked != nil && n.IsLocked {
+						go n.OnRoomLocked(true, n.RoomPIN)
+					}
+				} else {
+					n.IsHost = false
+					n.log(fmt.Sprintf("[HOST] New room HOST: %s", electedNick))
+				}
 			}
 			watchingThisPeer := wasSharing && n.IsWatchingScreen && (n.WatchingPeerID == pkt.SenderID || n.WatchingPeerID == "")
 			if watchingThisPeer {
@@ -2636,9 +2738,19 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if string(pkt.Payload) == "PIN_REQUIRED" {
 			reason = "Room is protected by PIN (join with code:PIN)"
 		}
-		n.log(fmt.Sprintf("[SECURITY] %s", reason))
-		if n.OnJoinFailed != nil {
-			go n.OnJoinFailed(reason)
+		if n.Connecting && !n.IsConnected {
+			if n.connectCancel != nil {
+				close(n.connectCancel)
+				n.connectCancel = nil
+			}
+			n.Connecting = false
+			n.aead = nil
+			n.RoomCode = ""
+			failedCb := n.OnJoinFailed
+			n.log(fmt.Sprintf("[SECURITY] %s", reason))
+			if failedCb != nil {
+				go failedCb(reason)
+			}
 		}
 
 	case PacketFileHeader:
@@ -3545,34 +3657,54 @@ func decryptAndDecodePacket(data []byte, pkt *P2PPacket, aead cipher.AEAD) error
 // LockRoom locks the current room against new joiners, optionally requiring a 4-digit PIN (Host only).
 func (n *P2PNode) LockRoom(pin string) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	if !n.IsHost {
+		n.mu.Unlock()
 		n.log("[SECURITY] Non-host attempted to lock room - ignored.")
 		return
 	}
 	n.IsLocked = true
 	n.RoomPIN = strings.TrimSpace(pin)
+	roomCode := n.RoomCode
+	roomPIN := n.RoomPIN
 	if n.RoomPIN != "" {
 		n.log(fmt.Sprintf("[SECURITY] Room locked with 4-digit PIN: %s", n.RoomPIN))
 	} else {
 		n.log("[SECURITY] Room locked. No new members can join.")
 	}
+	n.mu.Unlock()
+
+	n.sendRelayControl(RelayControlMessage{
+		Type:     "lock_room",
+		RoomCode: roomCode,
+		PIN:      roomPIN,
+		IsLocked: true,
+	})
+
 	if n.OnRoomLocked != nil {
-		go n.OnRoomLocked(true, n.RoomPIN)
+		go n.OnRoomLocked(true, roomPIN)
 	}
 }
 
 // UnlockRoom unlocks the room for open joining (Host only).
 func (n *P2PNode) UnlockRoom() {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	if !n.IsHost {
+		n.mu.Unlock()
 		n.log("[SECURITY] Non-host attempted to unlock room - ignored.")
 		return
 	}
 	n.IsLocked = false
 	n.RoomPIN = ""
+	roomCode := n.RoomCode
 	n.log("[SECURITY] Room unlocked. Open for new members.")
+	n.mu.Unlock()
+
+	n.sendRelayControl(RelayControlMessage{
+		Type:     "unlock_room",
+		RoomCode: roomCode,
+		IsLocked: false,
+	})
+
 	if n.OnRoomLocked != nil {
 		go n.OnRoomLocked(false, "")
 	}

@@ -530,6 +530,29 @@ func main() {
 	}
 	lobby.OnOpenTestModal = openTestModal
 
+	node.OnRoomLocked = func(isLocked bool, pin string) {
+		if currentScreen == ScreenRoom {
+			if isLocked {
+				if pin != "" {
+					if node.IsHost {
+						room.SetToast(fmt.Sprintf("Room locked with PIN: %s", pin))
+						room.AddLog(fmt.Sprintf("[ROOM] Room locked with PIN: %s (Host only)", pin))
+					} else {
+						room.SetToast("Room is locked with PIN")
+						room.AddLog("[ROOM] Room is locked with PIN by host")
+					}
+				} else {
+					room.SetToast("Room locked")
+					room.AddLog("[ROOM] Room locked by host")
+				}
+			} else {
+				room.SetToast("Room unlocked")
+				room.AddLog("[ROOM] Room unlocked by host")
+			}
+		}
+		t.ForceFullRedraw()
+	}
+
 	// Audio frame capture and sender loop
 	audio.Start(func(rms float64, speaking bool, pcm []byte) {
 		if currentScreen == ScreenRoom && !audio.InTestMode && !audio.Muted {

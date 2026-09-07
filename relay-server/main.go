@@ -26,6 +26,8 @@ type ControlMessage struct {
 	PublicIP   string     `json:"public_ip,omitempty"`    // Sender's observed public IP
 	PublicPort int        `json:"public_port,omitempty"`  // Sender's observed port
 	YourIP     string     `json:"your_ip,omitempty"`      // Client's own detected public IP
+	PIN        string     `json:"pin,omitempty"`          // Room password / PIN
+	IsLocked   bool       `json:"is_locked,omitempty"`    // Room locked state
 	Peers      []PeerInfo `json:"peers,omitempty"`
 }
 
@@ -53,11 +55,13 @@ type Client struct {
 }
 
 type Room struct {
-	Code    string
-	HostID  string
-	Members map[string]*Client // senderID -> Client
-	mu      sync.RWMutex
-	created time.Time
+	Code     string
+	HostID   string
+	PIN      string
+	IsLocked bool
+	Members  map[string]*Client // senderID -> Client
+	mu       sync.RWMutex
+	created  time.Time
 }
 
 type RelayServer struct {
@@ -183,6 +187,26 @@ func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 		s.handleHostRoom(client, msg)
 	case "join_room":
 		s.handleJoinRoom(client, msg)
+	case "lock_room":
+		if client.room != nil {
+			client.room.mu.Lock()
+			if client.room.HostID == client.senderID {
+				client.room.IsLocked = true
+				client.room.PIN = strings.TrimSpace(msg.PIN)
+				log.Printf("[SECURITY] Room %s locked by host %s (PIN: %s)", client.room.Code, client.nickname, client.room.PIN)
+			}
+			client.room.mu.Unlock()
+		}
+	case "unlock_room":
+		if client.room != nil {
+			client.room.mu.Lock()
+			if client.room.HostID == client.senderID {
+				client.room.IsLocked = false
+				client.room.PIN = ""
+				log.Printf("[SECURITY] Room %s unlocked by host %s", client.room.Code, client.nickname)
+			}
+			client.room.mu.Unlock()
+		}
 	case "port_update":
 		client.localPort = msg.Port
 		log.Printf("[🛡️] Client %s (%s) rotated port to %d", client.nickname, client.senderID, msg.Port)
@@ -238,6 +262,12 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 				}
 			}
 			existing.HostID = msg.SenderID
+			if msg.PIN != "" {
+				existing.PIN = strings.TrimSpace(msg.PIN)
+				existing.IsLocked = true
+			} else if msg.IsLocked {
+				existing.IsLocked = true
+			}
 			existing.Members[msg.SenderID] = client
 			client.room = existing
 			existing.mu.Unlock()
@@ -258,17 +288,21 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 		return
 	}
 
+	pin := strings.TrimSpace(msg.PIN)
+	isLocked := msg.IsLocked || pin != ""
 	room := &Room{
-		Code:    msg.RoomCode,
-		HostID:  msg.SenderID,
-		Members: map[string]*Client{msg.SenderID: client},
-		created: time.Now(),
+		Code:     msg.RoomCode,
+		HostID:   msg.SenderID,
+		PIN:      pin,
+		IsLocked: isLocked,
+		Members:  map[string]*Client{msg.SenderID: client},
+		created:  time.Now(),
 	}
 	s.rooms[msg.RoomCode] = room
 	client.room = room
 	s.mu.Unlock()
 
-	log.Printf("[+] Room created: %s by %s (%s, IP: %s:%d)", msg.RoomCode, msg.Nickname, msg.SenderID, client.publicIP, client.localPort)
+	log.Printf("[+] Room created: %s by %s (%s, IP: %s:%d, Locked: %v, PIN: %s)", msg.RoomCode, msg.Nickname, msg.SenderID, client.publicIP, client.localPort, isLocked, pin)
 	sendControlMessage(client, ControlMessage{
 		Type:     "room_created",
 		RoomCode: msg.RoomCode,
@@ -299,6 +333,26 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	}
 
 	room.mu.Lock()
+	if room.IsLocked {
+		if room.PIN != "" && strings.TrimSpace(msg.PIN) != room.PIN {
+			room.mu.Unlock()
+			log.Printf("[SECURITY] Join rejected for %s to room %s: invalid or missing PIN", msg.Nickname, msg.RoomCode)
+			sendControlMessage(client, ControlMessage{
+				Type:    "room_locked",
+				Message: "PIN_REQUIRED",
+			})
+			return
+		} else if room.PIN == "" {
+			room.mu.Unlock()
+			log.Printf("[SECURITY] Join rejected for %s to room %s: room is locked", msg.Nickname, msg.RoomCode)
+			sendControlMessage(client, ControlMessage{
+				Type:    "room_locked",
+				Message: "ROOM_LOCKED",
+			})
+			return
+		}
+	}
+
 	if len(room.Members) >= MaxRoomMembers && room.Members[msg.SenderID] == nil {
 		room.mu.Unlock()
 		sendControlMessage(client, ControlMessage{Type: "room_full", Message: "Oda dolu (Maks 4 kisi)"})
@@ -340,11 +394,13 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		hostIP = host.publicIP
 		hostPort = host.localPort
 	}
+	roomPIN := room.PIN
+	roomLocked := room.IsLocked
 	room.mu.Unlock()
 
 	log.Printf("[+] %s (%s, IP: %s:%d) joined room %s", msg.Nickname, msg.SenderID, client.publicIP, client.localPort, msg.RoomCode)
 
-	// Send welcome to joiner with peer list and direct P2P endpoint info
+	// Send welcome to joiner with peer list, direct P2P endpoint info, and room PIN/locked state
 	sendControlMessage(client, ControlMessage{
 		Type:       "welcome",
 		RoomCode:   msg.RoomCode,
@@ -354,6 +410,8 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		Port:       hostPort,
 		YourIP:     client.publicIP,
 		Peers:      peers,
+		PIN:        roomPIN,
+		IsLocked:   roomLocked,
 	})
 
 	// Notify existing members about new/reconnected peer with direct IP info for hole-punching
@@ -488,12 +546,14 @@ func (s *RelayServer) removeClientImmediate(client *Client) {
 	log.Printf("[-] %s (%s) left room %s", nickname, senderID, room.Code)
 
 	var newHostID, newHostNick string
+	roomPIN := room.PIN
+	roomLocked := room.IsLocked
 	if isHostLeaving && len(remainingMembers) > 0 {
 		newHost := remainingMembers[0]
 		room.HostID = newHost.senderID
 		newHostID = newHost.senderID
 		newHostNick = newHost.nickname
-		log.Printf("👑 Host migrated in room %s to %s (%s)", room.Code, newHost.nickname, newHost.senderID)
+		log.Printf("👑 Host migrated in room %s to %s (%s, PIN: %s, Locked: %v)", room.Code, newHost.nickname, newHost.senderID, roomPIN, roomLocked)
 	}
 	roomCode := room.Code
 	room.mu.Unlock()
@@ -515,6 +575,8 @@ func (s *RelayServer) removeClientImmediate(client *Client) {
 			RoomCode: roomCode,
 			SenderID: newHostID,
 			Nickname: newHostNick,
+			PIN:      roomPIN,
+			IsLocked: roomLocked,
 		}
 		for _, m := range remainingMembers {
 			sendControlMessage(m, newHostMsg)

@@ -1909,6 +1909,126 @@ func TestCrossPlatformTransfersDir(t *testing.T) {
 	}
 }
 
+func TestPINProtectionEnforcement(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// 1. Setup Host with PIN 4829
+	hostNode := NewP2PNode("host_node_pin", "HostUser", audio)
+	defer hostNode.Close()
+	roomCode := "pin-protect-test-room"
+	hostNode.HostRoom(roomCode)
+	hostNode.LockRoom("4829")
+
+	if !hostNode.IsLocked || hostNode.RoomPIN != "4829" {
+		t.Fatalf("Expected host to be locked with PIN 4829")
+	}
+
+	// 2. Client joins without PIN or with wrong PIN -> Should be rejected
+	wrongJoinPkt := P2PPacket{
+		Type:      PacketJoinRequest,
+		RoomCode:  roomCode,
+		SenderID:  "intruder_1",
+		Nickname:  "Intruder",
+		PIN:       "0000",
+		Timestamp: time.Now().UnixMilli(),
+	}
+	hostNode.handlePacket(&wrongJoinPkt, nil)
+
+	hostNode.mu.RLock()
+	_, intruderAccepted := hostNode.Peers["intruder_1"]
+	hostNode.mu.RUnlock()
+	if intruderAccepted {
+		t.Fatalf("Intruder with wrong PIN was incorrectly accepted into room!")
+	}
+
+	// 3. Client sends random hello packet while host is locked -> Must NOT auto-register
+	helloPkt := P2PPacket{
+		Type:      PacketHello,
+		RoomCode:  roomCode,
+		SenderID:  "intruder_2",
+		Nickname:  "Intruder2",
+		Timestamp: time.Now().UnixMilli(),
+	}
+	hostNode.handlePacket(&helloPkt, nil)
+
+	hostNode.mu.RLock()
+	_, intruder2Accepted := hostNode.Peers["intruder_2"]
+	hostNode.mu.RUnlock()
+	if intruder2Accepted {
+		t.Fatalf("Intruder sending PacketHello was incorrectly auto-registered into locked room!")
+	}
+
+	// 4. Valid client joins with correct PIN 4829 -> Should be admitted
+	validJoinPkt := P2PPacket{
+		Type:      PacketJoinRequest,
+		RoomCode:  roomCode,
+		SenderID:  "friend_1",
+		Nickname:  "FriendAlice",
+		PIN:       "4829",
+		Timestamp: time.Now().UnixMilli(),
+	}
+	hostNode.handlePacket(&validJoinPkt, nil)
+
+	hostNode.mu.RLock()
+	friendPeer, friendAccepted := hostNode.Peers["friend_1"]
+	hostNode.mu.RUnlock()
+	if !friendAccepted || friendPeer == nil {
+		t.Fatalf("Valid friend with correct PIN 4829 was not admitted into room")
+	}
+}
+
+func TestHostMigrationPINPreservation(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// 1. Original Host & Peer
+	peerNode := NewP2PNode("peer_alice", "Alice", audio)
+	defer peerNode.Close()
+
+	roomCode := "migration-test-room"
+	peerNode.RoomCode = roomCode
+	peerNode.IsConnected = true
+	peerNode.IsHost = false
+	peerNode.HostID = "host_bob"
+	peerNode.HostNick = "Bob"
+	peerNode.RoomPIN = "7788"
+	peerNode.IsLocked = true
+
+	// Add host Bob to Alice's peers
+	peerNode.Peers["host_bob"] = &PeerInfo{
+		ID:       "host_bob",
+		Nickname: "Bob",
+		LastSeen: time.Now(),
+	}
+
+	// 2. Bob leaves the room (PacketLeave from Host)
+	leavePkt := P2PPacket{
+		Type:      PacketLeave,
+		RoomCode:  roomCode,
+		SenderID:  "host_bob",
+		Nickname:  "Bob",
+		Timestamp: time.Now().UnixMilli(),
+	}
+	peerNode.handlePacket(&leavePkt, nil)
+
+	// 3. Verify Alice is now the elected host and retains RoomPIN and IsLocked!
+	peerNode.mu.RLock()
+	isHost := peerNode.IsHost
+	roomPIN := peerNode.RoomPIN
+	isLocked := peerNode.IsLocked
+	peerNode.mu.RUnlock()
+
+	if !isHost {
+		t.Fatalf("Expected Alice to become new Host after Bob left")
+	}
+	if !isLocked {
+		t.Fatalf("Expected Alice's room to remain locked after host migration")
+	}
+	if roomPIN != "7788" {
+		t.Fatalf("Expected Alice's RoomPIN to be '7788', got '%s'", roomPIN)
+	}
+}
+
+
 
 
 
