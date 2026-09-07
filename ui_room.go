@@ -2806,7 +2806,7 @@ func OpenInEditor(filePath string) error {
 		}
 
 		// 5. Try known common Linux GUI editors
-		for _, guiEditor := range []string{"gedit", "kate", "gnome-text-editor", "mousepad", "xed", "pluma", "subl", "atom", "kwrite"} {
+		for _, guiEditor := range []string{"cursor", "vscodium", "code-oss", "zed", "gedit", "kate", "gnome-text-editor", "mousepad", "xed", "pluma", "subl", "sublime-text", "atom", "kwrite"} {
 			if p, err := exec.LookPath(guiEditor); err == nil && p != "" {
 				cmd := exec.Command(guiEditor, filePath)
 				if err := cmd.Start(); err == nil {
@@ -2829,7 +2829,7 @@ func OpenInEditor(filePath string) error {
 		}
 
 		// 7. Try common terminal emulators to spawn the CLI editor in a new window
-		for _, termEmulator := range []string{"x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "kitty", "xterm"} {
+		for _, termEmulator := range []string{"x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "kitty", "foot", "wezterm", "tilix", "terminator", "xterm"} {
 			if p, err := exec.LookPath(termEmulator); err == nil && p != "" {
 				var cmd *exec.Cmd
 				if termEmulator == "gnome-terminal" {

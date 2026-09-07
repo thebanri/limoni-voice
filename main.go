@@ -238,7 +238,13 @@ func main() {
 					lobby.SetToast(fmt.Sprintf("✓ Code snippet saved: %s", offer.FileName))
 				}
 				if openInEditor {
-					_ = OpenInEditor(savedPath)
+					if err := OpenInEditor(savedPath); err != nil {
+						if currentScreen == ScreenRoom {
+							room.SetToast(fmt.Sprintf("Could not open editor: %v", err))
+						} else {
+							lobby.SetToast(fmt.Sprintf("Could not open editor: %v", err))
+						}
+					}
 				}
 			} else {
 				if currentScreen == ScreenRoom {
