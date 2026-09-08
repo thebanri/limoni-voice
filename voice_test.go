@@ -1824,6 +1824,184 @@ func TestCompactHUDScreenShareButton(t *testing.T) {
 	}
 }
 
+func TestRedesignedMiniHUDHeightsAndWidths(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("hud_multi_test", "Alice", audio)
+	defer node.Close()
+	node.HostRoom("123456")
+
+	testSizes := []struct {
+		w, h     uint16
+		expected []string
+	}{
+		{w: 80, h: 1, expected: []string{"123456", "MIC [M]", "FULL UI [H]"}},
+		{w: 80, h: 2, expected: []string{"LIMONI", "123456", "MIC", "FULL UI [H]"}},
+		{w: 100, h: 4, expected: []string{"MINI HUD", "123456", "MIC ON [M]", "FULL UI [H]"}},
+		{w: 100, h: 5, expected: []string{"MINI HUD", "123456", "VU:", "You"}},
+		{w: 120, h: 8, expected: []string{"MINI HUD", "ROOM #123456", "VU:", "You"}},
+		{w: 40, h: 2, expected: []string{"123456"}},
+	}
+
+	for _, tc := range testSizes {
+		room := NewRoomView()
+		room.IsCompactMode = true
+
+		buf := buffer.NewBuffer(cell.NewRect(0, 0, tc.w, tc.h))
+		frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+		room.Render(frame, cell.NewRect(0, 0, tc.w, tc.h), node, audio)
+
+		var sb strings.Builder
+		for y := uint16(0); y < tc.h; y++ {
+			for x := uint16(0); x < tc.w; x++ {
+				c := buf.Get(x, y)
+				if c != nil && c.Content != 0 {
+					sb.WriteRune(c.Content)
+				}
+			}
+		}
+		rendered := sb.String()
+		for _, exp := range tc.expected {
+			if !strings.Contains(rendered, exp) {
+				t.Errorf("For size %dx%d, expected substring %q in rendered output:\n%s", tc.w, tc.h, exp, rendered)
+			}
+		}
+	}
+}
+
+func TestMiniHUDInteractiveClickHandlers(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("hud_click_test", "Bob", audio)
+	defer node.Close()
+	node.HostRoom("778899")
+
+	// Add peer
+	node.Peers["peer_alice"] = &PeerInfo{
+		ID:       "peer_alice",
+		Nickname: "Alice",
+		PingMs:   25,
+	}
+
+	room := NewRoomView()
+	room.IsCompactMode = true
+	room.ToastMsg = "Test Toast Notification"
+	room.Messages = append(room.Messages, RoomMessage{
+		Sender: "Alice",
+		Text:   "Hello from chat!",
+	})
+
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 100, 8))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 100, 8), node, audio)
+
+	// Verify click handler count registered
+	if len(frame.ClickRegions) == 0 {
+		t.Fatalf("Expected click handlers to be registered in frame.ClickRegions for HUD pills, got 0")
+	}
+
+	// Trigger mute toggle via audio engine and re-render
+	audio.ToggleMute()
+	room.Render(frame, cell.NewRect(0, 0, 100, 8), node, audio)
+
+	var sb strings.Builder
+	for y := uint16(0); y < 8; y++ {
+		for x := uint16(0); x < 100; x++ {
+			c := buf.Get(x, y)
+			if c != nil && c.Content != 0 {
+				sb.WriteRune(c.Content)
+			}
+		}
+	}
+	rendered := sb.String()
+	if !strings.Contains(rendered, "MUTED") {
+		t.Errorf("Expected MUTED pill after mute toggle, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Alice") {
+		t.Errorf("Expected Alice row rendered in stacked list, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "[-]") || !strings.Contains(rendered, "[+]") {
+		t.Errorf("Expected per-user volume controls [-] and [+] on Alice row, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Test Toast Notification") {
+		t.Errorf("Expected Toast Notification in bottom row, got:\n%s", rendered)
+	}
+}
+
+func TestMiniHUDSpeakingAndSharingStates(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("hud_state_test", "Charlie", audio)
+	defer node.Close()
+	node.HostRoom("445566")
+
+	// 1. Test Speaking state
+	audio.IsSpeaking = true
+	room := NewRoomView()
+	room.IsCompactMode = true
+
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 100, 5))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 100, 5), node, audio)
+
+	var sb strings.Builder
+	for y := uint16(0); y < 5; y++ {
+		for x := uint16(0); x < 100; x++ {
+			c := buf.Get(x, y)
+			if c != nil && c.Content != 0 {
+				sb.WriteRune(c.Content)
+			}
+		}
+	}
+	rendered := sb.String()
+	if !strings.Contains(rendered, "SPEAKING") && !strings.Contains(rendered, "TALKING") {
+		t.Errorf("Expected SPEAKING or TALKING state when audio.IsSpeaking=true, got:\n%s", rendered)
+	}
+
+	// 2. Test Screen Sharing state
+	node.IsSharingScreen = true
+	buf = buffer.NewBuffer(cell.NewRect(0, 0, 100, 5))
+	frame = terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 100, 5), node, audio)
+
+	sb.Reset()
+	for y := uint16(0); y < 5; y++ {
+		for x := uint16(0); x < 100; x++ {
+			c := buf.Get(x, y)
+			if c != nil && c.Content != 0 {
+				sb.WriteRune(c.Content)
+			}
+		}
+	}
+	rendered = sb.String()
+	if !strings.Contains(rendered, "SHARING") {
+		t.Errorf("Expected SHARING pill when node.IsSharingScreen=true, got:\n%s", rendered)
+	}
+
+	// 3. Test Peer Sharing Stream Watch state
+	node.IsSharingScreen = false
+	node.Peers["peer_streamer"] = &PeerInfo{
+		ID:              "peer_streamer",
+		Nickname:        "StreamerDave",
+		IsSharingScreen: true,
+		VideoPort:       50200,
+	}
+	buf = buffer.NewBuffer(cell.NewRect(0, 0, 120, 8))
+	frame = terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 120, 8), node, audio)
+
+	sb.Reset()
+	for y := uint16(0); y < 8; y++ {
+		for x := uint16(0); x < 120; x++ {
+			c := buf.Get(x, y)
+			if c != nil && c.Content != 0 {
+				sb.WriteRune(c.Content)
+			}
+		}
+	}
+	rendered = sb.String()
+	if !strings.Contains(rendered, "WATCH LIVE [W]") {
+		t.Errorf("Expected WATCH LIVE [W] button for StreamerDave row, got:\n%s", rendered)
+	}
+}
+
 func TestFileOfferApproval(t *testing.T) {
 	// 1. Test SaveAcceptedFile for normal file
 	testData := []byte("Limoni Voice Binary File Test Data")
