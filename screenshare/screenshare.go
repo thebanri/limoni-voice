@@ -265,6 +265,27 @@ func watchX11WindowLiveness(ctx context.Context, winID string, cancel context.Ca
 	}
 }
 
+func watchPIDLiveness(ctx context.Context, pid int, cancel context.CancelFunc) {
+	if pid <= 1 {
+		return
+	}
+	ticker := time.NewTicker(800 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
+				logMsg("[APP-WATCH] Target process (PID %d) was closed. Ending screen stream.", pid)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 func getLinuxDisplay() string {
 	if disp := os.Getenv("DISPLAY"); disp != "" {
 		return disp
@@ -1091,7 +1112,7 @@ func CheckDependencies() DependencyStatus {
 	return status
 }
 
-func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string, []string, *os.File, func(), error) {
+func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel ...func()) (string, []string, *os.File, func(), error) {
 	targetID := strings.TrimSpace(opt.WindowID)
 	scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
 	if scaleRes == "" {
@@ -1108,7 +1129,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 			if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 				defer cancel()
-				nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 2) // 2 = Window Only
+				nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 2, onCancel...) // 2 = Window Only
 				if errPortal == nil && nodeID != 0 {
 					bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
 					if errGst == nil {
@@ -1153,7 +1174,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string) (string,
 		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 			defer cancel()
-			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 3) // 3 = Screen or Window
+			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 3, onCancel...) // 3 = Screen or Window
 			if errPortal == nil && nodeID != 0 {
 				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
 				if errGst == nil {
@@ -1326,12 +1347,15 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	var macSckitBin string
 	var macWidth, macHeight, macFps int
 
+	sessionCtx, cancel := context.WithCancel(ctx)
+
 	switch runtime.GOOS {
 	case "linux":
 		var err error
 		var pwFile *os.File
-		binPath, args, pwFile, cleanupFunc, err = buildLinuxBroadcastCommand(opt, targetURL)
+		binPath, args, pwFile, cleanupFunc, err = buildLinuxBroadcastCommand(opt, targetURL, cancel)
 		if err != nil {
+			cancel()
 			return nil, err
 		}
 		if pwFile != nil {
@@ -1550,7 +1574,6 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 
 	logMsg("[BROADCAST] Starting command: %s %s", binPath, strings.Join(args, " "))
 
-	sessionCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(sessionCtx, binPath, args...)
 	if len(extraFiles) > 0 {
 		cmd.ExtraFiles = extraFiles
@@ -1653,13 +1676,24 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		go StreamWindowFrames(sessionCtx, targetHwnd, opt.FPS, winWidth, winHeight, stdinPipe)
 	}
 
-	if runtime.GOOS == "linux" && (strings.HasPrefix(opt.WindowID, "win:") || opt.WindowID == "focused") {
-		targetWinID := strings.TrimPrefix(opt.WindowID, "win:")
-		if opt.WindowID == "focused" {
-			targetWinID = getActiveWindowIDX11()
-		}
-		if targetWinID != "" {
-			go watchX11WindowLiveness(sessionCtx, targetWinID, cancel)
+	if runtime.GOOS == "linux" {
+		if strings.HasPrefix(opt.WindowID, "app:") {
+			parts := strings.Split(strings.TrimPrefix(opt.WindowID, "app:"), ":")
+			if len(parts) > 0 {
+				if pid, err := strconv.Atoi(parts[0]); err == nil && pid > 1 {
+					go watchPIDLiveness(sessionCtx, pid, cancel)
+				}
+			}
+		} else if strings.HasPrefix(opt.WindowID, "win:") || opt.WindowID == "focused" {
+			targetWinID := strings.TrimPrefix(opt.WindowID, "win:")
+			if opt.WindowID == "focused" {
+				targetWinID = getActiveWindowIDX11()
+			} else if strings.Contains(targetWinID, ":") {
+				targetWinID = strings.Split(targetWinID, ":")[0]
+			}
+			if targetWinID != "" {
+				go watchX11WindowLiveness(sessionCtx, targetWinID, cancel)
+			}
 		}
 	}
 

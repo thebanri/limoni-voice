@@ -2,6 +2,8 @@ package screenshare
 
 import (
 	"context"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +132,37 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 		t.Fatal("expected non-empty bin and args")
 	}
 	t.Logf("Built desktop broadcast command: %s %v", bin, args)
+}
+
+func TestWatchPIDLiveness(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("watchPIDLiveness is Linux-specific")
+	}
+
+	cmd := exec.Command("sleep", "0.2")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start test process: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cancelledCh := make(chan struct{})
+	customCancel := func() {
+		close(cancelledCh)
+		cancel()
+	}
+
+	go watchPIDLiveness(ctx, cmd.Process.Pid, customCancel)
+
+	// Wait for process to naturally finish
+	_ = cmd.Wait()
+
+	select {
+	case <-cancelledCh:
+		t.Log("watchPIDLiveness successfully detected process termination and called cancel")
+	case <-time.After(3 * time.Second):
+		t.Fatal("watchPIDLiveness failed to detect process termination within 3 seconds")
+	}
 }
 

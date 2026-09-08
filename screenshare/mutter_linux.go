@@ -177,8 +177,9 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	args := []string{
 		"-q",
 		"pipewiresrc",
-		"on-disconnect=eos",
-		"automatic-eos=true",
+		"on-disconnect=none",
+		"automatic-eos=false",
+		"resend-last=true",
 	}
 	if hasFD {
 		args = append(args, "fd=3")

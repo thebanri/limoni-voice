@@ -96,7 +96,7 @@ func waitForPortalResponse(ctx context.Context, reqPath dbus.ObjectPath, sigChan
 
 // RequestPortalScreenCast creates a Portal screencast session.
 // sourceType: 1 = Monitor only, 2 = Window only, 3 = Both
-func RequestPortalScreenCast(ctx context.Context, sourceType uint32) (uint32, *os.File, func(), error) {
+func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionClosed ...func()) (uint32, *os.File, func(), error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("failed to connect to session bus: %w", err)
@@ -249,6 +249,29 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32) (uint32, *o
 			_ = pwFile.Close()
 		}
 		cleanup()
+	}
+
+	var onClosed func()
+	if len(onSessionClosed) > 0 {
+		onClosed = onSessionClosed[0]
+	}
+
+	ruleClosed := fmt.Sprintf("type='signal',interface='org.freedesktop.portal.Session',member='Closed',path='%s'", sessionHandle)
+	_ = conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, ruleClosed)
+
+	if onClosed != nil {
+		go func() {
+			for sig := range sigChan {
+				if sig == nil {
+					return
+				}
+				if sig.Name == "org.freedesktop.portal.Session.Closed" && sig.Path == sessionHandle {
+					logMsg("[PORTAL] ScreenCast session was closed by compositor. Terminating stream.")
+					onClosed()
+					return
+				}
+			}
+		}()
 	}
 
 	return nodeID, pwFile, fullCleanup, nil
