@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net"
@@ -29,6 +32,7 @@ type ControlMessage struct {
 	PIN        string     `json:"pin,omitempty"`          // Room password / PIN
 	IsLocked   bool       `json:"is_locked,omitempty"`    // Room locked state
 	Peers      []PeerInfo `json:"peers,omitempty"`
+	HostToken  string     `json:"host_token,omitempty"`   // Cryptographic secret token to prevent host hijacking
 }
 
 type PeerInfo struct {
@@ -40,28 +44,41 @@ type PeerInfo struct {
 }
 
 type Client struct {
-	conn            *websocket.Conn
-	senderID        string
-	nickname        string
-	localPort       int
-	publicIP        string
-	publicPort      int
-	room            *Room
-	sendCh          chan []byte // buffered channel for outgoing messages
-	mu              sync.Mutex
-	explicitLeave   bool
-	isDisconnected  bool
-	disconnectTimer *time.Timer
+	conn              *websocket.Conn
+	senderID          string
+	nickname          string
+	localPort         int
+	publicIP          string
+	publicPort        int
+	room              *Room
+	sendCh            chan []byte // buffered channel for outgoing messages
+	mu                sync.Mutex
+	explicitLeave     bool
+	isDisconnected    bool
+	disconnectTimer   *time.Timer
+	failedPINAttempts  int
+	lastPINAttempt     time.Time
+	roomCreationCount  int
+	roomCreationWindow time.Time
 }
 
 type Room struct {
-	Code     string
-	HostID   string
-	PIN      string
-	IsLocked bool
-	Members  map[string]*Client // senderID -> Client
-	mu       sync.RWMutex
-	created  time.Time
+	Code      string
+	HostID    string
+	HostToken string // Secret random token known only to the host
+	PIN       string
+	IsLocked  bool
+	Members   map[string]*Client // senderID -> Client
+	mu        sync.RWMutex
+	created   time.Time
+}
+
+func generateHostToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }
 
 type RelayServer struct {
@@ -101,6 +118,9 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
+
+	// Enforce 64 KB max frame limit to prevent memory exhaustion DoS / OOM attacks
+	conn.SetReadLimit(65536)
 
 	if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
 		_ = tcpConn.SetNoDelay(true)
@@ -239,6 +259,22 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 		return
 	}
 
+	// Rate limit room creation: max 10 rooms per minute per connection
+	now := time.Now()
+	if now.Sub(client.roomCreationWindow) > time.Minute {
+		client.roomCreationCount = 0
+		client.roomCreationWindow = now
+	}
+	client.roomCreationCount++
+	if client.roomCreationCount > 10 {
+		log.Printf("[SECURITY] Rate limit exceeded: client %s attempted too many room creations", client.publicIP)
+		sendControlMessage(client, ControlMessage{
+			Type:    "error",
+			Message: "Cok fazla oda olusturma istegi. Lutfen biraz bekleyin.",
+		})
+		return
+	}
+
 	// Remove from any previous room
 	s.removeClient(client)
 
@@ -256,6 +292,17 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 		// Allow reclaiming if same host reconnecting or room is empty
 		if existingHostID == msg.SenderID || memberCount == 0 {
+			// Cryptographic Host Token Verification to prevent host hijacking
+			if existing.HostToken != "" {
+				if msg.HostToken == "" || subtle.ConstantTimeCompare([]byte(existing.HostToken), []byte(msg.HostToken)) != 1 {
+					existing.mu.Unlock()
+					s.mu.Unlock()
+					log.Printf("[SECURITY] Unauthorized host reclaim attempt for room %s by sender %s (invalid or missing host token)", msg.RoomCode, msg.SenderID)
+					sendControlMessage(client, ControlMessage{Type: "error", Message: "Yetkisiz oda yonetimi: Gecersiz veya eksik Host Token"})
+					return
+				}
+			}
+
 			if oldClient, ok := existing.Members[msg.SenderID]; ok {
 				if oldClient.disconnectTimer != nil {
 					oldClient.disconnectTimer.Stop()
@@ -270,14 +317,16 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 			}
 			existing.Members[msg.SenderID] = client
 			client.room = existing
+			hostToken := existing.HostToken
 			existing.mu.Unlock()
 			s.mu.Unlock()
 
 			log.Printf("[~] Host reconnected to room: %s by %s (%s)", msg.RoomCode, msg.Nickname, msg.SenderID)
 			sendControlMessage(client, ControlMessage{
-				Type:     "room_created",
-				RoomCode: msg.RoomCode,
-				YourIP:   client.publicIP,
+				Type:      "room_created",
+				RoomCode:  msg.RoomCode,
+				YourIP:    client.publicIP,
+				HostToken: hostToken,
 			})
 			return
 		}
@@ -290,13 +339,15 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 	pin := strings.TrimSpace(msg.PIN)
 	isLocked := msg.IsLocked || pin != ""
+	hostToken := generateHostToken()
 	room := &Room{
-		Code:     msg.RoomCode,
-		HostID:   msg.SenderID,
-		PIN:      pin,
-		IsLocked: isLocked,
-		Members:  map[string]*Client{msg.SenderID: client},
-		created:  time.Now(),
+		Code:      msg.RoomCode,
+		HostID:    msg.SenderID,
+		HostToken: hostToken,
+		PIN:       pin,
+		IsLocked:  isLocked,
+		Members:   map[string]*Client{msg.SenderID: client},
+		created:   time.Now(),
 	}
 	s.rooms[msg.RoomCode] = room
 	client.room = room
@@ -304,9 +355,10 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 	log.Printf("[+] Room created: %s by %s (%s, IP: %s:%d, Locked: %v, PIN: %s)", msg.RoomCode, msg.Nickname, msg.SenderID, client.publicIP, client.localPort, isLocked, pin)
 	sendControlMessage(client, ControlMessage{
-		Type:     "room_created",
-		RoomCode: msg.RoomCode,
-		YourIP:   client.publicIP,
+		Type:      "room_created",
+		RoomCode:  msg.RoomCode,
+		YourIP:    client.publicIP,
+		HostToken: hostToken,
 	})
 }
 
@@ -335,8 +387,32 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	room.mu.Lock()
 	if room.IsLocked {
 		if room.PIN != "" && strings.TrimSpace(msg.PIN) != room.PIN {
+			client.failedPINAttempts++
+			failedAttempts := client.failedPINAttempts
+			client.lastPINAttempt = time.Now()
 			room.mu.Unlock()
-			log.Printf("[SECURITY] Join rejected for %s to room %s: invalid or missing PIN", msg.Nickname, msg.RoomCode)
+
+			log.Printf("[SECURITY] Join rejected for %s to room %s: invalid or missing PIN (attempt #%d)", msg.Nickname, msg.RoomCode, failedAttempts)
+
+			// Progressive backoff and lockout after 10 failed attempts
+			if failedAttempts >= 10 {
+				sendControlMessage(client, ControlMessage{
+					Type:    "error",
+					Message: "Cok fazla hatali PIN denemesi. Guvenlik nedeniyle baglanti kapatildi.",
+				})
+				client.mu.Lock()
+				_ = client.conn.WriteControl(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "Too many failed attempts"),
+					time.Now().Add(time.Second))
+				_ = client.conn.Close()
+				client.mu.Unlock()
+				return
+			}
+
+			if failedAttempts >= 5 {
+				time.Sleep(500 * time.Millisecond)
+			}
+
 			sendControlMessage(client, ControlMessage{
 				Type:    "room_locked",
 				Message: "PIN_REQUIRED",
@@ -351,6 +427,8 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 			})
 			return
 		}
+		// Reset counter on successful PIN verification
+		client.failedPINAttempts = 0
 	}
 
 	if len(room.Members) >= MaxRoomMembers && room.Members[msg.SenderID] == nil {
@@ -394,13 +472,12 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		hostIP = host.publicIP
 		hostPort = host.localPort
 	}
-	roomPIN := room.PIN
 	roomLocked := room.IsLocked
 	room.mu.Unlock()
 
 	log.Printf("[+] %s (%s, IP: %s:%d) joined room %s", msg.Nickname, msg.SenderID, client.publicIP, client.localPort, msg.RoomCode)
 
-	// Send welcome to joiner with peer list, direct P2P endpoint info, and room PIN/locked state
+	// Send welcome to joiner with peer list, direct P2P endpoint info, and room locked state (never leak room PIN)
 	sendControlMessage(client, ControlMessage{
 		Type:       "welcome",
 		RoomCode:   msg.RoomCode,
@@ -410,7 +487,6 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		Port:       hostPort,
 		YourIP:     client.publicIP,
 		Peers:      peers,
-		PIN:        roomPIN,
 		IsLocked:   roomLocked,
 	})
 
@@ -442,11 +518,12 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 			select {
 			case member.sendCh <- data:
 			default:
+			drainLoop:
 				for len(member.sendCh) > 8 {
 					select {
 					case <-member.sendCh:
 					default:
-						break
+						break drainLoop
 					}
 				}
 				select {
@@ -545,14 +622,16 @@ func (s *RelayServer) removeClientImmediate(client *Client) {
 
 	log.Printf("[-] %s (%s) left room %s", nickname, senderID, room.Code)
 
-	var newHostID, newHostNick string
+	var newHostID, newHostNick, newHostToken string
 	roomPIN := room.PIN
 	roomLocked := room.IsLocked
 	if isHostLeaving && len(remainingMembers) > 0 {
 		newHost := remainingMembers[0]
 		room.HostID = newHost.senderID
+		room.HostToken = generateHostToken()
 		newHostID = newHost.senderID
 		newHostNick = newHost.nickname
+		newHostToken = room.HostToken
 		log.Printf("👑 Host migrated in room %s to %s (%s, PIN: %s, Locked: %v)", room.Code, newHost.nickname, newHost.senderID, roomPIN, roomLocked)
 	}
 	roomCode := room.Code
@@ -568,17 +647,20 @@ func (s *RelayServer) removeClientImmediate(client *Client) {
 		sendControlMessage(m, leaveMsg)
 	}
 
-	// Automatic Host Migration notification
+	// Automatic Host Migration notification (PIN & HostToken sent only to the newly elected host)
 	if isHostLeaving && len(remainingMembers) > 0 && newHostID != "" {
-		newHostMsg := ControlMessage{
-			Type:     "new_host",
-			RoomCode: roomCode,
-			SenderID: newHostID,
-			Nickname: newHostNick,
-			PIN:      roomPIN,
-			IsLocked: roomLocked,
-		}
 		for _, m := range remainingMembers {
+			newHostMsg := ControlMessage{
+				Type:     "new_host",
+				RoomCode: roomCode,
+				SenderID: newHostID,
+				Nickname: newHostNick,
+				IsLocked: roomLocked,
+			}
+			if m.senderID == newHostID {
+				newHostMsg.PIN = roomPIN
+				newHostMsg.HostToken = newHostToken
+			}
 			sendControlMessage(m, newHostMsg)
 		}
 	}

@@ -242,3 +242,247 @@ func (s *RelayServer) upgraderHandler() http.Handler {
 	return mux
 }
 
+func TestHostHijackingPrevention(t *testing.T) {
+	server := NewRelayServer()
+	s := httptest.NewServer(server.upgraderHandler())
+	defer s.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
+
+	// 1. Alice creates room
+	aliceConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect Alice: %v", err)
+	}
+	defer aliceConn.Close()
+
+	aliceMsg := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "SECURE-101",
+		SenderID: "alice_host_id",
+		Nickname: "Alice",
+	}
+	data, _ := json.Marshal(aliceMsg)
+	_ = aliceConn.WriteMessage(websocket.TextMessage, data)
+
+	_, resp, err := aliceConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read Alice response: %v", err)
+	}
+	var createdMsg ControlMessage
+	json.Unmarshal(resp, &createdMsg)
+	if createdMsg.Type != "room_created" || createdMsg.HostToken == "" {
+		t.Fatalf("Expected room_created with HostToken, got %+v", createdMsg)
+	}
+	aliceToken := createdMsg.HostToken
+
+	// 2. Attacker Bob tries to hijack Alice's room with Alice's sender_id but without token
+	bobConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect Bob: %v", err)
+	}
+	defer bobConn.Close()
+
+	hijackMsgNoToken := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "SECURE-101",
+		SenderID: "alice_host_id", // spoofing Alice
+		Nickname: "FakeAlice",
+	}
+	data, _ = json.Marshal(hijackMsgNoToken)
+	_ = bobConn.WriteMessage(websocket.TextMessage, data)
+
+	_, hijackResp, err := bobConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read Bob response: %v", err)
+	}
+	var errResp ControlMessage
+	json.Unmarshal(hijackResp, &errResp)
+	if errResp.Type != "error" {
+		t.Fatalf("Expected error for missing token hijack, got %+v", errResp)
+	}
+
+	// 3. Attacker Bob tries with invalid token
+	hijackMsgBadToken := ControlMessage{
+		Type:      "host_room",
+		RoomCode:  "SECURE-101",
+		SenderID:  "alice_host_id",
+		Nickname:  "FakeAlice",
+		HostToken: "invalid_fake_token_12345678901234567890",
+	}
+	data, _ = json.Marshal(hijackMsgBadToken)
+	_ = bobConn.WriteMessage(websocket.TextMessage, data)
+
+	_, hijackResp2, err := bobConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read Bob response: %v", err)
+	}
+	json.Unmarshal(hijackResp2, &errResp)
+	if errResp.Type != "error" {
+		t.Fatalf("Expected error for invalid token hijack, got %+v", errResp)
+	}
+
+	// 4. Real Alice reconnects with valid HostToken
+	aliceReconnectConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect Alice reconnect: %v", err)
+	}
+	defer aliceReconnectConn.Close()
+
+	reconnectMsg := ControlMessage{
+		Type:      "host_room",
+		RoomCode:  "SECURE-101",
+		SenderID:  "alice_host_id",
+		Nickname:  "Alice",
+		HostToken: aliceToken,
+	}
+	data, _ = json.Marshal(reconnectMsg)
+	_ = aliceReconnectConn.WriteMessage(websocket.TextMessage, data)
+
+	_, reconnResp, err := aliceReconnectConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read Alice reconnect: %v", err)
+	}
+	var reconnMsg ControlMessage
+	json.Unmarshal(reconnResp, &reconnMsg)
+	if reconnMsg.Type != "room_created" {
+		t.Fatalf("Expected room_created for authorized host reconnect, got %+v", reconnMsg)
+	}
+}
+
+func TestPINBruteForceLockout(t *testing.T) {
+	server := NewRelayServer()
+	s := httptest.NewServer(server.upgraderHandler())
+	defer s.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
+
+	// 1. Host creates PIN protected room
+	hostConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect host: %v", err)
+	}
+	defer hostConn.Close()
+
+	hostMsg := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "PIN-TEST-99",
+		SenderID: "host_id",
+		Nickname: "PinHost",
+		PIN:      "5432",
+		IsLocked: true,
+	}
+	data, _ := json.Marshal(hostMsg)
+	_ = hostConn.WriteMessage(websocket.TextMessage, data)
+	_, _, _ = hostConn.ReadMessage()
+
+	// 2. Attacker makes 10 wrong PIN attempts
+	attackerConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect attacker: %v", err)
+	}
+	defer attackerConn.Close()
+
+	for i := 1; i <= 9; i++ {
+		guessMsg := ControlMessage{
+			Type:     "join_room",
+			RoomCode: "PIN-TEST-99",
+			SenderID: "attacker_id",
+			Nickname: "Attacker",
+			PIN:      "0000",
+		}
+		data, _ = json.Marshal(guessMsg)
+		_ = attackerConn.WriteMessage(websocket.TextMessage, data)
+		_, resp, err := attackerConn.ReadMessage()
+		if err != nil {
+			t.Fatalf("Premature disconnect on attempt %d: %v", i, err)
+		}
+		var ctrl ControlMessage
+		json.Unmarshal(resp, &ctrl)
+		if ctrl.Type != "room_locked" {
+			t.Fatalf("Expected room_locked, got %+v", ctrl)
+		}
+	}
+
+	// 10th attempt should trigger lockout / connection close
+	guessMsg10 := ControlMessage{
+		Type:     "join_room",
+		RoomCode: "PIN-TEST-99",
+		SenderID: "attacker_id",
+		Nickname: "Attacker",
+		PIN:      "0000",
+	}
+	data, _ = json.Marshal(guessMsg10)
+	_ = attackerConn.WriteMessage(websocket.TextMessage, data)
+
+	// Server sends error message and closes with PolicyViolation
+	_, resp, _ := attackerConn.ReadMessage()
+	var finalCtrl ControlMessage
+	json.Unmarshal(resp, &finalCtrl)
+	if finalCtrl.Type != "error" {
+		t.Fatalf("Expected error on 10th attempt, got %+v", finalCtrl)
+	}
+
+	// Next read must be EOF / closed connection
+	_, _, err = attackerConn.ReadMessage()
+	if err == nil {
+		t.Fatalf("Expected socket to be closed after 10 failed attempts!")
+	}
+}
+
+func TestNoPINLeakInWelcome(t *testing.T) {
+	server := NewRelayServer()
+	s := httptest.NewServer(server.upgraderHandler())
+	defer s.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
+
+	// 1. Host creates room with PIN
+	hostConn, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
+	defer hostConn.Close()
+
+	hostMsg := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "SECRET-ROOM",
+		SenderID: "host_pin",
+		Nickname: "Host",
+		PIN:      "ultra_secret_pin_999",
+		IsLocked: true,
+	}
+	data, _ := json.Marshal(hostMsg)
+	_ = hostConn.WriteMessage(websocket.TextMessage, data)
+	_, _, _ = hostConn.ReadMessage()
+
+	// 2. Guest joins with correct PIN
+	guestConn, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
+	defer guestConn.Close()
+
+	joinMsg := ControlMessage{
+		Type:     "join_room",
+		RoomCode: "SECRET-ROOM",
+		SenderID: "guest_id",
+		Nickname: "Guest",
+		PIN:      "ultra_secret_pin_999",
+	}
+	data, _ = json.Marshal(joinMsg)
+	_ = guestConn.WriteMessage(websocket.TextMessage, data)
+
+	_, resp, err := guestConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read welcome: %v", err)
+	}
+	var welcomeMsg ControlMessage
+	json.Unmarshal(resp, &welcomeMsg)
+
+	if welcomeMsg.Type != "welcome" {
+		t.Fatalf("Expected welcome, got %+v", welcomeMsg)
+	}
+	if welcomeMsg.PIN != "" {
+		t.Fatalf("SECURITY FLAW: Server leaked secret PIN in welcome message: %s", welcomeMsg.PIN)
+	}
+	if !welcomeMsg.IsLocked {
+		t.Fatalf("Expected IsLocked to be true")
+	}
+}
+
+

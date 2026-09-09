@@ -39,8 +39,9 @@
 ### 🎙️ Voice Communication
 - **Full-Mesh P2P**: 4-person rooms with direct peer-to-peer UDP
 - **AES-256-GCM Encryption**: All audio and control packets are end-to-end encrypted
-- **VAD (Voice Activity Detection)**: Real-time speaking detection
-- **Noise Suppression**: Multi-stage noise filter (OFF / Standard / High)
+- **VAD (Voice Activity Detection)**: Real-time speaking detection with 60ms pre-roll lookback buffer
+- **Onset & Consonant Protection**: Spectral crest factor discrimination prevents word onset clipping (e.g. unvoiced 's', 'p', 't')
+- **Noise Suppression**: Multi-stage noise filter (OFF / Standard / High) with mechanical keyboard & click rejection
 - **Live VU-Meter**: Real-time audio level visualization per participant
 
 </td>
@@ -49,7 +50,7 @@
 ### 🖥️ Screen Sharing
 - **60 FPS Hardware-Accelerated** screen capture (1080p, ultra-low-latency)
 - **Native Platform API Support**:
-  - **🪟 Windows**: ✅ **Fully Tested & Working** (Native Windows Graphics Capture / Win32 GDI & DXGI APIs with window & monitor selector)
+  - **🪟 Windows**: ✅ **Fully Tested & Working** (Win32 GDI & DWM window capture / FFmpeg gdigrab display capture with monitor and window selector)
   - **🍎 macOS**: ✅ **Fully Tested & Working** (Native ScreenCaptureKit & CoreMedia APIs with system permission integration)
   - **🐧 Linux (GNOME)**: ✅ **Fully Tested & Working** (Direct Mutter PipeWire zero-popup monitor capture & Portal window selector)
   - **🐧 Linux (KDE Plasma)**: ✅ **Fully Tested & Working** (XDG Desktop Portal PipeWire capture)
@@ -64,8 +65,9 @@
 ### 🌐 Network Architecture
 - **LAN Auto-Discovery**: Zero-configuration local network discovery via broadcast packets
 - **Internet P2P**: WebSocket relay server for NAT traversal and hole-punching
+- **Dynamic Port Hopping**: Automatic UDP endpoint rotation for DPI & censorship resistance
+- **Anti-Replay Protection**: Strict timestamp window and sliding sequence cache
 - **Relay Server**: Ultra-lightweight Go relay hosted on Railway (~7 MB Docker image)
-- **HMAC-SHA256**: Packet integrity and authentication
 
 </td>
 <td width="50%">
@@ -74,8 +76,29 @@
 - **3D Studio Microphone**: 60 FPS spinning 3D model on Braille Canvas
 - **Mouse 3D Rotation**: Interactive control via drag & scroll
 - **Animated Modals**: Smooth scaling dialog windows
-- **Neon Color Palette**: Modern Cyberpunk-themed TUI design
+- **Neon & Cyberpunk Palettes**: Multiple themes (Neon, Cyberpunk, Synthwave, Monokai, Dracula)
+- **Live VU-Meter**: Real-time audio waveform and volume visualization
 - **Toast Notifications**: Instant status updates
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### 📁 E2EE File & Code Sharing
+- **Direct P2P Transfer**: Chunked end-to-end encrypted file & code snippet sharing
+- **Safety Quarantine**: Executable file warnings and strict filename sanitization
+- **Auto-Save**: Accepted files saved to `Downloads/LimoniTransfers`
+- **Integrity Verified**: Automatic SHA-256 checksum verification
+
+</td>
+<td width="50%">
+
+### 💬 Chat & Room Security
+- **Terminal Chat**: Multi-line messaging, clickable links & slash commands (`/help`, `/clear`)
+- **Room Lock & PIN**: 4-digit PIN protection (`/lock <pin>`) and host access control
+- **Push-to-Talk (PTT)**: Configurable push-to-talk mode with voice activity detection
+- **Per-User Volume**: Independent volume leveling and boost per participant
 
 </td>
 </tr>
@@ -146,14 +169,12 @@ curl -fsSL https://raw.githubusercontent.com/thebanri/limoni-voice/main/install.
 irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
 ```
 
----
-
-### Pre-requisites for Screen Sharing (FFmpeg & MPV)
+### Prerequisites (Audio & Screen Sharing)
 
 > [!IMPORTANT]
-> Voice chat works out of the box with zero dependencies. However, for **Screen Sharing** (broadcasting and viewing live streams), **FFmpeg** and **MPV** are required on your system:
->
-> - **🍎 macOS (Homebrew)**:
+> - **🪟 Windows**: Voice chat works out of the box with **zero dependencies** (using native Win32 `winmm` audio APIs). For Screen Sharing, **FFmpeg** and **MPV** are required.
+> - **🐧 Linux**: Voice chat works out of the box on distributions with standard PulseAudio, PipeWire, or ALSA. For Screen Sharing, **FFmpeg** and **MPV** are required.
+> - **🍎 macOS**: Because macOS does not include built-in command-line audio capture tools, installing **FFmpeg** and **MPV** (via Homebrew) is required for both voice chat and screen sharing:
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
@@ -302,13 +323,15 @@ Limoni Voice is built with security from the ground up:
 
 | Layer | Technology | Details |
 |-------|------------|---------|
-| **Audio Encryption** | AES-256-GCM | Every audio packet is encrypted end-to-end |
-| **Packet Authentication** | HMAC-SHA256 | Packet integrity and sender verification |
-| **Key Derivation** | SHA-256 | Room key derived uniquely from the passphrase |
+| **End-to-End Encryption** | AES-256-GCM | All voice, chat, control, and file data packets are encrypted end-to-end |
+| **Packet Authentication** | AES-256-GCM AEAD Tag | 128-bit GHASH authentication tag guarantees packet integrity |
+| **Key Derivation** | Salted HMAC-SHA256 | Cryptographic master key derived with a unique salt from room code |
+| **Anti-Replay Protection** | Timestamp + Deduplication | Strict 30s freshness window and sliding-cache replay prevention |
+| **Input Sanitization** | Strict Filename Filter | Path traversal, shell characters, and dangerous files quarantined |
 | **Magic Header** | `LVS1` | Protocol versioning and header validation |
-| **Transport** | WSS (TLS 1.3) | Encrypted WebSocket connection to relay |
+| **Transport** | WSS (TLS 1.3) / UDP | Encrypted WebSocket for signaling, direct encrypted UDP for P2P media |
 
-> **No audio data is ever stored or inspected by the relay server.** The relay is strictly used for peer discovery and NAT traversal. All audio flows directly peer-to-peer over encrypted UDP.
+> **No audio or file data is ever stored or inspected by the relay server.** The relay is strictly used for peer discovery and NAT traversal. All audio and data flows directly peer-to-peer over encrypted UDP.
 
 ---
 

@@ -231,14 +231,16 @@ func DownloadAndApplyUpdate(release *GitHubRelease, execPath string) error {
 	var newBinaryData []byte
 	assetName := strings.ToLower(asset.Name)
 
+	const maxUpdateSize = 150 * 1024 * 1024 // 150 MB safety limit against memory exhaustion DoS
+
 	if strings.HasSuffix(assetName, ".tar.gz") || strings.HasSuffix(assetName, ".tgz") {
-		data, err := extractBinaryFromTarGz(resp.Body)
+		data, err := extractBinaryFromTarGz(io.LimitReader(resp.Body, maxUpdateSize))
 		if err != nil {
 			return fmt.Errorf("extraction error: %w", err)
 		}
 		newBinaryData = data
 	} else {
-		data, err := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxUpdateSize))
 		if err != nil {
 			return fmt.Errorf("read error: %w", err)
 		}
@@ -272,7 +274,7 @@ func extractBinaryFromTarGz(r io.Reader) ([]byte, error) {
 		if header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA {
 			base := filepath.Base(header.Name)
 			if strings.HasPrefix(base, "limoni-voice") {
-				return io.ReadAll(tr)
+				return io.ReadAll(io.LimitReader(tr, 150*1024*1024))
 			}
 		}
 	}

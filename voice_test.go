@@ -662,6 +662,40 @@ func TestQuietSpeechAndDeepVoicePassthrough(t *testing.T) {
 	}
 }
 
+func TestFricativeConsonantOnsetPassthrough(t *testing.T) {
+	audio := NewAudioEngine()
+
+	// Generate synthetic unvoiced fricative 'S' consonant sound (e.g. "Selam" onset)
+	// Turbulent noise concentrated in 4500Hz - 7500Hz with zero pitch harmonicity (natural fricative 'S' sound)
+	fricativePCM := make([]byte, AudioChunkSize)
+	// High-pass filtered turbulent noise (unvoiced fricative 'S' with low harmonicity)
+	var state uint32 = 987654321
+	var hpPrevIn, hpPrevOut float64
+	for i := 0; i < 320; i++ {
+		state = state*1664525 + 1013904223
+		rawNoise := (float64(int32(state)%2000) / 2000.0) * 1200.0 // +/- 1200 amplitude
+		// 4500Hz high-pass filter at 16000Hz (alpha ~ 0.36)
+		hpOut := 0.36 * (hpPrevOut + rawNoise - hpPrevIn)
+		hpPrevIn = rawNoise
+		hpPrevOut = hpOut
+		val := int16(hpOut)
+		binary.LittleEndian.PutUint16(fricativePCM[i*2:i*2+2], uint16(val))
+	}
+
+	speaking1, rms1, _ := audio.processNoiseCancellation(fricativePCM, 1)
+	t.Logf("Mode 1: speaking=%v, rms=%f, threshold=%f", speaking1, rms1, audio.VADThreshold)
+	if !speaking1 {
+		t.Fatalf("Expected fricative consonant 'S' to pass in Mode 1, but got speaking=false, rms=%f", rms1)
+	}
+
+	audio2 := NewAudioEngine()
+	speaking2, rms2, _ := audio2.processNoiseCancellation(fricativePCM, 2)
+	t.Logf("Mode 2: speaking=%v, rms=%f", speaking2, rms2)
+	if !speaking2 {
+		t.Fatalf("Expected fricative consonant 'S' to pass in Mode 2, but got speaking=false, rms=%f", rms2)
+	}
+}
+
 func TestVideoReorderBuffer(t *testing.T) {
 	buf := VideoReorderBuffer{}
 	buf.Reset()
@@ -2597,6 +2631,439 @@ func TestSanitizeClipboardText(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeFilenameSecurity(t *testing.T) {
+	cases := []struct {
+		input    string
+		isCode   bool
+		expected string
+	}{
+		{"../../../../etc/shadow", false, "shadow"},
+		{"report.txt&calc.exe", false, "report.txtcalc.exe"},
+		{"malicious;rm -rf /", false, "maliciousrm -rf"},
+		{"pipe|injection.sh", false, "pipeinjection.sh"},
+		{"$(reboot).png", false, "reboot.png"},
+		{"`whoami`.txt", false, "whoami.txt"},
+		{"CON.txt", false, "file_CON.txt"},
+		{"prn.pdf", false, "file_prn.pdf"},
+		{"aux", false, "file_aux"},
+		{"NUL.dat", false, "file_NUL.dat"},
+		{"", true, "snippet.txt"},
+		{"", false, "received_file.bin"},
+		{"....", false, "received_file.bin"},
+		{"normal_document.pdf", false, "normal_document.pdf"},
+	}
+
+	for _, c := range cases {
+		got := sanitizeFilename(c.input, c.isCode)
+		if got != c.expected {
+			t.Errorf("sanitizeFilename(%q, %v) = %q; want %q", c.input, c.isCode, got, c.expected)
+		}
+	}
+}
+
+func TestFileTransferSizeAndChunkLimits(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("test_receiver", "Receiver", audio)
+	node.IsConnected = true
+	node.RoomCode = NormalizeCode("LIMIT-TEST")
+
+	// 1. PacketFileHeader exceeding 50 MB should be rejected
+	oversizedPkt := P2PPacket{
+		Type:      PacketFileHeader,
+		RoomCode:  "LIMIT-TEST",
+		SenderID:  "attacker",
+		Nickname:  "Attacker",
+		Timestamp: time.Now().UnixMilli(),
+		FileMeta: &FileMetadata{
+			TransferID:  "oversized_tx",
+			FileName:    "huge.iso",
+			FileSize:    60 * 1024 * 1024, // 60 MB > 50 MB limit
+			TotalChunks: 100,
+		},
+	}
+	node.handlePacket(&oversizedPkt, nil)
+
+	node.mu.RLock()
+	_, exists := node.incomingTransfers["oversized_tx"]
+	node.mu.RUnlock()
+	if exists {
+		t.Fatalf("Expected oversized transfer to be rejected, but was accepted into incomingTransfers")
+	}
+
+	// 2. PacketFileHeader exceeding MaxFileChunks should be rejected
+	tooManyChunksPkt := P2PPacket{
+		Type:      PacketFileHeader,
+		RoomCode:  "LIMIT-TEST",
+		SenderID:  "attacker",
+		Nickname:  "Attacker",
+		Timestamp: time.Now().UnixMilli(),
+		FileMeta: &FileMetadata{
+			TransferID:  "chunks_tx",
+			FileName:    "split.bin",
+			FileSize:    10 * 1024 * 1024,
+			TotalChunks: 3000, // > 2000 MaxFileChunks
+		},
+	}
+	node.handlePacket(&tooManyChunksPkt, nil)
+
+	node.mu.RLock()
+	_, exists = node.incomingTransfers["chunks_tx"]
+	node.mu.RUnlock()
+	if exists {
+		t.Fatalf("Expected transfer with 3000 chunks to be rejected, but was accepted")
+	}
+
+	// 3. Valid file header should be accepted
+	validPkt := P2PPacket{
+		Type:      PacketFileHeader,
+		RoomCode:  "LIMIT-TEST",
+		SenderID:  "good_peer",
+		Nickname:  "GoodGuy",
+		Timestamp: time.Now().UnixMilli(),
+		FileMeta: &FileMetadata{
+			TransferID:  "valid_tx",
+			FileName:    "data.json",
+			FileSize:    1024,
+			TotalChunks: 2,
+		},
+	}
+	node.handlePacket(&validPkt, nil)
+
+	node.mu.RLock()
+	_, exists = node.incomingTransfers["valid_tx"]
+	node.mu.RUnlock()
+	if !exists {
+		t.Fatalf("Expected valid transfer to be accepted into incomingTransfers")
+	}
+
+	// 4. PacketFileChunk with negative or out-of-range chunk index should be ignored
+	badChunkPkt := P2PPacket{
+		Type:      PacketFileChunk,
+		RoomCode:  "LIMIT-TEST",
+		SenderID:  "good_peer",
+		Nickname:  "GoodGuy",
+		Timestamp: time.Now().UnixMilli(),
+		Payload:   []byte("chunk_data"),
+		FileMeta: &FileMetadata{
+			TransferID: "valid_tx",
+			ChunkIndex: 99, // TotalChunks is 2! Out of bounds
+		},
+	}
+	node.handlePacket(&badChunkPkt, nil)
+
+	node.mu.RLock()
+	tr := node.incomingTransfers["valid_tx"]
+	_, hasBadChunk := tr.Chunks[99]
+	node.mu.RUnlock()
+	if hasBadChunk {
+		t.Fatalf("Expected out-of-bounds chunk 99 to be rejected, but was stored")
+	}
+}
+
+func TestControlPacketReplayProtection(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("test_receiver_2", "Receiver2", audio)
+	node.IsConnected = true
+	node.RoomCode = NormalizeCode("REPLAY-TEST")
+
+	// Register a peer
+	node.Peers["peer_alice"] = &PeerInfo{
+		ID:       "peer_alice",
+		Nickname: "Alice",
+	}
+
+	// 1. A stale PacketLeave from 60 seconds ago should be dropped by freshness check
+	staleLeave := P2PPacket{
+		Type:      PacketLeave,
+		RoomCode:  "REPLAY-TEST",
+		SenderID:  "peer_alice",
+		Nickname:  "Alice",
+		Timestamp: time.Now().UnixMilli() - 60000, // 60s in the past
+	}
+	node.handlePacket(&staleLeave, nil)
+
+	node.mu.RLock()
+	_, peerStillExists := node.Peers["peer_alice"]
+	node.mu.RUnlock()
+	if !peerStillExists {
+		t.Fatalf("Stale PacketLeave should have been dropped, but peer was deleted")
+	}
+
+	// 2. A fresh PacketLeave with valid current timestamp should be processed
+	nowMs := time.Now().UnixMilli()
+	freshLeave := P2PPacket{
+		Type:      PacketLeave,
+		RoomCode:  "REPLAY-TEST",
+		SenderID:  "peer_alice",
+		Nickname:  "Alice",
+		Seq:       1,
+		Timestamp: nowMs,
+	}
+	node.handlePacket(&freshLeave, nil)
+
+	node.mu.RLock()
+	_, peerStillExists = node.Peers["peer_alice"]
+	node.mu.RUnlock()
+	if peerStillExists {
+		t.Fatalf("Fresh PacketLeave should have been processed, but peer still exists")
+	}
+
+	// 3. Replaying the EXACT same fresh packet immediately should be dropped by deduplicator
+	node.Peers["peer_alice"] = &PeerInfo{
+		ID:       "peer_alice",
+		Nickname: "Alice",
+	}
+	node.handlePacket(&freshLeave, nil) // Replay!
+
+	node.mu.RLock()
+	_, peerStillExists = node.Peers["peer_alice"]
+	node.mu.RUnlock()
+	if !peerStillExists {
+		t.Fatalf("Replayed PacketLeave should have been dropped by deduplicator, but was processed")
+	}
+}
+
+func TestRelayHostTokenLifecycle(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("user_alice", "Alice", audio)
+	defer node.Close()
+
+	// 1. Initially hostToken should be empty
+	node.mu.RLock()
+	if node.hostToken != "" {
+		t.Fatalf("Expected empty hostToken initially, got %s", node.hostToken)
+	}
+	node.mu.RUnlock()
+
+	// 2. Receive room_created with HostToken
+	node.handleRelayControl(RelayControlMessage{
+		Type:      "room_created",
+		RoomCode:  "TEST-ROOM",
+		HostToken: "secret_token_1234567890abcdef",
+	})
+
+	node.mu.RLock()
+	if node.hostToken != "secret_token_1234567890abcdef" {
+		t.Fatalf("Expected hostToken 'secret_token_1234567890abcdef', got %s", node.hostToken)
+	}
+	node.mu.RUnlock()
+
+	// 3. LeaveRoom should clear hostToken
+	node.LeaveRoom()
+
+	node.mu.RLock()
+	if node.hostToken != "" {
+		t.Fatalf("Expected empty hostToken after LeaveRoom, got %s", node.hostToken)
+	}
+	node.mu.RUnlock()
+
+	// 4. Test new_host promotion with HostToken
+	node.handleRelayControl(RelayControlMessage{
+		Type:      "new_host",
+		RoomCode:  "TEST-ROOM-2",
+		SenderID:  node.LocalID,
+		Nickname:  node.Nickname,
+		PIN:       "7777",
+		HostToken: "migrated_token_99999",
+	})
+
+	node.mu.RLock()
+	if !node.IsHost {
+		t.Fatalf("Expected IsHost to be true after promotion")
+	}
+	if node.hostToken != "migrated_token_99999" {
+		t.Fatalf("Expected hostToken 'migrated_token_99999', got %s", node.hostToken)
+	}
+	if node.RoomPIN != "7777" {
+		t.Fatalf("Expected RoomPIN '7777', got %s", node.RoomPIN)
+	}
+	node.mu.RUnlock()
+}
+
+func TestOpenBrowserURLSecurityValidation(t *testing.T) {
+	// 1. Empty URL should return nil
+	if err := OpenBrowserURL(""); err != nil {
+		t.Fatalf("Expected nil for empty string, got %v", err)
+	}
+
+	// 2. Dangerous schemes should be rejected
+	disallowedURLs := []string{
+		"file:///etc/passwd",
+		"javascript:alert(1)",
+		"data:text/html,<script>alert(1)</script>",
+		"powershell -Command calc.exe",
+		"https://example.com\" & calc.exe",
+		"https://example.com/test\nmalicious",
+		"https://example.com/test;rm -rf /",
+		"https://example.com/test|whoami",
+		"https://example.com/test^%USERPROFILE%",
+	}
+
+	for _, badURL := range disallowedURLs {
+		err := OpenBrowserURL(badURL)
+		if err == nil {
+			t.Fatalf("Expected security error for dangerous URL %q, but got nil", badURL)
+		}
+	}
+}
+
+func TestAudioEngineRemovePeerMemoryCleanup(t *testing.T) {
+	engine := NewAudioEngine()
+	defer engine.Stop()
+
+	testPCM := make([]byte, AudioChunkSize)
+	engine.PlayPeerPCM("peer_99", testPCM, 0.05, true)
+
+	// Check peer jitter buffer and wave exist
+	engine.mu.RLock()
+	_, jbExists := engine.peerJitterBuffers["peer_99"]
+	_, waveExists := engine.PeerWaves["peer_99"]
+	engine.mu.RUnlock()
+
+	if !jbExists || !waveExists {
+		t.Fatalf("Expected peer jitter buffer and wave to be created")
+	}
+
+	// Remove peer
+	engine.RemovePeer("peer_99")
+
+	engine.mu.RLock()
+	_, jbExistsAfter := engine.peerJitterBuffers["peer_99"]
+	_, waveExistsAfter := engine.PeerWaves["peer_99"]
+	engine.mu.RUnlock()
+
+	if jbExistsAfter || waveExistsAfter {
+		t.Fatalf("Expected peer jitter buffer and wave to be deleted after RemovePeer")
+	}
+
+	// Test ClearAllPeers
+	engine.PlayPeerPCM("peer_1", testPCM, 0.05, true)
+	engine.PlayPeerPCM("peer_2", testPCM, 0.05, true)
+	engine.ClearAllPeers()
+
+	engine.mu.RLock()
+	count := len(engine.peerJitterBuffers)
+	waveCount := len(engine.PeerWaves)
+	engine.mu.RUnlock()
+
+	if count != 0 || waveCount != 0 {
+		t.Fatalf("Expected 0 peers after ClearAllPeers, got %d buffers and %d waves", count, waveCount)
+	}
+}
+
+func TestChatMessageLengthCap(t *testing.T) {
+	node := NewP2PNode("user_alice", "Alice", nil)
+	defer node.Close()
+
+	node.mu.Lock()
+	node.IsConnected = true
+	node.RoomCode = "CHAT-ROOM"
+	node.mu.Unlock()
+
+	ch := make(chan string, 1)
+	node.OnChatMessage = func(senderID, nickname, text string, ts time.Time) {
+		ch <- text
+	}
+
+	// Simulate incoming chat packet exceeding 16KB limit (e.g. 32KB payload)
+	oversizedPayload := strings.Repeat("A", 32000)
+	pkt := P2PPacket{
+		Type:      PacketChatMessage,
+		RoomCode:  "CHAT-ROOM",
+		SenderID:  "peer_bob",
+		Nickname:  "Bob",
+		Payload:   []byte(oversizedPayload),
+		Timestamp: time.Now().UnixMilli(),
+		Seq:       1,
+	}
+
+	node.handlePacket(&pkt, nil)
+
+	select {
+	case receivedText := <-ch:
+		if len(receivedText) != 16384 {
+			t.Fatalf("Expected chat message payload to be capped to 16384 bytes, got %d bytes", len(receivedText))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for OnChatMessage callback")
+	}
+}
+
+func TestSendAudioPreRollLookback(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("sender_preroll", "Sender", audio)
+	defer node.Close()
+
+	key := deriveRoomKey("preroll-test-room")
+	block, _ := aes.NewCipher(key)
+	aead, _ := cipher.NewGCM(block)
+
+	priorityCh := make(chan []byte, 10)
+
+	node.mu.Lock()
+	node.IsConnected = true
+	node.RoomCode = "preroll-test-room"
+	node.aead = aead
+	node.Peers["peer_1"] = &PeerInfo{ID: "peer_1", Nickname: "Bob"}
+	node.isRelayConnected = true
+	node.wsPriorityCh = priorityCh
+	node.mu.Unlock()
+
+	// 1. Silent frames: should be buffered in audioPreRoll, not sent across network
+	node.SendAudio(0.001, false, []byte("silent_chunk_1"))
+	node.SendAudio(0.002, false, []byte("silent_chunk_2"))
+
+	node.mu.RLock()
+	preRollCount := len(node.audioPreRoll)
+	hangover := node.silenceHangover
+	node.mu.RUnlock()
+
+	if preRollCount != 2 {
+		t.Fatalf("Expected 2 pre-roll frames buffered during silence, got %d", preRollCount)
+	}
+	if hangover != 0 {
+		t.Fatalf("Expected silenceHangover=0 during silence, got %d", hangover)
+	}
+	if len(priorityCh) != 0 {
+		t.Fatalf("Expected 0 packets transmitted during silence, got %d", len(priorityCh))
+	}
+
+	// 2. Speech onset frame: should flush 2 pre-roll frames + send current speech frame (3 packets total)
+	node.SendAudio(0.020, true, []byte("speech_chunk_3"))
+
+	node.mu.RLock()
+	preRollAfter := len(node.audioPreRoll)
+	hangoverAfter := node.silenceHangover
+	node.mu.RUnlock()
+
+	if preRollAfter != 0 {
+		t.Fatalf("Expected pre-roll buffer to be cleared after speech onset, got %d", preRollAfter)
+	}
+	if hangoverAfter != 25 {
+		t.Fatalf("Expected silenceHangover=25 after speech onset, got %d", hangoverAfter)
+	}
+	if len(priorityCh) != 3 {
+		t.Fatalf("Expected 3 packets transmitted (2 pre-roll + 1 speech), got %d", len(priorityCh))
+	}
+
+	// Verify the 3 packets in order: silent_chunk_1, silent_chunk_2, speech_chunk_3
+	for i, expectedPayload := range []string{"silent_chunk_1", "silent_chunk_2", "speech_chunk_3"} {
+		encrypted := <-priorityCh
+		var pkt P2PPacket
+		if err := decryptAndDecodePacket(encrypted, &pkt, aead); err != nil {
+			t.Fatalf("Failed to decrypt packet %d: %v", i, err)
+		}
+		if string(pkt.Payload) != expectedPayload {
+			t.Fatalf("Packet %d payload mismatch: expected %q, got %q", i, expectedPayload, string(pkt.Payload))
+		}
+		if !pkt.Speaking {
+			t.Fatalf("Expected packet %d Speaking=true, got false", i)
+		}
+	}
+}
+
+
 
 
 

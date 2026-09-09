@@ -1292,8 +1292,11 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 
 	// Non-vocal sound discrimination (Claps, Keyboards, Coughs, Fan/AC low-drone)
 	isImpulsiveClap := (peakToRMS > 4.6 || maxSlew > 5500.0) && harmonicity < 0.22
-	isKeyboardClick := (hfRatio > 2.0 || maxSlew > 3800.0) && harmonicity < 0.18 && midRMS < a.VADThreshold*1.4
-	isCoughBurst := frameRMS > a.VADThreshold*1.40 && harmonicity < 0.20 && (lowEnergy > midEnergy*1.10 || hfRatio > 1.30)
+	// Mechanical keyboard clicks are sharp micro-impulses with extreme crest factor (> 4.2), high slew, and zero harmonicity.
+	// Continuous speech sibilants ('s', 'sh', 'f', 'z') have normal crest factor (< 3.8) and are never suppressed.
+	isKeyboardClick := peakToRMS > 4.2 && (hfRatio > 1.2 || maxSlew > 3800.0) && harmonicity < 0.18
+	// Coughs and throat clearing are explosive, low-frequency guttural turbulence (> 100-300Hz chest resonance)
+	isCoughBurst := frameRMS > a.VADThreshold*1.40 && harmonicity < 0.20 && lowEnergy > midEnergy*1.10
 	isLowDrone := (lowEnergy > (midEnergy*2.5 + 1.0)) && (midRMS < 0.003 || midRMS < a.VADThreshold*0.50)
 	isNonVocalNoise := isImpulsiveClap || isKeyboardClick || isCoughBurst || isLowDrone
 
@@ -1378,12 +1381,17 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	midSNRFloor := math.Max(a.noiseFloorMid, 0.0003)
 	midSNR := midRMS / midSNRFloor
 
+	highSNRFloor := math.Max(a.noiseFloorHigh, 0.0003)
+	highSNR := highRMS / highSNRFloor
+
 	var isSpeech bool
 	if mode == 2 { // HIGH (SteelSeries Sonar Deep Suppression Mode)
-		isSpeech = (frameRMS > threshold && snr > 1.25 && (harmonicity >= 0.20 || midSNR > 1.25) && !isNonVocalNoise)
+		isVoiced := harmonicity >= 0.20 || midSNR > 1.25
+		isUnvoicedConsonant := (snr > 1.25 || highSNR > 1.25) && highRMS > threshold*0.25
+		isSpeech = (frameRMS > threshold && snr > 1.25 && (isVoiced || isUnvoicedConsonant) && !isNonVocalNoise)
 	} else { // ON / Standard (Warm, natural speech with stationary noise/clap/cough rejection)
 		isVoiced := harmonicity >= 0.18 && (snr > 1.15 || midSNR > 1.15) && midRMS > threshold*0.25
-		isUnvoicedConsonant := (snr > 1.20 || midSNR > 1.20) && highRMS > threshold*0.25
+		isUnvoicedConsonant := (snr > 1.20 || midSNR > 1.20 || highSNR > 1.20) && highRMS > threshold*0.25
 		isSpeech = (frameRMS > threshold && (isVoiced || isUnvoicedConsonant) && !isNonVocalNoise)
 	}
 
@@ -2010,6 +2018,23 @@ func (a *AudioEngine) GetLocalWave() []float64 {
 func (a *AudioEngine) shiftWave(val float64) {
 	copy(a.LocalWave[0:], a.LocalWave[1:])
 	a.LocalWave[len(a.LocalWave)-1] = val
+}
+
+// RemovePeer cleans up audio jitter buffers, visualizer waves, and volume settings when a peer disconnects
+func (a *AudioEngine) RemovePeer(peerID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.peerJitterBuffers, peerID)
+	delete(a.PeerWaves, peerID)
+	delete(a.PeerVolumes, peerID)
+}
+
+// ClearAllPeers resets all peer audio buffers when leaving or resetting a room
+func (a *AudioEngine) ClearAllPeers() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.peerJitterBuffers = make(map[string]*PeerJitterBuffer)
+	a.PeerWaves = make(map[string][]float64)
 }
 
 // Helpers for PCM processing

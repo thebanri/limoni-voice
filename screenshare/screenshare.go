@@ -817,7 +817,15 @@ if #available(macOS 12.3, *) {
 `
 
 func getOrBuildMacCaptureBinary() (string, error) {
-	binPath := filepath.Join(os.TempDir(), "limoni-mac-sckit-v9")
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = filepath.Join(os.TempDir(), fmt.Sprintf("limoni-%d", os.Getuid()))
+	} else {
+		cacheDir = filepath.Join(cacheDir, "limoni-voice")
+	}
+	_ = os.MkdirAll(cacheDir, 0700)
+
+	binPath := filepath.Join(cacheDir, "limoni-mac-sckit-v9")
 	if info, err := os.Stat(binPath); err == nil && info.Size() > 0 {
 		return binPath, nil
 	}
@@ -827,8 +835,8 @@ func getOrBuildMacCaptureBinary() (string, error) {
 		return "", errors.New("swiftc not found on macOS")
 	}
 
-	srcFile := filepath.Join(os.TempDir(), "limoni_mac_capture.swift")
-	if err := os.WriteFile(srcFile, []byte(embeddedMacCaptureSwift), 0644); err != nil {
+	srcFile := filepath.Join(cacheDir, "limoni_mac_capture.swift")
+	if err := os.WriteFile(srcFile, []byte(embeddedMacCaptureSwift), 0600); err != nil {
 		return "", err
 	}
 	defer os.Remove(srcFile)

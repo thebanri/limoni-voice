@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -192,46 +193,60 @@ func GetClipboardText() string {
 	return SanitizeClipboardText(raw)
 }
 
-// OpenBrowserURL opens a web URL in the user's default browser.
+// OpenBrowserURL opens a web URL in the user's default browser safely.
 func OpenBrowserURL(urlStr string) error {
 	urlStr = strings.TrimSpace(urlStr)
 	if urlStr == "" {
 		return nil
 	}
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+
+	// Prevent shell/argument injection: reject control chars, quotes, and shell operators
+	if strings.ContainsAny(urlStr, " \t\r\n\x00\"'`;&|$><^%") {
+		return fmt.Errorf("URL contains disallowed characters: %s", urlStr)
+	}
+
+	// Reject disallowed schemes (e.g. file://, javascript:, data:)
+	if strings.Contains(urlStr, "://") {
+		if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+			return fmt.Errorf("unsupported or dangerous URL scheme: %s", urlStr)
+		}
+	} else {
+		if strings.Contains(urlStr, ":") {
+			return fmt.Errorf("disallowed URL format: %s", urlStr)
+		}
 		urlStr = "https://" + urlStr
 	}
 
+	// Validate URL structure: only permit valid http and https URLs
+	parsed, err := url.Parse(urlStr)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("invalid or disallowed URL: %s", urlStr)
+	}
+
+	cleanURL := parsed.String()
+
 	switch runtime.GOOS {
 	case "windows":
-		// Option 1: rundll32 url.dll,FileProtocolHandler <url>
-		cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", urlStr)
+		// Option 1: rundll32.exe url.dll,FileProtocolHandler <url> (invokes Windows ShellExecute safely)
+		cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", cleanURL)
 		if err := cmd.Start(); err == nil {
 			return nil
 		}
-		// Option 2: cmd.exe /c start "" <url>
-		cmd = exec.Command("cmd", "/c", "start", "", urlStr)
-		if err := cmd.Start(); err == nil {
-			return nil
-		}
-		// Option 3: PowerShell Start-Process
-		return exec.Command("powershell", "-NoProfile", "-Command", fmt.Sprintf("Start-Process '%s'", strings.ReplaceAll(urlStr, "'", "''"))).Start()
+		// Option 2: Parameterized PowerShell Start-Process (no string interpolation)
+		return exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $args[0]", cleanURL).Start()
 	case "darwin":
-		cmd := exec.Command("open", urlStr)
+		cmd := exec.Command("open", cleanURL)
 		return cmd.Start()
 	default:
-		// Try xdg-open on Linux/Unix, fallback to sensible browser or open
+		// Try xdg-open on Linux/Unix, fallback to sensible browser
 		if path, err := exec.LookPath("xdg-open"); err == nil {
-			cmd := exec.Command(path, urlStr)
-			return cmd.Start()
-		} else if path, err := exec.LookPath("open"); err == nil {
-			cmd := exec.Command(path, urlStr)
+			cmd := exec.Command(path, cleanURL)
 			return cmd.Start()
 		} else if path, err := exec.LookPath("sensible-browser"); err == nil {
-			cmd := exec.Command(path, urlStr)
+			cmd := exec.Command(path, cleanURL)
 			return cmd.Start()
 		}
-		cmd := exec.Command("xdg-open", urlStr)
+		cmd := exec.Command("xdg-open", cleanURL)
 		return cmd.Start()
 	}
 }

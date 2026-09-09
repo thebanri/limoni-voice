@@ -3931,8 +3931,8 @@ func OpenInEditor(filePath string) error {
 				return nil
 			}
 		}
-		// 2. Try Windows default association
-		cmd := exec.Command("cmd", "/c", "start", "", filePath)
+		// 2. Try Windows ShellExecute via rundll32 (prevents cmd.exe shell argument injection)
+		cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", filePath)
 		if err := cmd.Start(); err == nil {
 			return nil
 		}

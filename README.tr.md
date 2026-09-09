@@ -39,8 +39,9 @@
 ### 🎙️ Sesli Konuşma
 - **Full-Mesh P2P**: 4 kişilik oda, doğrudan peer-to-peer UDP
 - **AES-256-GCM Şifreleme**: Tüm ses ve kontrol paketleri uçtan uca şifreli
-- **VAD (Voice Activity Detection)**: Konuşan kişi anlık olarak tespit edilir
-- **Gürültü Bastırma**: Çok kademeli filtre sistemi (KAPALI / AÇIK / YÜKSEK)
+- **VAD (Voice Activity Detection)**: 60ms dairesel pre-roll tamponu ile konuşan anlık tespit edilir
+- **Harf & Başlangıç Koruma**: Tepe-RMS (Crest Factor) ayrıştırması ile kelime başlangıçlarındaki ötümsüz seslerin (örn. "selam"daki "s" harfi) kesilmesi önlenir
+- **Gürültü Bastırma**: Mekanik klavye ve darbe filtreli çok kademeli filtre (KAPALI / AÇIK / YÜKSEK)
 - **Canlı VU-Meter**: Her katılımcının ses seviyesi gerçek zamanlı görselleştirilir
 
 </td>
@@ -49,7 +50,7 @@
 ### 🖥️ Ekran Paylaşımı
 - **60 FPS Donanım Hızlandırmalı** ekran yakalama (1080p, ultra düşük gecikme)
 - **Yerel Platform API Desteği**:
-  - **🪟 Windows**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Yerel Windows Graphics Capture / Win32 GDI & DXGI API'leri ile pencere ve ekran seçimi)
+  - **🪟 Windows**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Win32 GDI & DWM pencere yakalama / FFmpeg gdigrab ekran yakalama ile pencere ve monitör seçimi)
   - **🍎 macOS**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Yerel ScreenCaptureKit & CoreMedia API'leri ile donanım hızlandırmalı yakalama)
   - **🐧 Linux (GNOME)**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Doğrudan Mutter PipeWire tam ekran ve Portal pencere seçici)
   - **🐧 Linux (KDE Plasma)**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (XDG Desktop Portal PipeWire ekran & pencere seçimi)
@@ -64,8 +65,9 @@
 ### 🌐 Ağ Mimarisi
 - **LAN Otomatik Keşif**: Broadcast paketleri ile yerel ağda sıfır-konfigürasyon
 - **İnternet P2P**: WebSocket relay sunucusu ile NAT geçişi ve hole-punching
+- **Dinamik Port Hopping**: DPI ve sansür engellemelerine karşı otomatik port rotasyonu
+- **Anti-Replay Koruması**: Zaman damgası penceresi ve kayan sıra önbelleği
 - **Relay Sunucusu**: Railway üzerinde barındırılan ultra hafif Go sunucusu (~7 MB Docker image)
-- **HMAC-SHA256**: Paket bütünlük doğrulaması
 
 </td>
 <td width="50%">
@@ -74,8 +76,29 @@
 - **3D Stüdyo Mikrofonu**: Braille Canvas üzerinde 60 FPS dönen 3D model
 - **Fare ile 3D Döndürme**: Drag & scroll ile interaktif kontrol
 - **Animasyonlu Modallar**: Yumuşak geçişli dialog pencereleri
-- **Neon Renk Paleti**: Cyberpunk estetiğinde modern TUI tasarımı
+- **Neon & Cyberpunk Paletleri**: Çoklu temalar (Neon, Cyberpunk, Synthwave, Monokai, Dracula)
+- **Canlı VU-Meter**: Gerçek zamanlı ses dalga formu ve seviye görselleştirme
 - **Toast Bildirimleri**: Anlık durum mesajları
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### 📁 Uçtan Uca Dosya & Kod Paylaşımı
+- **Doğrudan P2P Transfer**: Parçalı ve uçtan uca şifreli dosya & kod paylaşımı
+- **Güvenlik Karantinası**: Çalıştırılabilir dosya uyarıları ve sıkı dosya adı sanitizasyonu
+- **Otomatik Kayıt**: Kabul edilen dosyalar doğrudan `Downloads/LimoniTransfers` klasörüne kaydedilir
+- **Bütünlük Denetimi**: Otomatik SHA-256 sağlama doğrulaması
+
+</td>
+<td width="50%">
+
+### 💬 Sohbet & Oda Güvenliği
+- **Terminal İçi Chat**: Çok satırlı metin yazımı, tıklanabilir linkler & slash komutları (`/help`, `/clear`)
+- **Oda Kilidi & PIN**: 4 haneli PIN koruması (`/lock <pin>`) ve host kilit yönetimi
+- **Bas-Konuş (PTT)**: Ayarlanabilir bas-konuş tuşu ve konuşma algılama
+- **Kişi Bazlı Ses Ayarı**: Katılımcı başına bağımsız ses seviyesi ve AGC güçlendirme
 
 </td>
 </tr>
@@ -146,14 +169,12 @@ curl -fsSL https://raw.githubusercontent.com/thebanri/limoni-voice/main/install.
 irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
 ```
 
----
-
-### Ekran Paylaşımı İçin Ön Gereksinimler (FFmpeg & MPV)
+### Ön Gereksinimler (Ses ve Ekran Paylaşımı)
 
 > [!IMPORTANT]
-> Sesli konuşma özelliği tamamen sıfır bağımlılıkla doğrudan çalışır. Ancak **Ekran Paylaşımı** (yayın açma ve canlı yayın izleme) özelliklerini kullanabilmek için sisteminizde **FFmpeg** ve **MPV Player** kurulu olmalıdır:
->
-> - **🍎 macOS (Homebrew)**:
+> - **🪟 Windows**: Sesli konuşma tamamen **sıfır bağımlılıkla** doğrudan çalışır (yerel Win32 `winmm` ses API'leri kullanılır). Ekran paylaşımı için **FFmpeg** ve **MPV** gereklidir.
+> - **🐧 Linux**: Standart PulseAudio, PipeWire veya ALSA bulunan Linux dağıtımlarında sesli konuşma doğrudan çalışır. Ekran paylaşımı için **FFmpeg** ve **MPV** gereklidir.
+> - **🍎 macOS**: macOS işletim sisteminde yerleşik komut satırı ses yakalama aracı bulunmadığından, hem sesli konuşma hem de ekran paylaşımı için **FFmpeg** ve **MPV** (Homebrew ile) kurulmalıdır:
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
@@ -302,13 +323,15 @@ Limoni Voice, güvenliği temel bir prensip olarak ele alır:
 
 | Katman | Teknoloji | Açıklama |
 |--------|-----------|----------|
-| **Ses Şifreleme** | AES-256-GCM | Her ses paketi uçtan uca şifrelenir |
-| **Paket Doğrulama** | HMAC-SHA256 | Paket bütünlüğü ve kimlik doğrulama |
-| **Anahtar Türetme** | SHA-256 | Oda kodundan türetilen benzersiz şifreleme anahtarı |
+| **Uçtan Uca Şifreleme** | AES-256-GCM | Tüm ses, sohbet, kontrol ve dosya paketleri uçtan uca şifrelenir |
+| **Paket Doğrulama** | AES-256-GCM AEAD Tag | 128-bit GHASH doğrulama etiketi ile paket bütünlüğü garanti edilir |
+| **Anahtar Türetme** | Salted HMAC-SHA256 | Oda kodundan benzersiz tuz (salt) ile türetilen kriptografik anahtar |
+| **Replay Attack Koruması** | Zaman Damgası + Önbellek | 30s tazelik kontrolü ve kayan pencere ile paket tekrarı engellenir |
+| **Girdi Temizleme** | Sıkı Dosya Filtresi | Yol atlama (path traversal), kabuk komutları ve tehlikeli formatlar karantinaya alınır |
 | **Magic Prefix** | `LVS1` | Protokol versiyonu ve paket doğrulama başlığı |
-| **Transport** | WSS (TLS 1.3) | Relay sunucu bağlantısı şifreli WebSocket |
+| **Transport** | WSS (TLS 1.3) / UDP | Sinyalleşme için şifreli WebSocket, medya için doğrudan şifreli UDP |
 
-> **Hiçbir ses verisi relay sunucusunda işlenmez veya depolanmaz.** Relay yalnızca peer keşfi ve NAT traversal için kullanılır. Gerçek ses iletişimi doğrudan peer-to-peer UDP üzerinden gerçekleşir.
+> **Hiçbir ses veya dosya verisi relay sunucusunda işlenmez veya depolanmaz.** Relay yalnızca peer keşfi ve NAT traversal için kullanılır. Gerçek iletişim doğrudan peer-to-peer UDP üzerinden gerçekleşir.
 
 ---
 

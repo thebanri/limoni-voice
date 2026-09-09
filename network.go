@@ -33,6 +33,26 @@ const MaxPeers = 4
 // DefaultRelayURL is the default public WebSocket relay server URL
 const DefaultRelayURL = "wss://limoni-voice-production.up.railway.app/ws"
 
+// File transfer limits preventing DoS and memory exhaustion
+const (
+	MaxFileTransferSize    = 50 * 1024 * 1024 // 50 MB safety limit
+	MaxFileChunks          = 2000             // Max chunks per file (at 32KB chunk size)
+	MaxConcurrentTransfers = 10               // Max simultaneous incoming transfers
+	TransferExpiryDuration = 5 * time.Minute  // Stale transfer timeout
+)
+
+func init() {
+	gob.Register(P2PPacket{})
+	gob.Register(FileMetadata{})
+	gob.Register(PeerSummary{})
+}
+
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 // MagicPrefix identifies authentic Limoni Voice Secure v1 packets
 var MagicPrefix = []byte("LVS1")
 
@@ -76,6 +96,11 @@ var DangerousFileExtensions = map[string]bool{
 	".apk": true, ".appimage": true, ".pif": true, ".hta": true,
 	".cpl": true, ".reg": true, ".wsf": true, ".vb": true,
 	".so": true, ".dll": true,
+	// Additional dangerous formats across platforms
+	".desktop": true, ".command": true, ".lnk": true, ".url": true,
+	".py": true, ".js": true, ".wsh": true, ".gadget": true,
+	".msp": true, ".msc": true, ".iso": true, ".img": true,
+	".vhd": true, ".dylib": true,
 }
 
 type P2PPacket struct {
@@ -140,6 +165,7 @@ type RelayControlMessage struct {
 	PIN        string      `json:"pin,omitempty"`
 	IsLocked   bool        `json:"is_locked,omitempty"`
 	Peers      []RelayPeer `json:"peers,omitempty"`
+	HostToken  string      `json:"host_token,omitempty"`
 }
 
 type RelayPeer struct {
@@ -214,7 +240,9 @@ type P2PNode struct {
 	videoReorder       VideoReorderBuffer
 	audioDedup         AudioDeduplicator
 	chatDedup          ChatDeduplicator
+	ctrlDedup          ControlDeduplicator
 	silenceHangover    int
+	audioPreRoll       []audioPreRollFrame
 	lastVideoChunkTime time.Time
 	OnScreenShare      func(peerID string, isSharing bool, videoPort int)
 	OnChatMessage      func(senderID string, nickname string, text string, ts time.Time)
@@ -223,6 +251,7 @@ type P2PNode struct {
 	// Room Security (Lock & PIN Protection)
 	IsLocked     bool
 	RoomPIN      string
+	hostToken    string
 	OnRoomLocked func(isLocked bool, pin string)
 
 	// P2P E2EE Direct File & Code Sharing
@@ -343,6 +372,114 @@ func (d *ChatDeduplicator) ShouldProcess(senderID string, seq uint32, timestamp 
 	return true
 }
 
+// ControlDeduplicator prevents duplicate or replayed control packets from executing
+type ControlDeduplicator struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func (d *ControlDeduplicator) ShouldProcess(senderID string, pktType PacketType, seq uint32, timestamp int64) bool {
+	if senderID == "" {
+		return true
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.seen == nil {
+		d.seen = make(map[string]time.Time)
+	}
+
+	now := time.Now()
+	// Periodic garbage collection of expired keys
+	if len(d.seen) > 256 {
+		for k, exp := range d.seen {
+			if now.After(exp) {
+				delete(d.seen, k)
+			}
+		}
+	}
+
+	key := fmt.Sprintf("%s:%d:%d:%d", senderID, pktType, seq, timestamp)
+	if exp, exists := d.seen[key]; exists && now.Before(exp) {
+		return false
+	}
+	d.seen[key] = now.Add(35 * time.Second)
+	return true
+}
+
+func (d *ControlDeduplicator) Reset(senderID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen != nil {
+		prefix := senderID + ":"
+		for k := range d.seen {
+			if strings.HasPrefix(k, prefix) {
+				delete(d.seen, k)
+			}
+		}
+	}
+}
+
+// sanitizeFilename cleans and validates file names received from peers.
+// Prevents path traversal, shell injection characters, control characters,
+// and reserved Windows device names.
+func sanitizeFilename(rawName string, isCode bool) string {
+	base := filepath.Base(filepath.Clean(rawName))
+	base = strings.ReplaceAll(base, "\\", "")
+	base = strings.ReplaceAll(base, "/", "")
+	base = strings.TrimSpace(base)
+
+	var b strings.Builder
+	for _, r := range base {
+		if r < 32 || r == 127 { // Control characters
+			continue
+		}
+		// Disallow shell operators and risky characters
+		switch r {
+		case '&', '|', ';', '$', '`', '"', '\'', '<', '>', '(', ')', '{', '}', '!', '%', '*', '?', '[', ']', '^', '~', ':', '\r', '\n':
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	clean := strings.TrimSpace(b.String())
+	clean = strings.TrimLeft(clean, ".")
+
+	if clean == "" {
+		if isCode {
+			return "snippet.txt"
+		}
+		return "received_file.bin"
+	}
+
+	stem := strings.ToUpper(strings.TrimSuffix(clean, filepath.Ext(clean)))
+	reservedWindowsNames := map[string]bool{
+		"CON": true, "PRN": true, "AUX": true, "NUL": true,
+		"COM1": true, "COM2": true, "COM3": true, "COM4": true,
+		"COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+		"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true,
+		"LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+	}
+	if reservedWindowsNames[stem] {
+		clean = "file_" + clean
+	}
+
+	if len(clean) > 200 {
+		ext := filepath.Ext(clean)
+		clean = clean[:200-len(ext)] + ext
+	}
+
+	return clean
+}
+
+// audioPreRollFrame stores 20ms audio frames during silence periods so word onsets
+// (such as unvoiced fricatives 's', 'p', 't', 'k') are never clipped when VAD triggers.
+type audioPreRollFrame struct {
+	rms float64
+	pcm []byte
+	ts  int64
+}
+
 // VideoReorderBuffer ensures video packets are delivered to the player in strictly sequential order.
 // It discards stale/duplicate packets and buffers out-of-order packets (up to 24 items / ~20ms window)
 // so MPEG-TS / H.264 streams never suffer from macroblocking, packet loss or green screen tear.
@@ -454,6 +591,10 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 		if dur, err := time.ParseDuration(hopEnv); err == nil && dur > 0 {
 			hopInterval = dur
 		}
+	}
+
+	if audio == nil {
+		audio = NewAudioEngine()
 	}
 
 	// Create a dedicated UDP socket for sending broadcasts (avoids SO_BROADCAST issues on Windows)
@@ -782,7 +923,10 @@ func (n *P2PNode) LeaveRoom() {
 		close(n.hopCancel)
 		n.hopCancel = nil
 	}
+	n.hostToken = ""
 	if !n.IsConnected && !n.Connecting {
+		n.RoomCode = ""
+		n.RoomKey = nil
 		n.mu.Unlock()
 		return
 	}
@@ -801,6 +945,9 @@ func (n *P2PNode) LeaveRoom() {
 	peers := make([]*PeerInfo, 0, len(n.Peers))
 	for _, p := range n.Peers {
 		peers = append(peers, p)
+	}
+	if n.audio != nil {
+		n.audio.ClearAllPeers()
 	}
 	n.mu.Unlock()
 
@@ -948,17 +1095,19 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		localPort := n.Port
 		currentPIN := n.RoomPIN
 		currentLocked := n.IsLocked
+		token := n.hostToken
 		n.mu.RUnlock()
 
 		if action == "host" {
 			n.sendRelayControl(RelayControlMessage{
-				Type:     "host_room",
-				RoomCode: roomCode,
-				SenderID: n.LocalID,
-				Nickname: n.Nickname,
-				Port:     localPort,
-				PIN:      currentPIN,
-				IsLocked: currentLocked || currentPIN != "",
+				Type:      "host_room",
+				RoomCode:  roomCode,
+				SenderID:  n.LocalID,
+				Nickname:  n.Nickname,
+				Port:      localPort,
+				PIN:       currentPIN,
+				IsLocked:  currentLocked || currentPIN != "",
+				HostToken: token,
 			})
 		} else if action == "join" {
 			n.sendRelayControl(RelayControlMessage{
@@ -1230,6 +1379,9 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 
 	switch msg.Type {
 	case "room_created":
+		if msg.HostToken != "" {
+			n.hostToken = msg.HostToken
+		}
 		n.log(fmt.Sprintf("[RELAY] Room '%s' created on relay (Internet E2EE)", msg.RoomCode))
 
 	case "welcome":
@@ -1400,6 +1552,9 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 		if peer, exists := n.Peers[msg.SenderID]; exists {
 			wasSharing := peer.IsSharingScreen
 			delete(n.Peers, msg.SenderID)
+			if n.audio != nil {
+				n.audio.RemovePeer(msg.SenderID)
+			}
 			n.log(fmt.Sprintf("[-] %s left.", peer.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
@@ -1414,14 +1569,17 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 	case "new_host":
 		n.HostID = msg.SenderID
 		n.HostNick = msg.Nickname
-		if msg.PIN != "" {
-			n.RoomPIN = msg.PIN
-			n.IsLocked = true
-		} else if msg.IsLocked {
-			n.IsLocked = true
-		}
 		if msg.SenderID == n.LocalID {
 			n.IsHost = true
+			if msg.HostToken != "" {
+				n.hostToken = msg.HostToken
+			}
+			if msg.PIN != "" {
+				n.RoomPIN = msg.PIN
+				n.IsLocked = true
+			} else if msg.IsLocked {
+				n.IsLocked = true
+			}
 			if n.RoomPIN != "" {
 				n.log(fmt.Sprintf("[HOST] Former host left, you are now the room HOST! (Room PIN: %s)", n.RoomPIN))
 			} else {
@@ -1432,6 +1590,9 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			}
 		} else {
 			n.IsHost = false
+			if msg.IsLocked {
+				n.IsLocked = true
+			}
 			n.log(fmt.Sprintf("[HOST] New room HOST: %s", msg.Nickname))
 		}
 
@@ -1536,25 +1697,60 @@ func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
 		return
 	}
 	room := n.RoomCode
-	n.seqCounter++
-	seq := n.seqCounter
 
-	// DTX (Discontinuous Transmission): Do not flood network when completely silent.
-	// Allow 25 hangover frames (~500ms) to ensure natural speech pauses, breath spaces,
-	// and word endings are never chopped off.
+	// DTX (Discontinuous Transmission) with Pre-Roll Lookback Cushion:
+	// When silent, maintain a 3-frame (~60ms) ring buffer.
+	// When speech begins, flush the pre-buffered frames immediately so word onsets
+	// (like the 'S' in "Selam") are never clipped or truncated.
+	var flushedPreRoll []audioPreRollFrame
 	if speaking {
+		if n.silenceHangover == 0 && len(n.audioPreRoll) > 0 {
+			flushedPreRoll = n.audioPreRoll
+			n.audioPreRoll = nil
+		}
 		n.silenceHangover = 25
 	} else {
 		if n.silenceHangover > 0 {
 			n.silenceHangover--
 		} else {
+			// In silence: buffer up to 3 frames (~60ms lookback)
+			pcmCopy := make([]byte, len(pcm))
+			copy(pcmCopy, pcm)
+			n.audioPreRoll = append(n.audioPreRoll, audioPreRollFrame{
+				rms: rms,
+				pcm: pcmCopy,
+				ts:  time.Now().UnixMilli(),
+			})
+			if len(n.audioPreRoll) > 3 {
+				n.audioPreRoll = n.audioPreRoll[len(n.audioPreRoll)-3:]
+			}
 			n.mu.Unlock()
 			return
 		}
 	}
-	n.mu.Unlock()
 
-	pkt := P2PPacket{
+	var pktsToSend []P2PPacket
+	if len(flushedPreRoll) > 0 {
+		for _, pre := range flushedPreRoll {
+			n.seqCounter++
+			pktsToSend = append(pktsToSend, P2PPacket{
+				Type:       PacketAudio,
+				RoomCode:   room,
+				SenderID:   n.LocalID,
+				Nickname:   n.Nickname,
+				IsMuted:    n.audio.Muted,
+				IsDeafened: n.audio.Deafened,
+				Speaking:   true,
+				RMS:        pre.rms,
+				Seq:        n.seqCounter,
+				Timestamp:  pre.ts,
+				Payload:    pre.pcm,
+			})
+		}
+	}
+
+	n.seqCounter++
+	pktsToSend = append(pktsToSend, P2PPacket{
 		Type:       PacketAudio,
 		RoomCode:   room,
 		SenderID:   n.LocalID,
@@ -1563,12 +1759,15 @@ func (n *P2PNode) SendAudio(rms float64, speaking bool, pcm []byte) {
 		IsDeafened: n.audio.Deafened,
 		Speaking:   speaking,
 		RMS:        rms,
-		Seq:        seq,
+		Seq:        n.seqCounter,
 		Timestamp:  time.Now().UnixMilli(),
 		Payload:    pcm,
-	}
+	})
+	n.mu.Unlock()
 
-	n.sendAudioToPeers(&pkt)
+	for i := range pktsToSend {
+		n.sendAudioToPeers(&pktsToSend[i])
+	}
 }
 
 // sendAudioToPeers routes audio packets through the high-priority channel
@@ -1681,6 +1880,9 @@ func (n *P2PNode) SendChatMessage(text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
+	}
+	if len(text) > 16384 {
+		text = text[:16384]
 	}
 	n.mu.Lock()
 	if !n.IsConnected || (len(n.Peers) == 0 && !n.isRelayConnected) {
@@ -2195,9 +2397,24 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		targetRoom = n.ConnectTargetRoom
 	}
 
-	// Only process if matching room
-	if NormalizeCode(pkt.RoomCode) != targetRoom || (!n.IsConnected && !n.Connecting) {
+	// Only process if matching room (case-insensitive)
+	if NormalizeCode(pkt.RoomCode) != NormalizeCode(targetRoom) || (!n.IsConnected && !n.Connecting) {
 		return
+	}
+
+	// Verify packet timestamp freshness and deduplication for state control packets to prevent Replay Attacks
+	switch pkt.Type {
+	case PacketLeave, PacketRoomLocked, PacketRoomFull, PacketScreenShareStart, PacketScreenShareStop, PacketPortHop, PacketJoinRequest, PacketMuteState:
+		if pkt.Timestamp > 0 {
+			nowMs := time.Now().UnixMilli()
+			diff := nowMs - pkt.Timestamp
+			if diff < -15000 || diff > 30000 { // Allow 15s future clock skew, 30s past delay
+				return // Drop stale or replayed packet!
+			}
+		}
+		if !n.ctrlDedup.ShouldProcess(pkt.SenderID, pkt.Type, pkt.Seq, pkt.Timestamp) {
+			return // Drop duplicate replayed packet!
+		}
 	}
 
 	var peerAddr *net.UDPAddr
@@ -2644,7 +2861,11 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		go n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
 
 	case PacketChatMessage:
-		msgText := string(pkt.Payload)
+		payload := pkt.Payload
+		if len(payload) > 16384 {
+			payload = payload[:16384]
+		}
+		msgText := string(payload)
 		if msgText != "" {
 			if !n.chatDedup.ShouldProcess(pkt.SenderID, pkt.Seq, pkt.Timestamp, msgText) {
 				return
@@ -2693,6 +2914,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			wasSharing := peer.IsSharingScreen
 			isHostLeaving := (pkt.SenderID == n.HostID)
 			delete(n.Peers, pkt.SenderID)
+			if n.audio != nil {
+				n.audio.RemovePeer(pkt.SenderID)
+			}
 			n.log(fmt.Sprintf("[-] %s left the room.", peer.Nickname))
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("leave", peer)
@@ -2756,9 +2980,34 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	case PacketFileHeader:
 		meta := pkt.FileMeta
 		if meta != nil && meta.TransferID != "" {
+			// DoS Protection: Size and chunk count limits
+			if meta.FileSize <= 0 || meta.FileSize > MaxFileTransferSize || meta.TotalChunks <= 0 || meta.TotalChunks > MaxFileChunks {
+				n.log(fmt.Sprintf("[SECURITY] Rejected file transfer %s: size %d bytes or %d chunks exceeds limit", meta.TransferID, meta.FileSize, meta.TotalChunks))
+				return
+			}
+
+			if n.incomingTransfers == nil {
+				n.incomingTransfers = make(map[string]*IncomingFileTransfer)
+			}
+
+			// Clean expired transfers (TTL cleanup)
+			now := time.Now()
+			for id, tr := range n.incomingTransfers {
+				if now.Sub(tr.StartTime) > TransferExpiryDuration {
+					delete(n.incomingTransfers, id)
+				}
+			}
+
+			// Limit concurrent active transfers
+			if len(n.incomingTransfers) >= MaxConcurrentTransfers {
+				n.log("[SECURITY] Rejected file transfer: max concurrent incoming transfers reached")
+				return
+			}
+
+			safeName := sanitizeFilename(meta.FileName, meta.IsCode)
 			transfer := &IncomingFileTransfer{
 				TransferID:  meta.TransferID,
-				FileName:    meta.FileName,
+				FileName:    safeName,
 				FileSize:    meta.FileSize,
 				TotalChunks: meta.TotalChunks,
 				Chunks:      make(map[int][]byte),
@@ -2766,12 +3015,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				IsCode:      meta.IsCode,
 				Checksum:    meta.Checksum,
 			}
-			if n.incomingTransfers == nil {
-				n.incomingTransfers = make(map[string]*IncomingFileTransfer)
-			}
 			n.incomingTransfers[meta.TransferID] = transfer
 			if n.OnFileTransferProgress != nil {
-				go n.OnFileTransferProgress(meta.TransferID, meta.FileName, 0, meta.FileSize, 0, false, false, nil)
+				go n.OnFileTransferProgress(meta.TransferID, safeName, 0, meta.FileSize, 0, false, false, nil)
 			}
 		}
 
@@ -2779,21 +3025,21 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		meta := pkt.FileMeta
 		if meta != nil && meta.TransferID != "" {
 			if n.incomingTransfers == nil {
-				n.incomingTransfers = make(map[string]*IncomingFileTransfer)
+				return
 			}
 			transfer, exists := n.incomingTransfers[meta.TransferID]
 			if !exists {
-				transfer = &IncomingFileTransfer{
-					TransferID:  meta.TransferID,
-					FileName:    meta.FileName,
-					FileSize:    meta.FileSize,
-					TotalChunks: meta.TotalChunks,
-					Chunks:      make(map[int][]byte),
-					StartTime:   time.Now(),
-					IsCode:      meta.IsCode,
-					Checksum:    meta.Checksum,
-				}
-				n.incomingTransfers[meta.TransferID] = transfer
+				return // Reject chunks for non-existent or expired transfers
+			}
+
+			// Validate chunk index bounds
+			if meta.ChunkIndex < 0 || meta.ChunkIndex >= transfer.TotalChunks {
+				return
+			}
+
+			// Reject oversized individual chunk payload (> 64KB)
+			if len(pkt.Payload) > 65536 {
+				return
 			}
 
 			if _, already := transfer.Chunks[meta.ChunkIndex]; !already {
@@ -2809,60 +3055,71 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 
 			isDone := len(transfer.Chunks) >= transfer.TotalChunks || transfer.Received >= transfer.FileSize
 			if isDone {
-				var assembled bytes.Buffer
-				for idx := 0; idx < transfer.TotalChunks; idx++ {
-					if chunk, ok := transfer.Chunks[idx]; ok {
-						assembled.Write(chunk)
-					}
-				}
-				fullData := assembled.Bytes()
+				// Extract transfer data under lock, then delete from map
 				delete(n.incomingTransfers, meta.TransferID)
+				totalChunks := transfer.TotalChunks
+				chunksCopy := transfer.Chunks
+				checksum := transfer.Checksum
+				fileName := transfer.FileName
+				transferID := meta.TransferID
+				isCode := transfer.IsCode
+				senderID := pkt.SenderID
+				senderNick := pkt.Nickname
+				fileSize := transfer.FileSize
+				received := transfer.Received
 
-				// 1. Verify Checksum
-				if transfer.Checksum != "" {
-					sum := sha256.Sum256(fullData)
-					actualChecksum := hex.EncodeToString(sum[:])
-					if actualChecksum != transfer.Checksum {
-						if n.OnFileTransferProgress != nil {
-							go n.OnFileTransferProgress(meta.TransferID, meta.FileName, transfer.Received, transfer.FileSize, 0, false, true, fmt.Errorf("checksum mismatch (corrupted or tampered)"))
+				// Release lock before assembling and verifying checksum in background to prevent audio/ping glitch!
+				go func() {
+					var assembled bytes.Buffer
+					for idx := 0; idx < totalChunks; idx++ {
+						if chunk, ok := chunksCopy[idx]; ok {
+							assembled.Write(chunk)
 						}
-						return
 					}
-				}
+					fullData := assembled.Bytes()
 
-				safeName := filepath.Base(meta.FileName)
-				if safeName == "" || safeName == "." {
-					if transfer.IsCode {
-						safeName = "snippet.txt"
-					} else {
-						safeName = "received_file"
+					// 1. Verify Checksum
+					if checksum != "" {
+						sum := sha256.Sum256(fullData)
+						actualChecksum := hex.EncodeToString(sum[:])
+						if actualChecksum != checksum {
+							if n.OnFileTransferProgress != nil {
+								n.OnFileTransferProgress(transferID, fileName, received, fileSize, 0, false, true, fmt.Errorf("checksum mismatch (corrupted or tampered)"))
+							}
+							return
+						}
 					}
-				}
 
-				offer := &FileOffer{
-					TransferID: meta.TransferID,
-					SenderID:   pkt.SenderID,
-					SenderNick: pkt.Nickname,
-					FileName:   safeName,
-					FileSize:   int64(len(fullData)),
-					IsCode:     transfer.IsCode,
-					Checksum:   transfer.Checksum,
-					Data:       fullData,
-				}
-
-				if n.OnFileOfferReceived != nil {
-					go n.OnFileOfferReceived(offer)
-				} else if n.OnFileReceived != nil {
-					// Fallback if no interactive offer handler registered
-					savedPath, err := SaveAcceptedFile(offer)
-					if err == nil {
-						go n.OnFileReceived(meta.TransferID, safeName, savedPath, transfer.IsCode, string(fullData))
+					safeName := sanitizeFilename(fileName, isCode)
+					offer := &FileOffer{
+						TransferID: transferID,
+						SenderID:   senderID,
+						SenderNick: senderNick,
+						FileName:   safeName,
+						FileSize:   int64(len(fullData)),
+						IsCode:     isCode,
+						Checksum:   checksum,
+						Data:       fullData,
 					}
-				}
+
+					if n.OnFileOfferReceived != nil {
+						n.OnFileOfferReceived(offer)
+					} else if n.OnFileReceived != nil {
+						savedPath, err := SaveAcceptedFile(offer)
+						if err == nil {
+							n.OnFileReceived(transferID, safeName, savedPath, isCode, string(fullData))
+						}
+					}
+
+					if n.OnFileTransferProgress != nil {
+						n.OnFileTransferProgress(transferID, safeName, int64(len(fullData)), fileSize, speed, false, true, nil)
+					}
+				}()
+				return
 			}
 
 			if n.OnFileTransferProgress != nil {
-				go n.OnFileTransferProgress(meta.TransferID, meta.FileName, transfer.Received, transfer.FileSize, speed, false, isDone, nil)
+				go n.OnFileTransferProgress(meta.TransferID, transfer.FileName, transfer.Received, transfer.FileSize, speed, false, isDone, nil)
 			}
 		}
 
@@ -2909,12 +3166,14 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 
 	n.mu.Lock()
 	// Keep prebuffer of recent video chunks (~30 chunks = ~35KB) so player gets headers immediately on connect
+	// Zero-allocation ring buffer: reuses slice backing array instead of append(slice[1:], chunk)
 	for _, chunk := range readyChunks {
 		if len(chunk) > 0 {
 			if len(n.videoPreBuf) < 30 {
 				n.videoPreBuf = append(n.videoPreBuf, chunk)
 			} else {
-				n.videoPreBuf = append(n.videoPreBuf[1:], chunk)
+				copy(n.videoPreBuf, n.videoPreBuf[1:])
+				n.videoPreBuf[len(n.videoPreBuf)-1] = chunk
 			}
 		}
 	}
@@ -3309,6 +3568,9 @@ func (n *P2PNode) heartbeatLoop() {
 			if now.Sub(peer.LastSeen) > 45*time.Second {
 				wasSharing := peer.IsSharingScreen
 				delete(n.Peers, id)
+				if n.audio != nil {
+					n.audio.RemovePeer(id)
+				}
 				n.log(fmt.Sprintf("[-] %s timed out.", peer.Nickname))
 				if n.OnPeerEvent != nil {
 					go n.OnPeerEvent("leave", peer)
@@ -3600,27 +3862,35 @@ func encodeAndEncryptPacket(pkt *P2PPacket, aead cipher.AEAD) ([]byte, error) {
 		_, _ = rand.Read(pkt.Padding)
 	}
 
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+
+	enc := gob.NewEncoder(buf)
 	if err := enc.Encode(pkt); err != nil {
 		return nil, err
 	}
 
 	plaintext := buf.Bytes()
 
-	// 12-byte random nonce
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+	// 12-byte random nonce on stack (zero heap allocation)
+	var nonce [12]byte
+	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
 		return nil, err
 	}
 
-	// Seal: [MagicPrefix (4 bytes)][Nonce (12 bytes)][Ciphertext + AuthTag]
-	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
+	prefixLen := len(MagicPrefix)
+	nonceLen := len(nonce)
+	overhead := aead.Overhead()
+	totalCap := prefixLen + nonceLen + len(plaintext) + overhead
 
-	out := make([]byte, 0, len(MagicPrefix)+len(nonce)+len(ciphertext))
-	out = append(out, MagicPrefix...)
-	out = append(out, nonce...)
-	out = append(out, ciphertext...)
+	// Preallocate exact capacity and write MagicPrefix + Nonce
+	out := make([]byte, prefixLen+nonceLen, totalCap)
+	copy(out, MagicPrefix)
+	copy(out[prefixLen:], nonce[:])
+
+	// Seal appends [Ciphertext + AuthTag] directly to out, zero extra heap allocation or copy!
+	out = aead.Seal(out, nonce[:], plaintext, nil)
 
 	return out, nil
 }
@@ -3649,8 +3919,7 @@ func decryptAndDecodePacket(data []byte, pkt *P2PPacket, aead cipher.AEAD) error
 		return fmt.Errorf("decryption failed (authentication tag mismatch): %w", err)
 	}
 
-	decBuf := bytes.NewBuffer(plaintext)
-	dec := gob.NewDecoder(decBuf)
+	dec := gob.NewDecoder(bytes.NewReader(plaintext))
 	return dec.Decode(pkt)
 }
 
@@ -3852,15 +4121,7 @@ func SaveAcceptedFile(offer *FileOffer) (string, error) {
 		return "", err
 	}
 
-	safeName := filepath.Base(offer.FileName)
-	if safeName == "" || safeName == "." {
-		if offer.IsCode {
-			safeName = "snippet.txt"
-		} else {
-			safeName = "received_file"
-		}
-	}
-
+	safeName := sanitizeFilename(offer.FileName, offer.IsCode)
 	destPath := filepath.Join(dlDir, safeName)
 	if _, err := os.Stat(destPath); err == nil {
 		ext := filepath.Ext(safeName)
