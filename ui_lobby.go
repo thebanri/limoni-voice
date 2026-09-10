@@ -681,14 +681,14 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		buf.SetString(botInner.X+1, botInner.Y, "  "+l.ToastMsg+"  ", toastStyle)
 	} else {
 		isCustom := IsCustomRelayActive(l.RelayURL)
-		relayBtn := "[ ⚡ R : SUNUCU & SIFRE AYARLARI ]"
+		relayBtn := "[ ⚡ R : RELAY & SECURITY SETTINGS ]"
 		relayBtnStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.BorderFocused,
 			Modifier: cell.ModifierBold,
 		}
 		if isCustom {
-			relayBtn = "[ ⚡ R : OZEL RELAY AKTIF (Tikla / Degistir) ]"
+			relayBtn = "[ ⚡ R : CUSTOM RELAY ACTIVE (Click to edit) ]"
 			relayBtnStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Success,
@@ -703,7 +703,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			}
 		})
 
-		testBtn := "[ 🎤 T : Ses Testi ]"
+		testBtn := "[ 🎤 T : Mic Test ]"
 		testBtnStyle := cell.Style{
 			Fg:       theme.Text,
 			Bg:       theme.InputBg,
@@ -721,19 +721,19 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 		rowOffset := uint16(1)
 		if botInner.Height > 3 {
-			relayInfo := "Aktif Relay: " + l.RelayURL
+			relayInfo := "Active Relay: " + l.RelayURL
 			if l.RelayURL == "" {
-				relayInfo = "Aktif Relay: Resmi Genel Sunucu (Railway)"
+				relayInfo = "Active Relay: Official Public Server (Railway)"
 			}
 			buf.SetString(botInner.X+1, botInner.Y+1, relayInfo, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 			rowOffset = 2
 		}
 
 		helpLines := []string{
-			"• [R] Ozel relay sunucusu ve sifre yapilandirmasi (F5 / Tikla)",
-			"• [T] veya [F4] Mikrofon ve ses test paneli",
-			"• [Tab] veya [Shift+Tab] Alanlar arasi gecis",
-			"• [F2] / [C] Kopyala • [F3] / [G] Yeni anahtar • [Esc] Cikis",
+			"• [R] Custom relay server & security settings (Click or press R)",
+			"• [T] or [F4] Microphone & sound test panel",
+			"• [Tab] or [Shift+Tab] Switch input field",
+			"• [F2] / [C] Copy key • [F3] / [G] New key • [Esc] Exit",
 		}
 		for i, h := range helpLines {
 			lineY := botInner.Y + rowOffset + uint16(i)

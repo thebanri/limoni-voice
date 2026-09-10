@@ -123,6 +123,10 @@ type TextInput struct {
 	Style            cell.Style
 	PlaceholderStyle cell.Style
 	FocusedStyle     cell.Style
+	SelectionStart   int
+	SelectionEnd     int
+	SelectionStyle   cell.Style
+	Focused          bool
 }
 
 // Draw, metin kutusunu çizer, tıklandığında odak almasını sağlar ve aktif odaklıysa software cursor gösterir.
@@ -136,7 +140,7 @@ func (ti TextInput) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		ctx.RegisterFocus(ti.ID)
 	}
 
-	isFocused := (ctx.FocusedID == ti.ID)
+	isFocused := ti.Focused || (ti.ID != "" && ctx.FocusedID == ti.ID)
 
 	// Tıklama olayında odağı üzerine al
 	if ctx.RegisterClick != nil && ctx.SetFocus != nil {
@@ -161,11 +165,30 @@ func (ti TextInput) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
+	visibleWidth := int(ctx.Area.Width)
+	if visibleWidth <= 0 {
+		return
+	}
+
 	// Metni veya placeholder'ı çiz
 	textStr := ti.State.Value()
 	if textStr == "" && ti.Placeholder != "" {
 		phStyle := boxStyle.Merge(ti.PlaceholderStyle)
-		buf.SetString(ctx.Area.X, ctx.Area.Y, ti.Placeholder, phStyle)
+		phRunes := []rune(ti.Placeholder)
+		if len(phRunes) > visibleWidth {
+			phRunes = phRunes[:visibleWidth]
+		}
+		buf.SetString(ctx.Area.X, ctx.Area.Y, string(phRunes), phStyle)
+
+		// Boşken ilk karakter üzerinde software cursor çiz
+		if isFocused {
+			if c := buf.Get(ctx.Area.X, ctx.Area.Y); c != nil {
+				c.Style.Modifier |= cell.ModifierReverse
+				c.Style.Bg = cell.NewColorRGB(255, 255, 255)
+				c.Style.Fg = cell.NewColorRGB(0, 0, 0)
+				c.Style.Modifier |= cell.ModifierBold
+			}
+		}
 	} else {
 		var displayText strings.Builder
 		cursorVisualCol := 0
@@ -183,14 +206,59 @@ func (ti TextInput) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			cursorVisualCol = len([]rune(displayText.String()))
 		}
 
-		buf.SetString(ctx.Area.X, ctx.Area.Y, displayText.String(), boxStyle)
+		runes := []rune(displayText.String())
 
-		// Eğer odaklıysa software cursor (Reverse style) çiz
+		// Horizontal scrolling / Viewport calculation
+		startOffset := 0
+		if cursorVisualCol >= visibleWidth {
+			startOffset = cursorVisualCol - visibleWidth + 1
+		}
+		if startOffset > len(runes) {
+			startOffset = len(runes)
+		}
+		visibleRunes := runes[startOffset:]
+		if len(visibleRunes) > visibleWidth {
+			visibleRunes = visibleRunes[:visibleWidth]
+		}
+
+		s := ti.SelectionStart
+		e := ti.SelectionEnd
+		hasSelection := (s != -1 && e != -1 && s != e)
+		if s > e {
+			s, e = e, s
+		}
+
+		for i, r := range visibleRunes {
+			charIdx := startOffset + i
+			st := boxStyle
+			if hasSelection && charIdx >= s && charIdx < e {
+				if ti.SelectionStyle.Bg != 0 || ti.SelectionStyle.Fg != 0 || ti.SelectionStyle.Modifier != 0 {
+					st = st.Merge(ti.SelectionStyle)
+				} else {
+					st.Bg = cell.NewColorRGB(255, 255, 255)
+					st.Fg = cell.NewColorRGB(0, 0, 0)
+					st.Modifier |= cell.ModifierBold
+				}
+			}
+			colX := ctx.Area.X + uint16(i)
+			if colX < ctx.Area.X+ctx.Area.Width {
+				buf.SetCell(colX, ctx.Area.Y, cell.Cell{
+					Content: r,
+					Style:   st,
+				})
+			}
+		}
+
+		// Eğer odaklıysa software cursor çiz: harfin üzeri beyaz, yazı siyah
 		if isFocused {
-			cursorX := ctx.Area.X + uint16(cursorVisualCol)
-			if cursorX < ctx.Area.X+ctx.Area.Width {
+			relCursor := cursorVisualCol - startOffset
+			if relCursor >= 0 && relCursor < visibleWidth {
+				cursorX := ctx.Area.X + uint16(relCursor)
 				if c := buf.Get(cursorX, ctx.Area.Y); c != nil {
 					c.Style.Modifier |= cell.ModifierReverse
+					c.Style.Bg = cell.NewColorRGB(255, 255, 255)
+					c.Style.Fg = cell.NewColorRGB(0, 0, 0)
+					c.Style.Modifier |= cell.ModifierBold
 				}
 			}
 		}

@@ -118,7 +118,7 @@ func TestDrawRelayModal(t *testing.T) {
 		"wss://custom.server.com/ws", "topsecret",
 		urlState, tokenState, 0,
 		-1, -1, -1,
-		nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil,
 	)
 
 	// 2. Animated render at full progress with selection
@@ -126,9 +126,6 @@ func TestDrawRelayModal(t *testing.T) {
 	savedToken := ""
 	resetCalled := false
 	cancelCalled := false
-	pastedField := -1
-	copiedField := -1
-	clearedField := -1
 
 	DrawRelayModal(
 		frame, cell.NewRect(0, 0, 100, 30), 1.0,
@@ -136,9 +133,6 @@ func TestDrawRelayModal(t *testing.T) {
 		urlState, tokenState, 0,
 		0, 5, 12, // Select characters 5..12 of field 0
 		func(field int) {},
-		func(field int) { pastedField = field },
-		func(field int) { copiedField = field },
-		func(field int) { clearedField = field },
 		func(u, tok string) {
 			savedURL = u
 			savedToken = tok
@@ -162,9 +156,6 @@ func TestDrawRelayModal(t *testing.T) {
 	_ = savedToken
 	_ = resetCalled
 	_ = cancelCalled
-	_ = pastedField
-	_ = copiedField
-	_ = clearedField
 }
 
 func TestTextSelectionAndEditingHelpers(t *testing.T) {
@@ -217,3 +208,48 @@ func TestTextSelectionAndEditingHelpers(t *testing.T) {
 		t.Fatalf("Expected 'wss://relay.domain.org/ws', got %s", state.Value())
 	}
 }
+
+func TestRelayModalNoOverflow(t *testing.T) {
+	screenRect := cell.NewRect(0, 0, 100, 30)
+	buf := buffer.NewBuffer(screenRect)
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+
+	urlState := widgets.NewTextInputState()
+	// Long URL that exceeds standard modal inner width
+	urlState.SetValue("wss://very-long-custom-relay-server-name-that-definitely-exceeds-modal-width.domain.org/ws/endpoint/extra/long/path")
+	tokenState := widgets.NewTextInputState()
+	tokenState.SetValue("very-long-super-secret-token-key-that-is-over-eighty-characters-long-and-should-never-overflow-borders")
+
+	DrawRelayModal(
+		frame, screenRect, 1.0,
+		urlState.Value(), tokenState.Value(),
+		urlState, tokenState, 0,
+		-1, -1, -1,
+		nil, nil, nil, nil,
+	)
+
+	modalW, modalH := uint16(72), uint16(15)
+	modalArea := terminal.CenterRect(screenRect, modalW, modalH)
+	rightBorderX := modalArea.X + modalArea.Width - 1
+
+	// 1. Verify the right border itself is intact (should contain vertical border character '│' or '╮' or '╯')
+	for y := modalArea.Y; y < modalArea.Y+modalArea.Height; y++ {
+		c := buf.Get(rightBorderX, y)
+		if c == nil {
+			t.Fatalf("Expected border cell at right edge (%d, %d)", rightBorderX, y)
+		}
+		if c.Content == 'w' || c.Content == 's' || c.Content == 'v' || c.Content == 'k' {
+			t.Fatalf("Modal right border was overwritten by text character '%c' at y=%d!", c.Content, y)
+		}
+	}
+
+	// 2. Verify nothing bled past the shadow / right border
+	pastRightX := modalArea.X + modalArea.Width + 2 // past shadow
+	for y := modalArea.Y; y < modalArea.Y+modalArea.Height; y++ {
+		c := buf.Get(pastRightX, y)
+		if c != nil && c.Content != ' ' && c.Content != 0 {
+			t.Fatalf("Text bled outside modal at (%d, %d): '%c'", pastRightX, y, c.Content)
+		}
+	}
+}
+

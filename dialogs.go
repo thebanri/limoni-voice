@@ -829,6 +829,19 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 	frame.RenderWidget(exitDialog, animatedArea)
 }
 
+// drawBoundedString renders text up to maxX, preventing any overflow past boundaries.
+func drawBoundedString(buf *buffer.Buffer, x, y uint16, text string, style cell.Style, maxX uint16) {
+	if y >= buf.Area.Height || x >= maxX {
+		return
+	}
+	runes := []rune(text)
+	avail := maxX - x
+	if uint16(len(runes)) > avail {
+		runes = runes[:avail]
+	}
+	buf.SetString(x, y, string(runes), style)
+}
+
 // DrawRelayModal renders the animated Relay Server & Security configuration modal with scale opening/closing animation.
 func DrawRelayModal(
 	frame *terminal.Frame,
@@ -843,9 +856,6 @@ func DrawRelayModal(
 	selStart int,
 	selEnd int,
 	onSelectField func(field int),
-	onPaste func(field int),
-	onCopy func(field int),
-	onClear func(field int),
 	onSave func(newURL, newToken string),
 	onReset func(),
 	onCancel func(),
@@ -854,7 +864,7 @@ func DrawRelayModal(
 		return
 	}
 
-	modalW, modalH := uint16(74), uint16(16)
+	modalW, modalH := uint16(72), uint16(15)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -886,7 +896,7 @@ func DrawRelayModal(
 
 	// 3. Render Block with rounded borders
 	block := widgets.Block{
-		Title:          " RELAY SUNUCUSU VE GUVENLIK AYARLARI ",
+		Title:          " RELAY SERVER & SECURITY SETTINGS ",
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
@@ -901,22 +911,25 @@ func DrawRelayModal(
 		return
 	}
 
+	maxX := inner.X + inner.Width
+
 	// 4. Status Row
 	isCustom := IsCustomRelayActive(currentURL)
-	statusPrefix := "Aktif Sunucu: "
-	buf.SetString(inner.X+1, inner.Y, statusPrefix, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+	statusPrefix := "Active Server: "
+	drawBoundedString(buf, inner.X+1, inner.Y, statusPrefix, cell.Style{Fg: theme.TextMuted, Bg: dialogBg}, maxX)
+	statusX := inner.X + 1 + uint16(len([]rune(statusPrefix)))
 	if isCustom {
-		buf.SetString(inner.X+1+uint16(len([]rune(statusPrefix))), inner.Y, "[OZEL RELAY SUNUCUSU AKTIF]", cell.Style{
+		drawBoundedString(buf, statusX, inner.Y, "[CUSTOM RELAY SERVER ACTIVE]", cell.Style{
 			Fg:       theme.Success,
 			Bg:       dialogBg,
 			Modifier: cell.ModifierBold,
-		})
+		}, maxX)
 	} else {
-		buf.SetString(inner.X+1+uint16(len([]rune(statusPrefix))), inner.Y, "[RESMI GENEL SUNUCU (Railway)]", cell.Style{
+		drawBoundedString(buf, statusX, inner.Y, "[OFFICIAL PUBLIC RELAY (Railway)]", cell.Style{
 			Fg:       theme.Accent,
 			Bg:       dialogBg,
 			Modifier: cell.ModifierBold,
-		})
+		}, maxX)
 	}
 
 	// 5. URL Input Row
@@ -925,83 +938,34 @@ func DrawRelayModal(
 	if activeField == 0 {
 		urlLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
 	}
-	urlLabelText := "Sunucu WebSocket Adresi (Relay URL):"
-	buf.SetString(inner.X+1, urlLabelY, urlLabelText, urlLabelStyle)
-
-	// Quick Action Buttons on URL Label row (Paste, Copy, Clear)
-	actionBtnStyle := cell.Style{Fg: theme.BorderFocused, Bg: theme.InputBg, Modifier: cell.ModifierBold}
-	actionBtnPaste := "[📋 Yapistir]"
-	actionBtnCopy := "[📄 Kopyala]"
-	actionBtnClear := "[✕ Temizle]"
-
-	btnX := inner.X + 1 + uint16(len([]rune(urlLabelText))) + 2
-	if btnX+uint16(len([]rune(actionBtnPaste))) <= inner.X+inner.Width {
-		pasteRect := cell.NewRect(btnX, urlLabelY, uint16(len([]rune(actionBtnPaste))), 1)
-		buf.SetString(btnX, urlLabelY, actionBtnPaste, actionBtnStyle)
-		frame.RegisterClickHandler(pasteRect, func(_ backend.MouseEvent) {
-			if onPaste != nil {
-				onPaste(0)
-			}
-		})
-		btnX += uint16(len([]rune(actionBtnPaste))) + 1
-	}
-	if btnX+uint16(len([]rune(actionBtnCopy))) <= inner.X+inner.Width {
-		copyRect := cell.NewRect(btnX, urlLabelY, uint16(len([]rune(actionBtnCopy))), 1)
-		buf.SetString(btnX, urlLabelY, actionBtnCopy, actionBtnStyle)
-		frame.RegisterClickHandler(copyRect, func(_ backend.MouseEvent) {
-			if onCopy != nil {
-				onCopy(0)
-			}
-		})
-		btnX += uint16(len([]rune(actionBtnCopy))) + 1
-	}
-	if btnX+uint16(len([]rune(actionBtnClear))) <= inner.X+inner.Width {
-		clearRect := cell.NewRect(btnX, urlLabelY, uint16(len([]rune(actionBtnClear))), 1)
-		buf.SetString(btnX, urlLabelY, actionBtnClear, cell.Style{Fg: theme.Danger, Bg: theme.InputBg, Modifier: cell.ModifierBold})
-		frame.RegisterClickHandler(clearRect, func(_ backend.MouseEvent) {
-			if onClear != nil {
-				onClear(0)
-			}
-		})
-	}
+	urlLabelText := "Server WebSocket URL (Relay URL):"
+	drawBoundedString(buf, inner.X+1, urlLabelY, urlLabelText, urlLabelStyle, maxX)
 
 	urlInputY := urlLabelY + 1
 	urlInputW := inner.Width - 2
 	urlInputRect := cell.NewRect(inner.X+1, urlInputY, urlInputW, 1)
 
+	urlSelS, urlSelE := -1, -1
+	if selField == 0 {
+		urlSelS, urlSelE = selStart, selEnd
+	}
+
 	urlInput := widgets.TextInput{
 		ID:               "relay_url_input",
 		State:            urlState,
-		Placeholder:      "Orn: wss://ses.alanadiniz.com/ws veya ws://192.168.1.50:27850/ws",
+		Placeholder:      "e.g. wss://voice.yourdomain.com/ws or ws://192.168.1.50:27850/ws",
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
+		SelectionStart:   urlSelS,
+		SelectionEnd:     urlSelE,
+		SelectionStyle:   cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: cell.NewColorRGB(255, 255, 255), Modifier: cell.ModifierBold},
+		Focused:          activeField == 0,
 	}
 	if activeField == 0 {
 		urlInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
 	frame.RenderWidget(urlInput, urlInputRect)
-
-	// Draw character selection highlight for URL input if active
-	if selField == 0 && selStart != -1 && selStart != selEnd && urlState != nil {
-		s, e := selStart, selEnd
-		if s > e {
-			s, e = e, s
-		}
-		for i := s; i < e; i++ {
-			cellX := urlInputRect.X + uint16(i)
-			if cellX >= urlInputRect.X+urlInputRect.Width {
-				break
-			}
-			if c := buf.Get(cellX, urlInputRect.Y); c != nil {
-				c.Style = cell.Style{
-					Fg:       cell.NewColorRGB(0, 0, 0),
-					Bg:       theme.Accent,
-					Modifier: cell.ModifierBold,
-				}
-			}
-		}
-	}
 
 	frame.RegisterClickHandler(urlInputRect, func(_ backend.MouseEvent) {
 		if onSelectField != nil {
@@ -1015,77 +979,33 @@ func DrawRelayModal(
 	if activeField == 1 {
 		tokenLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
 	}
-	tokenLabelText := "Sunucu Sifresi / Token (RELAY_AUTH_TOKEN):"
-	buf.SetString(inner.X+1, tokenLabelY, tokenLabelText, tokenLabelStyle)
-
-	// Quick Action Buttons on Token Label row (Paste, Copy, Clear)
-	btnTokenX := inner.X + 1 + uint16(len([]rune(tokenLabelText))) + 2
-	if btnTokenX+uint16(len([]rune(actionBtnPaste))) <= inner.X+inner.Width {
-		pasteRect := cell.NewRect(btnTokenX, tokenLabelY, uint16(len([]rune(actionBtnPaste))), 1)
-		buf.SetString(btnTokenX, tokenLabelY, actionBtnPaste, actionBtnStyle)
-		frame.RegisterClickHandler(pasteRect, func(_ backend.MouseEvent) {
-			if onPaste != nil {
-				onPaste(1)
-			}
-		})
-		btnTokenX += uint16(len([]rune(actionBtnPaste))) + 1
-	}
-	if btnTokenX+uint16(len([]rune(actionBtnCopy))) <= inner.X+inner.Width {
-		copyRect := cell.NewRect(btnTokenX, tokenLabelY, uint16(len([]rune(actionBtnCopy))), 1)
-		buf.SetString(btnTokenX, tokenLabelY, actionBtnCopy, actionBtnStyle)
-		frame.RegisterClickHandler(copyRect, func(_ backend.MouseEvent) {
-			if onCopy != nil {
-				onCopy(1)
-			}
-		})
-		btnTokenX += uint16(len([]rune(actionBtnCopy))) + 1
-	}
-	if btnTokenX+uint16(len([]rune(actionBtnClear))) <= inner.X+inner.Width {
-		clearRect := cell.NewRect(btnTokenX, tokenLabelY, uint16(len([]rune(actionBtnClear))), 1)
-		buf.SetString(btnTokenX, tokenLabelY, actionBtnClear, cell.Style{Fg: theme.Danger, Bg: theme.InputBg, Modifier: cell.ModifierBold})
-		frame.RegisterClickHandler(clearRect, func(_ backend.MouseEvent) {
-			if onClear != nil {
-				onClear(1)
-			}
-		})
-	}
+	tokenLabelText := "Server Password / Token (RELAY_AUTH_TOKEN):"
+	drawBoundedString(buf, inner.X+1, tokenLabelY, tokenLabelText, tokenLabelStyle, maxX)
 
 	tokenInputY := tokenLabelY + 1
 	tokenInputRect := cell.NewRect(inner.X+1, tokenInputY, urlInputW, 1)
 
+	tokenSelS, tokenSelE := -1, -1
+	if selField == 1 {
+		tokenSelS, tokenSelE = selStart, selEnd
+	}
+
 	tokenInput := widgets.TextInput{
 		ID:               "relay_token_input",
 		State:            tokenState,
-		Placeholder:      "Sunucuda sifre/token yoksa bos birakabilirsiniz",
+		Placeholder:      "Optional (leave empty if your server does not require a password)",
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
+		SelectionStart:   tokenSelS,
+		SelectionEnd:     tokenSelE,
+		SelectionStyle:   cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: cell.NewColorRGB(255, 255, 255), Modifier: cell.ModifierBold},
+		Focused:          activeField == 1,
 	}
 	if activeField == 1 {
 		tokenInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
 	frame.RenderWidget(tokenInput, tokenInputRect)
-
-	// Draw character selection highlight for Token input if active
-	if selField == 1 && selStart != -1 && selStart != selEnd && tokenState != nil {
-		s, e := selStart, selEnd
-		if s > e {
-			s, e = e, s
-		}
-		for i := s; i < e; i++ {
-			cellX := tokenInputRect.X + uint16(i)
-			if cellX >= tokenInputRect.X+tokenInputRect.Width {
-				break
-			}
-			if c := buf.Get(cellX, tokenInputRect.Y); c != nil {
-				c.Style = cell.Style{
-					Fg:       cell.NewColorRGB(0, 0, 0),
-					Bg:       theme.Accent,
-					Modifier: cell.ModifierBold,
-				}
-			}
-		}
-	}
 
 	frame.RegisterClickHandler(tokenInputRect, func(_ backend.MouseEvent) {
 		if onSelectField != nil {
@@ -1095,9 +1015,9 @@ func DrawRelayModal(
 
 	// 7. Buttons Row
 	btnY := inner.Y + 8
-	saveBtnText := "[ Kaydet ve Baglan ]"
-	resetBtnText := "[ Varsayilana Sifirla ]"
-	cancelBtnText := "[ Iptal ]"
+	saveBtnText := "[ Save & Connect ]"
+	resetBtnText := "[ Reset to Default ]"
+	cancelBtnText := "[ Cancel ]"
 
 	saveBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
 	if activeField == 2 {
@@ -1113,27 +1033,31 @@ func DrawRelayModal(
 	}
 
 	bX := inner.X + 1
-	saveRect := cell.NewRect(bX, btnY, uint16(len([]rune(saveBtnText))), 1)
-	buf.SetString(bX, btnY, saveBtnText, saveBtnStyle)
-	frame.RegisterClickHandler(saveRect, func(_ backend.MouseEvent) {
-		if onSave != nil {
-			onSave(urlState.Value(), tokenState.Value())
-		}
-	})
+	if bX+uint16(len([]rune(saveBtnText))) <= maxX {
+		saveRect := cell.NewRect(bX, btnY, uint16(len([]rune(saveBtnText))), 1)
+		drawBoundedString(buf, bX, btnY, saveBtnText, saveBtnStyle, maxX)
+		frame.RegisterClickHandler(saveRect, func(_ backend.MouseEvent) {
+			if onSave != nil {
+				onSave(urlState.Value(), tokenState.Value())
+			}
+		})
+	}
 
 	bX += uint16(len([]rune(saveBtnText))) + 2
-	resetRect := cell.NewRect(bX, btnY, uint16(len([]rune(resetBtnText))), 1)
-	buf.SetString(bX, btnY, resetBtnText, resetBtnStyle)
-	frame.RegisterClickHandler(resetRect, func(_ backend.MouseEvent) {
-		if onReset != nil {
-			onReset()
-		}
-	})
+	if bX+uint16(len([]rune(resetBtnText))) <= maxX {
+		resetRect := cell.NewRect(bX, btnY, uint16(len([]rune(resetBtnText))), 1)
+		drawBoundedString(buf, bX, btnY, resetBtnText, resetBtnStyle, maxX)
+		frame.RegisterClickHandler(resetRect, func(_ backend.MouseEvent) {
+			if onReset != nil {
+				onReset()
+			}
+		})
+	}
 
 	bX += uint16(len([]rune(resetBtnText))) + 2
-	if bX+uint16(len([]rune(cancelBtnText))) <= inner.X+inner.Width {
+	if bX+uint16(len([]rune(cancelBtnText))) <= maxX {
 		cancelRect := cell.NewRect(bX, btnY, uint16(len([]rune(cancelBtnText))), 1)
-		buf.SetString(bX, btnY, cancelBtnText, cancelBtnStyle)
+		drawBoundedString(buf, bX, btnY, cancelBtnText, cancelBtnStyle, maxX)
 		frame.RegisterClickHandler(cancelRect, func(_ backend.MouseEvent) {
 			if onCancel != nil {
 				onCancel()
@@ -1141,16 +1065,16 @@ func DrawRelayModal(
 		})
 	}
 
-	// 8. Help Hints
+	// 8. Info & Keyboard Shortcuts
 	helpY1 := inner.Y + 10
 	if helpY1 < inner.Y+inner.Height {
-		helpText1 := "• [Ctrl+V / Shift+Ins] Yapistir  • [Ctrl+C] Kopyala  • [Ctrl+A] Tumunu Sec  • [Ctrl+X] Kes"
-		buf.SetString(inner.X+1, helpY1, helpText1, cell.Style{Fg: theme.BorderFocused, Bg: dialogBg})
+		helpText1 := "• [Ctrl+V] Paste   • [Ctrl+C] Copy   • [Ctrl+A] Select All"
+		drawBoundedString(buf, inner.X+1, helpY1, helpText1, cell.Style{Fg: theme.BorderFocused, Bg: dialogBg}, maxX)
 	}
 	helpY2 := inner.Y + 11
 	if helpY2 < inner.Y+inner.Height {
-		helpText2 := "• [Tab] Gecis  • [Enter] Kaydet  • [Esc] Kapat  • Butonlara tiklayarak da kopyala/yapistir yapabilirsiniz"
-		buf.SetString(inner.X+1, helpY2, helpText2, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+		helpText2 := "• [Tab] Switch Field   • [Enter] Save & Connect   • [Esc] Close"
+		drawBoundedString(buf, inner.X+1, helpY2, helpText2, cell.Style{Fg: theme.TextMuted, Bg: dialogBg}, maxX)
 	}
 }
 
