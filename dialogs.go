@@ -829,6 +829,205 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 	frame.RenderWidget(exitDialog, animatedArea)
 }
 
+// DrawRelayModal renders the animated Relay Server & Security configuration modal with scale opening/closing animation.
+func DrawRelayModal(
+	frame *terminal.Frame,
+	screenArea cell.Rect,
+	progress float64,
+	currentURL string,
+	currentToken string,
+	urlState *widgets.TextInputState,
+	tokenState *widgets.TextInputState,
+	activeField int, // 0: URL input, 1: Token input, 2: Save btn, 3: Reset btn, 4: Cancel btn
+	onSelectField func(field int),
+	onSave func(newURL, newToken string),
+	onReset func(),
+	onCancel func(),
+) {
+	if progress <= 0.001 {
+		return
+	}
+
+	modalW, modalH := uint16(66), uint16(14)
+	if screenArea.Width < modalW+2 {
+		modalW = screenArea.Width - 2
+	}
+	if screenArea.Height < modalH+2 {
+		modalH = screenArea.Height - 2
+	}
+
+	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
+	animatedArea := terminal.ScaleRect(modalArea, progress)
+
+	if animatedArea.Width < 8 || animatedArea.Height < 5 {
+		return
+	}
+
+	// 1. Drop shadow behind the dialog
+	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
+	frame.RegisterModal("relay_settings_dialog", animatedArea, onCancel)
+
+	theme := CurrentTheme()
+	dialogBg := theme.SurfaceBg
+
+	// 2. Clear entire dialog area
+	buf := frame.Buffer
+	for dy := animatedArea.Y; dy < animatedArea.Y+animatedArea.Height; dy++ {
+		for dx := animatedArea.X; dx < animatedArea.X+animatedArea.Width; dx++ {
+			buf.SetCell(dx, dy, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
+		}
+	}
+
+	// 3. Render Block with rounded borders
+	block := widgets.Block{
+		Title:          " RELAY SUNUCUSU VE GUVENLIK AYARLARI ",
+		TitleAlignment: widgets.AlignCenter,
+		Borders:        widgets.BorderAll,
+		BorderSymbols:  widgets.SymbolsRounded,
+		BorderStyle:    cell.Style{Fg: theme.BorderFocused},
+		Style:          cell.Style{Bg: dialogBg},
+	}
+	frame.RenderWidget(block, animatedArea)
+	inner := block.Inner(animatedArea)
+
+	// Guard against tiny areas during animation
+	if inner.Width < 20 || inner.Height < 8 {
+		return
+	}
+
+	// 4. Status Row
+	isCustom := IsCustomRelayActive(currentURL)
+	statusPrefix := "Aktif Sunucu: "
+	buf.SetString(inner.X+1, inner.Y, statusPrefix, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+	if isCustom {
+		buf.SetString(inner.X+1+uint16(len([]rune(statusPrefix))), inner.Y, "[OZEL RELAY SUNUCUSU AKTIF]", cell.Style{
+			Fg:       theme.Success,
+			Bg:       dialogBg,
+			Modifier: cell.ModifierBold,
+		})
+	} else {
+		buf.SetString(inner.X+1+uint16(len([]rune(statusPrefix))), inner.Y, "[RESMI GENEL SUNUCU (Railway)]", cell.Style{
+			Fg:       theme.Accent,
+			Bg:       dialogBg,
+			Modifier: cell.ModifierBold,
+		})
+	}
+
+	// 5. URL Input Row
+	urlLabelY := inner.Y + 2
+	urlLabelStyle := cell.Style{Fg: theme.TextMuted, Bg: dialogBg}
+	if activeField == 0 {
+		urlLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
+	}
+	buf.SetString(inner.X+1, urlLabelY, "Sunucu WebSocket Adresi (Relay URL):", urlLabelStyle)
+
+	urlInputY := urlLabelY + 1
+	urlInputW := inner.Width - 2
+	urlInputRect := cell.NewRect(inner.X+1, urlInputY, urlInputW, 1)
+
+	urlInput := widgets.TextInput{
+		ID:               "relay_url_input",
+		State:            urlState,
+		Placeholder:      "Orn: wss://ses.alanadiniz.com/ws veya ws://192.168.1.50:27850/ws",
+		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
+		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
+		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
+	}
+	if activeField == 0 {
+		urlInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
+	}
+	frame.RenderWidget(urlInput, urlInputRect)
+	frame.RegisterClickHandler(urlInputRect, func(_ backend.MouseEvent) {
+		if onSelectField != nil {
+			onSelectField(0)
+		}
+	})
+
+	// 6. Token / Password Input Row
+	tokenLabelY := inner.Y + 4
+	tokenLabelStyle := cell.Style{Fg: theme.TextMuted, Bg: dialogBg}
+	if activeField == 1 {
+		tokenLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
+	}
+	buf.SetString(inner.X+1, tokenLabelY, "Sunucu Sifresi / Token (RELAY_AUTH_TOKEN):", tokenLabelStyle)
+
+	tokenInputY := tokenLabelY + 1
+	tokenInputRect := cell.NewRect(inner.X+1, tokenInputY, urlInputW, 1)
+
+	tokenInput := widgets.TextInput{
+		ID:               "relay_token_input",
+		State:            tokenState,
+		Placeholder:      "Sunucuda sifre/token yoksa bos birakabilirsiniz",
+		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
+		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
+		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
+	}
+	if activeField == 1 {
+		tokenInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
+	}
+	frame.RenderWidget(tokenInput, tokenInputRect)
+	frame.RegisterClickHandler(tokenInputRect, func(_ backend.MouseEvent) {
+		if onSelectField != nil {
+			onSelectField(1)
+		}
+	})
+
+	// 7. Buttons Row
+	btnY := inner.Y + 7
+	saveBtnText := "[ Kaydet ve Baglan ]"
+	resetBtnText := "[ Varsayilana Sifirla ]"
+	cancelBtnText := "[ Iptal ]"
+
+	saveBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
+	if activeField == 2 {
+		saveBtnStyle = cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: theme.Success, Modifier: cell.ModifierBold}
+	}
+	resetBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
+	if activeField == 3 {
+		resetBtnStyle = cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: theme.Warning, Modifier: cell.ModifierBold}
+	}
+	cancelBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
+	if activeField == 4 {
+		cancelBtnStyle = cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: theme.Danger, Modifier: cell.ModifierBold}
+	}
+
+	btnX := inner.X + 1
+	saveRect := cell.NewRect(btnX, btnY, uint16(len([]rune(saveBtnText))), 1)
+	buf.SetString(btnX, btnY, saveBtnText, saveBtnStyle)
+	frame.RegisterClickHandler(saveRect, func(_ backend.MouseEvent) {
+		if onSave != nil {
+			onSave(urlState.Value(), tokenState.Value())
+		}
+	})
+
+	btnX += uint16(len([]rune(saveBtnText))) + 2
+	resetRect := cell.NewRect(btnX, btnY, uint16(len([]rune(resetBtnText))), 1)
+	buf.SetString(btnX, btnY, resetBtnText, resetBtnStyle)
+	frame.RegisterClickHandler(resetRect, func(_ backend.MouseEvent) {
+		if onReset != nil {
+			onReset()
+		}
+	})
+
+	btnX += uint16(len([]rune(resetBtnText))) + 2
+	if btnX+uint16(len([]rune(cancelBtnText))) <= inner.X+inner.Width {
+		cancelRect := cell.NewRect(btnX, btnY, uint16(len([]rune(cancelBtnText))), 1)
+		buf.SetString(btnX, btnY, cancelBtnText, cancelBtnStyle)
+		frame.RegisterClickHandler(cancelRect, func(_ backend.MouseEvent) {
+			if onCancel != nil {
+				onCancel()
+			}
+		})
+	}
+
+	// 8. Help Hints
+	helpY := inner.Y + 9
+	if helpY < inner.Y+inner.Height {
+		helpText := "• [Tab] Gecis  • [Enter] Sec/Kaydet  • [Esc] Kapat"
+		buf.SetString(inner.X+1, helpY, helpText, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+	}
+}
+
 // DrawScreenShareModal renders the screen and window selection modal with opening/closing scale animation and drop shadow
 func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, selectedIdx int, targets []screenshare.WindowInfo, onSelect func(target screenshare.WindowInfo), onCancel func()) {
 	if progress <= 0.001 {

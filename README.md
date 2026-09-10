@@ -250,6 +250,15 @@ docker run -d --name limoni-relay -p 27850:27850 -e RELAY_AUTH_TOKEN="your_secre
 
 #### Connecting Clients to Protected Relay:
 
+##### 1. Via In-App Graphical Modal (Recommended - Friendly for Everyone):
+To configure without messing with command-line arguments:
+- In the lobby, press **`[R]`** or click the **`[R] Sunucu & Sifre Ayarlari`** footer button.
+- From any screen, press the **`F5`** shortcut.
+- In room chat, type **`/relay`** or **`/server`**.
+
+In the animated dialog, configure the **WebSocket URL** and optional **Server Password / Token**, then click **`[ Kaydet ve Baglan ]`**. Settings are persisted across sessions (`settings.json`).
+
+##### 2. Via Command-Line Flags or Environment Variables:
 ```bash
 # Via command-line argument:
 ./limoni-voice --relay ws://192.168.1.100:27850/ws --relay-token your_secret_key_123

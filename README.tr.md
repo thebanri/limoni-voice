@@ -250,14 +250,23 @@ docker run -d --name limoni-relay -p 27850:27850 -e RELAY_AUTH_TOKEN="gizli_anah
 
 #### İstemcileri Kendi Korumalı Sunucunuza Bağlama:
 
+##### 1. Uygulama İçi Grafik Arayüzden (Önerilen - Arkadaşlarınız İçin Kolay):
+Arkadaşlarınızın komut satırıyla uğraşmaması için doğrudan uygulama içinden ayarlayabilirsiniz:
+- Lobideyken **`[R]`** tuşuna basın veya alt bardaki **`[R] Sunucu & Şifre Ayarları`** butonuna tıklayın.
+- Herhangi bir ekranda **`F5`** kısayoluna basın.
+- Oda içindeyken sohbete **`/relay`** veya **`/server`** yazın.
+
+Açılan animasyonlu pencerede **WebSocket Adresini** (örn. `wss://funny-animal-1234.trycloudflare.com/ws` veya `ws://192.168.1.100:27850/ws`) ve sunucu şifresini yazıp **`[ Kaydet ve Bağlan ]`** deyin. Ayarlar kalıcı olarak kaydedilir (`settings.json`).
+
+##### 2. Komut Satırı veya Ortam Değişkenleri ile:
 ```bash
-# 1. Komut satırı parametresi ile:
+# Komut satırı parametresi ile:
 ./limoni-voice --relay ws://192.168.1.100:27850/ws --relay-token gizli_anahtar_123
 
 # VEYA doğrudan URL içinde:
 ./limoni-voice --relay "ws://192.168.1.100:27850/ws?token=gizli_anahtar_123"
 
-# 2. Alternatif olarak ortam değişkenleriyle:
+# Alternatif olarak ortam değişkenleriyle:
 export LIMONI_RELAY_URL="ws://192.168.1.100:27850/ws"
 export LIMONI_RELAY_TOKEN="gizli_anahtar_123"
 ./limoni-voice

@@ -19,6 +19,7 @@ import (
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni/widgets"
 	"github.com/thebanri/limoni-voice/screenshare"
 )
 
@@ -127,6 +128,10 @@ func main() {
 
 	audio := NewAudioEngine()
 	node := NewP2PNode(localID, "User", audio)
+
+	// Load persistent configuration from settings.json
+	cfg := LoadAppConfig()
+
 	if *flagLAN || *flagLANOnly || *flagOffline {
 		node.LanOnly = true
 		node.RelayURL = ""
@@ -137,12 +142,21 @@ func main() {
 		} else {
 			node.RelayURL = *flagRelay
 		}
+	} else if cfg.RelayURL != "" {
+		if strings.EqualFold(cfg.RelayURL, "none") || strings.EqualFold(cfg.RelayURL, "off") {
+			node.LanOnly = true
+			node.RelayURL = ""
+		} else {
+			node.RelayURL = cfg.RelayURL
+		}
 	}
 
 	if *flagRelayToken != "" {
 		node.RelayToken = *flagRelayToken
 	} else if *flagToken != "" {
 		node.RelayToken = *flagToken
+	} else if cfg.RelayToken != "" {
+		node.RelayToken = cfg.RelayToken
 	}
 
 	if *flagPeer != "" {
@@ -182,6 +196,12 @@ func main() {
 	debugScrollOffset := 0
 	var screenShareTargets []screenshare.WindowInfo
 	selectedScreenShareIdx := 0
+
+	showRelayModal := false
+	relayDialogAnim := animation.NewFloat(0.0)
+	relayURLInput := widgets.NewTextInputState()
+	relayTokenInput := widgets.NewTextInputState()
+	relayModalActiveField := 0 // 0: URL, 1: Token, 2: Save, 3: Reset, 4: Cancel
 
 	exitDialogAnim := animation.NewFloat(0.0)
 	leaveDialogAnim := animation.NewFloat(0.0)
@@ -337,6 +357,20 @@ func main() {
 	closeScreenShareModal := func() {
 		showScreenShareModal = false
 		screenShareDialogAnim.AnimateTo(0.0, 160*time.Millisecond, animation.EaseInCubic)
+		t.ForceFullRedraw()
+	}
+
+	openRelayModal := func() {
+		showRelayModal = true
+		relayURLInput.SetValue(node.RelayURL)
+		relayTokenInput.SetValue(node.RelayToken)
+		relayModalActiveField = 0
+		relayDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
+	}
+
+	closeRelayModal := func() {
+		showRelayModal = false
+		relayDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
 		t.ForceFullRedraw()
 	}
 
@@ -543,6 +577,8 @@ func main() {
 		lobby.SetToast("New room key generated!")
 	}
 	lobby.OnOpenTestModal = openTestModal
+	lobby.OnOpenRelayModal = openRelayModal
+	lobby.RelayURL = node.RelayURL
 
 	node.OnRoomLocked = func(isLocked bool, pin string) {
 		if currentScreen == ScreenRoom {
@@ -743,6 +779,68 @@ func main() {
 					continue
 				}
 
+				if showRelayModal {
+					switch e.Type {
+					case backend.KeyEsc:
+						closeRelayModal()
+					case backend.KeyTab:
+						if e.Shift {
+							relayModalActiveField = (relayModalActiveField + 4) % 5
+						} else {
+							relayModalActiveField = (relayModalActiveField + 1) % 5
+						}
+					case backend.KeyArrowUp:
+						if relayModalActiveField > 0 {
+							relayModalActiveField--
+						}
+					case backend.KeyArrowDown:
+						if relayModalActiveField < 4 {
+							relayModalActiveField++
+						}
+					case backend.KeyArrowLeft:
+						if relayModalActiveField > 2 {
+							relayModalActiveField--
+						}
+					case backend.KeyArrowRight:
+						if relayModalActiveField >= 2 && relayModalActiveField < 4 {
+							relayModalActiveField++
+						}
+					case backend.KeyEnter:
+						if relayModalActiveField == 2 || relayModalActiveField == 0 || relayModalActiveField == 1 {
+							newURL := strings.TrimSpace(relayURLInput.Value())
+							newToken := strings.TrimSpace(relayTokenInput.Value())
+							node.UpdateRelaySettings(newURL, newToken)
+							_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+							if currentScreen == ScreenLobby {
+								lobby.RelayURL = newURL
+								lobby.SetToast("Relay sunucu ayarlari kaydedildi!")
+							} else {
+								room.SetToast("Relay sunucu ayarlari kaydedildi!")
+							}
+							closeRelayModal()
+						} else if relayModalActiveField == 3 {
+							node.UpdateRelaySettings(DefaultRelayURL, "")
+							_ = ResetAppConfig()
+							if currentScreen == ScreenLobby {
+								lobby.RelayURL = DefaultRelayURL
+								lobby.SetToast("Varsayilan resmi relay sunucusuna sifirlandi!")
+							} else {
+								room.SetToast("Varsayilan resmi relay sunucusuna sifirlandi!")
+							}
+							closeRelayModal()
+						} else if relayModalActiveField == 4 {
+							closeRelayModal()
+						}
+					default:
+						if relayModalActiveField == 0 {
+							relayURLInput.HandleKey(e)
+						} else if relayModalActiveField == 1 {
+							relayTokenInput.HandleKey(e)
+						}
+					}
+					continue
+				}
+
 				if showExitModal {
 					focused := t.FocusManager().Focused()
 					switch e.Type {
@@ -918,6 +1016,12 @@ func main() {
 					continue
 				}
 
+				// Dedicated Global Relay Settings Modal Key (F5)
+				if e.Type == backend.KeyF5 {
+					openRelayModal()
+					continue
+				}
+
 				// --- 2. Screen: Lobby Key Handling ---
 				if currentScreen == ScreenLobby {
 					if e.Type == backend.KeyF2 {
@@ -1028,6 +1132,8 @@ func main() {
 								lobby.SetToast("New room key generated!")
 							case 't', 'T':
 								openTestModal()
+							case 'r', 'R':
+								openRelayModal()
 							case 'q', 'Q':
 								openExitModal()
 							}
@@ -1345,6 +1451,7 @@ func main() {
 			leaveDialogAnim.Update(now)
 			screenShareDialogAnim.Update(now)
 			fileOfferDialogAnim.Update(now)
+			relayDialogAnim.Update(now)
 
 			exitProg := exitDialogAnim.Value()
 			if exitProg <= 0.001 && !exitDialogAnim.IsAnimating() {
@@ -1361,10 +1468,15 @@ func main() {
 				showScreenShareModal = false
 			}
 
+			relayProg := relayDialogAnim.Value()
+			if relayProg <= 0.001 && !relayDialogAnim.IsAnimating() {
+				showRelayModal = false
+			}
+
 			fileOfferProg := fileOfferDialogAnim.Value()
 
 			if currentScreen == ScreenLobby {
-				if !showTestModal && !showExitModal {
+				if !showTestModal && !showExitModal && !showRelayModal {
 					switch lobby.ActiveInput {
 					case 0:
 						t.FocusManager().SetFocused("nick_input")
@@ -1383,6 +1495,33 @@ func main() {
 							CopyToClipboard(GetAllDebugLogsText())
 							lobby.SetToast("Copied debug logs to clipboard")
 						})
+					} else if showRelayModal || relayProg > 0.001 {
+						DrawRelayModal(
+							f, f.Area(), relayProg,
+							node.RelayURL, node.RelayToken,
+							relayURLInput, relayTokenInput,
+							relayModalActiveField,
+							func(field int) { relayModalActiveField = field },
+							func(newURL, newToken string) {
+								newURL = strings.TrimSpace(newURL)
+								newToken = strings.TrimSpace(newToken)
+								node.UpdateRelaySettings(newURL, newToken)
+								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+								lobby.RelayURL = newURL
+								lobby.SetToast("Relay sunucu ayarlari kaydedildi!")
+								closeRelayModal()
+							},
+							func() {
+								node.UpdateRelaySettings(DefaultRelayURL, "")
+								_ = ResetAppConfig()
+								lobby.RelayURL = DefaultRelayURL
+								lobby.SetToast("Varsayilan resmi sunucuya sifirlandi!")
+								closeRelayModal()
+							},
+							func() {
+								closeRelayModal()
+							},
+						)
 					} else if showTestModal {
 						DrawTestModal(f, f.Area(), audio, node, closeTestModal)
 					} else if showExitModal || exitProg > 0.001 {
@@ -1404,7 +1543,7 @@ func main() {
 					}
 				})
 			} else {
-				if !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
+				if !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal && !showRelayModal {
 					if room.IsChatFocused {
 						t.FocusManager().SetFocused("room_chat_input")
 					} else {
@@ -1417,6 +1556,11 @@ func main() {
 				room.OnOpenTestModal = openTestModal
 				room.OnOpenScreenShareModal = openScreenShareModal
 				room.OnSendChat = func(text string) {
+					trimmed := strings.TrimSpace(text)
+					if strings.EqualFold(trimmed, "/relay") || strings.EqualFold(trimmed, "/server") {
+						openRelayModal()
+						return
+					}
 					node.SendChatMessage(text)
 					room.AddChatMessage(node.Nickname, node.LocalID, text, true, time.Now())
 				}
@@ -1563,6 +1707,31 @@ func main() {
 							CopyToClipboard(GetAllDebugLogsText())
 							room.SetToast("Copied debug logs to clipboard")
 						})
+					} else if showRelayModal || relayProg > 0.001 {
+						DrawRelayModal(
+							f, f.Area(), relayProg,
+							node.RelayURL, node.RelayToken,
+							relayURLInput, relayTokenInput,
+							relayModalActiveField,
+							func(field int) { relayModalActiveField = field },
+							func(newURL, newToken string) {
+								newURL = strings.TrimSpace(newURL)
+								newToken = strings.TrimSpace(newToken)
+								node.UpdateRelaySettings(newURL, newToken)
+								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+								room.SetToast("Relay sunucu ayarlari kaydedildi!")
+								closeRelayModal()
+							},
+							func() {
+								node.UpdateRelaySettings(DefaultRelayURL, "")
+								_ = ResetAppConfig()
+								room.SetToast("Varsayilan resmi sunucuya sifirlandi!")
+								closeRelayModal()
+							},
+							func() {
+								closeRelayModal()
+							},
+						)
 					} else if showTestModal {
 						DrawTestModal(f, f.Area(), audio, node, closeTestModal)
 					} else if showLeaveModal || leaveProg > 0.001 {

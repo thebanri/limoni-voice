@@ -46,8 +46,10 @@ type LobbyView struct {
 	OnJoinRoom      func(code string)
 	OnCancelJoin    func()
 	OnCopyCode      func(code string)
-	OnNewCode       func()
-	OnOpenTestModal func()
+	OnNewCode        func()
+	OnOpenTestModal  func()
+	OnOpenRelayModal func()
+	RelayURL         string
 }
 
 func GenerateMicrophoneModel() graphics.Model3D {
@@ -674,24 +676,42 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 		buf.SetString(botInner.X+1, botInner.Y, "  "+l.ToastMsg+"  ", toastStyle)
 	} else {
-		testBtn := "[T] Microphone & Sound Test Panel (Echo / Input Test)"
-		buf.SetString(botInner.X+1, botInner.Y, testBtn, cell.Style{
+		testBtn := "[T] Ses Testi"
+		relayBtn := "[R] Sunucu & Sifre Ayarlari"
+
+		btnStyle1 := cell.Style{
 			Fg:       theme.Accent,
 			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
-		})
+		}
+		btnStyle2 := cell.Style{
+			Fg:       theme.BorderFocused,
+			Bg:       theme.SurfaceBg,
+			Modifier: cell.ModifierBold,
+		}
+
+		buf.SetString(botInner.X+1, botInner.Y, testBtn, btnStyle1)
 		frame.RegisterClickHandler(cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ backend.MouseEvent) {
 			if l.OnOpenTestModal != nil {
 				l.OnOpenTestModal()
 			}
 		})
 
+		relayBtnX := botInner.X + 1 + uint16(len([]rune(testBtn))) + 3
+		if relayBtnX+uint16(len([]rune(relayBtn))) <= botInner.X+botInner.Width {
+			buf.SetString(relayBtnX, botInner.Y, relayBtn, btnStyle2)
+			frame.RegisterClickHandler(cell.NewRect(relayBtnX, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ backend.MouseEvent) {
+				if l.OnOpenRelayModal != nil {
+					l.OnOpenRelayModal()
+				}
+			})
+		}
+
 		helpLines := []string{
-			"• [T] or [F4] Open microphone test panel (hear your own voice)",
-			"• [Mouse] Click any section or button to focus",
-			"• [Tab] or [Shift+Tab] Navigate between fields",
-			"• [Ctrl+V] or [Shift+Insert] Paste key from clipboard",
-			"• [F2] / [C] Copy • [F3] / [G] New key • [Esc] Exit",
+			"• [R] Ozel relay sunucusu ve sifre yapilandirmasi",
+			"• [T] veya [F4] Mikrofon ve ses test paneli",
+			"• [Tab] veya [Shift+Tab] Alanlar arasi gecis",
+			"• [F2] / [C] Kopyala • [F3] / [G] Yeni anahtar • [Esc] Cikis",
 		}
 		for i, h := range helpLines {
 			if uint16(i+1) < botInner.Height {

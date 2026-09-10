@@ -1010,6 +1010,32 @@ func (n *P2PNode) Close() {
 	n.mu.Unlock()
 }
 
+// UpdateRelaySettings dynamically updates the relay server URL and authentication token,
+// reconnecting to the new relay server if a room session is currently active.
+func (n *P2PNode) UpdateRelaySettings(newURL, newToken string) {
+	n.mu.Lock()
+	n.RelayURL = strings.TrimSpace(newURL)
+	n.RelayToken = strings.TrimSpace(newToken)
+	if strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
+		n.LanOnly = true
+		n.RelayURL = ""
+	} else if n.RelayURL != "" {
+		n.LanOnly = false
+	}
+	isActiveRoom := n.RoomCode != ""
+	currentRoom := n.RoomCode
+	isHost := n.IsHost
+	n.mu.Unlock()
+
+	if isActiveRoom {
+		action := "join"
+		if isHost {
+			action = "host"
+		}
+		n.connectRelay(action, currentRoom)
+	}
+}
+
 // connectRelay connects to the WebSocket relay server in the background and sends the initial host/join message.
 // If the connection drops while the room is active, it automatically reconnects.
 func (n *P2PNode) connectRelay(action string, roomCode string) {
