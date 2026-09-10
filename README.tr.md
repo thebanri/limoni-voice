@@ -264,6 +264,36 @@ export LIMONI_RELAY_TOKEN="gizli_anahtar_123"
 ./limoni-voice
 ```
 
+#### 🌐 Cloudflare Tunnel ile Dış Dünyaya Açma (Modemden Port Açmadan)
+
+Eğer sunucuyu kendi ev bilgisayarınızda çalıştırıyorsanız, modeminizden port açmanıza gerek kalmadan **Cloudflare Tunnel** ile güvenli, DDoS korumalı ve otomatik SSL (WSS) sertifikalı bir dış bağlantı oluşturabilirsiniz.
+
+##### Seçenek 1: Docker Compose ile Tek Komutta (Kurulum Gerektirmez)
+```bash
+# 1. Relay sunucusunu ve Cloudflare Tünelini birlikte başlatın:
+docker compose --profile tunnel up -d
+
+# 2. Cloudflare'in atadığı ücretsiz dış bağlantı adresini görün:
+docker logs limoni-tunnel
+# Çıktıda şunu göreceksiniz:
+# https://xyz-abc-123.trycloudflare.com
+
+# 3. Siz ve arkadaşınız bu adrese bağlanın:
+./limoni-voice --relay wss://xyz-abc-123.trycloudflare.com/ws --relay-token gizli_anahtar_123
+```
+
+##### Seçenek 2: Doğrudan `cloudflared` Komut Satırı ile
+```bash
+# cloudflared yüklü ise tek komutla tünel açın:
+cloudflared tunnel --url http://localhost:8080
+# Size verilen trycloudflare.com adresini 'wss://adres/ws' olarak kullanın.
+```
+
+##### Seçenek 3: Kendi Alan Adınız ile (Kalıcı Tünel)
+Cloudflare Zero Trust panelinden oluşturduğunuz tünelin token'ını `.env` dosyasına `CLOUDFLARE_TUNNEL_TOKEN=eyJh...` şeklinde ekleyin ve `docker compose --profile tunnel up -d` komutunu çalıştırın.
+
+---
+
 ### LAN Modu (Çevrimdışı / İnternetsiz Yerel Ağ)
 
 Limoni Voice'u internet erişimi olmayan izole yerel ağlarda çalıştırmak için:

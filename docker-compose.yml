@@ -10,3 +10,26 @@ services:
     environment:
       - PORT=8080
       - RELAY_AUTH_TOKEN=${RELAY_AUTH_TOKEN:-}
+
+  # Optional Cloudflare Tunnel for exposing relay to the internet without port forwarding
+  # Quick start: docker compose --profile tunnel up -d
+  # View public URL: docker logs limoni-tunnel
+  limoni-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: limoni-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      - limoni-relay
+    command: >
+      tunnel --no-autoupdate
+      run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    # Fallback to free ephemeral trycloudflare URL if no token is provided:
+    entrypoint: >
+      /bin/sh -c '
+      if [ -n "$$CLOUDFLARE_TUNNEL_TOKEN" ]; then
+        exec cloudflared tunnel --no-autoupdate run --token "$$CLOUDFLARE_TUNNEL_TOKEN";
+      else
+        exec cloudflared tunnel --no-autoupdate --url http://limoni-relay:8080;
+      fi'
+

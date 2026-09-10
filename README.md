@@ -265,6 +265,36 @@ export LIMONI_RELAY_TOKEN="your_secret_key_123"
 ./limoni-voice
 ```
 
+#### 🌐 Exposing to the Internet with Cloudflare Tunnel (Zero Port Forwarding)
+
+If you are hosting the relay on your home machine or behind CGNAT, you can expose it securely to your friends over the internet using **Cloudflare Tunnel** without opening any ports on your router:
+
+##### Option 1: Using Docker Compose (Zero Installation Needed)
+```bash
+# 1. Start the relay server along with Cloudflare Tunnel:
+docker compose --profile tunnel up -d
+
+# 2. View your temporary public trycloudflare URL:
+docker logs limoni-tunnel
+# Look for the generated URL in the logs:
+# https://xyz-abc-123.trycloudflare.com
+
+# 3. Connect yourself and friends via WSS:
+./limoni-voice --relay wss://xyz-abc-123.trycloudflare.com/ws --relay-token your_secret_key_123
+```
+
+##### Option 2: Using the `cloudflared` CLI Directly
+```bash
+# Start a free instant tunnel to your local relay port:
+cloudflared tunnel --url http://localhost:8080
+# Use the assigned *.trycloudflare.com URL with 'wss://' scheme in clients.
+```
+
+##### Option 3: Using a Named Tunnel with Custom Domain
+Add your tunnel token from Cloudflare Zero Trust to `.env` as `CLOUDFLARE_TUNNEL_TOKEN=eyJh...` and run `docker compose --profile tunnel up -d`.
+
+---
+
 ### LAN-Only / Offline Mode
 
 To use Limoni Voice on an isolated local network (no internet connection required):
