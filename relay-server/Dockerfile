@@ -11,5 +11,5 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY --from=builder /app/relay-server .
 
-EXPOSE 8080
+EXPOSE 27850
 CMD ["./relay-server"]

@@ -232,34 +232,33 @@ go build -o limoni-voice .
 
 ### Docker ile Kendi Relay Sunucunuzu Barındırma
 
-Relay sunucunuzu yabancıların izinsiz kullanmasını engellemek için isteğe bağlı olarak bir **Erişim Parolası / Token (`RELAY_AUTH_TOKEN`)** tanımlayabilirsiniz:
+Sunucu varsayılan olarak **27850** portunu kullanır (8080 gibi yaygın portlarla çakışmayı ve internet taramalarını engellemek için). İsteğe bağlı olarak `.env` dosyasından `PORT` değerini istediğiniz herhangi bir porta değiştirebilirsiniz.
+
+Ayrıca yabancıların izinsiz kullanmasını engellemek için **Erişim Parolası / Token (`RELAY_AUTH_TOKEN`)** tanımlayabilirsiniz:
 
 ```bash
 # Yöntem 1: Docker Compose ile (Önerilen)
 cp .env.example .env
-# .env dosyasında RELAY_AUTH_TOKEN belirleyin
+# .env dosyasında PORT ve RELAY_AUTH_TOKEN belirleyin
 docker compose up -d
 
 # Yöntem 2: Standart Docker Komutu ile
 docker build -t limoni-relay .
-# Parolasız genel mod:
-docker run -d --name limoni-relay -p 8080:8080 limoni-relay
-
-# VEYA Parola korumalı güvenli mod:
-docker run -d --name limoni-relay -p 8080:8080 -e RELAY_AUTH_TOKEN="gizli_anahtar_123" limoni-relay
+# Parola korumalı güvenli mod (Varsayılan Port 27850):
+docker run -d --name limoni-relay -p 27850:27850 -e RELAY_AUTH_TOKEN="gizli_anahtar_123" limoni-relay
 ```
 
 #### İstemcileri Kendi Korumalı Sunucunuza Bağlama:
 
 ```bash
 # 1. Komut satırı parametresi ile:
-./limoni-voice --relay ws://192.168.1.100:8080/ws --relay-token gizli_anahtar_123
+./limoni-voice --relay ws://192.168.1.100:27850/ws --relay-token gizli_anahtar_123
 
 # VEYA doğrudan URL içinde:
-./limoni-voice --relay "ws://192.168.1.100:8080/ws?token=gizli_anahtar_123"
+./limoni-voice --relay "ws://192.168.1.100:27850/ws?token=gizli_anahtar_123"
 
 # 2. Alternatif olarak ortam değişkenleriyle:
-export LIMONI_RELAY_URL="ws://192.168.1.100:8080/ws"
+export LIMONI_RELAY_URL="ws://192.168.1.100:27850/ws"
 export LIMONI_RELAY_TOKEN="gizli_anahtar_123"
 ./limoni-voice
 ```
@@ -268,29 +267,32 @@ export LIMONI_RELAY_TOKEN="gizli_anahtar_123"
 
 Eğer sunucuyu kendi ev bilgisayarınızda çalıştırıyorsanız, modeminizden port açmanıza gerek kalmadan **Cloudflare Tunnel** ile güvenli, DDoS korumalı ve otomatik SSL (WSS) sertifikalı bir dış bağlantı oluşturabilirsiniz.
 
-##### Seçenek 1: Docker Compose ile Tek Komutta (Kurulum Gerektirmez)
+##### 🚀 Seçenek 1: Hızlı Tünel (Token veya Cloudflare Hesabı GEREKMEZ)
+Hiçbir Cloudflare hesabı açmadan, token girmeden anında ücretsiz bir dış bağlantı URL'i almak için:
 ```bash
-# 1. Relay sunucusunu ve Cloudflare Tünelini birlikte başlatın:
-docker compose --profile tunnel up -d
+# 1. Relay sunucusunu ve hızlı tüneli tek komutla başlatın:
+docker compose --profile quick-tunnel up -d
 
-# 2. Cloudflare'in atadığı ücretsiz dış bağlantı adresini görün:
-docker logs limoni-tunnel
+# 2. Cloudflare'in size atadığı ücretsiz trycloudflare adresini görün:
+docker logs limoni-quick-tunnel
 # Çıktıda şunu göreceksiniz:
-# https://xyz-abc-123.trycloudflare.com
+# https://funny-animal-1234.trycloudflare.com
 
-# 3. Siz ve arkadaşınız bu adrese bağlanın:
-./limoni-voice --relay wss://xyz-abc-123.trycloudflare.com/ws --relay-token gizli_anahtar_123
+# 3. Siz ve arkadaşınız bu adrese WSS ile bağlanın:
+./limoni-voice --relay wss://funny-animal-1234.trycloudflare.com/ws --relay-token gizli_anahtar_123
 ```
 
-##### Seçenek 2: Doğrudan `cloudflared` Komut Satırı ile
+##### 🔑 Seçenek 2: Kendi Alan Adınız ile (Kalıcı Tünel Token'ı)
+Cloudflare Zero Trust panelinden oluşturduğunuz tünelin token'ını `.env` dosyasına `CLOUDFLARE_TUNNEL_TOKEN=eyJh...` şeklinde ekleyin ve çalıştırın:
 ```bash
-# cloudflared yüklü ise tek komutla tünel açın:
-cloudflared tunnel --url http://localhost:8080
-# Size verilen trycloudflare.com adresini 'wss://adres/ws' olarak kullanın.
+docker compose --profile tunnel up -d
 ```
 
-##### Seçenek 3: Kendi Alan Adınız ile (Kalıcı Tünel)
-Cloudflare Zero Trust panelinden oluşturduğunuz tünelin token'ını `.env` dosyasına `CLOUDFLARE_TUNNEL_TOKEN=eyJh...` şeklinde ekleyin ve `docker compose --profile tunnel up -d` komutunu çalıştırın.
+##### 💻 Seçenek 3: Doğrudan `cloudflared` CLI ile
+```bash
+# cloudflared yüklü ise terminalden tek satırla:
+cloudflared tunnel --url http://localhost:27850
+```
 
 ---
 

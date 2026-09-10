@@ -6,15 +6,26 @@ services:
     container_name: limoni-relay
     restart: unless-stopped
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-27850}:${PORT:-27850}"
     environment:
-      - PORT=8080
+      - PORT=${PORT:-27850}
       - RELAY_AUTH_TOKEN=${RELAY_AUTH_TOKEN:-}
 
-  # Optional Cloudflare Tunnel for exposing relay to the internet without port forwarding
-  # Quick start: docker compose --profile tunnel up -d
-  # View public URL: docker logs limoni-tunnel
-  limoni-tunnel:
+  # 1. Hızlı ve Ücretsiz Tünel (Token veya Cloudflare hesabı GEREKTİRMEZ)
+  # Başlatma: docker compose --profile quick-tunnel up -d
+  # Adresi Görme: docker logs limoni-quick-tunnel
+  quick-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: limoni-quick-tunnel
+    restart: unless-stopped
+    profiles: ["quick-tunnel"]
+    depends_on:
+      - limoni-relay
+    command: tunnel --no-autoupdate --url http://limoni-relay:${PORT:-27850}
+
+  # 2. Kalıcı Tünel (Kendi alan adınız ve Cloudflare Token'ınız ile)
+  # Başlatma: docker compose --profile tunnel up -d
+  tunnel:
     image: cloudflare/cloudflared:latest
     container_name: limoni-tunnel
     restart: unless-stopped
@@ -22,4 +33,3 @@ services:
     depends_on:
       - limoni-relay
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-

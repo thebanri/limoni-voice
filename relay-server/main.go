@@ -757,7 +757,7 @@ func (s *RelayServer) cleanupLoop() {
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "27850"
 	}
 
 	authToken := os.Getenv("RELAY_AUTH_TOKEN")

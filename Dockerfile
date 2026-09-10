@@ -15,7 +15,7 @@ FROM scratch
 
 COPY --from=builder /relay-server /relay-server
 
-EXPOSE 8080
-ENV PORT=8080
+EXPOSE 27850
+ENV PORT=27850
 
 ENTRYPOINT ["/relay-server"]

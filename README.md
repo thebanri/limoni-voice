@@ -232,35 +232,33 @@ go build -o limoni-voice .
 
 ### Self-Hosted Relay Server (Docker)
 
+The relay server defaults to port **27850** (avoiding collision with common ports like 8080 and deterring port scanners). You can customize `PORT` in `.env` to any port you prefer.
+
 To protect your relay server from unauthorized access and bandwidth abuse, you can set an optional **Authentication Secret / Token (`RELAY_AUTH_TOKEN`)**:
 
 ```bash
 # Option 1: Using Docker Compose (Recommended)
 cp .env.example .env
-# Set RELAY_AUTH_TOKEN in .env
+# Set PORT and RELAY_AUTH_TOKEN in .env
 docker compose up -d
 
 # Option 2: Using Standard Docker CLI
 docker build -t limoni-relay .
-
-# Public / open mode:
-docker run -d --name limoni-relay -p 8080:8080 limoni-relay
-
-# OR Token-protected secure mode:
-docker run -d --name limoni-relay -p 8080:8080 -e RELAY_AUTH_TOKEN="your_secret_key_123" limoni-relay
+# Token-protected secure mode (Default Port 27850):
+docker run -d --name limoni-relay -p 27850:27850 -e RELAY_AUTH_TOKEN="your_secret_key_123" limoni-relay
 ```
 
 #### Connecting Clients to Protected Relay:
 
 ```bash
 # Via command-line argument:
-./limoni-voice --relay ws://192.168.1.100:8080/ws --relay-token your_secret_key_123
+./limoni-voice --relay ws://192.168.1.100:27850/ws --relay-token your_secret_key_123
 
 # OR directly in the URL query string:
-./limoni-voice --relay "ws://192.168.1.100:8080/ws?token=your_secret_key_123"
+./limoni-voice --relay "ws://192.168.1.100:27850/ws?token=your_secret_key_123"
 
 # Alternatively, set via environment variables:
-export LIMONI_RELAY_URL="ws://192.168.1.100:8080/ws"
+export LIMONI_RELAY_URL="ws://192.168.1.100:27850/ws"
 export LIMONI_RELAY_TOKEN="your_secret_key_123"
 ./limoni-voice
 ```
@@ -269,29 +267,31 @@ export LIMONI_RELAY_TOKEN="your_secret_key_123"
 
 If you are hosting the relay on your home machine or behind CGNAT, you can expose it securely to your friends over the internet using **Cloudflare Tunnel** without opening any ports on your router:
 
-##### Option 1: Using Docker Compose (Zero Installation Needed)
+##### 🚀 Option 1: Instant Quick Tunnel (NO Token or Cloudflare Account Needed)
+Get a free, instant HTTPS/WSS URL without registering or configuring anything:
 ```bash
-# 1. Start the relay server along with Cloudflare Tunnel:
-docker compose --profile tunnel up -d
+# 1. Start relay server and quick tunnel with a single command:
+docker compose --profile quick-tunnel up -d
 
 # 2. View your temporary public trycloudflare URL:
-docker logs limoni-tunnel
+docker logs limoni-quick-tunnel
 # Look for the generated URL in the logs:
-# https://xyz-abc-123.trycloudflare.com
+# https://funny-animal-1234.trycloudflare.com
 
 # 3. Connect yourself and friends via WSS:
-./limoni-voice --relay wss://xyz-abc-123.trycloudflare.com/ws --relay-token your_secret_key_123
+./limoni-voice --relay wss://funny-animal-1234.trycloudflare.com/ws --relay-token your_secret_key_123
 ```
 
-##### Option 2: Using the `cloudflared` CLI Directly
+##### 🔑 Option 2: Using a Named Tunnel with Custom Domain (Token)
+Add your tunnel token from Cloudflare Zero Trust to `.env` as `CLOUDFLARE_TUNNEL_TOKEN=eyJh...` and run:
 ```bash
-# Start a free instant tunnel to your local relay port:
-cloudflared tunnel --url http://localhost:8080
-# Use the assigned *.trycloudflare.com URL with 'wss://' scheme in clients.
+docker compose --profile tunnel up -d
 ```
 
-##### Option 3: Using a Named Tunnel with Custom Domain
-Add your tunnel token from Cloudflare Zero Trust to `.env` as `CLOUDFLARE_TUNNEL_TOKEN=eyJh...` and run `docker compose --profile tunnel up -d`.
+##### 💻 Option 3: Using the `cloudflared` CLI Directly
+```bash
+cloudflared tunnel --url http://localhost:27850
+```
 
 ---
 
