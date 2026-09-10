@@ -117,20 +117,28 @@ func TestDrawRelayModal(t *testing.T) {
 		frame, cell.NewRect(0, 0, 100, 30), 0.0,
 		"wss://custom.server.com/ws", "topsecret",
 		urlState, tokenState, 0,
-		nil, nil, nil, nil,
+		-1, -1, -1,
+		nil, nil, nil, nil, nil, nil, nil,
 	)
 
-	// 2. Animated render at full progress
+	// 2. Animated render at full progress with selection
 	savedURL := ""
 	savedToken := ""
 	resetCalled := false
 	cancelCalled := false
+	pastedField := -1
+	copiedField := -1
+	clearedField := -1
 
 	DrawRelayModal(
 		frame, cell.NewRect(0, 0, 100, 30), 1.0,
 		"wss://custom.server.com/ws", "topsecret",
 		urlState, tokenState, 0,
+		0, 5, 12, // Select characters 5..12 of field 0
 		func(field int) {},
+		func(field int) { pastedField = field },
+		func(field int) { copiedField = field },
+		func(field int) { clearedField = field },
 		func(u, tok string) {
 			savedURL = u
 			savedToken = tok
@@ -143,7 +151,7 @@ func TestDrawRelayModal(t *testing.T) {
 		},
 	)
 
-	// Verify modal title was drawn
+	// Verify modal was drawn
 	rendered := buf.Get(35, 9)
 	if rendered == nil {
 		t.Fatalf("Expected buffer cell at (35, 9) to be rendered")
@@ -154,4 +162,58 @@ func TestDrawRelayModal(t *testing.T) {
 	_ = savedToken
 	_ = resetCalled
 	_ = cancelCalled
+	_ = pastedField
+	_ = copiedField
+	_ = clearedField
+}
+
+func TestTextSelectionAndEditingHelpers(t *testing.T) {
+	state := widgets.NewTextInputState()
+	state.SetValue("wss://example.com/ws")
+
+	// Test string insertion
+	deleteSelectedRange := func(st *widgets.TextInputState, start, end int) {
+		if st == nil || start < 0 || end < 0 || start == end {
+			return
+		}
+		if start > end {
+			start, end = end, start
+		}
+		if start > len(st.Text) {
+			start = len(st.Text)
+		}
+		if end > len(st.Text) {
+			end = len(st.Text)
+		}
+		st.Text = append(st.Text[:start], st.Text[end:]...)
+		st.Cursor = start
+	}
+
+	// Delete "example.com/" (indices 6 to 18)
+	deleteSelectedRange(state, 6, 18)
+	if state.Value() != "wss://ws" {
+		t.Fatalf("Expected 'wss://ws', got %s", state.Value())
+	}
+	if state.Cursor != 6 {
+		t.Fatalf("Expected cursor at 6, got %d", state.Cursor)
+	}
+
+	// Insert replacement at cursor
+	insertStringAtCursor := func(st *widgets.TextInputState, s string) {
+		if st == nil || s == "" {
+			return
+		}
+		runes := []rune(s)
+		newText := make([]rune, len(st.Text)+len(runes))
+		copy(newText, st.Text[:st.Cursor])
+		copy(newText[st.Cursor:], runes)
+		copy(newText[st.Cursor+len(runes):], st.Text[st.Cursor:])
+		st.Text = newText
+		st.Cursor += len(runes)
+	}
+
+	insertStringAtCursor(state, "relay.domain.org/")
+	if state.Value() != "wss://relay.domain.org/ws" {
+		t.Fatalf("Expected 'wss://relay.domain.org/ws', got %s", state.Value())
+	}
 }

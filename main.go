@@ -18,6 +18,7 @@ import (
 
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
 	"github.com/thebanri/limoni-voice/screenshare"
@@ -202,6 +203,11 @@ func main() {
 	relayURLInput := widgets.NewTextInputState()
 	relayTokenInput := widgets.NewTextInputState()
 	relayModalActiveField := 0 // 0: URL, 1: Token, 2: Save, 3: Reset, 4: Cancel
+	relaySelStart := -1
+	relaySelEnd := -1
+	relaySelField := -1
+	appStartTime := time.Now()
+	var lastScreenArea cell.Rect
 
 	exitDialogAnim := animation.NewFloat(0.0)
 	leaveDialogAnim := animation.NewFloat(0.0)
@@ -360,16 +366,127 @@ func main() {
 		t.ForceFullRedraw()
 	}
 
+	deleteSelectedRange := func(state *widgets.TextInputState, start, end int) {
+		if state == nil || start < 0 || end < 0 || start == end {
+			return
+		}
+		if start > end {
+			start, end = end, start
+		}
+		if start > len(state.Text) {
+			start = len(state.Text)
+		}
+		if end > len(state.Text) {
+			end = len(state.Text)
+		}
+		state.Text = append(state.Text[:start], state.Text[end:]...)
+		state.Cursor = start
+	}
+
+	insertStringAtCursor := func(state *widgets.TextInputState, s string) {
+		if state == nil || s == "" {
+			return
+		}
+		s = strings.ReplaceAll(s, "\r", "")
+		s = strings.ReplaceAll(s, "\n", "")
+		runes := []rune(s)
+		newText := make([]rune, len(state.Text)+len(runes))
+		copy(newText, state.Text[:state.Cursor])
+		copy(newText[state.Cursor:], runes)
+		copy(newText[state.Cursor+len(runes):], state.Text[state.Cursor:])
+		state.Text = newText
+		state.Cursor += len(runes)
+	}
+
+	relayPasteAction := func(field int) {
+		clip := strings.TrimSpace(GetClipboardText())
+		if clip == "" {
+			return
+		}
+		var target *widgets.TextInputState
+		toastMsg := "Adres yapistirildi"
+		if field == 0 {
+			target = relayURLInput
+		} else if field == 1 {
+			target = relayTokenInput
+			toastMsg = "Token yapistirildi"
+		}
+		if target != nil {
+			if relaySelStart != -1 && relaySelStart != relaySelEnd && relaySelField == field {
+				deleteSelectedRange(target, relaySelStart, relaySelEnd)
+			}
+			insertStringAtCursor(target, clip)
+			relaySelStart = -1
+			relaySelEnd = -1
+			relaySelField = -1
+			relayModalActiveField = field
+			if currentScreen == ScreenLobby {
+				lobby.SetToast(toastMsg)
+			} else {
+				room.SetToast(toastMsg)
+			}
+		}
+	}
+
+	relayCopyAction := func(field int) {
+		var target *widgets.TextInputState
+		toastMsg := "Sunucu adresi kopyalandi"
+		if field == 0 {
+			target = relayURLInput
+		} else if field == 1 {
+			target = relayTokenInput
+			toastMsg = "Token kopyalandi"
+		}
+		if target != nil {
+			text := target.Value()
+			if relaySelStart != -1 && relaySelStart != relaySelEnd && relaySelField == field {
+				s, e := relaySelStart, relaySelEnd
+				if s > e {
+					s, e = e, s
+				}
+				if s < len(target.Text) && e <= len(target.Text) {
+					text = string(target.Text[s:e])
+				}
+			}
+			if text != "" {
+				CopyToClipboard(text)
+				if currentScreen == ScreenLobby {
+					lobby.SetToast(toastMsg)
+				} else {
+					room.SetToast(toastMsg)
+				}
+			}
+		}
+	}
+
+	relayClearAction := func(field int) {
+		if field == 0 {
+			relayURLInput.SetValue("")
+		} else if field == 1 {
+			relayTokenInput.SetValue("")
+		}
+		relaySelStart = -1
+		relaySelEnd = -1
+		relaySelField = -1
+		relayModalActiveField = field
+	}
+
 	openRelayModal := func() {
 		showRelayModal = true
 		relayURLInput.SetValue(node.RelayURL)
 		relayTokenInput.SetValue(node.RelayToken)
 		relayModalActiveField = 0
+		relaySelStart = -1
+		relaySelEnd = -1
+		relaySelField = -1
 		relayDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 
 	closeRelayModal := func() {
 		showRelayModal = false
+		relaySelStart = -1
+		relaySelEnd = -1
+		relaySelField = -1
 		relayDialogAnim.AnimateTo(0.0, 200*time.Millisecond, animation.EaseInCubic)
 		t.ForceFullRedraw()
 	}
@@ -643,16 +760,51 @@ func main() {
 		case ev := <-b.Events():
 			switch ev.Type {
 			case backend.EventPaste:
-				// Terminal bracketed paste event
+				// Discard any residual bracketed paste sequences sent during terminal startup
+				if time.Since(appStartTime) < 1200*time.Millisecond {
+					continue
+				}
+
 				pasted := ev.Paste.Text
+				if showRelayModal {
+					cleanPasted := strings.TrimSpace(pasted)
+					if cleanPasted != "" {
+						var target *widgets.TextInputState
+						toastMsg := "Adres yapistirildi"
+						if relayModalActiveField == 0 {
+							target = relayURLInput
+						} else if relayModalActiveField == 1 {
+							target = relayTokenInput
+							toastMsg = "Token yapistirildi"
+						}
+						if target != nil {
+							if relaySelStart != -1 && relaySelStart != relaySelEnd && relaySelField == relayModalActiveField {
+								deleteSelectedRange(target, relaySelStart, relaySelEnd)
+							}
+							insertStringAtCursor(target, cleanPasted)
+							relaySelStart = -1
+							relaySelEnd = -1
+							relaySelField = -1
+							if currentScreen == ScreenLobby {
+								lobby.SetToast(toastMsg)
+							} else {
+								room.SetToast(toastMsg)
+							}
+						}
+					}
+					continue
+				}
 				if currentScreen == ScreenLobby && pasted != "" && !showTestModal && !showExitModal {
 					cleanPasted := strings.TrimSpace(pasted)
 					if lobby.ActiveInput == 0 {
 						lobby.NickState.SetValue(cleanPasted)
 						lobby.SetToast("Username pasted")
 					} else if lobby.ActiveInput == 1 {
-						lobby.CodeState.SetValue(NormalizeCode(cleanPasted))
-						lobby.SetToast(fmt.Sprintf("Room key pasted: %s", NormalizeCode(cleanPasted)))
+						cleanCode := NormalizeCode(cleanPasted)
+						if cleanCode != "" {
+							lobby.CodeState.SetValue(cleanCode)
+							lobby.SetToast(fmt.Sprintf("Room key pasted: %s", cleanCode))
+						}
 					}
 				} else if currentScreen == ScreenRoom && pasted != "" && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal {
 					room.SetChatFocused(true)
@@ -666,6 +818,219 @@ func main() {
 
 			case backend.EventKey:
 				e := ev.Key
+
+				if showRelayModal {
+					// 1. Control Shortcuts (Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+U)
+					if e.Ctrl {
+						switch e.Ch {
+						case 'v', 'V':
+							relayPasteAction(relayModalActiveField)
+							continue
+						case 'c', 'C':
+							relayCopyAction(relayModalActiveField)
+							continue
+						case 'x', 'X':
+							var target *widgets.TextInputState
+							if relayModalActiveField == 0 {
+								target = relayURLInput
+							} else if relayModalActiveField == 1 {
+								target = relayTokenInput
+							}
+							if target != nil {
+								if relaySelStart != -1 && relaySelStart != relaySelEnd && relaySelField == relayModalActiveField {
+									s, end := relaySelStart, relaySelEnd
+									if s > end {
+										s, end = end, s
+									}
+									if s < len(target.Text) && end <= len(target.Text) {
+										CopyToClipboard(string(target.Text[s:end]))
+										deleteSelectedRange(target, s, end)
+										relaySelStart = -1
+										relaySelEnd = -1
+										relaySelField = -1
+									}
+								} else {
+									CopyToClipboard(target.Value())
+									target.SetValue("")
+								}
+								if currentScreen == ScreenLobby {
+									lobby.SetToast("Kesildi")
+								} else {
+									room.SetToast("Kesildi")
+								}
+							}
+							continue
+						case 'a', 'A':
+							if relayModalActiveField == 0 {
+								relaySelField = 0
+								relaySelStart = 0
+								relaySelEnd = len(relayURLInput.Text)
+								relayURLInput.Cursor = len(relayURLInput.Text)
+							} else if relayModalActiveField == 1 {
+								relaySelField = 1
+								relaySelStart = 0
+								relaySelEnd = len(relayTokenInput.Text)
+								relayTokenInput.Cursor = len(relayTokenInput.Text)
+							}
+							continue
+						case 'u', 'U':
+							relayClearAction(relayModalActiveField)
+							continue
+						}
+					}
+
+					// 2. Shift+Insert Paste
+					if e.Type == backend.KeyInsert && (e.Shift || e.Ctrl) {
+						relayPasteAction(relayModalActiveField)
+						continue
+					}
+
+					switch e.Type {
+					case backend.KeyEsc:
+						closeRelayModal()
+					case backend.KeyTab:
+						relaySelStart = -1
+						relaySelEnd = -1
+						relaySelField = -1
+						if e.Shift {
+							relayModalActiveField = (relayModalActiveField + 4) % 5
+						} else {
+							relayModalActiveField = (relayModalActiveField + 1) % 5
+						}
+					case backend.KeyArrowUp:
+						relaySelStart = -1
+						relaySelEnd = -1
+						relaySelField = -1
+						if relayModalActiveField > 0 {
+							relayModalActiveField--
+						}
+					case backend.KeyArrowDown:
+						relaySelStart = -1
+						relaySelEnd = -1
+						relaySelField = -1
+						if relayModalActiveField < 4 {
+							relayModalActiveField++
+						}
+					case backend.KeyArrowLeft:
+						if relayModalActiveField > 2 {
+							relayModalActiveField--
+						} else {
+							var target *widgets.TextInputState
+							if relayModalActiveField == 0 {
+								target = relayURLInput
+							} else if relayModalActiveField == 1 {
+								target = relayTokenInput
+							}
+							if target != nil {
+								if e.Shift {
+									if relaySelField != relayModalActiveField || relaySelStart == -1 {
+										relaySelField = relayModalActiveField
+										relaySelStart = target.Cursor
+										relaySelEnd = target.Cursor
+									}
+									if target.Cursor > 0 {
+										target.Cursor--
+										relaySelEnd = target.Cursor
+									}
+								} else {
+									relaySelStart = -1
+									relaySelEnd = -1
+									relaySelField = -1
+									target.HandleKey(e)
+								}
+							}
+						}
+					case backend.KeyArrowRight:
+						if relayModalActiveField >= 2 && relayModalActiveField < 4 {
+							relayModalActiveField++
+						} else {
+							var target *widgets.TextInputState
+							if relayModalActiveField == 0 {
+								target = relayURLInput
+							} else if relayModalActiveField == 1 {
+								target = relayTokenInput
+							}
+							if target != nil {
+								if e.Shift {
+									if relaySelField != relayModalActiveField || relaySelStart == -1 {
+										relaySelField = relayModalActiveField
+										relaySelStart = target.Cursor
+										relaySelEnd = target.Cursor
+									}
+									if target.Cursor < len(target.Text) {
+										target.Cursor++
+										relaySelEnd = target.Cursor
+									}
+								} else {
+									relaySelStart = -1
+									relaySelEnd = -1
+									relaySelField = -1
+									target.HandleKey(e)
+								}
+							}
+						}
+					case backend.KeyBackspace, backend.KeyDelete:
+						var target *widgets.TextInputState
+						if relayModalActiveField == 0 {
+							target = relayURLInput
+						} else if relayModalActiveField == 1 {
+							target = relayTokenInput
+						}
+						if target != nil {
+							if relaySelStart != -1 && relaySelStart != relaySelEnd && relaySelField == relayModalActiveField {
+								deleteSelectedRange(target, relaySelStart, relaySelEnd)
+								relaySelStart = -1
+								relaySelEnd = -1
+								relaySelField = -1
+							} else {
+								target.HandleKey(e)
+							}
+						}
+					case backend.KeyEnter:
+						if relayModalActiveField == 2 || relayModalActiveField == 0 || relayModalActiveField == 1 {
+							newURL := strings.TrimSpace(relayURLInput.Value())
+							newToken := strings.TrimSpace(relayTokenInput.Value())
+							node.UpdateRelaySettings(newURL, newToken)
+							_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+							if currentScreen == ScreenLobby {
+								lobby.RelayURL = newURL
+								lobby.SetToast("Relay sunucu ayarlari kaydedildi!")
+							} else {
+								room.SetToast("Relay sunucu ayarlari kaydedildi!")
+							}
+							closeRelayModal()
+						} else if relayModalActiveField == 3 {
+							node.UpdateRelaySettings(DefaultRelayURL, "")
+							_ = ResetAppConfig()
+							if currentScreen == ScreenLobby {
+								lobby.RelayURL = DefaultRelayURL
+								lobby.SetToast("Varsayilan resmi relay sunucusuna sifirlandi!")
+							} else {
+								room.SetToast("Varsayilan resmi relay sunucusuna sifirlandi!")
+							}
+							closeRelayModal()
+						} else if relayModalActiveField == 4 {
+							closeRelayModal()
+						}
+					default:
+						var target *widgets.TextInputState
+						if relayModalActiveField == 0 {
+							target = relayURLInput
+						} else if relayModalActiveField == 1 {
+							target = relayTokenInput
+						}
+						if target != nil && e.Type == backend.KeyRune {
+							if relaySelStart != -1 && relaySelStart != relaySelEnd && relaySelField == relayModalActiveField {
+								deleteSelectedRange(target, relaySelStart, relaySelEnd)
+								relaySelStart = -1
+								relaySelEnd = -1
+								relaySelField = -1
+							}
+							target.HandleKey(e)
+						}
+					}
+					continue
+				}
 
 				// Ctrl+C: If text is selected in chat, copy it! Otherwise trigger exit/leave prompt
 				if e.Ctrl && (e.Ch == 'c' || e.Ch == 'C') {
@@ -779,67 +1144,7 @@ func main() {
 					continue
 				}
 
-				if showRelayModal {
-					switch e.Type {
-					case backend.KeyEsc:
-						closeRelayModal()
-					case backend.KeyTab:
-						if e.Shift {
-							relayModalActiveField = (relayModalActiveField + 4) % 5
-						} else {
-							relayModalActiveField = (relayModalActiveField + 1) % 5
-						}
-					case backend.KeyArrowUp:
-						if relayModalActiveField > 0 {
-							relayModalActiveField--
-						}
-					case backend.KeyArrowDown:
-						if relayModalActiveField < 4 {
-							relayModalActiveField++
-						}
-					case backend.KeyArrowLeft:
-						if relayModalActiveField > 2 {
-							relayModalActiveField--
-						}
-					case backend.KeyArrowRight:
-						if relayModalActiveField >= 2 && relayModalActiveField < 4 {
-							relayModalActiveField++
-						}
-					case backend.KeyEnter:
-						if relayModalActiveField == 2 || relayModalActiveField == 0 || relayModalActiveField == 1 {
-							newURL := strings.TrimSpace(relayURLInput.Value())
-							newToken := strings.TrimSpace(relayTokenInput.Value())
-							node.UpdateRelaySettings(newURL, newToken)
-							_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
-							if currentScreen == ScreenLobby {
-								lobby.RelayURL = newURL
-								lobby.SetToast("Relay sunucu ayarlari kaydedildi!")
-							} else {
-								room.SetToast("Relay sunucu ayarlari kaydedildi!")
-							}
-							closeRelayModal()
-						} else if relayModalActiveField == 3 {
-							node.UpdateRelaySettings(DefaultRelayURL, "")
-							_ = ResetAppConfig()
-							if currentScreen == ScreenLobby {
-								lobby.RelayURL = DefaultRelayURL
-								lobby.SetToast("Varsayilan resmi relay sunucusuna sifirlandi!")
-							} else {
-								room.SetToast("Varsayilan resmi relay sunucusuna sifirlandi!")
-							}
-							closeRelayModal()
-						} else if relayModalActiveField == 4 {
-							closeRelayModal()
-						}
-					default:
-						if relayModalActiveField == 0 {
-							relayURLInput.HandleKey(e)
-						} else if relayModalActiveField == 1 {
-							relayTokenInput.HandleKey(e)
-						}
-					}
-					continue
-				}
+
 
 				if showExitModal {
 					focused := t.FocusManager().Focused()
@@ -1349,6 +1654,74 @@ func main() {
 				}
 
 			case backend.EventMouse:
+				if showRelayModal {
+					modalW, modalH := uint16(74), uint16(16)
+					screenArea := lastScreenArea
+					if screenArea.Width == 0 || screenArea.Height == 0 {
+						w, h, _ := b.Size()
+						screenArea = cell.NewRect(0, 0, w, h)
+					}
+					if screenArea.Width < modalW+2 {
+						modalW = screenArea.Width - 2
+					}
+					if screenArea.Height < modalH+2 {
+						modalH = screenArea.Height - 2
+					}
+					modalArea := terminal.CenterRect(screenArea, modalW, modalH)
+					inner := cell.NewRect(modalArea.X+1, modalArea.Y+1, modalArea.Width-2, modalArea.Height-2)
+					urlInputRect := cell.NewRect(inner.X+1, inner.Y+3, inner.Width-2, 1)
+					tokenInputRect := cell.NewRect(inner.X+1, inner.Y+6, inner.Width-2, 1)
+
+					if ev.Mouse.Button == backend.MouseLeft {
+						if urlInputRect.Contains(ev.Mouse.X, ev.Mouse.Y) {
+							col := int(ev.Mouse.X) - int(urlInputRect.X)
+							if col < 0 {
+								col = 0
+							}
+							if col > len(relayURLInput.Text) {
+								col = len(relayURLInput.Text)
+							}
+							relayModalActiveField = 0
+							relayURLInput.Cursor = col
+							if !ev.Mouse.Drag {
+								relaySelField = 0
+								relaySelStart = col
+								relaySelEnd = col
+							} else {
+								relaySelEnd = col
+							}
+						} else if tokenInputRect.Contains(ev.Mouse.X, ev.Mouse.Y) {
+							col := int(ev.Mouse.X) - int(tokenInputRect.X)
+							if col < 0 {
+								col = 0
+							}
+							if col > len(relayTokenInput.Text) {
+								col = len(relayTokenInput.Text)
+							}
+							relayModalActiveField = 1
+							relayTokenInput.Cursor = col
+							if !ev.Mouse.Drag {
+								relaySelField = 1
+								relaySelStart = col
+								relaySelEnd = col
+							} else {
+								relaySelEnd = col
+							}
+						}
+					} else if ev.Mouse.Button == backend.MouseRight {
+						clip := strings.TrimSpace(GetClipboardText())
+						if clip != "" {
+							if urlInputRect.Contains(ev.Mouse.X, ev.Mouse.Y) {
+								relayModalActiveField = 0
+								insertStringAtCursor(relayURLInput, clip)
+							} else if tokenInputRect.Contains(ev.Mouse.X, ev.Mouse.Y) {
+								relayModalActiveField = 1
+								insertStringAtCursor(relayTokenInput, clip)
+							}
+						}
+					}
+				}
+
 				if currentScreen == ScreenRoom && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
 					if ev.Mouse.Button == backend.MouseLeft && !ev.Mouse.Drag {
 						room.mu.Lock()
@@ -1488,6 +1861,7 @@ func main() {
 				}
 				lobby.Update(dt)
 				_ = t.Draw(func(f *terminal.Frame) {
+					lastScreenArea = f.Area()
 					lobby.Render(f, f.Area())
 
 					if showDebugModal {
@@ -1501,7 +1875,11 @@ func main() {
 							node.RelayURL, node.RelayToken,
 							relayURLInput, relayTokenInput,
 							relayModalActiveField,
+							relaySelField, relaySelStart, relaySelEnd,
 							func(field int) { relayModalActiveField = field },
+							relayPasteAction,
+							relayCopyAction,
+							relayClearAction,
 							func(newURL, newToken string) {
 								newURL = strings.TrimSpace(newURL)
 								newToken = strings.TrimSpace(newToken)
@@ -1700,6 +2078,7 @@ func main() {
 				}
 				room.Update()
 				_ = t.Draw(func(f *terminal.Frame) {
+					lastScreenArea = f.Area()
 					room.Render(f, f.Area(), node, audio)
 
 					if showDebugModal {
@@ -1713,7 +2092,11 @@ func main() {
 							node.RelayURL, node.RelayToken,
 							relayURLInput, relayTokenInput,
 							relayModalActiveField,
+							relaySelField, relaySelStart, relaySelEnd,
 							func(field int) { relayModalActiveField = field },
+							relayPasteAction,
+							relayCopyAction,
+							relayClearAction,
 							func(newURL, newToken string) {
 								newURL = strings.TrimSpace(newURL)
 								newToken = strings.TrimSpace(newToken)

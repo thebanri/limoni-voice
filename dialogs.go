@@ -839,7 +839,13 @@ func DrawRelayModal(
 	urlState *widgets.TextInputState,
 	tokenState *widgets.TextInputState,
 	activeField int, // 0: URL input, 1: Token input, 2: Save btn, 3: Reset btn, 4: Cancel btn
+	selField int,
+	selStart int,
+	selEnd int,
 	onSelectField func(field int),
+	onPaste func(field int),
+	onCopy func(field int),
+	onClear func(field int),
 	onSave func(newURL, newToken string),
 	onReset func(),
 	onCancel func(),
@@ -848,7 +854,7 @@ func DrawRelayModal(
 		return
 	}
 
-	modalW, modalH := uint16(66), uint16(14)
+	modalW, modalH := uint16(74), uint16(16)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -919,7 +925,45 @@ func DrawRelayModal(
 	if activeField == 0 {
 		urlLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
 	}
-	buf.SetString(inner.X+1, urlLabelY, "Sunucu WebSocket Adresi (Relay URL):", urlLabelStyle)
+	urlLabelText := "Sunucu WebSocket Adresi (Relay URL):"
+	buf.SetString(inner.X+1, urlLabelY, urlLabelText, urlLabelStyle)
+
+	// Quick Action Buttons on URL Label row (Paste, Copy, Clear)
+	actionBtnStyle := cell.Style{Fg: theme.BorderFocused, Bg: theme.InputBg, Modifier: cell.ModifierBold}
+	actionBtnPaste := "[📋 Yapistir]"
+	actionBtnCopy := "[📄 Kopyala]"
+	actionBtnClear := "[✕ Temizle]"
+
+	btnX := inner.X + 1 + uint16(len([]rune(urlLabelText))) + 2
+	if btnX+uint16(len([]rune(actionBtnPaste))) <= inner.X+inner.Width {
+		pasteRect := cell.NewRect(btnX, urlLabelY, uint16(len([]rune(actionBtnPaste))), 1)
+		buf.SetString(btnX, urlLabelY, actionBtnPaste, actionBtnStyle)
+		frame.RegisterClickHandler(pasteRect, func(_ backend.MouseEvent) {
+			if onPaste != nil {
+				onPaste(0)
+			}
+		})
+		btnX += uint16(len([]rune(actionBtnPaste))) + 1
+	}
+	if btnX+uint16(len([]rune(actionBtnCopy))) <= inner.X+inner.Width {
+		copyRect := cell.NewRect(btnX, urlLabelY, uint16(len([]rune(actionBtnCopy))), 1)
+		buf.SetString(btnX, urlLabelY, actionBtnCopy, actionBtnStyle)
+		frame.RegisterClickHandler(copyRect, func(_ backend.MouseEvent) {
+			if onCopy != nil {
+				onCopy(0)
+			}
+		})
+		btnX += uint16(len([]rune(actionBtnCopy))) + 1
+	}
+	if btnX+uint16(len([]rune(actionBtnClear))) <= inner.X+inner.Width {
+		clearRect := cell.NewRect(btnX, urlLabelY, uint16(len([]rune(actionBtnClear))), 1)
+		buf.SetString(btnX, urlLabelY, actionBtnClear, cell.Style{Fg: theme.Danger, Bg: theme.InputBg, Modifier: cell.ModifierBold})
+		frame.RegisterClickHandler(clearRect, func(_ backend.MouseEvent) {
+			if onClear != nil {
+				onClear(0)
+			}
+		})
+	}
 
 	urlInputY := urlLabelY + 1
 	urlInputW := inner.Width - 2
@@ -937,6 +981,28 @@ func DrawRelayModal(
 		urlInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
 	frame.RenderWidget(urlInput, urlInputRect)
+
+	// Draw character selection highlight for URL input if active
+	if selField == 0 && selStart != -1 && selStart != selEnd && urlState != nil {
+		s, e := selStart, selEnd
+		if s > e {
+			s, e = e, s
+		}
+		for i := s; i < e; i++ {
+			cellX := urlInputRect.X + uint16(i)
+			if cellX >= urlInputRect.X+urlInputRect.Width {
+				break
+			}
+			if c := buf.Get(cellX, urlInputRect.Y); c != nil {
+				c.Style = cell.Style{
+					Fg:       cell.NewColorRGB(0, 0, 0),
+					Bg:       theme.Accent,
+					Modifier: cell.ModifierBold,
+				}
+			}
+		}
+	}
+
 	frame.RegisterClickHandler(urlInputRect, func(_ backend.MouseEvent) {
 		if onSelectField != nil {
 			onSelectField(0)
@@ -944,12 +1010,45 @@ func DrawRelayModal(
 	})
 
 	// 6. Token / Password Input Row
-	tokenLabelY := inner.Y + 4
+	tokenLabelY := inner.Y + 5
 	tokenLabelStyle := cell.Style{Fg: theme.TextMuted, Bg: dialogBg}
 	if activeField == 1 {
 		tokenLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
 	}
-	buf.SetString(inner.X+1, tokenLabelY, "Sunucu Sifresi / Token (RELAY_AUTH_TOKEN):", tokenLabelStyle)
+	tokenLabelText := "Sunucu Sifresi / Token (RELAY_AUTH_TOKEN):"
+	buf.SetString(inner.X+1, tokenLabelY, tokenLabelText, tokenLabelStyle)
+
+	// Quick Action Buttons on Token Label row (Paste, Copy, Clear)
+	btnTokenX := inner.X + 1 + uint16(len([]rune(tokenLabelText))) + 2
+	if btnTokenX+uint16(len([]rune(actionBtnPaste))) <= inner.X+inner.Width {
+		pasteRect := cell.NewRect(btnTokenX, tokenLabelY, uint16(len([]rune(actionBtnPaste))), 1)
+		buf.SetString(btnTokenX, tokenLabelY, actionBtnPaste, actionBtnStyle)
+		frame.RegisterClickHandler(pasteRect, func(_ backend.MouseEvent) {
+			if onPaste != nil {
+				onPaste(1)
+			}
+		})
+		btnTokenX += uint16(len([]rune(actionBtnPaste))) + 1
+	}
+	if btnTokenX+uint16(len([]rune(actionBtnCopy))) <= inner.X+inner.Width {
+		copyRect := cell.NewRect(btnTokenX, tokenLabelY, uint16(len([]rune(actionBtnCopy))), 1)
+		buf.SetString(btnTokenX, tokenLabelY, actionBtnCopy, actionBtnStyle)
+		frame.RegisterClickHandler(copyRect, func(_ backend.MouseEvent) {
+			if onCopy != nil {
+				onCopy(1)
+			}
+		})
+		btnTokenX += uint16(len([]rune(actionBtnCopy))) + 1
+	}
+	if btnTokenX+uint16(len([]rune(actionBtnClear))) <= inner.X+inner.Width {
+		clearRect := cell.NewRect(btnTokenX, tokenLabelY, uint16(len([]rune(actionBtnClear))), 1)
+		buf.SetString(btnTokenX, tokenLabelY, actionBtnClear, cell.Style{Fg: theme.Danger, Bg: theme.InputBg, Modifier: cell.ModifierBold})
+		frame.RegisterClickHandler(clearRect, func(_ backend.MouseEvent) {
+			if onClear != nil {
+				onClear(1)
+			}
+		})
+	}
 
 	tokenInputY := tokenLabelY + 1
 	tokenInputRect := cell.NewRect(inner.X+1, tokenInputY, urlInputW, 1)
@@ -966,6 +1065,28 @@ func DrawRelayModal(
 		tokenInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
 	frame.RenderWidget(tokenInput, tokenInputRect)
+
+	// Draw character selection highlight for Token input if active
+	if selField == 1 && selStart != -1 && selStart != selEnd && tokenState != nil {
+		s, e := selStart, selEnd
+		if s > e {
+			s, e = e, s
+		}
+		for i := s; i < e; i++ {
+			cellX := tokenInputRect.X + uint16(i)
+			if cellX >= tokenInputRect.X+tokenInputRect.Width {
+				break
+			}
+			if c := buf.Get(cellX, tokenInputRect.Y); c != nil {
+				c.Style = cell.Style{
+					Fg:       cell.NewColorRGB(0, 0, 0),
+					Bg:       theme.Accent,
+					Modifier: cell.ModifierBold,
+				}
+			}
+		}
+	}
+
 	frame.RegisterClickHandler(tokenInputRect, func(_ backend.MouseEvent) {
 		if onSelectField != nil {
 			onSelectField(1)
@@ -973,7 +1094,7 @@ func DrawRelayModal(
 	})
 
 	// 7. Buttons Row
-	btnY := inner.Y + 7
+	btnY := inner.Y + 8
 	saveBtnText := "[ Kaydet ve Baglan ]"
 	resetBtnText := "[ Varsayilana Sifirla ]"
 	cancelBtnText := "[ Iptal ]"
@@ -991,28 +1112,28 @@ func DrawRelayModal(
 		cancelBtnStyle = cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: theme.Danger, Modifier: cell.ModifierBold}
 	}
 
-	btnX := inner.X + 1
-	saveRect := cell.NewRect(btnX, btnY, uint16(len([]rune(saveBtnText))), 1)
-	buf.SetString(btnX, btnY, saveBtnText, saveBtnStyle)
+	bX := inner.X + 1
+	saveRect := cell.NewRect(bX, btnY, uint16(len([]rune(saveBtnText))), 1)
+	buf.SetString(bX, btnY, saveBtnText, saveBtnStyle)
 	frame.RegisterClickHandler(saveRect, func(_ backend.MouseEvent) {
 		if onSave != nil {
 			onSave(urlState.Value(), tokenState.Value())
 		}
 	})
 
-	btnX += uint16(len([]rune(saveBtnText))) + 2
-	resetRect := cell.NewRect(btnX, btnY, uint16(len([]rune(resetBtnText))), 1)
-	buf.SetString(btnX, btnY, resetBtnText, resetBtnStyle)
+	bX += uint16(len([]rune(saveBtnText))) + 2
+	resetRect := cell.NewRect(bX, btnY, uint16(len([]rune(resetBtnText))), 1)
+	buf.SetString(bX, btnY, resetBtnText, resetBtnStyle)
 	frame.RegisterClickHandler(resetRect, func(_ backend.MouseEvent) {
 		if onReset != nil {
 			onReset()
 		}
 	})
 
-	btnX += uint16(len([]rune(resetBtnText))) + 2
-	if btnX+uint16(len([]rune(cancelBtnText))) <= inner.X+inner.Width {
-		cancelRect := cell.NewRect(btnX, btnY, uint16(len([]rune(cancelBtnText))), 1)
-		buf.SetString(btnX, btnY, cancelBtnText, cancelBtnStyle)
+	bX += uint16(len([]rune(resetBtnText))) + 2
+	if bX+uint16(len([]rune(cancelBtnText))) <= inner.X+inner.Width {
+		cancelRect := cell.NewRect(bX, btnY, uint16(len([]rune(cancelBtnText))), 1)
+		buf.SetString(bX, btnY, cancelBtnText, cancelBtnStyle)
 		frame.RegisterClickHandler(cancelRect, func(_ backend.MouseEvent) {
 			if onCancel != nil {
 				onCancel()
@@ -1021,10 +1142,15 @@ func DrawRelayModal(
 	}
 
 	// 8. Help Hints
-	helpY := inner.Y + 9
-	if helpY < inner.Y+inner.Height {
-		helpText := "• [Tab] Gecis  • [Enter] Sec/Kaydet  • [Esc] Kapat"
-		buf.SetString(inner.X+1, helpY, helpText, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+	helpY1 := inner.Y + 10
+	if helpY1 < inner.Y+inner.Height {
+		helpText1 := "• [Ctrl+V / Shift+Ins] Yapistir  • [Ctrl+C] Kopyala  • [Ctrl+A] Tumunu Sec  • [Ctrl+X] Kes"
+		buf.SetString(inner.X+1, helpY1, helpText1, cell.Style{Fg: theme.BorderFocused, Bg: dialogBg})
+	}
+	helpY2 := inner.Y + 11
+	if helpY2 < inner.Y+inner.Height {
+		helpText2 := "• [Tab] Gecis  • [Enter] Kaydet  • [Esc] Kapat  • Butonlara tiklayarak da kopyala/yapistir yapabilirsiniz"
+		buf.SetString(inner.X+1, helpY2, helpText2, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
 	}
 }
 

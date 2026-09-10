@@ -328,8 +328,12 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 
 func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	theme := CurrentTheme()
+	mainTitle := " P2P ROOM & CONNECTION (CROC ENGINE) "
+	if IsCustomRelayActive(l.RelayURL) {
+		mainTitle = " P2P ROOM & CONNECTION [⚡ OZEL RELAY AKTIF - (R)] "
+	}
 	mainBlock := widgets.Block{
-		Title:         " P2P ROOM & CONNECTION (CROC ENGINE) ",
+		Title:         mainTitle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
@@ -676,46 +680,69 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 		buf.SetString(botInner.X+1, botInner.Y, "  "+l.ToastMsg+"  ", toastStyle)
 	} else {
-		testBtn := "[T] Ses Testi"
-		relayBtn := "[R] Sunucu & Sifre Ayarlari"
-
-		btnStyle1 := cell.Style{
-			Fg:       theme.Accent,
-			Bg:       theme.SurfaceBg,
+		isCustom := IsCustomRelayActive(l.RelayURL)
+		relayBtn := "[ ⚡ R : SUNUCU & SIFRE AYARLARI ]"
+		relayBtnStyle := cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.BorderFocused,
 			Modifier: cell.ModifierBold,
 		}
-		btnStyle2 := cell.Style{
-			Fg:       theme.BorderFocused,
-			Bg:       theme.SurfaceBg,
-			Modifier: cell.ModifierBold,
+		if isCustom {
+			relayBtn = "[ ⚡ R : OZEL RELAY AKTIF (Tikla / Degistir) ]"
+			relayBtnStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       theme.Success,
+				Modifier: cell.ModifierBold,
+			}
 		}
 
-		buf.SetString(botInner.X+1, botInner.Y, testBtn, btnStyle1)
-		frame.RegisterClickHandler(cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ backend.MouseEvent) {
-			if l.OnOpenTestModal != nil {
-				l.OnOpenTestModal()
+		buf.SetString(botInner.X+1, botInner.Y, relayBtn, relayBtnStyle)
+		frame.RegisterClickHandler(cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ backend.MouseEvent) {
+			if l.OnOpenRelayModal != nil {
+				l.OnOpenRelayModal()
 			}
 		})
 
-		relayBtnX := botInner.X + 1 + uint16(len([]rune(testBtn))) + 3
-		if relayBtnX+uint16(len([]rune(relayBtn))) <= botInner.X+botInner.Width {
-			buf.SetString(relayBtnX, botInner.Y, relayBtn, btnStyle2)
-			frame.RegisterClickHandler(cell.NewRect(relayBtnX, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ backend.MouseEvent) {
-				if l.OnOpenRelayModal != nil {
-					l.OnOpenRelayModal()
+		testBtn := "[ 🎤 T : Ses Testi ]"
+		testBtnStyle := cell.Style{
+			Fg:       theme.Text,
+			Bg:       theme.InputBg,
+			Modifier: cell.ModifierBold,
+		}
+		testBtnX := botInner.X + 1 + uint16(len([]rune(relayBtn))) + 2
+		if testBtnX+uint16(len([]rune(testBtn))) <= botInner.X+botInner.Width {
+			buf.SetString(testBtnX, botInner.Y, testBtn, testBtnStyle)
+			frame.RegisterClickHandler(cell.NewRect(testBtnX, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ backend.MouseEvent) {
+				if l.OnOpenTestModal != nil {
+					l.OnOpenTestModal()
 				}
 			})
 		}
 
+		rowOffset := uint16(1)
+		if botInner.Height > 3 {
+			relayInfo := "Aktif Relay: " + l.RelayURL
+			if l.RelayURL == "" {
+				relayInfo = "Aktif Relay: Resmi Genel Sunucu (Railway)"
+			}
+			buf.SetString(botInner.X+1, botInner.Y+1, relayInfo, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
+			rowOffset = 2
+		}
+
 		helpLines := []string{
-			"• [R] Ozel relay sunucusu ve sifre yapilandirmasi",
+			"• [R] Ozel relay sunucusu ve sifre yapilandirmasi (F5 / Tikla)",
 			"• [T] veya [F4] Mikrofon ve ses test paneli",
 			"• [Tab] veya [Shift+Tab] Alanlar arasi gecis",
 			"• [F2] / [C] Kopyala • [F3] / [G] Yeni anahtar • [Esc] Cikis",
 		}
 		for i, h := range helpLines {
-			if uint16(i+1) < botInner.Height {
-				buf.SetString(botInner.X+1, botInner.Y+uint16(i+1), h, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
+			lineY := botInner.Y + rowOffset + uint16(i)
+			if lineY < botInner.Y+botInner.Height {
+				lineStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+				if i == 0 {
+					lineStyle = cell.Style{Fg: theme.BorderFocused, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+				}
+				buf.SetString(botInner.X+1, lineY, h, lineStyle)
 			}
 		}
 	}
