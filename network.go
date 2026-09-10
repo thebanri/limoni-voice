@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -207,6 +209,7 @@ type P2PNode struct {
 	lastSweepTime  time.Time
 	// WebSocket Relay for internet-wide P2P forwarding
 	RelayURL         string
+	RelayToken       string
 	LanOnly          bool
 	wsConn           *websocket.Conn
 	wsPriorityCh     chan []byte // dedicated real-time channel for Audio, Ping, Pong & Control (never delayed by video)
@@ -579,6 +582,10 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 	if relayURL == "" {
 		relayURL = DefaultRelayURL
 	}
+	relayToken := os.Getenv("LIMONI_RELAY_TOKEN")
+	if relayToken == "" {
+		relayToken = os.Getenv("RELAY_AUTH_TOKEN")
+	}
 	lanOnly := false
 	if val := strings.ToLower(os.Getenv("LIMONI_LAN_ONLY")); val == "1" || val == "true" || val == "yes" {
 		lanOnly = true
@@ -603,6 +610,7 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 		LocalID:             localID,
 		Nickname:            nickname,
 		RelayURL:            relayURL,
+		RelayToken:          strings.TrimSpace(relayToken),
 		LanOnly:             lanOnly,
 		Peers:               make(map[string]*PeerInfo),
 		audio:               audio,
@@ -1043,12 +1051,30 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		n.wsVideoCh = wsVideoCh
 		n.mu.Unlock()
 
+		targetURL := relayURL
+		headers := http.Header{}
+		if n.RelayToken != "" {
+			headers.Set("X-Auth-Token", n.RelayToken)
+			if !strings.Contains(targetURL, "token=") {
+				sep := "?"
+				if strings.Contains(targetURL, "?") {
+					sep = "&"
+				}
+				targetURL = fmt.Sprintf("%s%stoken=%s", targetURL, sep, url.QueryEscape(n.RelayToken))
+			}
+		}
+
 		dialer := websocket.Dialer{
 			HandshakeTimeout: 8 * time.Second,
 		}
-		conn, _, err := dialer.Dial(relayURL, nil)
+		conn, resp, err := dialer.Dial(targetURL, headers)
 		if err != nil {
-			if firstConnect {
+			if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+				if firstConnect {
+					n.log("[RELAY] ⛔ Relay connection rejected (401 Unauthorized): Invalid or missing token. Check --relay-token or LIMONI_RELAY_TOKEN.")
+					firstConnect = false
+				}
+			} else if firstConnect {
 				n.log(fmt.Sprintf("[RELAY] Failed to connect to relay server (%v). LAN mode active.", err))
 				firstConnect = false
 			}
@@ -1056,7 +1082,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 			select {
 			case <-cancel:
 				return
-			case <-time.After(1 * time.Second):
+			case <-time.After(2 * time.Second):
 				continue
 			}
 		}

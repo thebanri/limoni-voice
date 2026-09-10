@@ -36,21 +36,24 @@ Usage:
   limoni-voice [flags]
 
 Flags:
-  --relay <url>       Custom WebSocket relay URL for self-hosted servers
-                      Example: --relay ws://192.168.1.100:8080/ws
-                      (Set to 'none' or 'off' to disable relay)
-  --lan, --lan-only   Force LAN-only offline mode (disables relay, direct P2P on local network)
-  --offline           Alias for --lan
-  --peer, --connect   Direct target peer IP/host for cross-subnet or VPN LAN P2P
-                      Example: --peer 192.168.1.50:50000
-  --version           Show version information
-  --help, -h          Show this help message
+  --relay <url>         Custom WebSocket relay URL for self-hosted servers
+                        Example: --relay ws://192.168.1.100:8080/ws
+                        (Set to 'none' or 'off' to disable relay)
+  --relay-token <token> Authentication token for password-protected relay servers
+  --token <token>       Alias for --relay-token
+  --lan, --lan-only     Force LAN-only offline mode (disables relay, direct P2P on local network)
+  --offline             Alias for --lan
+  --peer, --connect     Direct target peer IP/host for cross-subnet or VPN LAN P2P
+                        Example: --peer 192.168.1.50:50000
+  --version             Show version information
+  --help, -h            Show this help message
 
 Environment Variables:
-  LIMONI_RELAY_URL    Override default WebSocket relay URL
-  LIMONI_LAN_ONLY     Set to 1 / true to enable LAN-only mode by default
-  LIMONI_OFFLINE      Set to 1 / true to enable offline mode
-  LIMONI_PEER         Set direct target peer IP/host
+  LIMONI_RELAY_URL      Override default WebSocket relay URL
+  LIMONI_RELAY_TOKEN    Authentication token for protected relay servers
+  LIMONI_LAN_ONLY       Set to 1 / true to enable LAN-only mode by default
+  LIMONI_OFFLINE        Set to 1 / true to enable offline mode
+  LIMONI_PEER           Set direct target peer IP/host
 
 Examples:
   # Standard launch (connects to default public relay + LAN auto-discovery):
@@ -63,19 +66,24 @@ Examples:
   limoni-voice --lan --peer 192.168.1.50
 
   # Connect using your self-hosted Docker relay server:
-  limoni-voice --relay ws://192.168.1.100:8080/ws`)
+  limoni-voice --relay ws://192.168.1.100:8080/ws
+
+  # Connect to a password-protected self-hosted relay:
+  limoni-voice --relay wss://yourdomain.com/ws --relay-token mysecret123`)
 }
 
 func main() {
 	var (
-		flagRelay   = flag.String("relay", "", "Custom WebSocket relay URL (e.g. ws://192.168.1.100:8080/ws, or 'none' for LAN only)")
-		flagLAN     = flag.Bool("lan", false, "Force LAN-only offline mode (disables relay connection)")
-		flagLANOnly = flag.Bool("lan-only", false, "Alias for -lan")
-		flagOffline = flag.Bool("offline", false, "Alias for -lan")
-		flagPeer    = flag.String("peer", "", "Direct target peer IP / host for LAN / VPN P2P (e.g. 192.168.1.50)")
-		flagConnect = flag.String("connect", "", "Alias for -peer")
-		flagHelp    = flag.Bool("help", false, "Show help and usage instructions")
-		flagVersion = flag.Bool("version", false, "Show version information")
+		flagRelay      = flag.String("relay", "", "Custom WebSocket relay URL (e.g. ws://192.168.1.100:8080/ws, or 'none' for LAN only)")
+		flagRelayToken = flag.String("relay-token", "", "Authentication token for protected relay server (or set LIMONI_RELAY_TOKEN)")
+		flagToken      = flag.String("token", "", "Alias for -relay-token")
+		flagLAN        = flag.Bool("lan", false, "Force LAN-only offline mode (disables relay connection)")
+		flagLANOnly    = flag.Bool("lan-only", false, "Alias for -lan")
+		flagOffline    = flag.Bool("offline", false, "Alias for -lan")
+		flagPeer       = flag.String("peer", "", "Direct target peer IP / host for LAN / VPN P2P (e.g. 192.168.1.50)")
+		flagConnect    = flag.String("connect", "", "Alias for -peer")
+		flagHelp       = flag.Bool("help", false, "Show help and usage instructions")
+		flagVersion    = flag.Bool("version", false, "Show version information")
 	)
 	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
 	flag.CommandLine.SetOutput(os.Stdout)
@@ -129,6 +137,12 @@ func main() {
 		} else {
 			node.RelayURL = *flagRelay
 		}
+	}
+
+	if *flagRelayToken != "" {
+		node.RelayToken = *flagRelayToken
+	} else if *flagToken != "" {
+		node.RelayToken = *flagToken
 	}
 
 	if *flagPeer != "" {

@@ -82,16 +82,22 @@ func generateHostToken() string {
 }
 
 type RelayServer struct {
-	rooms    map[string]*Room
-	mu       sync.RWMutex
-	upgrader websocket.Upgrader
+	authToken string
+	rooms     map[string]*Room
+	mu        sync.RWMutex
+	upgrader  websocket.Upgrader
 }
 
-func NewRelayServer() *RelayServer {
+func NewRelayServer(authTokens ...string) *RelayServer {
+	token := ""
+	if len(authTokens) > 0 {
+		token = strings.TrimSpace(authTokens[0])
+	}
 	return &RelayServer{
-		rooms: make(map[string]*Room),
+		authToken: token,
+		rooms:     make(map[string]*Room),
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin:     func(r *http.Request) bool { return true },
 			ReadBufferSize:  65536,
 			WriteBufferSize: 65536,
 		},
@@ -113,6 +119,28 @@ func extractClientIP(r *http.Request) string {
 }
 
 func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
+	clientIP := extractClientIP(r)
+
+	// Validate server authentication token if configured
+	if s.authToken != "" {
+		clientToken := r.URL.Query().Get("token")
+		if clientToken == "" {
+			clientToken = r.Header.Get("X-Auth-Token")
+		}
+		if clientToken == "" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+				clientToken = strings.TrimSpace(authHeader[7:])
+			}
+		}
+
+		if subtle.ConstantTimeCompare([]byte(clientToken), []byte(s.authToken)) != 1 {
+			log.Printf("[SECURITY] Unauthorized connection rejected from %s (invalid or missing auth token)", clientIP)
+			http.Error(w, "Unauthorized: Invalid or missing relay authentication token", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
@@ -127,7 +155,6 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remoteAddr := r.RemoteAddr
-	clientIP := extractClientIP(r)
 	log.Printf("[🌐] New connection from IP: %s (remote: %s)", clientIP, remoteAddr)
 
 	if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
@@ -733,8 +760,19 @@ func main() {
 		port = "8080"
 	}
 
-	server := NewRelayServer()
+	authToken := os.Getenv("RELAY_AUTH_TOKEN")
+	if authToken == "" {
+		authToken = os.Getenv("LIMONI_AUTH_TOKEN")
+	}
+
+	server := NewRelayServer(authToken)
 	go server.cleanupLoop()
+
+	if server.authToken != "" {
+		log.Printf("🔒 [SECURITY] Relay authentication active (RELAY_AUTH_TOKEN is set)")
+	} else {
+		log.Printf("⚠️  [NOTICE] Relay authentication disabled (public mode - no RELAY_AUTH_TOKEN set)")
+	}
 
 	http.HandleFunc("/ws", server.handleWS)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -743,8 +781,9 @@ func main() {
 		server.mu.RUnlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "ok",
-			"rooms":  roomCount,
+			"status":        "ok",
+			"rooms":         roomCount,
+			"auth_required": server.authToken != "",
 		})
 	})
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

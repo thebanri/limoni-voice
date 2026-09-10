@@ -485,4 +485,46 @@ func TestNoPINLeakInWelcome(t *testing.T) {
 	}
 }
 
+func TestRelayServerAuthToken(t *testing.T) {
+	secretToken := "super_secret_token_123"
+	server := NewRelayServer(secretToken)
+	s := httptest.NewServer(server.upgraderHandler())
+	defer s.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
+
+	// 1. Connection without token must fail with 401 Unauthorized
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatalf("Expected connection without token to fail, but it succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected HTTP 401 Unauthorized, got resp: %v", resp)
+	}
+
+	// 2. Connection with wrong token must fail with 401 Unauthorized
+	_, resp, err = websocket.DefaultDialer.Dial(wsURL+"?token=wrong_token", nil)
+	if err == nil {
+		t.Fatalf("Expected connection with wrong token to fail, but it succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected HTTP 401 Unauthorized for wrong token, got resp: %v", resp)
+	}
+
+	// 3. Connection with valid token in query parameter must succeed
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL+"?token="+secretToken, nil)
+	if err != nil {
+		t.Fatalf("Expected connection with valid query token to succeed, got error: %v (resp: %v)", err, resp)
+	}
+	conn.Close()
+
+	// 4. Connection with valid token in header must succeed
+	headers := http.Header{"X-Auth-Token": []string{secretToken}}
+	connHeader, respHeader, errHeader := websocket.DefaultDialer.Dial(wsURL, headers)
+	if errHeader != nil {
+		t.Fatalf("Expected connection with valid header token to succeed, got error: %v (resp: %v)", errHeader, respHeader)
+	}
+	connHeader.Close()
+}
+
 

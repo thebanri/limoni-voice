@@ -232,16 +232,35 @@ go build -o limoni-voice .
 
 ### Docker ile Kendi Relay Sunucunuzu Barındırma
 
+Relay sunucunuzu yabancıların izinsiz kullanmasını engellemek için isteğe bağlı olarak bir **Erişim Parolası / Token (`RELAY_AUTH_TOKEN`)** tanımlayabilirsiniz:
+
 ```bash
-# 1. Kendi WebSocket relay sunucusu konteynerinizi başlatın
+# Yöntem 1: Docker Compose ile (Önerilen)
+cp .env.example .env
+# .env dosyasında RELAY_AUTH_TOKEN belirleyin
+docker compose up -d
+
+# Yöntem 2: Standart Docker Komutu ile
 docker build -t limoni-relay .
+# Parolasız genel mod:
 docker run -d --name limoni-relay -p 8080:8080 limoni-relay
 
-# 2. İstemcileri kendi sunucunuza bağlayın
-./limoni-voice --relay ws://192.168.1.100:8080/ws
+# VEYA Parola korumalı güvenli mod:
+docker run -d --name limoni-relay -p 8080:8080 -e RELAY_AUTH_TOKEN="gizli_anahtar_123" limoni-relay
+```
 
-# Alternatif olarak ortam değişkeniyle tanımlayın:
+#### İstemcileri Kendi Korumalı Sunucunuza Bağlama:
+
+```bash
+# 1. Komut satırı parametresi ile:
+./limoni-voice --relay ws://192.168.1.100:8080/ws --relay-token gizli_anahtar_123
+
+# VEYA doğrudan URL içinde:
+./limoni-voice --relay "ws://192.168.1.100:8080/ws?token=gizli_anahtar_123"
+
+# 2. Alternatif olarak ortam değişkenleriyle:
 export LIMONI_RELAY_URL="ws://192.168.1.100:8080/ws"
+export LIMONI_RELAY_TOKEN="gizli_anahtar_123"
 ./limoni-voice
 ```
 
@@ -265,6 +284,8 @@ export LIMONI_LAN_ONLY=1
 | Parametre | Ortam Değişkeni | Varsayılan | Açıklama |
 |-----------|-----------------|------------|----------|
 | `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Kendi relay sunucunuzun WebSocket adresi |
+| `--relay-token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Parola korumalı relay sunucuları için kimlik doğrulama anahtarı |
+| `--token <token>` | `LIMONI_RELAY_TOKEN` | `""` | `--relay-token` parametresinin takma adı |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Sadece yerel ağ modunu zorlar (internet relay'i kapatır) |
 | `--offline` | `LIMONI_OFFLINE` | `false` | `--lan` parametresinin takma adı |
 | `--peer <ip:port>` | `LIMONI_PEER` | `""` | Farklı alt ağlar veya VPN için doğrudan hedef eş IP/adresi |

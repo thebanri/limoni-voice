@@ -232,16 +232,36 @@ go build -o limoni-voice .
 
 ### Self-Hosted Relay Server (Docker)
 
+To protect your relay server from unauthorized access and bandwidth abuse, you can set an optional **Authentication Secret / Token (`RELAY_AUTH_TOKEN`)**:
+
 ```bash
-# 1. Run your own WebSocket relay server container
+# Option 1: Using Docker Compose (Recommended)
+cp .env.example .env
+# Set RELAY_AUTH_TOKEN in .env
+docker compose up -d
+
+# Option 2: Using Standard Docker CLI
 docker build -t limoni-relay .
+
+# Public / open mode:
 docker run -d --name limoni-relay -p 8080:8080 limoni-relay
 
-# 2. Connect clients to your custom relay server
-./limoni-voice --relay ws://192.168.1.100:8080/ws
+# OR Token-protected secure mode:
+docker run -d --name limoni-relay -p 8080:8080 -e RELAY_AUTH_TOKEN="your_secret_key_123" limoni-relay
+```
 
-# Alternatively, set the environment variable:
+#### Connecting Clients to Protected Relay:
+
+```bash
+# Via command-line argument:
+./limoni-voice --relay ws://192.168.1.100:8080/ws --relay-token your_secret_key_123
+
+# OR directly in the URL query string:
+./limoni-voice --relay "ws://192.168.1.100:8080/ws?token=your_secret_key_123"
+
+# Alternatively, set via environment variables:
 export LIMONI_RELAY_URL="ws://192.168.1.100:8080/ws"
+export LIMONI_RELAY_TOKEN="your_secret_key_123"
 ./limoni-voice
 ```
 
@@ -265,6 +285,8 @@ export LIMONI_LAN_ONLY=1
 | Flag | Env Variable | Default | Description |
 |------|--------------|---------|-------------|
 | `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Custom WebSocket relay URL for self-hosted servers |
+| `--relay-token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Authentication token for password-protected relay servers |
+| `--token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Alias for `--relay-token` |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Force LAN-only offline mode (disables internet relay) |
 | `--offline` | `LIMONI_OFFLINE` | `false` | Alias for `--lan` |
 | `--peer <ip:port>` | `LIMONI_PEER` | `""` | Direct target peer IP/host for cross-subnet or VPN LAN P2P |

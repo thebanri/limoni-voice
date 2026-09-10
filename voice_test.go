@@ -3063,6 +3063,19 @@ func TestSendAudioPreRollLookback(t *testing.T) {
 	}
 }
 
+func TestRelayTokenConfig(t *testing.T) {
+	os.Setenv("LIMONI_RELAY_TOKEN", "test-token-xyz")
+	defer os.Unsetenv("LIMONI_RELAY_TOKEN")
+
+	audio := NewAudioEngine()
+	node := NewP2PNode("user_alice", "Alice", audio)
+	defer node.Close()
+
+	if node.RelayToken != "test-token-xyz" {
+		t.Fatalf("Expected node.RelayToken to be 'test-token-xyz', got %q", node.RelayToken)
+	}
+}
+
 
 
 
