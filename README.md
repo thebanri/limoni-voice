@@ -252,7 +252,7 @@ docker run -d --name limoni-relay -p 27850:27850 -e RELAY_AUTH_TOKEN="your_secre
 
 ##### 1. Via In-App Graphical Modal (Recommended - Friendly for Everyone):
 To configure without messing with command-line arguments:
-- In the lobby, press **`[R]`** or click the **`[R] Sunucu & Sifre Ayarlari`** footer button.
+- In the lobby, press **`[R]`** or click the **`[ R : Relay & Security Settings ]`** footer button.
 - From any screen, press the **`F5`** shortcut.
 - In room chat, type **`/relay`** or **`/server`**.
 
@@ -301,6 +301,23 @@ docker compose --profile tunnel up -d
 ```bash
 cloudflared tunnel --url http://localhost:27850
 ```
+
+##### 🛑 Stopping Relay and Tunnels
+Since tunnel services are defined under Docker Compose profiles, running a simple `docker compose down` will only stop the relay service. To stop everything (including all active tunnels):
+
+```bash
+# Stop all services and all tunnels across all profiles:
+docker compose --profile "*" down
+
+# Or stop a specific active profile:
+docker compose --profile quick-tunnel down
+
+# Remove any orphaned/leftover background containers:
+docker compose down --remove-orphans
+```
+
+> [!TIP]
+> **Network / UDP QUIC Issues:** `docker-compose.yml` is pre-configured with `--protocol http2` and public DNS to route tunnel traffic over standard HTTPS (TCP 443) instead of UDP port 7844 (QUIC), preventing "sendmsg: network is unreachable" errors caused by ISP UDP drops.
 
 ---
 

@@ -252,7 +252,7 @@ docker run -d --name limoni-relay -p 27850:27850 -e RELAY_AUTH_TOKEN="gizli_anah
 
 ##### 1. Uygulama İçi Grafik Arayüzden (Önerilen - Arkadaşlarınız İçin Kolay):
 Arkadaşlarınızın komut satırıyla uğraşmaması için doğrudan uygulama içinden ayarlayabilirsiniz:
-- Lobideyken **`[R]`** tuşuna basın veya alt bardaki **`[R] Sunucu & Şifre Ayarları`** butonuna tıklayın.
+- Lobideyken **`[R]`** tuşuna basın veya alt bardaki **`[ R : Relay & Security Settings ]`** butonuna tıklayın.
 - Herhangi bir ekranda **`F5`** kısayoluna basın.
 - Oda içindeyken sohbete **`/relay`** veya **`/server`** yazın.
 
@@ -302,6 +302,23 @@ docker compose --profile tunnel up -d
 # cloudflared yüklü ise terminalden tek satırla:
 cloudflared tunnel --url http://localhost:27850
 ```
+
+##### 🛑 Sunucu ve Tünelleri Durdurma
+Tünel servisleri Docker Compose profilleri altında tanımlı olduğundan, düz bir `docker compose down` komutu yalnızca ana relay servisini kapatır. Tüneller dahil tüm servisleri tek seferde durdurmak için:
+
+```bash
+# Tüm profillerdeki tünelleri ve relay'i birlikte kapatıp kaldırır:
+docker compose --profile "*" down
+
+# Veya sadece kullandığınız profili kapatmak için:
+docker compose --profile quick-tunnel down
+
+# Arkada kalan yetim/eski konteynerleri temizlemek için:
+docker compose down --remove-orphans
+```
+
+> [!TIP]
+> **Ağ / UDP QUIC Bağlantı Sorunları:** `docker-compose.yml`, tünel trafiğini UDP port 7844 (QUIC) yerine standart HTTPS (TCP 443) üzerinden geçirmek üzere `--protocol http2` ve genel DNS ile yapılandırılmıştır. Bu sayede servis sağlayıcıların UDP engellemelerine ve "sendmsg: network is unreachable" hatalarına takılmaz.
 
 ---
 
