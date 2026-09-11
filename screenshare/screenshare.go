@@ -1851,17 +1851,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	var args []string
 
 	useFfplay := strings.EqualFold(opt.PreferredPlayer, "ffplay")
-	if !useFfplay && opt.PreferredPlayer == "" {
-		// On Linux, prefer ffplay by default as it is immune to GPU/OpenGL/EGL driver crashes (e.g. NVIDIA update library mismatch)
-		if runtime.GOOS == "linux" {
-			if p, err := FindExecutable("ffplay"); err == nil {
-				useFfplay = true
-				binPath = p
-			}
-		}
-	}
 
-	if !useFfplay && !strings.EqualFold(opt.PreferredPlayer, "ffplay") {
+	if !useFfplay {
 		if p, err := FindExecutable("mpv"); err == nil {
 			binPath = p
 			args = []string{
@@ -1897,8 +1888,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			}
 			if runtime.GOOS == "windows" {
 				args = append(args, "--d3d11-sync-interval=0", "--swapchain-depth=1")
-			} else {
-				args = append(args, "--vo=gpu-next,gpu,wlshm,sdl")
+			} else if isWayland() {
+				args = append(args, "--gpu-context=wayland")
 			}
 			if len(opt.CustomMpvFlags) > 0 {
 				args = append(args, opt.CustomMpvFlags...)
@@ -1930,10 +1921,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-flags", "low_delay",
 			"-fflags", "nobuffer+flush_packets",
 			"-framedrop",
-			"-sync", "ext",
+			"-threads", fmt.Sprintf("%d", threads),
 			"-probesize", "32768",
 			"-analyzeduration", "0",
-			"-threads", fmt.Sprintf("%d", threads),
 			"-f", "mpegts",
 			"-alwaysontop",
 			"-window_title", windowTitle,

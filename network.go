@@ -260,6 +260,7 @@ type P2PNode struct {
 	videoTCPConn       net.Conn
 	videoPlayerCh      chan []byte
 	videoPlayerCancel  chan struct{}
+	videoPreBuf        [][]byte
 	videoReorder       VideoReorderBuffer
 	audioDedup         AudioDeduplicator
 	chatDedup          ChatDeduplicator
@@ -3634,6 +3635,22 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 		return
 	}
 
+	n.mu.Lock()
+	// Pre-buffer up to 10 recent chunks so player gets PAT/PMT/SPS sync headers immediately on connect
+	for _, chunk := range readyChunks {
+		if len(chunk) > 0 {
+			if len(n.videoPreBuf) < 10 {
+				n.videoPreBuf = append(n.videoPreBuf, chunk)
+			} else {
+				copy(n.videoPreBuf, n.videoPreBuf[1:])
+				n.videoPreBuf[len(n.videoPreBuf)-1] = chunk
+			}
+		}
+	}
+	watching = n.IsWatchingScreen
+	playerCh = n.videoPlayerCh
+	n.mu.Unlock()
+
 	// Non-blocking asynchronous dispatch to dedicated player pump.
 	// Network receive loops (relay WebSocket & UDP) NEVER block on player TCP writes!
 	if watching && playerCh != nil {
@@ -3698,7 +3715,7 @@ func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, canc
 				select {
 				case nextChunk, ok := <-playerCh:
 					if !ok {
-						_ = conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+						_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 						_, _ = batch.WriteTo(conn)
 						return
 					}
@@ -3710,7 +3727,7 @@ func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, canc
 				}
 			}
 
-			_ = conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if _, err := batch.WriteTo(conn); err != nil {
 				n.debugLog(fmt.Sprintf("⚠️ [WATCH] Player TCP write error: %v", err))
 				return
@@ -3949,6 +3966,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		opt = screenshare.DefaultReceiverOptions(fps)
 	}
 	n.videoReorder.Reset()
+	n.videoPreBuf = nil
 	playerCh := make(chan []byte, 1024)
 	cancelCh := make(chan struct{})
 	n.videoPlayerCh = playerCh
@@ -3984,6 +4002,12 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.mu.Lock()
 		if n.IsWatchingScreen {
 			n.videoTCPConn = conn
+			// Immediately flush pre-buffered chunks so player receives sync headers instantly
+			for _, chunk := range n.videoPreBuf {
+				if len(chunk) > 0 {
+					_, _ = conn.Write(chunk)
+				}
+			}
 			activePlayerCh := n.videoPlayerCh
 			activeCancelCh := n.videoPlayerCancel
 			n.mu.Unlock()
@@ -4114,6 +4138,7 @@ func (n *P2PNode) StopWatchingScreen() error {
 	n.WatchingPeerID = ""
 	n.WatchingPeerNick = ""
 	n.lastVideoChunkTime = time.Time{}
+	n.videoPreBuf = nil
 	n.videoReorder.Reset()
 	n.mu.Unlock()
 
