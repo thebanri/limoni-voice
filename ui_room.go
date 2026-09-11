@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 	"unicode"
 
@@ -3943,6 +3944,10 @@ func formatBytes(bytes int64) string {
 
 // OpenInEditor opens the specified file in the system's default or preferred GUI/terminal editor
 func OpenInEditor(filePath string) error {
+	if testing.Testing() {
+		return nil
+	}
+
 	absPath, err := filepath.Abs(filePath)
 	if err == nil {
 		filePath = absPath
@@ -4060,6 +4065,10 @@ func OpenInEditor(filePath string) error {
 
 // OpenFolder opens the system file manager at the specified directory
 func OpenFolder(dirPath string) error {
+	if testing.Testing() {
+		return nil
+	}
+
 	absPath, err := filepath.Abs(dirPath)
 	if err == nil {
 		dirPath = absPath

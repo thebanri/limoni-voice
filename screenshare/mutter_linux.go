@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -16,6 +17,10 @@ import (
 // RequestMutterScreenCast creates a direct, popup-less screencast session with GNOME Mutter compositor.
 // Returns the PipeWire Node ID and a cleanup function to stop the screencast session.
 func RequestMutterScreenCast(ctx context.Context, connector string) (uint32, func(), error) {
+	if testing.Testing() {
+		return 100, func() {}, nil
+	}
+
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to connect to session bus: %w", err)

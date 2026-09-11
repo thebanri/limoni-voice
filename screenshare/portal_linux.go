@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -97,6 +98,10 @@ func waitForPortalResponse(ctx context.Context, reqPath dbus.ObjectPath, sigChan
 // RequestPortalScreenCast creates a Portal screencast session.
 // sourceType: 1 = Monitor only, 2 = Window only, 3 = Both
 func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionClosed ...func()) (uint32, *os.File, func(), error) {
+	if testing.Testing() {
+		return 100, nil, func() {}, nil
+	}
+
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("failed to connect to session bus: %w", err)

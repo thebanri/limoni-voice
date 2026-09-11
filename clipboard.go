@@ -253,6 +253,10 @@ func OpenBrowserURL(urlStr string) error {
 
 	cleanURL := parsed.String()
 
+	if testing.Testing() {
+		return nil
+	}
+
 	switch runtime.GOOS {
 	case "windows":
 		// Option 1: rundll32.exe url.dll,FileProtocolHandler <url> (invokes Windows ShellExecute safely)

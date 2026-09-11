@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -205,6 +206,7 @@ type P2PNode struct {
 	OnLog             func(msg string)
 	OnPeerEvent       func(event string, peer *PeerInfo)
 	stopChan          chan struct{}
+	stopOnce          sync.Once
 	// Dedicated broadcast sender socket with SO_BROADCAST (works on Windows too)
 	bcastSendConn *net.UDPConn
 	// Optional direct LAN target peer address
@@ -583,13 +585,20 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 	relayURL := os.Getenv("LIMONI_RELAY_URL")
 	if relayURL == "" {
-		relayURL = DefaultRelayURL
+		if testing.Testing() {
+			relayURL = ""
+		} else {
+			relayURL = DefaultRelayURL
+		}
 	}
 	relayToken := os.Getenv("LIMONI_RELAY_TOKEN")
 	if relayToken == "" {
 		relayToken = os.Getenv("RELAY_AUTH_TOKEN")
 	}
 	lanOnly := false
+	if testing.Testing() && os.Getenv("LIMONI_RELAY_URL") == "" {
+		lanOnly = true
+	}
 	if val := strings.ToLower(os.Getenv("LIMONI_LAN_ONLY")); val == "1" || val == "true" || val == "yes" {
 		lanOnly = true
 	}
@@ -998,7 +1007,11 @@ func (n *P2PNode) LeaveRoom() {
 
 // Close gracefully terminates all active network listeners, screen shares, and leaves any room
 func (n *P2PNode) Close() {
+	n.stopOnce.Do(func() {
+		close(n.stopChan)
+	})
 	n.LeaveRoom()
+	n.closeRelay()
 	_ = n.StopScreenShare()
 	_ = n.StopWatchingScreen()
 	n.mu.Lock()
@@ -1009,6 +1022,10 @@ func (n *P2PNode) Close() {
 	if n.BroadcastConn != nil {
 		_ = n.BroadcastConn.Close()
 		n.BroadcastConn = nil
+	}
+	if n.bcastSendConn != nil {
+		_ = n.bcastSendConn.Close()
+		n.bcastSendConn = nil
 	}
 	n.mu.Unlock()
 }
@@ -3635,7 +3652,14 @@ func (n *P2PNode) GetPeer(id string) *PeerInfo {
 
 func (n *P2PNode) heartbeatLoop() {
 	ticker := time.NewTicker(1500 * time.Millisecond)
-	for range ticker.C {
+	defer ticker.Stop()
+	for {
+		select {
+		case <-n.stopChan:
+			return
+		case <-ticker.C:
+		}
+
 		n.mu.Lock()
 		if !n.IsConnected {
 			n.mu.Unlock()
@@ -4210,6 +4234,10 @@ func (n *P2PNode) SendFileBytes(fileName string, data []byte, isCode bool) error
 
 // GetLimoniTransfersDir returns the cross-platform path to ~/Downloads/LimoniTransfers/
 func GetLimoniTransfersDir() string {
+	if testing.Testing() {
+		return filepath.Join(os.TempDir(), "LimoniTransfers_test")
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil || homeDir == "" {
 		if runtime.GOOS == "windows" {

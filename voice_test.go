@@ -163,11 +163,7 @@ func TestP2PMaxPeers(t *testing.T) {
 	if err := node.Start(); err != nil {
 		t.Fatalf("Node start failed: %v", err)
 	}
-	defer func() {
-		if node.Conn != nil {
-			node.Conn.Close()
-		}
-	}()
+	defer node.Close()
 
 	node.JoinRoom("test-room")
 	if node.RoomCode != "test-room" || !node.IsConnected {
@@ -188,11 +184,7 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	if err := node1.Start(); err != nil {
 		t.Fatalf("Node1 start failed: %v", err)
 	}
-	defer func() {
-		if node1.Conn != nil {
-			node1.Conn.Close()
-		}
-	}()
+	defer node1.Close()
 
 	audio2 := NewAudioEngine()
 	node2 := NewP2PNode("node_2", "Bob", audio2)
@@ -201,11 +193,7 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	if err := node2.Start(); err != nil {
 		t.Fatalf("Node2 start failed: %v", err)
 	}
-	defer func() {
-		if node2.Conn != nil {
-			node2.Conn.Close()
-		}
-	}()
+	defer node2.Close()
 
 	room := "4819-azure-tiger"
 	// Alice opens room as Host
@@ -256,11 +244,7 @@ func TestP2PLANOnlyModeDirectDiscovery(t *testing.T) {
 	if err := node1.Start(); err != nil {
 		t.Fatalf("Node1 start failed: %v", err)
 	}
-	defer func() {
-		if node1.Conn != nil {
-			node1.Conn.Close()
-		}
-	}()
+	defer node1.Close()
 
 	audio2 := NewAudioEngine()
 	node2 := NewP2PNode("lan_node_2", "JoinerBob", audio2)
@@ -269,11 +253,7 @@ func TestP2PLANOnlyModeDirectDiscovery(t *testing.T) {
 	if err := node2.Start(); err != nil {
 		t.Fatalf("Node2 start failed: %v", err)
 	}
-	defer func() {
-		if node2.Conn != nil {
-			node2.Conn.Close()
-		}
-	}()
+	defer node2.Close()
 
 	room := "9912-silent-falcon"
 	node1.HostRoom(room)
@@ -314,11 +294,7 @@ func TestJoinClosedRoomFails(t *testing.T) {
 	if err := node.Start(); err != nil {
 		t.Fatalf("Node start failed: %v", err)
 	}
-	defer func() {
-		if node.Conn != nil {
-			node.Conn.Close()
-		}
-	}()
+	defer node.Close()
 
 	room := "9999-ghost-falcon"
 	failed := false
