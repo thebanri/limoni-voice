@@ -709,6 +709,22 @@ func TestVideoReorderBuffer(t *testing.T) {
 	if len(out) != 1 || string(out[0]) != "chunk10" {
 		t.Fatalf("Expected chunk10 after reset, got %v", out)
 	}
+
+	// Test packet drop recovery within low-latency threshold (12 packets)
+	buf.Reset()
+	_ = buf.Push(1, []byte("chunk1"))
+	// Packet 2 is lost!
+	for seq := uint32(3); seq <= 14; seq++ {
+		_ = buf.Push(seq, []byte(fmt.Sprintf("chunk%d", seq)))
+	}
+	// Pushing packet 15 triggers force advance since pending > 12
+	out = buf.Push(15, []byte("chunk15"))
+	if len(out) == 0 {
+		t.Fatalf("Expected force advance when buffer exceeds 12 packets, got empty")
+	}
+	if string(out[0]) != "chunk3" {
+		t.Fatalf("Expected earliest available packet chunk3 after force advance, got %s", string(out[0]))
+	}
 }
 
 func TestPushToTalkMode(t *testing.T) {

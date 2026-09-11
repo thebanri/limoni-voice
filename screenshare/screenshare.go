@@ -1395,7 +1395,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", gopSize, gopSize),
+			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", gopSize, gopSize),
 			"-b:v", bitrate,
 			"-maxrate", maxRate,
 			"-bufsize", bufSize,
@@ -1532,7 +1532,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
+				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
 				"-b:v", winBitrate,
 				"-maxrate", winMaxRate,
 				"-bufsize", winBufSize,
@@ -1585,7 +1585,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
+				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
 				"-b:v", winBitrate,
 				"-maxrate", winMaxRate,
 				"-bufsize", winBufSize,
@@ -1638,7 +1638,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "keyint=60:min-keyint=60:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1",
+				"-x264-params", "keyint=60:min-keyint=60:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1",
 				"-crf", "23",
 				"-b:v", "2M",
 				"-maxrate", "2.5M",
@@ -1670,7 +1670,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "keyint=60:min-keyint=60:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1",
+				"-x264-params", "keyint=60:min-keyint=60:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1",
 				"-crf", "23",
 				"-b:v", "2M",
 				"-maxrate", "2.5M",
@@ -1853,15 +1853,16 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
-			"--untimed",
-			"--vd-lavc-threads=0",
+			"--vd-lavc-threads=1",
 			"--cache=no",
 			"--demuxer-readahead-secs=0",
 			"--stream-buffer-size=4k",
-			"--framedrop=vo",
+			"--framedrop=decoder+vo",
 			"--hwdec=auto",
 			"--vd-lavc-show-all=no",
 			"--video-sync=desync",
+			"--video-latency-hacks=yes",
+			"--interpolation=no",
 			"--force-window=yes",
 			"--ontop=yes",
 			"--keep-open=yes",
@@ -1876,6 +1877,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--demuxer-lavf-probesize=32768",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
+		}
+		if runtime.GOOS == "windows" {
+			args = append(args, "--d3d11-sync-interval=0")
+		} else {
+			args = append(args, "--opengl-waitvsync=no")
 		}
 		if len(opt.CustomMpvFlags) > 0 {
 			args = append(args, opt.CustomMpvFlags...)
