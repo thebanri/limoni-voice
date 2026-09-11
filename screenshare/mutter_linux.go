@@ -38,7 +38,13 @@ func getBestLinuxEncoder() string {
 			logMsg("[SCREENSHARE] Hardware encoder detected: Intel/AMD VAAPI (vaapih264enc)")
 			return
 		}
-		// 3. Fallback: Universal high-performance multi-threaded CPU software encoding
+		// 3. Try Vulkan Hardware Video Encode (Vulkan H.264 on modern NVIDIA/AMD/Intel GPUs)
+		if exec.Command("gst-launch-1.0", "-q", "videotestsrc", "num-buffers=1", "!", "videoconvert", "!", "vulkanupload", "!", "vulkanh264enc", "!", "fakesink").Run() == nil {
+			selectedEncoder = "vulkanh264enc"
+			logMsg("[SCREENSHARE] Hardware encoder detected: Vulkan Video (vulkanh264enc)")
+			return
+		}
+		// 4. Fallback: Universal high-performance multi-threaded CPU software encoding
 		selectedEncoder = "x264enc"
 		logMsg("[SCREENSHARE] Software encoder active: CPU multi-core (x264enc)")
 	})
@@ -183,11 +189,10 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		}
 	}
 
-	// 120 FPS'de GOP aralığını 240 kareye (~2 sn) çıkararak burst dalgalanmalarını engelliyoruz
+	// 1 saniyelik GOP periyodu (IDR aralığı): herhangi bir paket kaybında
+	// en geç 1 saniye içinde tam kare yenilemesi sağlanır ve gecikme birikmesi önlenir.
 	gopSize := fps
-	if fps >= 120 {
-		gopSize = fps * 2
-	} else if gopSize < 30 {
+	if gopSize < 30 {
 		gopSize = 30
 	}
 
@@ -234,7 +239,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	}
 	encoder := getBestLinuxEncoder()
 	rawFormat := "I420"
-	if encoder == "nvh264enc" || encoder == "vaapih264enc" {
+	if encoder == "nvh264enc" || encoder == "vaapih264enc" || encoder == "vulkanh264enc" {
 		rawFormat = "NV12"
 	}
 
@@ -246,7 +251,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"always-copy=true",
 		// max-size-buffers=4: Gecikme birikmesini önlemek için kuyruk sınırlandırıldı
 		"!", "queue", "max-size-buffers=4", "max-size-bytes=0", "max-size-time=0",
-		"!", "videoconvert",
+		"!", "videoconvert", "n-threads=4",
 		"!", "videoscale",
 		"!", "videorate", "skip-to-first=true", "drop-only=true", "max-duplication-time=0",
 		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=%s", outWidth, outHeight, fps, rawFormat),
@@ -278,6 +283,13 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("keyframe-period=%d", gopSize),
 		)
+	case "vulkanh264enc":
+		args = append(args,
+			"!", "vulkanupload",
+			"!", "vulkanh264enc",
+			fmt.Sprintf("bitrate=%d", bitrateKbps*1000),
+			fmt.Sprintf("idr-period=%d", gopSize),
+		)
 	default: // "x264enc"
 		args = append(args,
 			"!", "x264enc",
@@ -287,11 +299,10 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			"pass=cbr",
 			"qp-min=18",
 			"qp-max=38",
-			"vbv-buf-capacity=50",
+			"vbv-buf-capacity=100",
 			"rc-lookahead=0",
 			"sync-lookahead=0",
 			"mb-tree=false",
-			"intra-refresh=true",
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("key-int-max=%d", gopSize),
 			"bframes=0",

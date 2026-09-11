@@ -178,7 +178,7 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		conn:           conn,
 		publicIP:       clientIP,
 		prioritySendCh: make(chan []byte, 128),
-		videoSendCh:    make(chan []byte, 1024),
+		videoSendCh:    make(chan []byte, 128),
 	}
 
 	// Start write pump
@@ -594,14 +594,20 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 	for id, member := range room.Members {
 		if id != sender.senderID && !member.isDisconnected {
 			if isVideo {
-				// Dedicated video channel with safe backpressure:
-				// If channel overflows 1024 packets, drop oldest single packet non-blocking without shredding GOP
+				// Dedicated video channel with anti-bufferbloat backpressure:
+				// If channel fills beyond 128 packets, client has fallen behind.
+				// Drain older backlog to snap stream immediately back to real-time (<50ms latency),
+				// rather than accumulating permanent ~1200ms queue delay.
 				select {
 				case member.videoSendCh <- data:
 				default:
-					select {
-					case <-member.videoSendCh:
-					default:
+					dropCount := len(member.videoSendCh) / 2
+					for i := 0; i < dropCount; i++ {
+						select {
+						case <-member.videoSendCh:
+						default:
+							break
+						}
 					}
 					select {
 					case member.videoSendCh <- data:

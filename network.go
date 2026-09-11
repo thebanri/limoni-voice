@@ -576,8 +576,10 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 		}
 	}
 
-	// 120 FPS'te kilitlenmeyi önlemek için eşik 32'den 8'e düşürüldü:
-	if len(b.pending) > 8 {
+	// 120 FPS'te internet dalgalanmalarında (jitter) erken paket kaybı ve
+	// makrobloklaşmayı önlemek için eşik 36 pakete (~140 ms) ayarlandı.
+	// 36 paket biriktiğinde kayıp paket atlanarak donma engellenir:
+	if len(b.pending) > 36 {
 		var minSeq uint32
 		var found bool
 		for s := range b.pending {
@@ -1148,10 +1150,9 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		wsPriorityCh := make(chan []byte, 128)
-		// CRITICAL: Keep video channel small to prevent TCP bufferbloat!
-		// 1024 packets @ 120 FPS = ~1.35 MB = ~4.5 seconds of queue delay.
-		// 48 packets = ~63 KB = ~210ms max, keeping ping RTT stable below 150ms.
-		wsVideoCh := make(chan []byte, 48)
+		// CRITICAL: Size video channel to comfortably hold a 1080p 120 FPS keyframe burst (60-90 packets)
+		// without bufferbloat. 128 packets = ~170 KB = ~300-400ms buffer, preventing keyframe slice truncation.
+		wsVideoCh := make(chan []byte, 128)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -2618,10 +2619,15 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		select {
 		case wsVideoCh <- data:
 		default:
-			// If channel is momentarily full, drop oldest single packet non-blocking to maintain live streaming
-			select {
-			case <-wsVideoCh:
-			default:
+			// Channel congested: drain older stale packets to snap latency back to real-time (<50ms)
+			// instead of permanently hovering at max capacity.
+			dropCount := len(wsVideoCh) / 2
+			for i := 0; i < dropCount; i++ {
+				select {
+				case <-wsVideoCh:
+				default:
+					break
+				}
 			}
 			select {
 			case wsVideoCh <- data:
@@ -3659,11 +3665,14 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 				select {
 				case playerCh <- chunk:
 				default:
-					// Dedicated pump channel full (player backlogged beyond 1024):
-					// Non-blocking drop of oldest single packet to keep stream moving without GOP destruction
-					select {
-					case <-playerCh:
-					default:
+					// Dedicated pump channel full: drain older backlog to snap back to real-time
+					dropCount := len(playerCh) / 2
+					for i := 0; i < dropCount; i++ {
+						select {
+						case <-playerCh:
+						default:
+							break
+						}
 					}
 					select {
 					case playerCh <- chunk:
@@ -3967,10 +3976,9 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	}
 	n.videoReorder.Reset()
 	n.videoPreBuf = nil
-	// CRITICAL: Small player channel prevents TCP loopback bufferbloat!
-	// 1024 packets = 1.35 MB queued to mpv → player always plays stale frames.
-	// 48 packets = 63 KB → drains in ~2ms on loopback; live & instant.
-	playerCh := make(chan []byte, 48)
+	// Channel capacity 192 easily absorbs full 1080p 120 FPS keyframe bursts (60-90 packets)
+	// without keyframe slice dropping. Loopback TCP drains 192 packets in <0.5ms.
+	playerCh := make(chan []byte, 192)
 	cancelCh := make(chan struct{})
 	n.videoPlayerCh = playerCh
 	n.videoPlayerCancel = cancelCh

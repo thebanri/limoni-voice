@@ -3363,6 +3363,57 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 	}
 }
 
+func TestVideo120FPSKeyframeBurstAndJitter(t *testing.T) {
+	// 1. Verify that a 80-chunk 1080p 120 FPS keyframe burst passes cleanly without dropping
+	node := &P2PNode{
+		LocalID:          "viewerNode",
+		Peers:            make(map[string]*PeerInfo),
+		IsWatchingScreen: true,
+	}
+	node.videoReorder.Reset()
+
+	playerCh := make(chan []byte, 192)
+	node.videoPlayerCh = playerCh
+
+	// Send 80 chunks of an I-frame in rapid succession
+	for i := uint32(1); i <= 80; i++ {
+		chunk := []byte(fmt.Sprintf("iframe-slice-%d", i))
+		node.forwardVideoChunk("streamer", chunk, i, "streamer")
+	}
+
+	if len(playerCh) != 80 {
+		t.Fatalf("Expected all 80 keyframe chunks in playerCh without loss, got %d", len(playerCh))
+	}
+
+	// 2. Verify jitter tolerance: Stream starts with packet 1.
+	// Packet 2 is missing/delayed while packets 3..28 arrive (26 packets of jitter).
+	// With threshold = 36, packet 2 arriving late must recover all chunks 2..28 without discarding packet 2!
+	reorder := VideoReorderBuffer{}
+	reorder.Reset()
+
+	p1 := reorder.Push(1, []byte("data-1"))
+	if len(p1) != 1 || string(p1[0]) != "data-1" {
+		t.Fatalf("Expected packet 1, got %v", p1)
+	}
+
+	for i := uint32(3); i <= 28; i++ {
+		chunks := reorder.Push(i, []byte(fmt.Sprintf("data-%d", i)))
+		if len(chunks) != 0 {
+			t.Fatalf("Expected 0 chunks while packet 2 is delayed, got %d for seq %d", len(chunks), i)
+		}
+	}
+
+	// Late packet 2 arrives!
+	out := reorder.Push(2, []byte("data-2"))
+	if len(out) != 27 {
+		t.Fatalf("Expected all 27 chunks (2..28) recovered in exact order, got %d", len(out))
+	}
+	if string(out[0]) != "data-2" || string(out[26]) != "data-28" {
+		t.Fatalf("Unexpected ordering: first=%s, last=%s", string(out[0]), string(out[26]))
+	}
+}
+
+
 
 
 

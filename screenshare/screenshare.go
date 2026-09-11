@@ -1177,7 +1177,69 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 		fps = 60
 	}
 
-	// 1. If user selected a specific Window / App on Wayland -> use Desktop Portal Window Cast
+	// 1. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS zero-copy)
+	// Prioritized for monitor, desktop, screen, and focused targets to avoid CPU portal encoding overhead.
+	if targetID != "portal:window" {
+		if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
+			gsrTarget := "screen"
+			if targetID == "focused" {
+				gsrTarget = "focused"
+			} else if strings.HasPrefix(targetID, "monitor:") {
+				parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
+				if len(parts) > 0 && parts[0] != "" {
+					gsrTarget = parts[0]
+				}
+			} else if strings.HasPrefix(targetID, "win:") {
+				parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
+				if len(parts) > 0 && parts[0] != "" {
+					gsrTarget = parts[0]
+				}
+			} else if targetID == "desktop" || targetID == "screen" || targetID == "" || targetID == "portal" {
+				gsrTarget = "screen"
+			} else {
+				gsrTarget = targetID
+			}
+
+			bitrateKbps := 1800
+			if fps >= 120 {
+				bitrateKbps = 2500
+			} else if fps <= 30 {
+				bitrateKbps = 1200
+			}
+			if opt.Bitrate != "" {
+				clean := strings.TrimSpace(strings.ToLower(opt.Bitrate))
+				if strings.HasSuffix(clean, "m") {
+					val, _ := strconv.ParseFloat(strings.TrimSuffix(clean, "m"), 64)
+					if val > 0 {
+						bitrateKbps = int(val * 1000)
+					}
+				} else if strings.HasSuffix(clean, "k") {
+					val, _ := strconv.Atoi(strings.TrimSuffix(clean, "k"))
+					if val > 0 {
+						bitrateKbps = val
+					}
+				}
+			}
+
+			args := []string{
+				"-w", gsrTarget,
+				"-s", opt.Resolution,
+				"-f", fmt.Sprintf("%d", fps),
+				"-k", "h264",
+				"-bm", "cbr",
+				"-q", fmt.Sprintf("%d", bitrateKbps),
+				"-tune", "performance",
+				"-keyint", "1",
+				"-fallback-cpu-encoding", "yes",
+				"-restore-portal-session", "no",
+				"-c", "mpegts",
+				"-o", targetURL,
+			}
+			return p, args, nil, nil, nil
+		}
+	}
+
+	// 2. If user selected a specific Window / App on Wayland -> use Desktop Portal Window Cast
 	if targetID == "portal:window" || targetID == "portal" || strings.HasPrefix(targetID, "app:") || strings.HasPrefix(targetID, "win:") || targetID == "focused" {
 		if isWayland() {
 			if _, err := FindExecutable("gst-launch-1.0"); err == nil {
@@ -1200,7 +1262,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 		}
 	}
 
-	// 2. If GNOME Mutter compositor is available (for Screen 1 / Monitors) -> direct popup-less full monitor capture
+	// 3. If GNOME Mutter compositor is available (for Screen 1 / Monitors) -> direct popup-less full monitor capture
 	if isMutterAvailable() {
 		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 			connector := ""
@@ -1224,7 +1286,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			}
 		}
 	} else if isWayland() {
-		// 2b. On KDE Plasma / non-GNOME Wayland compositors -> capture Screen via Desktop Portal
+		// 3b. On KDE Plasma / non-GNOME Wayland compositors -> capture Screen via Desktop Portal
 		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 			defer cancel()
@@ -1239,65 +1301,6 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 				}
 			}
 		}
-	}
-
-	// 3. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS)
-	if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
-		gsrTarget := "screen"
-		if targetID == "focused" {
-			gsrTarget = "focused"
-		} else if strings.HasPrefix(targetID, "monitor:") {
-			parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
-			if len(parts) > 0 && parts[0] != "" {
-				gsrTarget = parts[0]
-			}
-		} else if strings.HasPrefix(targetID, "win:") {
-			parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
-			if len(parts) > 0 && parts[0] != "" {
-				gsrTarget = parts[0]
-			}
-		} else if targetID == "desktop" || targetID == "screen" || targetID == "" {
-			gsrTarget = "screen"
-		} else {
-			gsrTarget = targetID
-		}
-
-		bitrateKbps := 1800
-		if fps >= 120 {
-			bitrateKbps = 2500
-		} else if fps <= 30 {
-			bitrateKbps = 1200
-		}
-		if opt.Bitrate != "" {
-			clean := strings.TrimSpace(strings.ToLower(opt.Bitrate))
-			if strings.HasSuffix(clean, "m") {
-				val, _ := strconv.ParseFloat(strings.TrimSuffix(clean, "m"), 64)
-				if val > 0 {
-					bitrateKbps = int(val * 1000)
-				}
-			} else if strings.HasSuffix(clean, "k") {
-				val, _ := strconv.Atoi(strings.TrimSuffix(clean, "k"))
-				if val > 0 {
-					bitrateKbps = val
-				}
-			}
-		}
-
-		args := []string{
-			"-w", gsrTarget,
-			"-s", opt.Resolution,
-			"-f", fmt.Sprintf("%d", fps),
-			"-k", "h264",
-			"-bm", "cbr",
-			"-q", fmt.Sprintf("%d", bitrateKbps),
-			"-tune", "performance",
-			"-keyint", "2",
-			"-fallback-cpu-encoding", "yes",
-			"-restore-portal-session", "no",
-			"-c", "mpegts",
-			"-o", targetURL,
-		}
-		return p, args, nil, nil, nil
 	}
 
 	// 4. Try wf-recorder on Wayland / wlroots (Sway, Hyprland, Wayfire)
@@ -1862,15 +1865,16 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 				"--really-quiet",
 				"--no-audio",
 				"--profile=low-latency",
-				"--untimed",
 				"--vd-lavc-threads=0",
+				"--vd-lavc-fast=yes",
 				"--cache=no",
 				"--demuxer-readahead-secs=0",
-				"--stream-buffer-size=4k",
+				"--stream-buffer-size=128k",
 				"--framedrop=vo",
 				"--hwdec=auto-safe",
 				"--vd-lavc-show-all=no",
-				"--video-sync=desync",
+				"--video-sync=audio",
+				fmt.Sprintf("--fps=%d", opt.FPS),
 				"--force-window=yes",
 				"--ontop=yes",
 				"--keep-open=yes",
