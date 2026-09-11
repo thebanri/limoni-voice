@@ -2676,12 +2676,15 @@ func (n *P2PNode) listenLoopOnConn(conn *net.UDPConn) {
 }
 
 func (n *P2PNode) listenBroadcastLoop() {
-	if n.BroadcastConn == nil {
+	n.mu.RLock()
+	bConn := n.BroadcastConn
+	n.mu.RUnlock()
+	if bConn == nil {
 		return
 	}
 	buf := make([]byte, 65535)
 	for {
-		readBytes, raddr, err := n.BroadcastConn.ReadFromUDP(buf)
+		readBytes, raddr, err := bConn.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
