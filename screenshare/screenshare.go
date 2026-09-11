@@ -912,21 +912,21 @@ func GetPresetOptions(fps int, targetID string) BroadcastOptions {
 		targetID = "portal"
 	}
 
-	bitrate := "1.8M"
+	bitrate := "4.5M"
 	quality := "high"
 	switch fps {
 	case 120:
-		bitrate = "2.4M"
+		bitrate = "6.5M"
 		quality = "ultra"
 	case 30:
-		bitrate = "1M"
+		bitrate = "3.0M"
 		quality = "fast"
 	case 60:
-		bitrate = "1.8M"
+		bitrate = "4.5M"
 		quality = "high"
 	default:
 		fps = 60
-		bitrate = "1.8M"
+		bitrate = "4.5M"
 		quality = "high"
 	}
 
@@ -1299,11 +1299,11 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			}
 
 			if gsrTarget != "" {
-				bitrateKbps := 1800
+				bitrateKbps := 4500
 				if fps >= 120 {
-					bitrateKbps = 2500
+					bitrateKbps = 6500
 				} else if fps <= 30 {
-					bitrateKbps = 1200
+					bitrateKbps = 3000
 				}
 				if opt.Bitrate != "" {
 					clean := strings.TrimSpace(strings.ToLower(opt.Bitrate))
@@ -1471,21 +1471,21 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-draw_mouse", "1",
 		}
 		args = append(args, inputArgs...)
-		bitrate := "1.8M"
-		maxRate := "2.4M"
-		bufSize := "600k"
+		bitrate := "4.5M"
+		maxRate := "6.5M"
+		bufSize := "2000k"
 		gopSize := fps
 		if gopSize > 120 {
 			gopSize = 120
 		}
 		if fps >= 120 {
-			bitrate = "2.4M"
-			maxRate = "3.2M"
-			bufSize = "800k"
+			bitrate = "6.5M"
+			maxRate = "9.0M"
+			bufSize = "3000k"
 		} else if fps <= 30 {
-			bitrate = "1M"
-			maxRate = "1.5M"
-			bufSize = "400k"
+			bitrate = "3.0M"
+			maxRate = "4.5M"
+			bufSize = "1500k"
 		}
 		if opt.Bitrate != "" {
 			bitrate = opt.Bitrate
@@ -1497,8 +1497,8 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", gopSize, gopSize),
-			"-crf", "22",
+			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=15:qpmax=32:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=2:aq-strength=1.0", gopSize, gopSize),
+			"-crf", "19",
 			"-b:v", bitrate,
 			"-maxrate", maxRate,
 			"-bufsize", bufSize,
@@ -1591,16 +1591,22 @@ func buildWindowsEncoderArgs(encoder string, winBitrate, winMaxRate, winBufSize 
 	case "h264_nvenc":
 		return []string{
 			"-c:v", "h264_nvenc",
-			"-preset", "p1",
+			"-preset", "p3",
 			"-tune", "ll",
-			"-rc", "cbr",
+			"-rc", "vbr",
+			"-cq", "19",
 			"-b:v", winBitrate,
 			"-maxrate", winMaxRate,
 			"-bufsize", winBufSize,
+			"-spatial-aq", "1",
+			"-temporal-aq", "1",
+			"-aq-strength", "8",
+			"-qmin", "15",
+			"-qmax", "32",
+			"-zerolatency", "1",
 			"-g", fmt.Sprintf("%d", winGop),
 			"-bf", "0",
 			"-forced-idr", "1",
-			"-repeat-headers", "1",
 			"-delay", "0",
 		}
 	case "h264_amf":
@@ -1611,27 +1617,35 @@ func buildWindowsEncoderArgs(encoder string, winBitrate, winMaxRate, winBufSize 
 			"-b:v", winBitrate,
 			"-maxrate", winMaxRate,
 			"-bufsize", winBufSize,
+			"-vbaq", "1",
+			"-async_depth", "1",
 			"-g", fmt.Sprintf("%d", winGop),
 			"-bf", "0",
-			"-header_insertion_mode", "gop",
+			"-forced_idr", "1",
 		}
 	case "h264_qsv":
 		return []string{
 			"-c:v", "h264_qsv",
 			"-preset", "veryfast",
+			"-scenario", "displayremoting",
 			"-b:v", winBitrate,
 			"-maxrate", winMaxRate,
 			"-bufsize", winBufSize,
+			"-max_qp_i", "32",
+			"-max_qp_p", "32",
+			"-min_qp_i", "15",
+			"-min_qp_p", "15",
 			"-g", fmt.Sprintf("%d", winGop),
 			"-bf", "0",
+			"-forced_idr", "1",
 		}
 	default: // libx264
 		return []string{
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
-			"-crf", "22",
+			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=15:qpmax=32:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=2:aq-strength=1.0", winGop, winGop),
+			"-crf", "19",
 			"-b:v", winBitrate,
 			"-maxrate", winMaxRate,
 			"-bufsize", winBufSize,
@@ -1646,7 +1660,7 @@ func buildWindowsBroadcastArgs(opt BroadcastOptions, targetURL string, ffmpegBin
 	if scaleRes == "" {
 		scaleRes = "1920:1080"
 	}
-	scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p", scaleRes)
+	scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic:force_original_aspect_ratio=decrease:in_range=full:out_range=full:in_color_matrix=bt709:out_color_matrix=bt709,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p", scaleRes)
 
 	winFps := opt.FPS
 	if winFps <= 0 {
@@ -1656,17 +1670,17 @@ func buildWindowsBroadcastArgs(opt BroadcastOptions, targetURL string, ffmpegBin
 	if winGop > 120 {
 		winGop = 120
 	}
-	winBitrate := "1.8M"
-	winMaxRate := "2.4M"
-	winBufSize := "600k"
+	winBitrate := "4.5M"
+	winMaxRate := "6.5M"
+	winBufSize := "2000k"
 	if winFps >= 120 {
-		winBitrate = "2.5M"
-		winMaxRate = "3.2M"
-		winBufSize = "800k"
+		winBitrate = "6.5M"
+		winMaxRate = "9.0M"
+		winBufSize = "3000k"
 	} else if winFps <= 30 {
-		winBitrate = "1.2M"
-		winMaxRate = "1.6M"
-		winBufSize = "400k"
+		winBitrate = "3.0M"
+		winMaxRate = "4.5M"
+		winBufSize = "1500k"
 	}
 	if opt.Bitrate != "" {
 		winBitrate = opt.Bitrate
@@ -1675,6 +1689,14 @@ func buildWindowsBroadcastArgs(opt BroadcastOptions, targetURL string, ffmpegBin
 
 	encoder := getBestWindowsEncoder(ffmpegBin)
 	encArgs := buildWindowsEncoderArgs(encoder, winBitrate, winMaxRate, winBufSize, winGop)
+
+	colorArgs := []string{
+		"-color_range", "2",
+		"-colorspace", "bt709",
+		"-color_primaries", "bt709",
+		"-color_trc", "bt709",
+		"-pix_fmt", "yuv420p",
+	}
 
 	var args []string
 	if targetHwnd != 0 {
@@ -1694,8 +1716,8 @@ func buildWindowsBroadcastArgs(opt BroadcastOptions, targetURL string, ffmpegBin
 			"-vf", scaleOpt,
 		}
 		args = append(args, encArgs...)
+		args = append(args, colorArgs...)
 		args = append(args,
-			"-pix_fmt", "yuv420p",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
 			"-mpegts_flags", "+latm+pat_pmt_at_frames",
@@ -1737,8 +1759,8 @@ func buildWindowsBroadcastArgs(opt BroadcastOptions, targetURL string, ffmpegBin
 			"-vf", scaleOpt,
 		}
 		args = append(args, encArgs...)
+		args = append(args, colorArgs...)
 		args = append(args,
-			"-pix_fmt", "yuv420p",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
 			"-mpegts_flags", "+latm+pat_pmt_at_frames",
@@ -1777,8 +1799,8 @@ func buildWindowsBroadcastArgs(opt BroadcastOptions, targetURL string, ffmpegBin
 	args = append(args, inputArgs...)
 	args = append(args, "-vf", scaleOpt)
 	args = append(args, encArgs...)
+	args = append(args, colorArgs...)
 	args = append(args,
-		"-pix_fmt", "yuv420p",
 		"-bsf:v", "dump_extra",
 		"-f", "mpegts",
 		"-mpegts_flags", "+latm+pat_pmt_at_frames",

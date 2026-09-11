@@ -228,7 +228,7 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 
 	procWinSelectObject.Call(hdcOutMem, hOutBitmap)
 	if procWinSetStretchBltMode.Find() == nil {
-		procWinSetStretchBltMode.Call(hdcOutMem, uintptr(COLORONCOLOR))
+		procWinSetStretchBltMode.Call(hdcOutMem, uintptr(HALFTONE))
 	}
 
 	// Dynamic window capture DC & Bitmap (adapted dynamically when window is resized)

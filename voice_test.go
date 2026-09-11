@@ -3170,17 +3170,17 @@ func TestLobbyPinToggleAndHostHygiene(t *testing.T) {
 
 func TestScreenShareFPSModes(t *testing.T) {
 	opt120 := screenshare.GetPresetOptions(120, "win-120")
-	if opt120.FPS != 120 || opt120.Bitrate != "2.4M" || opt120.Quality != "ultra" || opt120.WindowID != "win-120" {
+	if opt120.FPS != 120 || opt120.Bitrate != "6.5M" || opt120.Quality != "ultra" || opt120.WindowID != "win-120" {
 		t.Fatalf("Unexpected 120 FPS preset: %+v", opt120)
 	}
 
 	opt60 := screenshare.GetPresetOptions(60, "win-60")
-	if opt60.FPS != 60 || opt60.Bitrate != "1.8M" || opt60.Quality != "high" || opt60.WindowID != "win-60" {
+	if opt60.FPS != 60 || opt60.Bitrate != "4.5M" || opt60.Quality != "high" || opt60.WindowID != "win-60" {
 		t.Fatalf("Unexpected 60 FPS preset: %+v", opt60)
 	}
 
 	opt30 := screenshare.GetPresetOptions(30, "win-30")
-	if opt30.FPS != 30 || opt30.Bitrate != "1M" || opt30.Quality != "fast" || opt30.WindowID != "win-30" {
+	if opt30.FPS != 30 || opt30.Bitrate != "3.0M" || opt30.Quality != "fast" || opt30.WindowID != "win-30" {
 		t.Fatalf("Unexpected 30 FPS preset: %+v", opt30)
 	}
 

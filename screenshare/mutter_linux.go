@@ -168,11 +168,11 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		fps = 60
 	}
 
-	bitrateKbps := 1800
+	bitrateKbps := 4500
 	if fps >= 120 {
-		bitrateKbps = 2400
+		bitrateKbps = 6500
 	} else if fps <= 30 {
-		bitrateKbps = 1000
+		bitrateKbps = 3000
 	}
 	if opt.Bitrate != "" {
 		bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))

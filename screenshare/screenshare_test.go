@@ -247,7 +247,7 @@ func TestWatchPIDLiveness(t *testing.T) {
 func TestBuildWindowsEncoderArgs(t *testing.T) {
 	encoders := []string{"h264_nvenc", "h264_amf", "h264_qsv", "libx264"}
 	for _, enc := range encoders {
-		args := buildWindowsEncoderArgs(enc, "2.5M", "3.2M", "800k", 60)
+		args := buildWindowsEncoderArgs(enc, "4.5M", "6.5M", "2000k", 60)
 		if len(args) == 0 {
 			t.Fatalf("expected non-empty encoder args for %s", enc)
 		}
@@ -261,6 +261,64 @@ func TestBuildWindowsEncoderArgs(t *testing.T) {
 		if !foundEnc {
 			t.Fatalf("expected -c:v %s in args, got: %v", enc, args)
 		}
+
+		// Ensure unsupported options are not present
+		for _, a := range args {
+			if a == "-repeat-headers" && enc == "h264_nvenc" {
+				t.Fatalf("h264_nvenc should not contain unsupported -repeat-headers")
+			}
+			if a == "-header_insertion_mode" && enc == "h264_amf" {
+				t.Fatalf("h264_amf should not contain unsupported -header_insertion_mode")
+			}
+		}
+
+		// Verify tuning parameters
+		switch enc {
+		case "h264_nvenc":
+			hasSpatialAQ := false
+			for i, a := range args {
+				if a == "-spatial-aq" && i+1 < len(args) && args[i+1] == "1" {
+					hasSpatialAQ = true
+					break
+				}
+			}
+			if !hasSpatialAQ {
+				t.Fatalf("h264_nvenc should have -spatial-aq 1")
+			}
+		case "h264_amf":
+			hasVBAQ := false
+			for i, a := range args {
+				if a == "-vbaq" && i+1 < len(args) && args[i+1] == "1" {
+					hasVBAQ = true
+					break
+				}
+			}
+			if !hasVBAQ {
+				t.Fatalf("h264_amf should have -vbaq 1")
+			}
+		case "h264_qsv":
+			hasScenario := false
+			for i, a := range args {
+				if a == "-scenario" && i+1 < len(args) && args[i+1] == "displayremoting" {
+					hasScenario = true
+					break
+				}
+			}
+			if !hasScenario {
+				t.Fatalf("h264_qsv should have -scenario displayremoting")
+			}
+		case "libx264":
+			hasCRF19 := false
+			for i, a := range args {
+				if a == "-crf" && i+1 < len(args) && args[i+1] == "19" {
+					hasCRF19 = true
+					break
+				}
+			}
+			if !hasCRF19 {
+				t.Fatalf("libx264 should have -crf 19")
+			}
+		}
 		t.Logf("Encoder %s args: %v", enc, args)
 	}
 }
@@ -270,7 +328,7 @@ func TestBuildWindowsBroadcastArgs(t *testing.T) {
 		opt := BroadcastOptions{
 			Resolution: "1920x1080",
 			FPS:        120,
-			Bitrate:    "2.5M",
+			Bitrate:    "6.5M",
 			WindowID:   "desktop",
 		}
 		args := buildWindowsBroadcastArgs(opt, "udp://127.0.0.1:50100", "ffmpeg", 0, 0, 0)
@@ -278,14 +336,20 @@ func TestBuildWindowsBroadcastArgs(t *testing.T) {
 			t.Fatal("expected non-empty args for Windows desktop broadcast")
 		}
 		foundMpegts := false
+		foundColorRange := false
 		for i, a := range args {
 			if a == "-f" && i+1 < len(args) && args[i+1] == "mpegts" {
 				foundMpegts = true
-				break
+			}
+			if a == "-color_range" && i+1 < len(args) && args[i+1] == "2" {
+				foundColorRange = true
 			}
 		}
 		if !foundMpegts {
 			t.Fatalf("expected mpegts format in args: %v", args)
+		}
+		if !foundColorRange {
+			t.Fatalf("expected -color_range 2 in args: %v", args)
 		}
 		t.Logf("Windows desktop broadcast args: %v", args)
 	})
@@ -314,14 +378,20 @@ func TestBuildWindowsBroadcastArgs(t *testing.T) {
 			t.Fatal("expected non-empty args for Windows window broadcast")
 		}
 		foundPipe := false
+		foundColorRange := false
 		for i, a := range args {
 			if a == "-i" && i+1 < len(args) && args[i+1] == "pipe:0" {
 				foundPipe = true
-				break
+			}
+			if a == "-color_range" && i+1 < len(args) && args[i+1] == "2" {
+				foundColorRange = true
 			}
 		}
 		if !foundPipe {
 			t.Fatalf("expected -i pipe:0 in window capture args, got: %v", args)
+		}
+		if !foundColorRange {
+			t.Fatalf("expected -color_range 2 in window capture args, got: %v", args)
 		}
 		t.Logf("Windows window capture args: %v", args)
 	})
