@@ -308,6 +308,9 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 	client.senderID = msg.SenderID
 	client.nickname = msg.Nickname
 	client.localPort = msg.Port
+	if msg.PublicPort > 0 {
+		client.publicPort = msg.PublicPort
+	}
 
 	s.mu.Lock()
 
@@ -401,6 +404,9 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	client.senderID = msg.SenderID
 	client.nickname = msg.Nickname
 	client.localPort = msg.Port
+	if msg.PublicPort > 0 {
+		client.publicPort = msg.PublicPort
+	}
 
 	s.mu.RLock()
 	room, exists := s.rooms[msg.RoomCode]
@@ -470,10 +476,11 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	for _, m := range room.Members {
 		if m.senderID != msg.SenderID {
 			peers = append(peers, PeerInfo{
-				SenderID:  m.senderID,
-				Nickname:  m.nickname,
-				PublicIP:  m.publicIP,
-				LocalPort: m.localPort,
+				SenderID:   m.senderID,
+				Nickname:   m.nickname,
+				PublicIP:   m.publicIP,
+				LocalPort:  m.localPort,
+				PublicPort: m.publicPort,
 			})
 			existingMembers = append(existingMembers, m)
 		}
@@ -494,15 +501,17 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	hostNick := ""
 	hostIP := ""
 	hostPort := 0
+	hostPubPort := 0
 	if host, ok := room.Members[hostID]; ok {
 		hostNick = host.nickname
 		hostIP = host.publicIP
 		hostPort = host.localPort
+		hostPubPort = host.publicPort
 	}
 	roomLocked := room.IsLocked
 	room.mu.Unlock()
 
-	log.Printf("[+] %s (%s, IP: %s:%d) joined room %s", msg.Nickname, msg.SenderID, client.publicIP, client.localPort, msg.RoomCode)
+	log.Printf("[+] %s (%s, IP: %s:%d, PubPort: %d) joined room %s", msg.Nickname, msg.SenderID, client.publicIP, client.localPort, client.publicPort, msg.RoomCode)
 
 	// Send welcome to joiner with peer list, direct P2P endpoint info, and room locked state (never leak room PIN)
 	sendControlMessage(client, ControlMessage{
@@ -512,6 +521,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		Nickname:   hostNick,
 		PublicIP:   hostIP,
 		Port:       hostPort,
+		PublicPort: hostPubPort,
 		YourIP:     client.publicIP,
 		Peers:      peers,
 		IsLocked:   roomLocked,
@@ -519,11 +529,12 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 
 	// Notify existing members about new/reconnected peer with direct IP info for hole-punching
 	joinNotify := ControlMessage{
-		Type:     "peer_joined",
-		SenderID: msg.SenderID,
-		Nickname: msg.Nickname,
-		PublicIP: client.publicIP,
-		Port:     client.localPort,
+		Type:       "peer_joined",
+		SenderID:   msg.SenderID,
+		Nickname:   msg.Nickname,
+		PublicIP:   client.publicIP,
+		Port:       client.localPort,
+		PublicPort: client.publicPort,
 	}
 	for _, m := range existingMembers {
 		sendControlMessage(m, joinNotify)

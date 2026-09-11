@@ -6,13 +6,33 @@ package screenshare
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 )
+
+var (
+	nvencCheckOnce sync.Once
+	hasNvenc       bool
+)
+
+func isNvencSupported() bool {
+	if testing.Testing() {
+		return false
+	}
+	nvencCheckOnce.Do(func() {
+		cmd := exec.Command("gst-inspect-1.0", "nvh264enc")
+		if err := cmd.Run(); err == nil {
+			hasNvenc = true
+		}
+	})
+	return hasNvenc
+}
 
 // RequestMutterScreenCast creates a direct, popup-less screencast session with GNOME Mutter compositor.
 // Returns the PipeWire Node ID and a cleanup function to stop the screencast session.
@@ -194,6 +214,12 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	if hasFD {
 		args = append(args, "fd=3")
 	}
+	useNvenc := isNvencSupported()
+	rawFormat := "I420"
+	if useNvenc {
+		rawFormat = "NV12"
+	}
+
 	args = append(args,
 		fmt.Sprintf("path=%d", nodeID),
 		"do-timestamp=true",
@@ -204,19 +230,38 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"!", "videoconvert",
 		"!", "videoscale",
 		"!", "videorate", "skip-to-first=true", "drop-only=false", "max-duplication-time=0",
-		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=I420", outWidth, outHeight, fps),
-		"!", "x264enc",
-		"speed-preset=ultrafast",
-		"tune=zerolatency",
-		"pass=cbr",
-		fmt.Sprintf("bitrate=%d", bitrateKbps),
-		"intra-refresh=true",
-		fmt.Sprintf("key-int-max=%d", fps),
-		"bframes=0",
-		"byte-stream=true",
-		"sliced-threads=true",
-		fmt.Sprintf("option-string=intra-refresh=1:keyint=%d:min-keyint=%d:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", fps, fps),
-		"insert-vui=true",
+		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=%s", outWidth, outHeight, fps, rawFormat),
+	)
+
+	if useNvenc {
+		args = append(args,
+			"!", "nvh264enc",
+			"preset=low-latency",
+			"tune=ultra-low-latency",
+			"zerolatency=true",
+			"rc-mode=cbr",
+			fmt.Sprintf("bitrate=%d", bitrateKbps),
+			fmt.Sprintf("gop-size=%d", fps),
+			"repeat-sequence-header=true",
+		)
+	} else {
+		args = append(args,
+			"!", "x264enc",
+			"speed-preset=ultrafast",
+			"tune=zerolatency",
+			"pass=cbr",
+			fmt.Sprintf("bitrate=%d", bitrateKbps),
+			"intra-refresh=true",
+			fmt.Sprintf("key-int-max=%d", fps),
+			"bframes=0",
+			"byte-stream=true",
+			"sliced-threads=true",
+			fmt.Sprintf("option-string=intra-refresh=1:keyint=%d:min-keyint=%d:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", fps, fps),
+			"insert-vui=true",
+		)
+	}
+
+	args = append(args,
 		"!", "video/x-h264,profile=baseline,stream-format=byte-stream",
 		"!", "mpegtsmux",
 		"alignment=7",
