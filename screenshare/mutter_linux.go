@@ -300,7 +300,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	}
 
 	args = append(args,
-		"!", "h264parse",
+		"!", "h264parse", "config-interval=-1",
 		"!", "video/x-h264,stream-format=byte-stream",
 		"!", "mpegtsmux",
 		"alignment=7",

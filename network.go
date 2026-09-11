@@ -3640,7 +3640,6 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 	if watching && tcpConn != nil {
 		for _, chunk := range readyChunks {
 			if len(chunk) > 0 {
-				_ = tcpConn.SetWriteDeadline(time.Now().Add(50 * time.Millisecond))
 				if _, err := tcpConn.Write(chunk); err != nil {
 					n.mu.Lock()
 					if n.videoTCPConn == tcpConn {
@@ -3902,8 +3901,8 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.debugLog(fmt.Sprintf("[VIEWER] [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
-			_ = tcp.SetWriteBuffer(64 * 1024)
-			_ = tcp.SetReadBuffer(64 * 1024)
+			_ = tcp.SetWriteBuffer(2 * 1024 * 1024)
+			_ = tcp.SetReadBuffer(2 * 1024 * 1024)
 		}
 		n.mu.Lock()
 		if n.IsWatchingScreen {
