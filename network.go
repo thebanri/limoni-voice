@@ -1146,7 +1146,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		wsPriorityCh := make(chan []byte, 256)
-		wsVideoCh := make(chan []byte, 512)
+		wsVideoCh := make(chan []byte, 48)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -1511,13 +1511,17 @@ func (n *P2PNode) punchPeerUDP(publicIP string, localPort int, publicPort int, l
 	var targets []*net.UDPAddr
 	if publicIP != "" && publicPort > 0 {
 		if raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", publicIP, publicPort)); err == nil {
-			targets = append(targets, raddr)
+			if n.LanOnly || (!raddr.IP.IsPrivate() && !raddr.IP.IsLoopback()) {
+				targets = append(targets, raddr)
+			}
 		}
 	}
-	for _, lip := range localIPs {
-		if lip != "" && localPort > 0 && lip != publicIP {
-			if raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", lip, localPort)); err == nil {
-				targets = append(targets, raddr)
+	if n.LanOnly {
+		for _, lip := range localIPs {
+			if lip != "" && localPort > 0 && lip != publicIP {
+				if raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", lip, localPort)); err == nil {
+					targets = append(targets, raddr)
+				}
 			}
 		}
 	}
@@ -1689,7 +1693,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			}
 			if msg.PublicIP != "" && effectiveHostPort > 0 {
 				hostAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", msg.PublicIP, effectiveHostPort))
-			} else if msg.LocalIP != "" && effectiveHostPort > 0 {
+			} else if msg.LocalIP != "" && effectiveHostPort > 0 && n.LanOnly {
 				hostAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", msg.LocalIP, effectiveHostPort))
 			}
 
@@ -1710,9 +1714,11 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				n.Peers[msg.SenderID] = hostPeer
 			}
 
-			// Trigger direct UDP hole-punching to Host (probing both WAN Public IP and LAN Local IP)
-			if msg.PublicIP != "" || msg.LocalIP != "" {
-				go n.punchPeerUDP(msg.PublicIP, msg.Port, msg.PublicPort, msg.LocalIP)
+			// Trigger direct UDP hole-punching to Host
+			if n.LanOnly && msg.LocalIP != "" && msg.Port > 0 {
+				go n.punchPeerUDP("", msg.Port, 0, msg.LocalIP)
+			} else if !n.LanOnly && msg.PublicIP != "" && msg.PublicPort > 0 {
+				go n.punchPeerUDP(msg.PublicIP, 0, msg.PublicPort)
 			}
 
 			for _, p := range msg.Peers {
@@ -1724,7 +1730,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 					}
 					if p.PublicIP != "" && effectivePeerPort > 0 {
 						pAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", p.PublicIP, effectivePeerPort))
-					} else if p.LocalIP != "" && effectivePeerPort > 0 {
+					} else if p.LocalIP != "" && effectivePeerPort > 0 && n.LanOnly {
 						pAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", p.LocalIP, effectivePeerPort))
 					}
 					if existingPeer, ok := n.Peers[p.SenderID]; ok {
@@ -1742,8 +1748,10 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 							ViaRelay: true,
 						}
 					}
-					if p.PublicIP != "" || p.LocalIP != "" {
-						go n.punchPeerUDP(p.PublicIP, p.LocalPort, p.PublicPort, p.LocalIP)
+					if n.LanOnly && p.LocalIP != "" && p.LocalPort > 0 {
+						go n.punchPeerUDP("", p.LocalPort, 0, p.LocalIP)
+					} else if !n.LanOnly && p.PublicIP != "" && p.PublicPort > 0 {
+						go n.punchPeerUDP(p.PublicIP, 0, p.PublicPort)
 					}
 				}
 			}
@@ -1804,7 +1812,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			}
 			if msg.PublicIP != "" && effectivePort > 0 {
 				peerAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", msg.PublicIP, effectivePort))
-			} else if msg.LocalIP != "" && effectivePort > 0 {
+			} else if msg.LocalIP != "" && effectivePort > 0 && n.LanOnly {
 				peerAddr, _ = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", msg.LocalIP, effectivePort))
 			}
 
@@ -1815,6 +1823,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 					Nickname: msg.Nickname,
 					Addr:     peerAddr,
 					LastSeen: time.Now(),
+					ViaRelay: true,
 				}
 				n.Peers[msg.SenderID] = peer
 				n.log(fmt.Sprintf("[+] %s joined the room! (Internet E2EE)", msg.Nickname))
@@ -1830,9 +1839,11 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				}
 			}
 
-			// Trigger direct UDP hole-punching to the new/reconnected joiner (probing both WAN and LAN)
-			if msg.PublicIP != "" || msg.LocalIP != "" {
-				go n.punchPeerUDP(msg.PublicIP, msg.Port, msg.PublicPort, msg.LocalIP)
+			// Trigger direct UDP hole-punching to the new/reconnected joiner
+			if n.LanOnly && msg.LocalIP != "" && msg.Port > 0 {
+				go n.punchPeerUDP("", msg.Port, 0, msg.LocalIP)
+			} else if !n.LanOnly && msg.PublicIP != "" && msg.PublicPort > 0 {
+				go n.punchPeerUDP(msg.PublicIP, 0, msg.PublicPort)
 			}
 		}
 
@@ -2774,15 +2785,21 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					if nick == "" {
 						nick = "User_" + pkt.SenderID[:min(len(pkt.SenderID), 4)]
 					}
+					isPrivateAddr := (raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())) ||
+						(peerAddr != nil && (peerAddr.IP.IsPrivate() || peerAddr.IP.IsLoopback()))
+					isRelayed := (raddr == nil && peerAddr == nil) || (!n.LanOnly && isPrivateAddr)
+					effectiveAddr := peerAddr
+					if !n.LanOnly && isPrivateAddr {
+						effectiveAddr = nil
+					}
 					var lastDirect time.Time
-					isRelayed := (raddr == nil && peerAddr == nil)
-					if raddr != nil {
+					if raddr != nil && (n.LanOnly || !isPrivateAddr) {
 						lastDirect = time.Now()
 					}
 					peer = &PeerInfo{
 						ID:             pkt.SenderID,
 						Nickname:       nick,
-						Addr:           peerAddr,
+						Addr:           effectiveAddr,
 						LocalPort:      pkt.LocalPort,
 						LastSeen:       time.Now(),
 						LastDirectSeen: lastDirect,
@@ -2798,14 +2815,17 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					go n.sendPingToPeer(peer)
 				}
 			} else {
-				if peerAddr != nil {
+				isPrivateAddr := (raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())) ||
+					(peerAddr != nil && (peerAddr.IP.IsPrivate() || peerAddr.IP.IsLoopback()))
+				if peerAddr != nil && (n.LanOnly || !isPrivateAddr) {
 					peer.Addr = peerAddr
 				}
 				peer.LastSeen = time.Now()
-				if raddr != nil {
+				if raddr != nil && (n.LanOnly || !isPrivateAddr) {
 					peer.LastDirectSeen = time.Now()
 					peer.ViaRelay = false
-				} else if peer.Addr == nil || time.Since(peer.LastDirectSeen) > 3*time.Second {
+					peer.Addr = raddr
+				} else if peer.Addr == nil || time.Since(peer.LastDirectSeen) > 3*time.Second || (!n.LanOnly && isPrivateAddr) {
 					peer.ViaRelay = true
 				}
 				if pkt.Nickname != "" {
@@ -3035,15 +3055,21 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				n.IsLocked = true
 			}
 
+			isPrivateAddr := (raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())) ||
+				(peerAddr != nil && (peerAddr.IP.IsPrivate() || peerAddr.IP.IsLoopback()))
+			isRelayed := (raddr == nil && peerAddr == nil) || (!n.LanOnly && isPrivateAddr)
+			effectiveHostAddr := peerAddr
+			if !n.LanOnly && isPrivateAddr {
+				effectiveHostAddr = nil
+			}
 			var lastDirect time.Time
-			isRelayed := (raddr == nil && peerAddr == nil)
-			if raddr != nil {
+			if raddr != nil && (n.LanOnly || !isPrivateAddr) {
 				lastDirect = time.Now()
 			}
 			hostPeer := &PeerInfo{
 				ID:              pkt.SenderID,
 				Nickname:        pkt.Nickname,
-				Addr:            peerAddr,
+				Addr:            effectiveHostAddr,
 				LocalPort:       pkt.LocalPort,
 				LastSeen:        time.Now(),
 				LastDirectSeen:  lastDirect,
@@ -3170,10 +3196,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			return
 		}
 		var destAddr *net.UDPAddr = raddr
-		if destAddr == nil {
-			if peer, ok := n.Peers[pkt.SenderID]; ok {
-				destAddr = peer.Addr
-			}
+		peer, hasPeer := n.Peers[pkt.SenderID]
+		if raddr == nil || (hasPeer && peer.ViaRelay) {
+			destAddr = nil
 		}
 		var isMuted, isDeafened bool
 		if n.audio != nil {
@@ -3203,10 +3228,12 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				peer.VideoFPS = pkt.VideoFPS
 			}
 
-			if raddr != nil {
+			isPrivateAddr := raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())
+			if raddr != nil && (n.LanOnly || !isPrivateAddr) {
 				peer.LastDirectSeen = time.Now()
 				peer.ViaRelay = false
-			} else if peer.Addr == nil || time.Since(peer.LastDirectSeen) > 3*time.Second {
+				peer.Addr = raddr
+			} else if peer.Addr == nil || time.Since(peer.LastDirectSeen) > 3*time.Second || (!n.LanOnly && isPrivateAddr) {
 				peer.ViaRelay = true
 			}
 
@@ -4069,6 +4096,7 @@ func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
 	videoPort := n.ScreenSharePort
 	videoFPS := n.ActiveScreenShareFPS
 	peerAddr := peer.Addr
+	viaRelay := peer.ViaRelay
 	n.mu.RUnlock()
 
 	pingSeq := atomic.AddUint32(&n.pingSeq, 1)
@@ -4085,7 +4113,7 @@ func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
 		VideoFPS:        videoFPS,
 		Timestamp:       time.Now().UnixMilli(),
 	}
-	if peer.ViaRelay || peerAddr == nil {
+	if viaRelay || peerAddr == nil {
 		n.sendPacketTo(nil, &pingPkt)
 	} else {
 		n.sendPacketTo(peerAddr, &pingPkt)

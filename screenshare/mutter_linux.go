@@ -163,17 +163,17 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		fps = 60
 	}
 
-	bitrateKbps := 3000
+	bitrateKbps := 1800
 	if fps >= 120 {
-		bitrateKbps = 4200
+		bitrateKbps = 2400
 	} else if fps <= 30 {
-		bitrateKbps = 1800
+		bitrateKbps = 1000
 	}
 	if opt.Bitrate != "" {
 		bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))
 		if strings.HasSuffix(bStr, "M") {
-			if val, err := strconv.Atoi(strings.TrimSuffix(bStr, "M")); err == nil && val > 0 {
-				bitrateKbps = val * 1000
+			if val, err := strconv.ParseFloat(strings.TrimSuffix(bStr, "M"), 64); err == nil && val > 0 {
+				bitrateKbps = int(val * 1000)
 			}
 		} else if strings.HasSuffix(bStr, "K") {
 			if val, err := strconv.Atoi(strings.TrimSuffix(bStr, "K")); err == nil && val > 0 {
@@ -184,12 +184,12 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		}
 	}
 
-	gopSize := fps / 2
-	if gopSize < 15 {
-		gopSize = 15
+	gopSize := fps
+	if gopSize < 30 {
+		gopSize = 30
 	}
-	if gopSize > 60 {
-		gopSize = 60
+	if gopSize > 120 {
+		gopSize = 120
 	}
 
 	usePipe := (targetURL == "-")

@@ -412,8 +412,8 @@ func TestPeerViaRelayAndDirectTracking(t *testing.T) {
 		t.Fatalf("Expected ViaRelay to be true for relay-only packet")
 	}
 
-	// 2. Direct UDP packet arrives (raddr != nil)
-	udpAddr := &net.UDPAddr{IP: net.ParseIP("192.168.1.50"), Port: 50002}
+	// 2. Private LAN packet arrives while !LanOnly -> must NOT hijack into LAN mode (ViaRelay remains true)
+	lanAddr := &net.UDPAddr{IP: net.ParseIP("192.168.1.50"), Port: 50002}
 	pkt2 := P2PPacket{
 		Type:      PacketPing,
 		RoomCode:  "room-test",
@@ -422,13 +422,35 @@ func TestPeerViaRelayAndDirectTracking(t *testing.T) {
 		LocalPort: 50002,
 		Timestamp: time.Now().UnixMilli(),
 	}
-	node.handlePacket(&pkt2, udpAddr)
+	node.handlePacket(&pkt2, lanAddr)
+	if !peer.ViaRelay {
+		t.Fatalf("Expected ViaRelay to remain true for LAN packet when !LanOnly")
+	}
 
+	// 3. Direct WAN UDP packet arrives (public IP) -> switches to direct P2P (ViaRelay = false)
+	wanAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.50"), Port: 50002}
+	pkt3 := P2PPacket{
+		Type:      PacketPing,
+		RoomCode:  "room-test",
+		SenderID:  "peer_1",
+		Nickname:  "Alice",
+		LocalPort: 50002,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	node.handlePacket(&pkt3, wanAddr)
 	if peer.ViaRelay {
-		t.Fatalf("Expected ViaRelay to be false after receiving direct UDP packet")
+		t.Fatalf("Expected ViaRelay to be false after receiving direct WAN UDP packet")
 	}
 	if peer.LastDirectSeen.IsZero() {
 		t.Fatalf("Expected LastDirectSeen to be recorded")
+	}
+
+	// 4. LAN-only mode accepts private IP
+	node.LanOnly = true
+	peer.ViaRelay = true
+	node.handlePacket(&pkt2, lanAddr)
+	if peer.ViaRelay {
+		t.Fatalf("Expected ViaRelay to be false for LAN packet when LanOnly is true")
 	}
 }
 

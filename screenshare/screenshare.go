@@ -859,21 +859,21 @@ func GetPresetOptions(fps int, targetID string) BroadcastOptions {
 		targetID = "portal"
 	}
 
-	bitrate := "3.5M"
+	bitrate := "1.8M"
 	quality := "high"
 	switch fps {
 	case 120:
-		bitrate = "5.5M"
+		bitrate = "2.4M"
 		quality = "ultra"
 	case 30:
-		bitrate = "2M"
+		bitrate = "1M"
 		quality = "fast"
 	case 60:
-		bitrate = "3.5M"
+		bitrate = "1.8M"
 		quality = "high"
 	default:
 		fps = 60
-		bitrate = "3.5M"
+		bitrate = "1.8M"
 		quality = "high"
 	}
 
