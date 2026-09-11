@@ -1264,7 +1264,7 @@ func (n *P2PNode) RelayStatus() string {
 		return "Connected"
 	}
 	if n.IsConnected || n.Connecting {
-		return "Offline (LAN Mode)"
+		return "Connecting..."
 	}
 	return "Disconnected"
 }

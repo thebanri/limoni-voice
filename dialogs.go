@@ -934,6 +934,9 @@ func DrawRelayModal(
 		} else if statusStr == "Online" {
 			label = "[CUSTOM RELAY: ONLINE]"
 			color = theme.Success
+		} else if statusStr == "Connecting..." || statusStr == "Checking..." {
+			label = "[CUSTOM RELAY: CONNECTING...]"
+			color = theme.Warning
 		} else if statusStr != "" {
 			label = fmt.Sprintf("[CUSTOM RELAY: %s]", strings.ToUpper(statusStr))
 			color = theme.Warning
@@ -952,6 +955,12 @@ func DrawRelayModal(
 		} else if statusStr == "Online" {
 			label = "[OFFICIAL RELAY: ONLINE]"
 			color = theme.Success
+		} else if statusStr == "Connecting..." || statusStr == "Checking..." {
+			label = "[OFFICIAL RELAY: CONNECTING...]"
+			color = theme.Warning
+		} else if statusStr == "LAN Mode" {
+			label = "[RELAY: LAN MODE]"
+			color = theme.Secondary
 		}
 		drawBoundedString(buf, statusX, inner.Y, label, cell.Style{
 			Fg:       color,

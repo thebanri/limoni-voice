@@ -473,8 +473,16 @@ func main() {
 	}
 
 	probeRelayStatus := func(u, tok string) {
+		target := NormalizeRelayURL(u)
+		if target == "" {
+			lobby.RelayOnline = false
+			lobby.RelayStatus = "LAN Mode"
+			return
+		}
+		lobby.RelayStatus = "Connecting..."
+		lobby.RelayOnline = false
 		go func() {
-			online, status := ProbeRelayServer(u, tok, 2500*time.Millisecond)
+			online, status := ProbeRelayServer(target, tok, 5*time.Second)
 			lobby.RelayOnline = online
 			lobby.RelayStatus = status
 		}()
@@ -483,13 +491,17 @@ func main() {
 
 	openRelayModal := func() {
 		showRelayModal = true
-		relayURLInput.SetValue(node.RelayURL)
+		currURL := node.RelayURL
+		if currURL == "" && !node.LanOnly {
+			currURL = DefaultRelayURL
+		}
+		relayURLInput.SetValue(currURL)
 		relayTokenInput.SetValue(node.RelayToken)
 		relayModalActiveField = 0
 		relaySelStart = 0
 		relaySelEnd = len(relayURLInput.Text)
 		relaySelField = 0
-		probeRelayStatus(node.RelayURL, node.RelayToken)
+		probeRelayStatus(currURL, node.RelayToken)
 		relayDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 
@@ -1054,7 +1066,11 @@ func main() {
 							newURL := NormalizeRelayURL(relayURLInput.Value())
 							newToken := strings.TrimSpace(relayTokenInput.Value())
 							node.UpdateRelaySettings(newURL, newToken)
-							_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+							if newURL == DefaultRelayURL && newToken == "" {
+								_ = ResetAppConfig()
+							} else {
+								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+							}
 							probeRelayStatus(newURL, newToken)
 							relayURLInput.SetValue(newURL)
 							if currentScreen == ScreenLobby {
@@ -1067,6 +1083,8 @@ func main() {
 						} else if relayModalActiveField == 3 {
 							node.UpdateRelaySettings(DefaultRelayURL, "")
 							_ = ResetAppConfig()
+							relayURLInput.SetValue(DefaultRelayURL)
+							relayTokenInput.SetValue("")
 							probeRelayStatus(DefaultRelayURL, "")
 							if currentScreen == ScreenLobby {
 								lobby.RelayURL = DefaultRelayURL
@@ -2030,7 +2048,11 @@ func main() {
 								newURL = NormalizeRelayURL(newURL)
 								newToken = strings.TrimSpace(newToken)
 								node.UpdateRelaySettings(newURL, newToken)
-								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+								if newURL == DefaultRelayURL && newToken == "" {
+									_ = ResetAppConfig()
+								} else {
+									_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+								}
 								lobby.RelayURL = newURL
 								probeRelayStatus(newURL, newToken)
 								relayURLInput.SetValue(newURL)
@@ -2041,8 +2063,10 @@ func main() {
 								node.UpdateRelaySettings(DefaultRelayURL, "")
 								_ = ResetAppConfig()
 								lobby.RelayURL = DefaultRelayURL
+								relayURLInput.SetValue(DefaultRelayURL)
+								relayTokenInput.SetValue("")
 								probeRelayStatus(DefaultRelayURL, "")
-								lobby.SetToast("Reset to default official relay!")
+								lobby.SetToast("Reset to official default relay server!")
 								closeRelayModal()
 							},
 							func() {
@@ -2257,7 +2281,11 @@ func main() {
 								newURL = NormalizeRelayURL(newURL)
 								newToken = strings.TrimSpace(newToken)
 								node.UpdateRelaySettings(newURL, newToken)
-								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+								if newURL == DefaultRelayURL && newToken == "" {
+									_ = ResetAppConfig()
+								} else {
+									_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+								}
 								probeRelayStatus(newURL, newToken)
 								relayURLInput.SetValue(newURL)
 								room.SetToast("Relay server settings saved!")
@@ -2266,8 +2294,10 @@ func main() {
 							func() {
 								node.UpdateRelaySettings(DefaultRelayURL, "")
 								_ = ResetAppConfig()
+								relayURLInput.SetValue(DefaultRelayURL)
+								relayTokenInput.SetValue("")
 								probeRelayStatus(DefaultRelayURL, "")
-								room.SetToast("Reset to default official relay!")
+								room.SetToast("Reset to official default relay server!")
 								closeRelayModal()
 							},
 							func() {

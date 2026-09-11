@@ -710,11 +710,18 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 			Bg:       theme.Success,
 			Modifier: cell.ModifierBold,
 		}
-	} else if node.LanOnly || node.RelayURL == "" || strings.EqualFold(node.RelayURL, "none") || strings.EqualFold(node.RelayURL, "off") {
+	} else if node.LanOnly || node.RelayURL == "" || strings.EqualFold(node.RelayURL, "none") || strings.EqualFold(node.RelayURL, "off") || strings.EqualFold(node.RelayURL, "lan") {
 		relayBadge = " 🏠 LAN ONLY "
 		relayStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Secondary,
+			Modifier: cell.ModifierBold,
+		}
+	} else if node.Connecting || node.RelayStatus() == "Connecting..." {
+		relayBadge = " ⏳ RELAY: CONNECTING... "
+		relayStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
 	} else {

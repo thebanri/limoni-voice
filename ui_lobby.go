@@ -357,16 +357,22 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: ONLINE - (R)] "
 		} else if l.RelayStatus == "Offline" {
 			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: OFFLINE (LAN ONLY) - (R)] "
+		} else if l.RelayStatus == "Connecting..." || l.RelayStatus == "Checking..." {
+			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: CONNECTING... - (R)] "
 		} else if l.RelayStatus != "" {
 			mainTitle = fmt.Sprintf(" P2P ROOM & CONNECTION [CUSTOM RELAY: %s - (R)] ", strings.ToUpper(l.RelayStatus))
 		} else {
 			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY ACTIVE - (R)] "
 		}
 	} else {
-		if l.RelayStatus == "Offline" {
-			mainTitle = " P2P ROOM & CONNECTION [RELAY: OFFLINE (LAN ONLY) - (R)] "
-		} else if l.RelayOnline {
+		if l.RelayOnline {
 			mainTitle = " P2P ROOM & CONNECTION [RELAY: ONLINE - (R)] "
+		} else if l.RelayStatus == "Connecting..." || l.RelayStatus == "Checking..." {
+			mainTitle = " P2P ROOM & CONNECTION [RELAY: CONNECTING... - (R)] "
+		} else if l.RelayStatus == "LAN Mode" {
+			mainTitle = " P2P ROOM & CONNECTION [RELAY: LAN MODE - (R)] "
+		} else if l.RelayStatus == "Offline" {
+			mainTitle = " P2P ROOM & CONNECTION [RELAY: OFFLINE (LAN ONLY) - (R)] "
 		}
 	}
 	mainBlock := widgets.Block{

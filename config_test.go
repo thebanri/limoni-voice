@@ -324,9 +324,9 @@ func TestClipboardTestingModeMocking(t *testing.T) {
 
 func TestProbeRelayServer(t *testing.T) {
 	// 1. LAN Mode
-	online, status := ProbeRelayServer("", "", 100*time.Millisecond)
+	online, status := ProbeRelayServer("lan", "", 100*time.Millisecond)
 	if online || status != "LAN Mode" {
-		t.Fatalf("Expected LAN Mode for empty URL, got online=%v status=%s", online, status)
+		t.Fatalf("Expected LAN Mode for 'lan', got online=%v status=%s", online, status)
 	}
 
 	online, status = ProbeRelayServer("off", "", 100*time.Millisecond)
@@ -482,7 +482,10 @@ func TestNormalizeRelayURL(t *testing.T) {
 		{"none", ""},
 		{"off", ""},
 		{"lan", ""},
-		{"", ""},
+		{"local", ""},
+		{"", DefaultRelayURL},
+		{"default", DefaultRelayURL},
+		{"reset", DefaultRelayURL},
 		{"wss://custom.relay.com/ws", "wss://custom.relay.com/ws"},
 		{"ws://custom.relay.com/ws", "ws://custom.relay.com/ws"},
 		{"https://relay.example.com:8443/custompath?token=123", "wss://relay.example.com:8443/custompath?token=123"},
@@ -493,5 +496,12 @@ func TestNormalizeRelayURL(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("NormalizeRelayURL(%q) = %q, expected %q", tc.input, got, tc.expected)
 		}
+	}
+}
+
+func TestDefaultRelayLive(t *testing.T) {
+	online, status := ProbeRelayServer(DefaultRelayURL, "", 5*time.Second)
+	if !online {
+		t.Fatalf("Expected DefaultRelayURL to probe online, got online=%v status=%s", online, status)
 	}
 }

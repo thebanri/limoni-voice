@@ -78,18 +78,24 @@ func ResetAppConfig() error {
 }
 
 // NormalizeRelayURL converts user-entered URL, web link, or raw domain into a valid WebSocket relay URL.
+// If empty, "default", or "reset", it returns DefaultRelayURL (official Railway relay).
+// Explicit LAN keywords ("none", "off", "lan", "local") return "" (LAN Mode).
 // Examples:
+//   - "" -> "wss://limoni-voice-production.up.railway.app/ws"
+//   - "default" -> "wss://limoni-voice-production.up.railway.app/ws"
+//   - "none" / "off" / "lan" -> ""
 //   - "voice.thebanri.dpdns.org" -> "wss://voice.thebanri.dpdns.org/ws"
 //   - "https://voice.thebanri.dpdns.org" -> "wss://voice.thebanri.dpdns.org/ws"
-//   - "https://voice.thebanri.dpdns.org/" -> "wss://voice.thebanri.dpdns.org/ws"
 //   - "http://192.168.1.3:27850" -> "ws://192.168.1.3:27850/ws"
 //   - "192.168.1.3:27850" -> "ws://192.168.1.3:27850/ws"
 //   - "localhost:27850" -> "ws://localhost:27850/ws"
-//   - "wss://myrelay.com/ws" -> "wss://myrelay.com/ws"
 func NormalizeRelayURL(raw string) string {
 	u := strings.TrimSpace(raw)
-	if u == "" || strings.EqualFold(u, "none") || strings.EqualFold(u, "off") || strings.EqualFold(u, "lan") {
+	if strings.EqualFold(u, "none") || strings.EqualFold(u, "off") || strings.EqualFold(u, "lan") || strings.EqualFold(u, "local") {
 		return ""
+	}
+	if u == "" || strings.EqualFold(u, "default") || strings.EqualFold(u, "reset") {
+		return DefaultRelayURL
 	}
 
 	hasWss := strings.HasPrefix(strings.ToLower(u), "wss://")
@@ -171,61 +177,108 @@ func IsCustomRelayActive(url string) bool {
 	return true
 }
 
-// ProbeRelayServer performs a quick network probe to check if a relay server is reachable and active.
+// ProbeRelayServer performs a fast concurrent network probe to check if a relay server is reachable and active.
 func ProbeRelayServer(relayURL, token string, timeout time.Duration) (bool, string) {
+	u := strings.TrimSpace(relayURL)
+	if strings.EqualFold(u, "none") || strings.EqualFold(u, "off") || strings.EqualFold(u, "lan") || strings.EqualFold(u, "local") {
+		return false, "LAN Mode"
+	}
 	targetURL := NormalizeRelayURL(relayURL)
 	if targetURL == "" {
 		return false, "LAN Mode"
 	}
-	headers := http.Header{}
-	if token != "" {
-		headers.Set("X-Auth-Token", token)
-		if !strings.Contains(targetURL, "token=") {
-			sep := "?"
-			if strings.Contains(targetURL, "?") {
-				sep = "&"
-			}
-			targetURL = fmt.Sprintf("%s%stoken=%s", targetURL, sep, url.QueryEscape(token))
-		}
+
+	type probeResult struct {
+		online bool
+		status string
 	}
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: timeout,
-	}
-	conn, resp, err := dialer.Dial(targetURL, headers)
-	if err != nil {
-		if resp != nil {
-			if resp.StatusCode == http.StatusUnauthorized {
-				return false, "Auth Failed (401)"
-			}
-			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
-				// Server is online and responding via HTTP
-				return true, "Online"
-			}
-		}
-		// Fallback: check HTTP /health or / endpoint
+	resCh := make(chan probeResult, 2)
+
+	// 1. Fast HTTP /health probe
+	go func() {
 		httpURL := strings.Replace(targetURL, "wss://", "https://", 1)
 		httpURL = strings.Replace(httpURL, "ws://", "http://", 1)
 		healthURL := strings.TrimSuffix(httpURL, "/ws") + "/health"
-		req, rErr := http.NewRequest("GET", healthURL, nil)
-		if rErr == nil {
-			if token != "" {
-				req.Header.Set("X-Auth-Token", token)
-			}
-			client := &http.Client{Timeout: timeout}
-			hResp, hErr := client.Do(req)
-			if hErr == nil {
-				defer hResp.Body.Close()
-				if hResp.StatusCode == http.StatusOK {
-					return true, "Online"
-				} else if hResp.StatusCode == http.StatusUnauthorized {
-					return false, "Auth Failed (401)"
-				}
+		req, err := http.NewRequest("GET", healthURL, nil)
+		if err != nil {
+			resCh <- probeResult{online: false, status: "Offline"}
+			return
+		}
+		if token != "" {
+			req.Header.Set("X-Auth-Token", token)
+		}
+		client := &http.Client{Timeout: timeout}
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				resCh <- probeResult{online: true, status: "Online"}
+				return
+			} else if resp.StatusCode == http.StatusUnauthorized {
+				resCh <- probeResult{online: false, status: "Auth Failed (401)"}
+				return
 			}
 		}
+		resCh <- probeResult{online: false, status: "Offline"}
+	}()
+
+	// 2. WebSocket upgrade probe
+	go func() {
+		headers := http.Header{}
+		wsURL := targetURL
+		if token != "" {
+			headers.Set("X-Auth-Token", token)
+			if !strings.Contains(wsURL, "token=") {
+				sep := "?"
+				if strings.Contains(wsURL, "?") {
+					sep = "&"
+				}
+				wsURL = fmt.Sprintf("%s%stoken=%s", wsURL, sep, url.QueryEscape(token))
+			}
+		}
+
+		dialer := websocket.Dialer{
+			HandshakeTimeout: timeout,
+		}
+		conn, resp, err := dialer.Dial(wsURL, headers)
+		if err == nil {
+			_ = conn.Close()
+			resCh <- probeResult{online: true, status: "Online"}
+			return
+		}
+		if resp != nil {
+			if resp.StatusCode == http.StatusUnauthorized {
+				resCh <- probeResult{online: false, status: "Auth Failed (401)"}
+				return
+			}
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
+				resCh <- probeResult{online: true, status: "Online"}
+				return
+			}
+		}
+		resCh <- probeResult{online: false, status: "Offline"}
+	}()
+
+	select {
+	case res1 := <-resCh:
+		if res1.online {
+			return res1.online, res1.status
+		}
+		// First was not positive, wait briefly for second
+		select {
+		case res2 := <-resCh:
+			if res2.online {
+				return res2.online, res2.status
+			}
+			if res1.status == "Auth Failed (401)" || res2.status == "Auth Failed (401)" {
+				return false, "Auth Failed (401)"
+			}
+			return false, "Offline"
+		case <-time.After(timeout):
+			return res1.online, res1.status
+		}
+	case <-time.After(timeout):
 		return false, "Offline"
 	}
-	_ = conn.Close()
-	return true, "Online"
 }
-
