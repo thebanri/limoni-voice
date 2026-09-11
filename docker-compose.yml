@@ -21,7 +21,10 @@ services:
     profiles: ["quick-tunnel"]
     depends_on:
       - limoni-relay
-    command: tunnel --no-autoupdate --url http://limoni-relay:${PORT:-27850}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    command: tunnel --no-autoupdate --protocol http2 --url http://limoni-relay:${PORT:-27850}
 
   # 2. Kalıcı Tünel (Kendi alan adınız ve Cloudflare Token'ınız ile)
   # Başlatma: docker compose --profile tunnel up -d
@@ -32,4 +35,7 @@ services:
     profiles: ["tunnel"]
     depends_on:
       - limoni-relay
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN}
