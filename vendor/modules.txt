@@ -4,7 +4,7 @@ github.com/godbus/dbus/v5
 # github.com/gorilla/websocket v1.5.3
 ## explicit; go 1.12
 github.com/gorilla/websocket
-# github.com/thebanri/limoni v0.2.5-0.20260910195401-e83cbc36608e
+# github.com/thebanri/limoni v0.2.4
 ## explicit; go 1.26.5
 github.com/thebanri/limoni/animation
 github.com/thebanri/limoni/core/accessibility
