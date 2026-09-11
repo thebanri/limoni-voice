@@ -1486,8 +1486,6 @@ func main() {
 							case 'g', 'G':
 								lobby.CurrentCode = GenerateRoomCode()
 								lobby.SetToast("New room key generated!")
-							case 'm', 'M':
-								lobby.Cycle3DMode()
 							case ' ':
 								lobby.AutoRotate = !lobby.AutoRotate
 								if lobby.AutoRotate {

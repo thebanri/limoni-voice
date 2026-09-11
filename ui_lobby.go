@@ -24,7 +24,6 @@ type LobbyView struct {
 	AutoRotate       bool
 	AutoRotateSpeed  float64
 	StartTime        time.Time
-	RenderMode       widgets.Ascii3DMode
 
 	// Mouse Drag State
 	DragActive bool
@@ -256,44 +255,11 @@ func NewLobbyView() *LobbyView {
 		AutoRotate:      true,
 		AutoRotateSpeed: 1.8,
 		StartTime:       time.Now(),
-		RenderMode:      widgets.ModeBlock,
 		CurrentCode:     code,
 		NickState:       nickState,
 		CodeState:       codeState,
 		PinState:        pinState,
 		ActiveInput:     2,
-	}
-}
-
-func (l *LobbyView) Cycle3DMode() {
-	switch l.RenderMode {
-	case widgets.ModeBlock:
-		l.RenderMode = widgets.ModeBraille
-		l.SetToast("3D Mode: Braille Matrix (8x)")
-	case widgets.ModeBraille:
-		l.RenderMode = widgets.ModeDithered
-		l.SetToast("3D Mode: Retro Dithered")
-	case widgets.ModeDithered:
-		l.RenderMode = widgets.ModeASCII
-		l.SetToast("3D Mode: ASCII Art Ramp")
-	default:
-		l.RenderMode = widgets.ModeBlock
-		l.SetToast("3D Mode: Half-Block TrueColor (2x)")
-	}
-}
-
-func (l *LobbyView) RenderModeName() string {
-	switch l.RenderMode {
-	case widgets.ModeBlock:
-		return "Half-Block (2x TrueColor)"
-	case widgets.ModeBraille:
-		return "Braille Matrix (8x)"
-	case widgets.ModeDithered:
-		return "Retro Dithered"
-	case widgets.ModeASCII:
-		return "ASCII Art Ramp"
-	default:
-		return "Half-Block"
 	}
 }
 
@@ -334,9 +300,8 @@ func (l *LobbyView) Render(frame *terminal.Frame, area cell.Rect) {
 
 func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 	theme := CurrentTheme()
-	title := fmt.Sprintf(" 3D STUDIO MICROPHONE [%s - (M)] ", l.RenderModeName())
 	block := widgets.Block{
-		Title:         title,
+		Title:         " 3D STUDIO MICROPHONE ",
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
@@ -352,18 +317,13 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 
-	// Register click handler on 3D view area to cycle rendering modes
-	frame.RegisterClickHandler(area, func(_ driver.MouseEvent) {
-		l.Cycle3DMode()
-	})
-
 	if innerArea.Width < 4 || innerArea.Height < 4 {
 		return
 	}
 
 	asciiWidget := widgets.Ascii3D{
 		Model:                l.MicModel,
-		Mode:                 l.RenderMode,
+		Mode:                 widgets.ModeBlock,
 		Scale:                l.Scale,
 		XOffset:              0.0,
 		YOffset:              0.0,
@@ -380,7 +340,7 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 		EdgeContrast:         2.2,
 		Exposure:             1.15,
 		Roughness:            0.15,
-		Ascii:                l.RenderMode == widgets.ModeASCII,
+		Ascii:                false,
 		Colored:              true,
 		Invert:               false,
 		Color:                cell.NewColorRGB(220, 225, 235),
@@ -395,19 +355,19 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	mainTitle := " P2P ROOM & CONNECTION (CROC ENGINE) "
 	if IsCustomRelayActive(l.RelayURL) {
 		if l.RelayOnline {
-			mainTitle = " P2P ROOM & CONNECTION [⚡ CUSTOM RELAY: ONLINE - (R)] "
+			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: ONLINE - (R)] "
 		} else if l.RelayStatus == "Offline" {
-			mainTitle = " P2P ROOM & CONNECTION [⚠ CUSTOM RELAY: OFFLINE (LAN ONLY) - (R)] "
+			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: OFFLINE (LAN ONLY) - (R)] "
 		} else if l.RelayStatus != "" {
-			mainTitle = fmt.Sprintf(" P2P ROOM & CONNECTION [⚡ CUSTOM RELAY: %s - (R)] ", strings.ToUpper(l.RelayStatus))
+			mainTitle = fmt.Sprintf(" P2P ROOM & CONNECTION [CUSTOM RELAY: %s - (R)] ", strings.ToUpper(l.RelayStatus))
 		} else {
-			mainTitle = " P2P ROOM & CONNECTION [⚡ CUSTOM RELAY ACTIVE - (R)] "
+			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY ACTIVE - (R)] "
 		}
 	} else {
 		if l.RelayStatus == "Offline" {
-			mainTitle = " P2P ROOM & CONNECTION [⚠ RELAY: OFFLINE (LAN ONLY) - (R)] "
+			mainTitle = " P2P ROOM & CONNECTION [RELAY: OFFLINE (LAN ONLY) - (R)] "
 		} else if l.RelayOnline {
-			mainTitle = " P2P ROOM & CONNECTION [⚡ RELAY: ONLINE - (R)] "
+			mainTitle = " P2P ROOM & CONNECTION [RELAY: ONLINE - (R)] "
 		}
 	}
 	mainBlock := widgets.Block{
@@ -759,14 +719,14 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		buf.SetString(botInner.X+1, botInner.Y, "  "+l.ToastMsg+"  ", toastStyle)
 	} else {
 		isCustom := IsCustomRelayActive(l.RelayURL)
-		relayBtn := "[ ⚡ R : RELAY & SECURITY SETTINGS ]"
+		relayBtn := "[ R : Relay & Security Settings ]"
 		relayBtnStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.BorderFocused,
 			Modifier: cell.ModifierBold,
 		}
 		if isCustom {
-			relayBtn = "[ ⚡ R : CUSTOM RELAY ACTIVE (Click to edit) ]"
+			relayBtn = "[ R : Custom Relay Active ]"
 			relayBtnStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Success,
@@ -781,7 +741,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			}
 		})
 
-		testBtn := "[ 🎤 T : Mic Test ]"
+		testBtn := "[ T : Audio / Mic Test ]"
 		testBtnStyle := cell.Style{
 			Fg:       theme.Text,
 			Bg:       theme.InputBg,
@@ -808,10 +768,10 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 
 		helpLines := []string{
-			"• [R] Custom relay server & security settings (Click or press R)",
-			"• [T] or [F4] Microphone & sound test panel",
-			"• [M] 3D render mode (Block/Braille/Dither/ASCII) • [Space] Rotate toggle",
-			"• [Tab] Switch field • [F2]/[C] Copy • [F3]/[G] New key • [Esc] Exit",
+			"• [R] Relay & Security Settings (Click or press R)",
+			"• [T] or [F4] Audio & Microphone Test (Click or press T)",
+			"• [Tab] Switch input field • [Enter] Open / Connect",
+			"• [F2]/[C] Copy key • [F3]/[G] New key • [Esc] Exit",
 		}
 		for i, h := range helpLines {
 			lineY := botInner.Y + rowOffset + uint16(i)
