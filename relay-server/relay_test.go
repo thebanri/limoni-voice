@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -526,5 +529,80 @@ func TestRelayServerAuthToken(t *testing.T) {
 	}
 	connHeader.Close()
 }
+
+func TestRelayVideoAndPriorityQueues(t *testing.T) {
+	server := NewRelayServer("")
+	s := httptest.NewServer(server.upgraderHandler())
+	defer s.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
+
+	// 1. Broadcaster connects and creates room
+	broadcasterConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer broadcasterConn.Close()
+
+	hostMsg := ControlMessage{
+		Type:     "host_room",
+		RoomCode: "QUEUE-TEST",
+		SenderID: "host_sender",
+		Nickname: "Broadcaster",
+	}
+	data, _ := json.Marshal(hostMsg)
+	_ = broadcasterConn.WriteMessage(websocket.TextMessage, data)
+	_, _, _ = broadcasterConn.ReadMessage()
+
+	// 2. Viewer connects and joins room
+	viewerConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial viewer: %v", err)
+	}
+	defer viewerConn.Close()
+
+	joinMsg := ControlMessage{
+		Type:     "join_room",
+		RoomCode: "QUEUE-TEST",
+		SenderID: "viewer_sender",
+		Nickname: "Viewer",
+	}
+	data, _ = json.Marshal(joinMsg)
+	_ = viewerConn.WriteMessage(websocket.TextMessage, data)
+	_, _, _ = viewerConn.ReadMessage() // welcome
+
+	// 3. Broadcaster sends 50 video packets (LVV1) and 1 priority packet (LVS1)
+	for i := 0; i < 50; i++ {
+		vidChunk := []byte(fmt.Sprintf("LVV1-chunk-%03d", i))
+		if err := broadcasterConn.WriteMessage(websocket.BinaryMessage, vidChunk); err != nil {
+			t.Fatalf("Failed to write video chunk: %v", err)
+		}
+	}
+
+	// Send priority packet (e.g. Ping)
+	priorityPkt := []byte("LVS1-ping-instant")
+	if err := broadcasterConn.WriteMessage(websocket.BinaryMessage, priorityPkt); err != nil {
+		t.Fatalf("Failed to write priority packet: %v", err)
+	}
+
+	// 4. Viewer reads messages
+	var receivedPriority bool
+	for i := 0; i < 51; i++ {
+		_ = viewerConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, msg, err := viewerConn.ReadMessage()
+		if err != nil {
+			t.Fatalf("Failed to read message %d: %v", i, err)
+		}
+		if bytes.HasPrefix(msg, []byte("LVS1")) {
+			receivedPriority = true
+			break
+		}
+	}
+
+	if !receivedPriority {
+		t.Fatalf("Viewer never received priority packet")
+	}
+}
+
 
 

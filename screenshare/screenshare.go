@@ -1375,8 +1375,8 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 		maxRate := "2.4M"
 		bufSize := "600k"
 		gopSize := fps
-		if gopSize > 60 {
-			gopSize = 60
+		if gopSize > 120 {
+			gopSize = 120
 		}
 		if fps >= 120 {
 			bitrate = "2.4M"
@@ -1487,8 +1487,8 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			winFps = 60
 		}
 		winGop := winFps
-		if winGop > 60 {
-			winGop = 60
+		if winGop > 120 {
+			winGop = 120
 		}
 		winBitrate := "1.8M"
 		winMaxRate := "2.4M"
@@ -1874,8 +1874,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 				"--vd-lavc-threads=0",
 				"--cache=no",
 				"--demuxer-readahead-secs=0",
-				"--stream-buffer-size=32k",
-				"--demuxer-max-bytes=256k",
+				"--stream-buffer-size=256k",
+				"--demuxer-max-bytes=2048k",
 				"--framedrop=vo",
 				"--hwdec=auto",
 				"--vd-lavc-show-all=no",
@@ -1890,8 +1890,8 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 				fmt.Sprintf("--osd-playing-msg=Limoni Voice Stream (%d FPS) - Press 'Shift+I' for live stats", opt.FPS),
 				"--cursor-autohide=1000",
 				"--demuxer-lavf-format=mpegts",
-				"--demuxer-lavf-analyzeduration=0.1",
-				"--demuxer-lavf-probesize=32768",
+				"--demuxer-lavf-analyzeduration=1.0",
+				"--demuxer-lavf-probesize=524288",
 				"--title=" + windowTitle,
 				"--autofit=65%x65%",
 			}
@@ -1924,9 +1924,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-flags", "low_delay",
 			"-fflags", "nobuffer+flush_packets",
 			"-framedrop",
-			"-sync", "ext",
-			"-probesize", "32768",
-			"-analyzeduration", "0",
+			"-sync", "video",
+			"-probesize", "524288",
+			"-analyzeduration", "1000000",
 			"-f", "mpegts",
 			"-alwaysontop",
 			"-window_title", windowTitle,

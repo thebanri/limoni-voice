@@ -188,8 +188,8 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	if gopSize < 30 {
 		gopSize = 30
 	}
-	if gopSize > 60 {
-		gopSize = 60
+	if gopSize > 120 {
+		gopSize = 120
 	}
 
 	usePipe := (targetURL == "-")
@@ -286,7 +286,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			"pass=cbr",
 			"qp-min=18",
 			"qp-max=38",
-			"vbv-buf-capacity=0",
+			"vbv-buf-capacity=300",
 			"rc-lookahead=0",
 			"sync-lookahead=0",
 			"mb-tree=false",

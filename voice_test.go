@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
@@ -725,20 +726,13 @@ func TestVideoPlayerAsyncDecoupling(t *testing.T) {
 	node.IsWatchingScreen = true
 
 	serverConn, clientConn := net.Pipe()
-	preBuf := [][]byte{[]byte("header-sps-pps")}
-
 	pumpDone := make(chan struct{})
 	go func() {
-		node.videoPlayerWritePump(serverConn, playerCh, preBuf, cancelCh)
+		node.videoPlayerWritePump(serverConn, playerCh, cancelCh)
 		close(pumpDone)
 	}()
 
-	// Read preBuf
 	buf := make([]byte, 64)
-	n, err := clientConn.Read(buf)
-	if err != nil || string(buf[:n]) != "header-sps-pps" {
-		t.Fatalf("Failed to read prebuf header: %v, got %s", err, string(buf[:n]))
-	}
 
 	// Forward video chunk: must be fast and non-blocking
 	start := time.Now()
@@ -748,7 +742,7 @@ func TestVideoPlayerAsyncDecoupling(t *testing.T) {
 		t.Fatalf("forwardVideoChunk took too long (%v), must never block network loop", dur)
 	}
 
-	n, err = clientConn.Read(buf)
+	n, err := clientConn.Read(buf)
 	if err != nil || string(buf[:n]) != "video-slice-1" {
 		t.Fatalf("Failed to read video chunk: %v, got %s", err, string(buf[:n]))
 	}
@@ -3284,6 +3278,91 @@ func TestP2PScreenShareFPSPacket(t *testing.T) {
 		t.Fatalf("Expected peer sharing to stop and fps reset to 0, got sharing=%v fps=%d", peer.IsSharingScreen, peer.VideoFPS)
 	}
 }
+
+func TestVideo120FPSPrefixAndQueues(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("aes error: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("gcm error: %v", err)
+	}
+
+	// 1. Video packet must use LVV1 prefix
+	vidPkt := P2PPacket{
+		Type:     PacketScreenShareData,
+		RoomCode: "TEST-120",
+		SenderID: "streamer",
+		Seq:      100,
+		Payload:  make([]byte, 1316),
+	}
+	encVid, err := encodeAndEncryptPacket(&vidPkt, aead)
+	if err != nil {
+		t.Fatalf("encode video packet failed: %v", err)
+	}
+	if !bytes.HasPrefix(encVid, []byte("LVV1")) {
+		t.Fatalf("Expected LVV1 prefix for video packet, got: %s", string(encVid[:4]))
+	}
+
+	// 2. Control/Ping packet must use LVS1 prefix
+	pingPkt := P2PPacket{
+		Type:      PacketPing,
+		RoomCode:  "TEST-120",
+		SenderID:  "streamer",
+		Seq:       100,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	encPing, err := encodeAndEncryptPacket(&pingPkt, aead)
+	if err != nil {
+		t.Fatalf("encode ping packet failed: %v", err)
+	}
+	if !bytes.HasPrefix(encPing, []byte("LVS1")) {
+		t.Fatalf("Expected LVS1 prefix for ping packet, got: %s", string(encPing[:4]))
+	}
+
+	// 3. Decrypt must accept both prefixes cleanly
+	var decVid P2PPacket
+	if err := decryptAndDecodePacket(encVid, &decVid, aead); err != nil {
+		t.Fatalf("failed to decrypt LVV1 packet: %v", err)
+	}
+	if decVid.Type != PacketScreenShareData || len(decVid.Payload) != 1316 {
+		t.Fatalf("corrupted decrypted video packet: %+v", decVid)
+	}
+
+	var decPing P2PPacket
+	if err := decryptAndDecodePacket(encPing, &decPing, aead); err != nil {
+		t.Fatalf("failed to decrypt LVS1 packet: %v", err)
+	}
+	if decPing.Type != PacketPing {
+		t.Fatalf("corrupted decrypted ping packet: %+v", decPing)
+	}
+
+	// 4. VideoReorderBuffer must not stall for 160 packets (must advance at 32 packets)
+	reorder := VideoReorderBuffer{}
+	reorder.Reset()
+	for i := uint32(1); i <= 30; i++ {
+		chunks := reorder.Push(i, []byte(fmt.Sprintf("frame-%d", i)))
+		if len(chunks) != 1 {
+			t.Fatalf("expected 1 chunk, got %d", len(chunks))
+		}
+	}
+
+	// Drop packet 31. Push 32..80. When pending > 32, it must force-advance without hanging!
+	var flushedAfterDrop int
+	for i := uint32(32); i <= 80; i++ {
+		chunks := reorder.Push(i, []byte(fmt.Sprintf("frame-%d", i)))
+		flushedAfterDrop += len(chunks)
+	}
+	if flushedAfterDrop == 0 {
+		t.Fatalf("Reorder buffer failed to advance past dropped packet!")
+	}
+}
+
 
 
 

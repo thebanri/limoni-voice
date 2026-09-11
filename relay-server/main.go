@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -54,7 +55,8 @@ type Client struct {
 	publicIP          string
 	publicPort        int
 	room              *Room
-	sendCh            chan []byte // buffered channel for outgoing messages
+	prioritySendCh    chan []byte // high-priority channel for Voice, Ping, Pong, Control (never delayed)
+	videoSendCh       chan []byte // bounded channel for video chunks with safe backpressure
 	mu                sync.Mutex
 	explicitLeave     bool
 	isDisconnected    bool
@@ -173,9 +175,10 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		conn:     conn,
-		publicIP: clientIP,
-		sendCh:   make(chan []byte, 128),
+		conn:           conn,
+		publicIP:       clientIP,
+		prioritySendCh: make(chan []byte, 128),
+		videoSendCh:    make(chan []byte, 512),
 	}
 
 	// Start write pump
@@ -587,22 +590,33 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 	room.mu.RLock()
 	defer room.mu.RUnlock()
 
+	isVideo := bytes.HasPrefix(data, []byte("LVV1"))
 	for id, member := range room.Members {
 		if id != sender.senderID && !member.isDisconnected {
-			// Non-blocking send via bounded buffered channel: drop oldest on congestion to keep latency near 0ms
-			select {
-			case member.sendCh <- data:
-			default:
-			drainLoop:
-				for len(member.sendCh) > 24 {
+			if isVideo {
+				// Dedicated video channel with safe backpressure:
+				// If channel overflows 512 packets, drain down to 256 so I-frames are not chopped
+				select {
+				case member.videoSendCh <- data:
+				default:
+				drainLoop:
+					for len(member.videoSendCh) > 256 {
+						select {
+						case <-member.videoSendCh:
+						default:
+							break drainLoop
+						}
+					}
 					select {
-					case <-member.sendCh:
+					case member.videoSendCh <- data:
 					default:
-						break drainLoop
 					}
 				}
+			} else {
+				// High-priority channel for Audio (Opus), Ping, Pong & Control
+				// Never delayed behind video frames; ping remains ~0ms!
 				select {
-				case member.sendCh <- data:
+				case member.prioritySendCh <- data:
 				default:
 				}
 			}
@@ -759,20 +773,46 @@ func (c *Client) writePump() {
 		c.conn.Close()
 	}()
 
+	writeMsg := func(data []byte) error {
+		c.mu.Lock()
+		c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		err := c.conn.WriteMessage(websocket.BinaryMessage, data)
+		c.mu.Unlock()
+		return err
+	}
+
 	for {
+		// Priority 1: Drain ALL pending priority packets (Voice, Ping, Pong, Control) first!
+		for {
+			select {
+			case data, ok := <-c.prioritySendCh:
+				if !ok {
+					return
+				}
+				if writeMsg(data) != nil {
+					return
+				}
+			default:
+				goto sendVideoOrWait
+			}
+		}
+
+	sendVideoOrWait:
 		select {
-		case data, ok := <-c.sendCh:
+		case data, ok := <-c.prioritySendCh:
 			if !ok {
 				return
 			}
-			c.mu.Lock()
-			c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			err := c.conn.WriteMessage(websocket.BinaryMessage, data)
-			c.mu.Unlock()
-			if err != nil {
+			if writeMsg(data) != nil {
 				return
 			}
-
+		case data, ok := <-c.videoSendCh:
+			if !ok {
+				return
+			}
+			if writeMsg(data) != nil {
+				return
+			}
 		case <-ticker.C:
 			c.mu.Lock()
 			c.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))

@@ -59,7 +59,10 @@ var bufPool = sync.Pool{
 }
 
 // MagicPrefix identifies authentic Limoni Voice Secure v1 packets
-var MagicPrefix = []byte("LVS1")
+var (
+	MagicPrefix      = []byte("LVS1")
+	MagicVideoPrefix = []byte("LVV1")
+)
 
 type PacketType byte
 
@@ -257,7 +260,6 @@ type P2PNode struct {
 	videoTCPConn       net.Conn
 	videoPlayerCh      chan []byte
 	videoPlayerCancel  chan struct{}
-	videoPreBuf        [][]byte
 	videoReorder       VideoReorderBuffer
 	audioDedup         AudioDeduplicator
 	chatDedup          ChatDeduplicator
@@ -576,8 +578,8 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 		}
 	}
 
-	// If pending buffer grows too large (> 160 packets ~150KB burst window), force advance to avoid stalling
-	if len(b.pending) > 160 {
+	// If pending buffer grows too large (> 32 packets ~40KB jitter window), force advance to avoid stalling
+	if len(b.pending) > 32 {
 		var minSeq uint32
 		var found bool
 		for s := range b.pending {
@@ -1148,7 +1150,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		wsPriorityCh := make(chan []byte, 256)
-		wsVideoCh := make(chan []byte, 64)
+		wsVideoCh := make(chan []byte, 512)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -2615,9 +2617,9 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		select {
 		case wsVideoCh <- data:
 		default:
-			// If channel is backlogged, drain stale packets down to 16 to keep broadcast zero-latency
+			// If channel is backlogged beyond capacity (512), drain down to 256
 		drainLoop:
-			for len(wsVideoCh) > 16 {
+			for len(wsVideoCh) > 256 {
 				select {
 				case <-wsVideoCh:
 				default:
@@ -3636,22 +3638,10 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 		return
 	}
 
-	n.mu.Lock()
-	// Keep prebuffer of recent video chunks (~10 chunks = ~12KB) so player gets headers immediately on connect
-	// Zero-allocation ring buffer: reuses slice backing array instead of append(slice[1:], chunk)
-	for _, chunk := range readyChunks {
-		if len(chunk) > 0 {
-			if len(n.videoPreBuf) < 10 {
-				n.videoPreBuf = append(n.videoPreBuf, chunk)
-			} else {
-				copy(n.videoPreBuf, n.videoPreBuf[1:])
-				n.videoPreBuf[len(n.videoPreBuf)-1] = chunk
-			}
-		}
-	}
+	n.mu.RLock()
 	watching = n.IsWatchingScreen
 	playerCh := n.videoPlayerCh
-	n.mu.Unlock()
+	n.mu.RUnlock()
 
 	// Non-blocking asynchronous dispatch to dedicated player pump.
 	// Network receive loops (relay WebSocket & UDP) NEVER block on player TCP writes!
@@ -3661,10 +3651,10 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 				select {
 				case playerCh <- chunk:
 				default:
-					// Dedicated pump channel full (player backlogged):
-					// Drain older chunks down to 16 so the player ALWAYS receives the fresh live frames!
+					// Dedicated pump channel full (player backlogged beyond 512):
+					// Drain down to 256 so the player ALWAYS receives fresh live frames!
 				drainPlayer:
-					for len(playerCh) > 16 {
+					for len(playerCh) > 256 {
 						select {
 						case <-playerCh:
 						default:
@@ -3683,7 +3673,7 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 
 // videoPlayerWritePump runs in a dedicated goroutine and flushes video chunks to the player (mpv/ffplay)
 // over local loopback TCP using batched writes, completely decoupled from the network receive thread.
-func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, preBuf [][]byte, cancelCh chan struct{}) {
+func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, cancelCh chan struct{}) {
 	pumpDone := make(chan struct{})
 	defer func() {
 		close(pumpDone)
@@ -3700,17 +3690,7 @@ func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, preB
 		}()
 	}
 
-	// 1. Immediately send pre-buffered header chunks (SPS/PPS) so decoder syncs instantly
-	for _, chunk := range preBuf {
-		if len(chunk) > 0 {
-			_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-			if _, err := conn.Write(chunk); err != nil {
-				return
-			}
-		}
-	}
-
-	// 2. Stream incoming chunks using vectorized batch writes
+	// Stream incoming chunks directly using vectorized batch writes
 	var batch net.Buffers
 	for {
 		select {
@@ -3725,9 +3705,9 @@ func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, preB
 			}
 			batch = append(batch[:0], chunk)
 
-			// Drain any immediately available chunks to write in a single vectorized syscall
+			// Drain any immediately available chunks to write in a single vectorized syscall (up to 64 chunks)
 		drainLoop:
-			for len(batch) < 32 {
+			for len(batch) < 64 {
 				select {
 				case nextChunk, ok := <-playerCh:
 					if !ok {
@@ -3982,8 +3962,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		opt = screenshare.DefaultReceiverOptions(fps)
 	}
 	n.videoReorder.Reset()
-	n.videoPreBuf = nil
-	playerCh := make(chan []byte, 64)
+	playerCh := make(chan []byte, 512)
 	cancelCh := make(chan struct{})
 	n.videoPlayerCh = playerCh
 	n.videoPlayerCancel = cancelCh
@@ -4012,20 +3991,18 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.debugLog(fmt.Sprintf("[VIEWER] [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
-			_ = tcp.SetWriteBuffer(64 * 1024)
-			_ = tcp.SetReadBuffer(64 * 1024)
+			_ = tcp.SetWriteBuffer(256 * 1024)
+			_ = tcp.SetReadBuffer(256 * 1024)
 		}
 		n.mu.Lock()
 		if n.IsWatchingScreen {
 			n.videoTCPConn = conn
 			activePlayerCh := n.videoPlayerCh
 			activeCancelCh := n.videoPlayerCancel
-			preBuf := make([][]byte, len(n.videoPreBuf))
-			copy(preBuf, n.videoPreBuf)
 			n.mu.Unlock()
 
 			// Launch dedicated async player pump
-			go n.videoPlayerWritePump(conn, activePlayerCh, preBuf, activeCancelCh)
+			go n.videoPlayerWritePump(conn, activePlayerCh, activeCancelCh)
 		} else {
 			n.mu.Unlock()
 			_ = conn.Close()
@@ -4150,7 +4127,6 @@ func (n *P2PNode) StopWatchingScreen() error {
 	n.WatchingPeerID = ""
 	n.WatchingPeerNick = ""
 	n.lastVideoChunkTime = time.Time{}
-	n.videoPreBuf = nil
 	n.videoReorder.Reset()
 	n.mu.Unlock()
 
@@ -4568,14 +4544,18 @@ func encodeAndEncryptPacket(pkt *P2PPacket, aead cipher.AEAD) ([]byte, error) {
 		return nil, err
 	}
 
-	prefixLen := len(MagicPrefix)
+	prefix := MagicPrefix
+	if pkt.Type == PacketScreenShareData {
+		prefix = MagicVideoPrefix
+	}
+	prefixLen := len(prefix)
 	nonceLen := len(nonce)
 	overhead := aead.Overhead()
 	totalCap := prefixLen + nonceLen + len(plaintext) + overhead
 
-	// Preallocate exact capacity and write MagicPrefix + Nonce
+	// Preallocate exact capacity and write Prefix + Nonce
 	out := make([]byte, prefixLen+nonceLen, totalCap)
-	copy(out, MagicPrefix)
+	copy(out, prefix)
 	copy(out[prefixLen:], nonce[:])
 
 	// Seal appends [Ciphertext + AuthTag] directly to out, zero extra heap allocation or copy!
@@ -4594,8 +4574,8 @@ func decryptAndDecodePacket(data []byte, pkt *P2PPacket, aead cipher.AEAD) error
 		return errors.New("packet too short")
 	}
 
-	// Verify magic prefix
-	if !bytes.Equal(data[:headerLen], MagicPrefix) {
+	// Verify magic prefix (accepts both LVS1 standard and LVV1 video stream)
+	if !bytes.Equal(data[:headerLen], MagicPrefix) && !bytes.Equal(data[:headerLen], MagicVideoPrefix) {
 		return errors.New("invalid packet magic header")
 	}
 
