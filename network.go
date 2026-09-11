@@ -154,6 +154,8 @@ type PeerInfo struct {
 	RMS             float64
 	IsSharingScreen bool
 	VideoPort       int
+	ViaRelay        bool      // True if routing through WebSocket relay, false if direct P2P/LAN
+	LastDirectSeen  time.Time // Last time a direct UDP packet arrived from this peer
 }
 
 // RelayControlMessage represents control JSON payloads sent to/from the relay server
@@ -1234,6 +1236,29 @@ func (n *P2PNode) closeRelay() {
 	n.isRelayConnected = false
 }
 
+// IsRelayConnected returns whether the node has an active WebSocket relay connection
+func (n *P2PNode) IsRelayConnected() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.isRelayConnected
+}
+
+// RelayStatus returns human-readable status of the relay server connection
+func (n *P2PNode) RelayStatus() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
+		return "LAN Mode"
+	}
+	if n.isRelayConnected {
+		return "Connected"
+	}
+	if n.IsConnected || n.Connecting {
+		return "Offline (LAN Mode)"
+	}
+	return "Disconnected"
+}
+
 func (n *P2PNode) sendRelayControl(msg RelayControlMessage) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -1485,6 +1510,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 					Nickname: msg.Nickname,
 					Addr:     hostAddr,
 					LastSeen: time.Now(),
+					ViaRelay: true,
 				}
 				n.Peers[msg.SenderID] = hostPeer
 			}
@@ -1512,6 +1538,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 							Nickname: p.Nickname,
 							Addr:     pAddr,
 							LastSeen: time.Now(),
+							ViaRelay: true,
 						}
 					}
 					if p.PublicIP != "" {
@@ -1551,6 +1578,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 							Nickname: p.Nickname,
 							Addr:     pAddr,
 							LastSeen: time.Now(),
+							ViaRelay: true,
 						}
 					}
 					if p.PublicIP != "" {
@@ -2525,14 +2553,21 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					if nick == "" {
 						nick = "User_" + pkt.SenderID[:min(len(pkt.SenderID), 4)]
 					}
+					var lastDirect time.Time
+					isRelayed := (raddr == nil && peerAddr == nil)
+					if raddr != nil {
+						lastDirect = time.Now()
+					}
 					peer = &PeerInfo{
-						ID:         pkt.SenderID,
-						Nickname:   nick,
-						Addr:       peerAddr,
-						LocalPort:  pkt.LocalPort,
-						LastSeen:   time.Now(),
-						IsMuted:    pkt.IsMuted,
-						IsDeafened: pkt.IsDeafened,
+						ID:             pkt.SenderID,
+						Nickname:       nick,
+						Addr:           peerAddr,
+						LocalPort:      pkt.LocalPort,
+						LastSeen:       time.Now(),
+						LastDirectSeen: lastDirect,
+						ViaRelay:       isRelayed,
+						IsMuted:        pkt.IsMuted,
+						IsDeafened:     pkt.IsDeafened,
 					}
 					n.Peers[pkt.SenderID] = peer
 					n.log(fmt.Sprintf("[+] Established connection with %s. (E2EE Secure)", nick))
@@ -2546,6 +2581,12 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					peer.Addr = peerAddr
 				}
 				peer.LastSeen = time.Now()
+				if raddr != nil {
+					peer.LastDirectSeen = time.Now()
+					peer.ViaRelay = false
+				} else if peer.Addr == nil || time.Since(peer.LastDirectSeen) > 3*time.Second {
+					peer.ViaRelay = true
+				}
 				if pkt.Nickname != "" {
 					peer.Nickname = pkt.Nickname
 				}
@@ -2761,14 +2802,21 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				n.IsLocked = true
 			}
 
+			var lastDirect time.Time
+			isRelayed := (raddr == nil && peerAddr == nil)
+			if raddr != nil {
+				lastDirect = time.Now()
+			}
 			hostPeer := &PeerInfo{
-				ID:         pkt.SenderID,
-				Nickname:   pkt.Nickname,
-				Addr:       peerAddr,
-				LocalPort:  pkt.LocalPort,
-				LastSeen:   time.Now(),
-				IsMuted:    pkt.IsMuted,
-				IsDeafened: pkt.IsDeafened,
+				ID:             pkt.SenderID,
+				Nickname:       pkt.Nickname,
+				Addr:           peerAddr,
+				LocalPort:      pkt.LocalPort,
+				LastSeen:       time.Now(),
+				LastDirectSeen: lastDirect,
+				ViaRelay:       isRelayed,
+				IsMuted:        pkt.IsMuted,
+				IsDeafened:     pkt.IsDeafened,
 			}
 			n.Peers[pkt.SenderID] = hostPeer
 			go n.sendPingToPeer(hostPeer)
@@ -2783,14 +2831,20 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					} else if peerAddr != nil && pSum.LocalPort > 0 {
 						pAddr = &net.UDPAddr{IP: peerAddr.IP, Port: pSum.LocalPort}
 					}
+					var pDirect time.Time
+					if pAddr != nil {
+						pDirect = time.Now()
+					}
 					newPeer := &PeerInfo{
-						ID:         pSum.ID,
-						Nickname:   pSum.Nickname,
-						Addr:       pAddr,
-						LocalPort:  pSum.LocalPort,
-						LastSeen:   time.Now(),
-						IsMuted:    pSum.IsMuted,
-						IsDeafened: pSum.IsDeafened,
+						ID:             pSum.ID,
+						Nickname:       pSum.Nickname,
+						Addr:           pAddr,
+						LocalPort:      pSum.LocalPort,
+						LastSeen:       time.Now(),
+						LastDirectSeen: pDirect,
+						ViaRelay:       (pAddr == nil),
+						IsMuted:        pSum.IsMuted,
+						IsDeafened:     pSum.IsDeafened,
 					}
 					n.Peers[pSum.ID] = newPeer
 					if pAddr != nil {
@@ -2879,14 +2933,19 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				destAddr = peer.Addr
 			}
 		}
+		var isMuted, isDeafened bool
+		if n.audio != nil {
+			isMuted = n.audio.Muted
+			isDeafened = n.audio.Deafened
+		}
 		pong := P2PPacket{
 			Type:            PacketPong,
 			RoomCode:        n.RoomCode,
 			SenderID:        n.LocalID,
 			Nickname:        n.Nickname,
 			Seq:             pkt.Seq,
-			IsMuted:         n.audio.Muted,
-			IsDeafened:      n.audio.Deafened,
+			IsMuted:         isMuted,
+			IsDeafened:      isDeafened,
 			IsSharingScreen: n.IsSharingScreen,
 			VideoPort:       n.ScreenSharePort,
 			Timestamp:       pkt.Timestamp, // Echo timestamp
@@ -2897,6 +2956,13 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = pkt.IsSharingScreen
 			peer.VideoPort = pkt.VideoPort
+
+			if raddr != nil {
+				peer.LastDirectSeen = time.Now()
+				peer.ViaRelay = false
+			} else if peer.Addr == nil || time.Since(peer.LastDirectSeen) > 3*time.Second {
+				peer.ViaRelay = true
+			}
 
 			// Dedup incoming pong: only accept the earliest/fastest pong for this ping sequence.
 			// Drops delayed redundant copies arriving from alternate transport (e.g. WebSocket Relay vs Direct UDP).

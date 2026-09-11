@@ -471,6 +471,15 @@ func main() {
 		relayModalActiveField = field
 	}
 
+	probeRelayStatus := func(u, tok string) {
+		go func() {
+			online, status := ProbeRelayServer(u, tok, 2500*time.Millisecond)
+			lobby.RelayOnline = online
+			lobby.RelayStatus = status
+		}()
+	}
+	probeRelayStatus(node.RelayURL, node.RelayToken)
+
 	openRelayModal := func() {
 		showRelayModal = true
 		relayURLInput.SetValue(node.RelayURL)
@@ -479,6 +488,7 @@ func main() {
 		relaySelStart = 0
 		relaySelEnd = len(relayURLInput.Text)
 		relaySelField = 0
+		probeRelayStatus(node.RelayURL, node.RelayToken)
 		relayDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 
@@ -1031,6 +1041,7 @@ func main() {
 							newToken := strings.TrimSpace(relayTokenInput.Value())
 							node.UpdateRelaySettings(newURL, newToken)
 							_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+							probeRelayStatus(newURL, newToken)
 							if currentScreen == ScreenLobby {
 								lobby.RelayURL = newURL
 								lobby.SetToast("Relay server settings saved!")
@@ -1041,6 +1052,7 @@ func main() {
 						} else if relayModalActiveField == 3 {
 							node.UpdateRelaySettings(DefaultRelayURL, "")
 							_ = ResetAppConfig()
+							probeRelayStatus(DefaultRelayURL, "")
 							if currentScreen == ScreenLobby {
 								lobby.RelayURL = DefaultRelayURL
 								lobby.SetToast("Reset to official default relay server!")
@@ -1952,19 +1964,22 @@ func main() {
 								node.UpdateRelaySettings(newURL, newToken)
 								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
 								lobby.RelayURL = newURL
-								lobby.SetToast("Relay sunucu ayarlari kaydedildi!")
+								probeRelayStatus(newURL, newToken)
+								lobby.SetToast("Relay server settings saved!")
 								closeRelayModal()
 							},
 							func() {
 								node.UpdateRelaySettings(DefaultRelayURL, "")
 								_ = ResetAppConfig()
 								lobby.RelayURL = DefaultRelayURL
-								lobby.SetToast("Varsayilan resmi sunucuya sifirlandi!")
+								probeRelayStatus(DefaultRelayURL, "")
+								lobby.SetToast("Reset to default official relay!")
 								closeRelayModal()
 							},
 							func() {
 								closeRelayModal()
 							},
+							lobby.RelayStatus,
 						)
 					} else if showTestModal {
 						DrawTestModal(f, f.Area(), audio, node, closeTestModal)
@@ -2174,18 +2189,21 @@ func main() {
 								newToken = strings.TrimSpace(newToken)
 								node.UpdateRelaySettings(newURL, newToken)
 								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
-								room.SetToast("Relay sunucu ayarlari kaydedildi!")
+								probeRelayStatus(newURL, newToken)
+								room.SetToast("Relay server settings saved!")
 								closeRelayModal()
 							},
 							func() {
 								node.UpdateRelaySettings(DefaultRelayURL, "")
 								_ = ResetAppConfig()
-								room.SetToast("Varsayilan resmi sunucuya sifirlandi!")
+								probeRelayStatus(DefaultRelayURL, "")
+								room.SetToast("Reset to default official relay!")
 								closeRelayModal()
 							},
 							func() {
 								closeRelayModal()
 							},
+							node.RelayStatus(),
 						)
 					} else if showTestModal {
 						DrawTestModal(f, f.Area(), audio, node, closeTestModal)

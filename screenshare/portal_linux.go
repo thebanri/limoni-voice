@@ -218,7 +218,7 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 		return 0, nil, nil, fmt.Errorf("failed to decode Start response path: %w", err)
 	}
 
-	logMsg("[PORTAL] Lutfen paylasmak istediginiz pencereyi secin...")
+	logMsg("[PORTAL] Please select the window or screen you want to share...")
 	respCode, results, err := waitForPortalResponse(ctx, reqStartPath, sigChan, 120*time.Second)
 	if err != nil {
 		cleanup()
@@ -226,7 +226,7 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 	}
 	if respCode != 0 {
 		cleanup()
-		return 0, nil, nil, errors.New("pencere secimi kullanici tarafindan iptal edildi")
+		return 0, nil, nil, errors.New("window selection cancelled by user")
 	}
 
 	nodeID := parsePipewireNodeID(results["streams"].Value())
@@ -235,7 +235,7 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 		return 0, nil, nil, errors.New("portal did not return a valid PipeWire stream Node ID")
 	}
 
-	logMsg("[PORTAL] Pencere secildi! PipeWire Node ID: %d", nodeID)
+	logMsg("[PORTAL] Window selected! PipeWire Node ID: %d", nodeID)
 
 	// 4. OpenPipeWireRemote
 	var fd dbus.UnixFD

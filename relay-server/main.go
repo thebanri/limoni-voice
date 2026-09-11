@@ -223,7 +223,7 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 	var msg ControlMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		sendControlMessage(client, ControlMessage{Type: "error", Message: "Gecersiz JSON mesaji"})
+		sendControlMessage(client, ControlMessage{Type: "error", Message: "Invalid JSON message"})
 		return
 	}
 
@@ -282,7 +282,7 @@ func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 
 func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 	if msg.RoomCode == "" || msg.SenderID == "" {
-		sendControlMessage(client, ControlMessage{Type: "error", Message: "Oda kodu ve kullanici ID gerekli"})
+		sendControlMessage(client, ControlMessage{Type: "error", Message: "Room code and user ID required"})
 		return
 	}
 
@@ -297,7 +297,7 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 		log.Printf("[SECURITY] Rate limit exceeded: client %s attempted too many room creations", client.publicIP)
 		sendControlMessage(client, ControlMessage{
 			Type:    "error",
-			Message: "Cok fazla oda olusturma istegi. Lutfen biraz bekleyin.",
+			Message: "Too many room creation requests. Please wait a moment.",
 		})
 		return
 	}
@@ -325,7 +325,7 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 					existing.mu.Unlock()
 					s.mu.Unlock()
 					log.Printf("[SECURITY] Unauthorized host reclaim attempt for room %s by sender %s (invalid or missing host token)", msg.RoomCode, msg.SenderID)
-					sendControlMessage(client, ControlMessage{Type: "error", Message: "Yetkisiz oda yonetimi: Gecersiz veya eksik Host Token"})
+					sendControlMessage(client, ControlMessage{Type: "error", Message: "Unauthorized room management: Invalid or missing Host Token"})
 					return
 				}
 			}
@@ -360,7 +360,7 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 		existing.mu.Unlock()
 		s.mu.Unlock()
-		sendControlMessage(client, ControlMessage{Type: "error", Message: "Bu oda kodu zaten kullaniliyor"})
+		sendControlMessage(client, ControlMessage{Type: "error", Message: "Room code already in use"})
 		return
 	}
 
@@ -391,7 +391,7 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 
 func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	if msg.RoomCode == "" || msg.SenderID == "" {
-		sendControlMessage(client, ControlMessage{Type: "error", Message: "Oda kodu ve kullanici ID gerekli"})
+		sendControlMessage(client, ControlMessage{Type: "error", Message: "Room code and user ID required"})
 		return
 	}
 
@@ -407,7 +407,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	s.mu.RUnlock()
 
 	if !exists {
-		sendControlMessage(client, ControlMessage{Type: "room_not_found", Message: "Bu oda su anda acik degil"})
+		sendControlMessage(client, ControlMessage{Type: "room_not_found", Message: "Room not found or currently closed"})
 		return
 	}
 
@@ -425,7 +425,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 			if failedAttempts >= 10 {
 				sendControlMessage(client, ControlMessage{
 					Type:    "error",
-					Message: "Cok fazla hatali PIN denemesi. Guvenlik nedeniyle baglanti kapatildi.",
+					Message: "Too many failed PIN attempts. Connection closed for security.",
 				})
 				client.mu.Lock()
 				_ = client.conn.WriteControl(websocket.CloseMessage,
@@ -460,7 +460,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 
 	if len(room.Members) >= MaxRoomMembers && room.Members[msg.SenderID] == nil {
 		room.mu.Unlock()
-		sendControlMessage(client, ControlMessage{Type: "room_full", Message: "Oda dolu (Maks 4 kisi)"})
+		sendControlMessage(client, ControlMessage{Type: "room_full", Message: "Room is full (Max 4 members)"})
 		return
 	}
 

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,6 +321,149 @@ func TestClipboardTestingModeMocking(t *testing.T) {
 		t.Fatalf("Expected GetClipboardText to return %q, got %q", testStr, got)
 	}
 }
+
+func TestProbeRelayServer(t *testing.T) {
+	// 1. LAN Mode
+	online, status := ProbeRelayServer("", "", 100*time.Millisecond)
+	if online || status != "LAN Mode" {
+		t.Fatalf("Expected LAN Mode for empty URL, got online=%v status=%s", online, status)
+	}
+
+	online, status = ProbeRelayServer("off", "", 100*time.Millisecond)
+	if online || status != "LAN Mode" {
+		t.Fatalf("Expected LAN Mode for 'off', got online=%v status=%s", online, status)
+	}
+
+	// 2. Offline server (unreachable port)
+	online, status = ProbeRelayServer("ws://127.0.0.1:49999/ws", "", 200*time.Millisecond)
+	if online || status != "Offline" {
+		t.Fatalf("Expected Offline for closed port, got online=%v status=%s", online, status)
+	}
+
+	// 3. Online server with mock HTTP /health endpoint
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	online, status = ProbeRelayServer(wsURL, "", 500*time.Millisecond)
+	if !online || status != "Online" {
+		t.Fatalf("Expected Online for healthy server, got online=%v status=%s", online, status)
+	}
+
+	// 4. Server returning 401 Unauthorized
+	authTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("X-Auth-Token")
+		if token == "" {
+			token = r.URL.Query().Get("token")
+		}
+		if token != "valid_token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer authTS.Close()
+
+	authWsURL := "ws" + strings.TrimPrefix(authTS.URL, "http") + "/ws"
+	online, status = ProbeRelayServer(authWsURL, "bad_token", 500*time.Millisecond)
+	if online || status != "Auth Failed (401)" {
+		t.Fatalf("Expected Auth Failed (401) for invalid token, got online=%v status=%s", online, status)
+	}
+
+	online, status = ProbeRelayServer(authWsURL, "valid_token", 500*time.Millisecond)
+	if !online || status != "Online" {
+		t.Fatalf("Expected Online with valid token, got online=%v status=%s", online, status)
+	}
+}
+
+func TestPeerViaRelayAndDirectTracking(t *testing.T) {
+	node := &P2PNode{
+		LocalID:     "node_local",
+		RoomCode:    "room-test",
+		IsConnected: true,
+		Peers:       make(map[string]*PeerInfo),
+		audio:       NewAudioEngine(),
+	}
+	node.aead, _ = deriveRoomCipher(deriveRoomKey("room-test"))
+
+	// 1. Peer packet arrives via WebSocket relay (raddr == nil)
+	pkt1 := P2PPacket{
+		Type:      PacketPing,
+		RoomCode:  "room-test",
+		SenderID:  "peer_1",
+		Nickname:  "Alice",
+		LocalPort: 50002,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	node.handlePacket(&pkt1, nil)
+
+	peer, exists := node.Peers["peer_1"]
+	if !exists {
+		t.Fatalf("Expected peer_1 to be registered")
+	}
+	if !peer.ViaRelay {
+		t.Fatalf("Expected ViaRelay to be true for relay-only packet")
+	}
+
+	// 2. Direct UDP packet arrives (raddr != nil)
+	udpAddr := &net.UDPAddr{IP: net.ParseIP("192.168.1.50"), Port: 50002}
+	pkt2 := P2PPacket{
+		Type:      PacketPing,
+		RoomCode:  "room-test",
+		SenderID:  "peer_1",
+		Nickname:  "Alice",
+		LocalPort: 50002,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	node.handlePacket(&pkt2, udpAddr)
+
+	if peer.ViaRelay {
+		t.Fatalf("Expected ViaRelay to be false after receiving direct UDP packet")
+	}
+	if peer.LastDirectSeen.IsZero() {
+		t.Fatalf("Expected LastDirectSeen to be recorded")
+	}
+}
+
+func TestDrawRelayModalWithDynamicStatus(t *testing.T) {
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 100, 30))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+
+	urlState := widgets.NewTextInputState()
+	urlState.SetValue("wss://custom.relay.org/ws")
+	tokenState := widgets.NewTextInputState()
+
+	// Render with Offline status
+	DrawRelayModal(
+		frame, cell.NewRect(0, 0, 100, 30), 1.0,
+		"wss://custom.relay.org/ws", "",
+		urlState, tokenState, 0,
+		-1, -1, -1,
+		nil, nil, nil, nil,
+		"Offline",
+	)
+
+	allText := ""
+	for y := uint16(0); y < 30; y++ {
+		for x := uint16(0); x < 100; x++ {
+			c := buf.Get(x, y)
+			if c.Content != 0 && c.Content != ' ' {
+				allText += string(c.Content)
+			}
+		}
+	}
+	if !strings.Contains(allText, "OFFLINE") {
+		t.Fatalf("Expected modal to contain OFFLINE status indicator, got: %s", allText)
+	}
+}
+
 
 
 

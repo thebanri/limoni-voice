@@ -252,7 +252,7 @@ func (r *RoomView) SendCurrentChat() {
 				r.mu.Unlock()
 				return
 			}
-			formattedMsg := fmt.Sprintf("📋 [Kopyala: %s]", rawCopyText)
+			formattedMsg := fmt.Sprintf("📋 [Copy: %s]", rawCopyText)
 			onSend := r.OnSendChat
 			r.mu.Unlock()
 			if onSend != nil {
@@ -699,6 +699,37 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 			curX += lockLen + 2
 		}
 	}
+
+	// 7. Relay Status Badge
+	var relayBadge string
+	var relayStyle cell.Style
+	if node.IsRelayConnected() {
+		relayBadge = " 🌐 RELAY: CONNECTED "
+		relayStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Success,
+			Modifier: cell.ModifierBold,
+		}
+	} else if node.LanOnly || node.RelayURL == "" || strings.EqualFold(node.RelayURL, "none") || strings.EqualFold(node.RelayURL, "off") {
+		relayBadge = " 🏠 LAN ONLY "
+		relayStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Secondary,
+			Modifier: cell.ModifierBold,
+		}
+	} else {
+		relayBadge = " ⚠ RELAY: OFFLINE (LAN MODE) "
+		relayStyle = cell.Style{
+			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+			Bg:       theme.Danger,
+			Modifier: cell.ModifierBold,
+		}
+	}
+	relayLen := uint16(len([]rune(relayBadge)))
+	if curX+relayLen <= limitX {
+		buf.SetString(curX, inner.Y, relayBadge, relayStyle)
+		curX += relayLen + 2
+	}
 }
 
 func (r *RoomView) renderGrid(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
@@ -821,7 +852,13 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 		peerCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
 		isReconnecting := time.Since(peer.LastSeen) > 8000*time.Millisecond
 		isBeingWatched := node.IsWatchingScreen && node.WatchingPeerID == peer.ID
-		r.renderMemberMiniCard(frame, peerCard, peer.Nickname, peer.RMS, peer.Speaking, peer.IsMuted, peer.IsDeafened, peer.IsSharingScreen, isBeingWatched, peer.PingMs, isReconnecting, false)
+		trans := "Direct"
+		if peer.ViaRelay {
+			trans = "Relay"
+		} else if peer.Addr != nil && (peer.Addr.IP.IsLoopback() || peer.Addr.IP.IsPrivate()) {
+			trans = "LAN"
+		}
+		r.renderMemberMiniCard(frame, peerCard, peer.Nickname, peer.RMS, peer.Speaking, peer.IsMuted, peer.IsDeafened, peer.IsSharingScreen, isBeingWatched, peer.PingMs, isReconnecting, false, trans)
 
 		if peer.IsSharingScreen {
 			targetPeer := peer
@@ -862,7 +899,7 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
-func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, name string, rms float64, isSpeaking, isMuted, isDeafened, isSharing, isBeingWatched bool, pingMs int64, isReconnecting bool, isSelf bool) {
+func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, name string, rms float64, isSpeaking, isMuted, isDeafened, isSharing, isBeingWatched bool, pingMs int64, isReconnecting bool, isSelf bool, trans ...string) {
 	theme := CurrentTheme()
 	buf := frame.Buffer
 
@@ -924,7 +961,11 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	}
 
 	if pingMs > 0 {
-		statusStr += fmt.Sprintf(" • %dms", pingMs)
+		tTag := ""
+		if len(trans) > 0 && trans[0] != "" {
+			tTag = fmt.Sprintf(" (%s)", trans[0])
+		}
+		statusStr += fmt.Sprintf(" • %dms%s", pingMs, tTag)
 	}
 
 	if area.Height >= 2 {
@@ -1399,7 +1440,13 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 
 	pingStr := "PING: --"
 	if peer.PingMs > 0 {
-		pingStr = fmt.Sprintf("PING: %dms", peer.PingMs)
+		trans := "Direct"
+		if peer.ViaRelay {
+			trans = "Relay"
+		} else if peer.Addr != nil && (peer.Addr.IP.IsLoopback() || peer.Addr.IP.IsPrivate()) {
+			trans = "LAN"
+		}
+		pingStr = fmt.Sprintf("PING: %dms (%s)", peer.PingMs, trans)
 	}
 	volVal := 1.0
 	if audio != nil {
@@ -2807,7 +2854,7 @@ func (r *RoomView) HandleChatClick(x, y uint16) bool {
 		if len([]rune(previewStr)) > 35 {
 			previewStr = string([]rune(previewStr)[:35]) + "…"
 		}
-		r.SetToast(fmt.Sprintf("📋 Kopyalandı: %s", previewStr))
+		r.SetToast(fmt.Sprintf("📋 Copied: %s", previewStr))
 		r.AddLog(fmt.Sprintf("[CLIPBOARD] Copied: %s", previewStr))
 		return true
 	}
@@ -2963,17 +3010,27 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 
 	// Calculate latency indicator (average of all active peers with measured ping)
 	peerPing := 0
+	allRelayed := false
+	anyRelayed := false
 	if len(peers) > 0 {
 		var totalPing int64
 		count := 0
+		relayedCount := 0
 		for _, p := range peers {
 			if p.PingMs > 0 {
 				totalPing += p.PingMs
 				count++
 			}
+			if p.ViaRelay {
+				relayedCount++
+				anyRelayed = true
+			}
 		}
 		if count > 0 {
 			peerPing = int(totalPing / int64(count))
+		}
+		if relayedCount == len(peers) {
+			allRelayed = true
 		}
 	}
 	pingColor := theme.Success
@@ -3148,7 +3205,13 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		// 6. Ping pill
 		pingPill := " ⚡ -- "
 		if peerPing > 0 {
-			pingPill = fmt.Sprintf(" ⚡ %dms ", peerPing)
+			modeTag := "LAN"
+			if allRelayed {
+				modeTag = "Relay"
+			} else if anyRelayed {
+				modeTag = "Mesh"
+			}
+			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 		}
 		curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, pingPill, cell.Style{
 			Fg: pingColor,
@@ -3238,7 +3301,13 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		// Latency
 		pingPill := " ⚡ -- "
 		if peerPing > 0 {
-			pingPill = fmt.Sprintf(" ⚡ %dms ", peerPing)
+			modeTag := "LAN"
+			if allRelayed {
+				modeTag = "Relay"
+			} else if anyRelayed {
+				modeTag = "Mesh"
+			}
+			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 		}
 		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
 			Fg: pingColor,
@@ -3444,7 +3513,13 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 	// Latency
 	pingPill := " ⚡ -- "
 	if peerPing > 0 {
-		pingPill = fmt.Sprintf(" ⚡ %dms ", peerPing)
+		modeTag := "LAN"
+		if allRelayed {
+			modeTag = "Relay"
+		} else if anyRelayed {
+			modeTag = "Mesh"
+		}
+		pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 	}
 	curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
 		Fg:       pingColor,
@@ -3890,7 +3965,13 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 			pPing := int(targetPeer.PingMs)
 			pPill := " ⚡ -- "
 			if pPing > 0 {
-				pPill = fmt.Sprintf(" ⚡ %dms ", pPing)
+				trans := "Direct"
+				if targetPeer.ViaRelay {
+					trans = "Relay"
+				} else if targetPeer.Addr != nil && (targetPeer.Addr.IP.IsLoopback() || targetPeer.Addr.IP.IsPrivate()) {
+					trans = "LAN"
+				}
+				pPill = fmt.Sprintf(" ⚡ %dms (%s) ", pPing, trans)
 			}
 			curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, pPill, cell.Style{
 				Fg: theme.TextMuted,

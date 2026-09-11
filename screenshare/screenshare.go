@@ -1108,13 +1108,13 @@ func CheckDependencies() DependencyStatus {
 	}
 
 	if !hasReceiver {
-		status.MissingRecommended = "mpv veya ffmpeg (ekran izlemek icin gereklidir)"
+		status.MissingRecommended = "mpv or ffmpeg (required for screen watching)"
 	} else if runtime.GOOS == "linux" && !status.HasGPUScreenRecorder && !status.HasFFmpeg && errGst != nil {
-		status.MissingRecommended = "gst-launch-1.0, gpu-screen-recorder veya ffmpeg (ekran paylasmak icin gereklidir)"
+		status.MissingRecommended = "gst-launch-1.0, gpu-screen-recorder or ffmpeg (required for screen sharing)"
 	} else if runtime.GOOS == "windows" && !status.HasFFmpeg {
-		status.MissingRecommended = "ffmpeg (ekran paylasmak icin gereklidir)"
+		status.MissingRecommended = "ffmpeg (required for screen sharing)"
 	} else if runtime.GOOS == "darwin" && !status.HasFFmpeg {
-		status.MissingRecommended = "ffmpeg (ekran paylasmak icin gereklidir)"
+		status.MissingRecommended = "ffmpeg (required for screen sharing)"
 	}
 
 	return status
@@ -1323,7 +1323,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 		return p, args, nil, nil, nil
 	}
 
-	return "", nil, nil, nil, errors.New("sistemde ekran paylasimi icin gerekli araclar ('gpu-screen-recorder', 'gst-launch-1.0' veya 'ffmpeg') bulunamadi")
+	return "", nil, nil, nil, errors.New("required screen capture tools ('gpu-screen-recorder', 'gst-launch-1.0' or 'ffmpeg') not found on system")
 }
 
 // StartBroadcasting starts hardware-accelerated screen capture and streams over pipe or UDP
@@ -1374,7 +1374,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		// Windows desktop & window capture via FFmpeg
 		p, err := FindExecutable("ffmpeg")
 		if err != nil {
-			return nil, errors.New("'ffmpeg.exe' bulunamadi. Lutfen 'ffmpeg.exe' dosyasini uygulamanin yanina koyun veya PowerShell'de 'winget install Gyan.FFmpeg' calistirin.")
+			return nil, errors.New("'ffmpeg.exe' not found. Please place 'ffmpeg.exe' next to the application or run 'winget install Gyan.FFmpeg' in PowerShell.")
 		}
 		binPath = p
 
@@ -1780,9 +1780,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 		}
 	} else {
 		if runtime.GOOS == "windows" {
-			return nil, errors.New("ekran izlemek icin 'mpv.exe' veya 'ffplay.exe' bulunamadi. Lutfen 'mpv.exe'yi uygulamanin yanina koyun veya PowerShell'de 'winget install mpv.mpv' calistirin.")
+			return nil, errors.New("'mpv.exe' or 'ffplay.exe' not found to watch stream. Please place 'mpv.exe' next to the application or run 'winget install mpv.mpv' in PowerShell.")
 		}
-		return nil, errors.New("ekrani izlemek icin sistemde 'mpv' veya 'ffplay' (ffmpeg) bulunamadi. Lutfen 'mpv' yukleyin (ornek: sudo apt install mpv / brew install mpv).")
+		return nil, errors.New("'mpv' or 'ffplay' (ffmpeg) not found on system to watch stream. Please install 'mpv' (e.g., sudo apt install mpv / brew install mpv).")
 	}
 
 	logMsg("[RECEIVER] Starting command: %s %s", binPath, strings.Join(args, " "))

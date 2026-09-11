@@ -859,6 +859,7 @@ func DrawRelayModal(
 	onSave func(newURL, newToken string),
 	onReset func(),
 	onCancel func(),
+	extraStatus ...string,
 ) {
 	if progress <= 0.001 {
 		return
@@ -918,15 +919,42 @@ func DrawRelayModal(
 	statusPrefix := "Active Server: "
 	drawBoundedString(buf, inner.X+1, inner.Y, statusPrefix, cell.Style{Fg: theme.TextMuted, Bg: dialogBg}, maxX)
 	statusX := inner.X + 1 + uint16(len([]rune(statusPrefix)))
+
+	statusStr := ""
+	if len(extraStatus) > 0 {
+		statusStr = extraStatus[0]
+	}
+
 	if isCustom {
-		drawBoundedString(buf, statusX, inner.Y, "[CUSTOM RELAY SERVER ACTIVE]", cell.Style{
-			Fg:       theme.Success,
+		label := "[CUSTOM RELAY SERVER ACTIVE]"
+		color := theme.Success
+		if statusStr == "Offline" {
+			label = "[CUSTOM RELAY: OFFLINE (LAN FALLBACK)]"
+			color = theme.Danger
+		} else if statusStr == "Online" {
+			label = "[CUSTOM RELAY: ONLINE]"
+			color = theme.Success
+		} else if statusStr != "" {
+			label = fmt.Sprintf("[CUSTOM RELAY: %s]", strings.ToUpper(statusStr))
+			color = theme.Warning
+		}
+		drawBoundedString(buf, statusX, inner.Y, label, cell.Style{
+			Fg:       color,
 			Bg:       dialogBg,
 			Modifier: cell.ModifierBold,
 		}, maxX)
 	} else {
-		drawBoundedString(buf, statusX, inner.Y, "[OFFICIAL PUBLIC RELAY (Railway)]", cell.Style{
-			Fg:       theme.Accent,
+		label := "[OFFICIAL PUBLIC RELAY (Railway)]"
+		color := theme.Accent
+		if statusStr == "Offline" {
+			label = "[OFFICIAL RELAY: OFFLINE (LAN ONLY)]"
+			color = theme.Danger
+		} else if statusStr == "Online" {
+			label = "[OFFICIAL RELAY: ONLINE]"
+			color = theme.Success
+		}
+		drawBoundedString(buf, statusX, inner.Y, label, cell.Style{
+			Fg:       color,
 			Bg:       dialogBg,
 			Modifier: cell.ModifierBold,
 		}, maxX)

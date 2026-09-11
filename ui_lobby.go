@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/thebanri/limoni/core/backend"
@@ -50,6 +51,8 @@ type LobbyView struct {
 	OnOpenTestModal  func()
 	OnOpenRelayModal func()
 	RelayURL         string
+	RelayOnline      bool
+	RelayStatus      string
 }
 
 func GenerateMicrophoneModel() graphics.Model3D {
@@ -330,7 +333,21 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	theme := CurrentTheme()
 	mainTitle := " P2P ROOM & CONNECTION (CROC ENGINE) "
 	if IsCustomRelayActive(l.RelayURL) {
-		mainTitle = " P2P ROOM & CONNECTION [⚡ OZEL RELAY AKTIF - (R)] "
+		if l.RelayOnline {
+			mainTitle = " P2P ROOM & CONNECTION [⚡ CUSTOM RELAY: ONLINE - (R)] "
+		} else if l.RelayStatus == "Offline" {
+			mainTitle = " P2P ROOM & CONNECTION [⚠ CUSTOM RELAY: OFFLINE (LAN ONLY) - (R)] "
+		} else if l.RelayStatus != "" {
+			mainTitle = fmt.Sprintf(" P2P ROOM & CONNECTION [⚡ CUSTOM RELAY: %s - (R)] ", strings.ToUpper(l.RelayStatus))
+		} else {
+			mainTitle = " P2P ROOM & CONNECTION [⚡ CUSTOM RELAY ACTIVE - (R)] "
+		}
+	} else {
+		if l.RelayStatus == "Offline" {
+			mainTitle = " P2P ROOM & CONNECTION [⚠ RELAY: OFFLINE (LAN ONLY) - (R)] "
+		} else if l.RelayOnline {
+			mainTitle = " P2P ROOM & CONNECTION [⚡ RELAY: ONLINE - (R)] "
+		}
 	}
 	mainBlock := widgets.Block{
 		Title:         mainTitle,

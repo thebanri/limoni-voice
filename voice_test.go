@@ -368,17 +368,17 @@ func TestNoiseSuppressionAndTestMode(t *testing.T) {
 	audio := NewAudioEngine()
 
 	if audio.SuppressionMode != 1 {
-		t.Fatalf("Expected default suppression mode 1 (ACIK), got %d", audio.SuppressionMode)
+		t.Fatalf("Expected default suppression mode 1 (ON), got %d", audio.SuppressionMode)
 	}
 
 	audio.CycleSuppressionMode()
 	if audio.SuppressionMode != 2 {
-		t.Fatalf("Expected suppression mode 2 (YUKSEK), got %d", audio.SuppressionMode)
+		t.Fatalf("Expected suppression mode 2 (HIGH), got %d", audio.SuppressionMode)
 	}
 
 	audio.SetSuppressionMode(1)
 	if audio.SuppressionMode != 1 {
-		t.Fatalf("Expected suppression mode 1 (ACIK), got %d", audio.SuppressionMode)
+		t.Fatalf("Expected suppression mode 1 (ON), got %d", audio.SuppressionMode)
 	}
 
 	// Generate synthetic vocal frame (400Hz tone at typical speaking volume)
@@ -390,7 +390,7 @@ func TestNoiseSuppressionAndTestMode(t *testing.T) {
 
 	speaking, finalRMS, filtered := audio.processNoiseCancellation(speechPCM, audio.SuppressionMode)
 	if !speaking {
-		t.Fatalf("Expected speaking=true for vocal frame in ACIK mode, got false")
+		t.Fatalf("Expected speaking=true for vocal frame in ON mode, got false")
 	}
 	if finalRMS <= 0.01 {
 		t.Fatalf("Expected audible finalRMS > 0.01 for vocal frame, got %f", finalRMS)
@@ -425,28 +425,28 @@ func TestSpeechPassesThroughAllModes(t *testing.T) {
 		binary.LittleEndian.PutUint16(speechPCM[i*2:i*2+2], uint16(val))
 	}
 
-	// Test Mode 0 (KAPALI)
+	// Test Mode 0 (OFF)
 	rawRMS := calculateRMS(speechPCM)
 	if rawRMS < 0.05 {
 		t.Fatalf("Expected speech rawRMS >= 0.05, got %f", rawRMS)
 	}
 
-	// Test Mode 1 (ACIK)
+	// Test Mode 1 (ON)
 	speaking1, rms1, out1 := audio.processNoiseCancellation(speechPCM, 1)
 	if !speaking1 {
-		t.Fatalf("Expected speaking=true in Mode 1 (ACIK)")
+		t.Fatalf("Expected speaking=true in Mode 1 (ON)")
 	}
 	if rms1 < 0.01 || calculateRMS(out1) < 0.01 {
-		t.Fatalf("Expected non-zero audible output in Mode 1 (ACIK), got rms=%f", rms1)
+		t.Fatalf("Expected non-zero audible output in Mode 1 (ON), got rms=%f", rms1)
 	}
 
-	// Test Mode 2 (YUKSEK)
+	// Test Mode 2 (HIGH)
 	speaking2, rms2, out2 := audio.processNoiseCancellation(speechPCM, 2)
 	if !speaking2 {
-		t.Fatalf("Expected speaking=true in Mode 2 (YUKSEK)")
+		t.Fatalf("Expected speaking=true in Mode 2 (HIGH)")
 	}
 	if rms2 < 0.01 || calculateRMS(out2) < 0.01 {
-		t.Fatalf("Expected non-zero audible output in Mode 2 (YUKSEK), got rms=%f", rms2)
+		t.Fatalf("Expected non-zero audible output in Mode 2 (HIGH), got rms=%f", rms2)
 	}
 }
 
@@ -2419,7 +2419,7 @@ func TestChatCopyCommandAndSpans(t *testing.T) {
 	room.ChatInputState.SetValue("/copy 192.168.1.100:3000")
 	room.SendCurrentChat()
 
-	expectedSent := "📋 [Kopyala: 192.168.1.100:3000]"
+	expectedSent := "📋 [Copy: 192.168.1.100:3000]"
 	if sentMessage != expectedSent {
 		t.Fatalf("Expected sent chat message %q, got %q", expectedSent, sentMessage)
 	}
