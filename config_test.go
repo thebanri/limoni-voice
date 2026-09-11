@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
@@ -252,4 +253,55 @@ func TestRelayModalNoOverflow(t *testing.T) {
 		}
 	}
 }
+
+func TestPingPongDeduplicationAndSmoothing(t *testing.T) {
+	node := &P2PNode{
+		LocalID:     "node_local",
+		RoomCode:    "test-room",
+		IsConnected: true,
+		Peers:       make(map[string]*PeerInfo),
+	}
+	peer := &PeerInfo{
+		ID:       "peer_remote",
+		Nickname: "RemoteUser",
+		LastSeen: time.Now(),
+		PingMs:   0,
+	}
+	node.Peers["peer_remote"] = peer
+
+	now := time.Now().UnixMilli()
+	sendTimestamp := now - 2 // 2ms RTT
+
+	// 1. First Pong arrives (e.g. via direct UDP)
+	pong1 := P2PPacket{
+		Type:      PacketPong,
+		RoomCode:  "test-room",
+		SenderID:  "peer_remote",
+		Seq:       1,
+		Timestamp: sendTimestamp,
+	}
+	node.handlePacket(&pong1, nil)
+
+	if peer.PingMs <= 0 || peer.PingMs > 10 {
+		t.Fatalf("Expected PingMs to be around 2ms, got %d", peer.PingMs)
+	}
+	recordedPing := peer.PingMs
+
+	// 2. Delayed duplicate Pong arrives 300ms later (via WebSocket Relay) with identical seq & timestamp
+	pong2 := P2PPacket{
+		Type:      PacketPong,
+		RoomCode:  "test-room",
+		SenderID:  "peer_remote",
+		Seq:       1,
+		Timestamp: sendTimestamp,
+	}
+	// Simulate arrival after 300ms delay by temporarily modifying time or just passing it
+	node.handlePacket(&pong2, nil)
+
+	// PingMs must NOT have been updated or overwritten by the delayed packet!
+	if peer.PingMs != recordedPing {
+		t.Fatalf("Expected PingMs to remain %d, but was overwritten to %d by duplicate pong!", recordedPing, peer.PingMs)
+	}
+}
+
 

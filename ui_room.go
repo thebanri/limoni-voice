@@ -1396,7 +1396,10 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: theme.Text, Bg: theme.CardBg})
 	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
 
-	pingStr := fmt.Sprintf("PING: %dms", peer.PingMs)
+	pingStr := "PING: --"
+	if peer.PingMs > 0 {
+		pingStr = fmt.Sprintf("PING: %dms", peer.PingMs)
+	}
 	volVal := 1.0
 	if audio != nil {
 		volVal = audio.GetPeerVolume(peer.ID)
@@ -2957,10 +2960,20 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		}
 	}
 
-	// Calculate latency indicator
+	// Calculate latency indicator (average of all active peers with measured ping)
 	peerPing := 0
 	if len(peers) > 0 {
-		peerPing = int(peers[0].PingMs)
+		var totalPing int64
+		count := 0
+		for _, p := range peers {
+			if p.PingMs > 0 {
+				totalPing += p.PingMs
+				count++
+			}
+		}
+		if count > 0 {
+			peerPing = int(totalPing / int64(count))
+		}
 	}
 	pingColor := theme.Success
 	if peerPing > 120 {
@@ -3132,7 +3145,10 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		}
 
 		// 6. Ping pill
-		pingPill := fmt.Sprintf(" ⚡ %dms ", peerPing)
+		pingPill := " ⚡ -- "
+		if peerPing > 0 {
+			pingPill = fmt.Sprintf(" ⚡ %dms ", peerPing)
+		}
 		curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, pingPill, cell.Style{
 			Fg: pingColor,
 			Bg: theme.CardBg,
@@ -3219,7 +3235,10 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		}
 
 		// Latency
-		pingPill := fmt.Sprintf(" ⚡ %dms ", peerPing)
+		pingPill := " ⚡ -- "
+		if peerPing > 0 {
+			pingPill = fmt.Sprintf(" ⚡ %dms ", peerPing)
+		}
 		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
 			Fg: pingColor,
 			Bg: theme.CardBg,
@@ -3422,7 +3441,10 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 	}
 
 	// Latency
-	pingPill := fmt.Sprintf(" ⚡ %dms ", peerPing)
+	pingPill := " ⚡ -- "
+	if peerPing > 0 {
+		pingPill = fmt.Sprintf(" ⚡ %dms ", peerPing)
+	}
 	curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
 		Fg:       pingColor,
 		Bg:       theme.CardBg,
@@ -3865,7 +3887,11 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 			}
 		} else {
 			pPing := int(targetPeer.PingMs)
-			curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, fmt.Sprintf(" ⚡ %dms ", pPing), cell.Style{
+			pPill := " ⚡ -- "
+			if pPing > 0 {
+				pPill = fmt.Sprintf(" ⚡ %dms ", pPing)
+			}
+			curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, pPill, cell.Style{
 				Fg: theme.TextMuted,
 				Bg: theme.SurfaceBg,
 			}, nil)

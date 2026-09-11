@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -199,6 +201,7 @@ type P2PNode struct {
 	OnJoinFailed      func(reason string)
 	audio             *AudioEngine
 	seqCounter        uint32
+	pingSeq           uint32
 	OnLog             func(msg string)
 	OnPeerEvent       func(event string, peer *PeerInfo)
 	stopChan          chan struct{}
@@ -1560,6 +1563,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 				if n.OnPeerEvent != nil {
 					go n.OnPeerEvent("join", peer)
 				}
+				go n.sendPingToPeer(peer)
 			} else {
 				peer.Nickname = msg.Nickname
 				peer.LastSeen = time.Now()
@@ -2518,6 +2522,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					if n.OnPeerEvent != nil {
 						go n.OnPeerEvent("join", peer)
 					}
+					go n.sendPingToPeer(peer)
 				}
 			} else {
 				if peerAddr != nil {
@@ -2749,6 +2754,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				IsDeafened: pkt.IsDeafened,
 			}
 			n.Peers[pkt.SenderID] = hostPeer
+			go n.sendPingToPeer(hostPeer)
 			n.log(fmt.Sprintf("[+] Connected to room %s (Host: %s | E2EE Secure)", n.RoomCode, pkt.Nickname))
 
 			// Connect to other peers reported in Welcome packet (mesh topology)
@@ -2846,27 +2852,57 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			peer.IsSharingScreen = pkt.IsSharingScreen
 			peer.VideoPort = pkt.VideoPort
 		}
+		// Dedup incoming ping: if we already received and answered this exact ping seq/timestamp, don't echo again
+		if pkt.Timestamp > 0 && !n.ctrlDedup.ShouldProcess(pkt.SenderID, PacketPing, pkt.Seq, pkt.Timestamp) {
+			return
+		}
+		var destAddr *net.UDPAddr = raddr
+		if destAddr == nil {
+			if peer, ok := n.Peers[pkt.SenderID]; ok {
+				destAddr = peer.Addr
+			}
+		}
 		pong := P2PPacket{
 			Type:            PacketPong,
 			RoomCode:        n.RoomCode,
 			SenderID:        n.LocalID,
 			Nickname:        n.Nickname,
+			Seq:             pkt.Seq,
 			IsMuted:         n.audio.Muted,
 			IsDeafened:      n.audio.Deafened,
 			IsSharingScreen: n.IsSharingScreen,
 			VideoPort:       n.ScreenSharePort,
 			Timestamp:       pkt.Timestamp, // Echo timestamp
 		}
-		go n.sendPacketTo(raddr, &pong)
+		go n.sendPacketTo(destAddr, &pong)
 
 	case PacketPong:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = pkt.IsSharingScreen
 			peer.VideoPort = pkt.VideoPort
+
+			// Dedup incoming pong: only accept the earliest/fastest pong for this ping sequence.
+			// Drops delayed redundant copies arriving from alternate transport (e.g. WebSocket Relay vs Direct UDP).
+			if pkt.Timestamp > 0 && !n.ctrlDedup.ShouldProcess(pkt.SenderID, PacketPong, pkt.Seq, pkt.Timestamp) {
+				return
+			}
+
 			nowMs := time.Now().UnixMilli()
 			rtt := nowMs - pkt.Timestamp
-			if rtt >= 0 && rtt < 3000 {
-				peer.PingMs = rtt
+			if rtt <= 0 {
+				rtt = 1
+			}
+			if rtt < 3000 {
+				if peer.PingMs <= 0 {
+					peer.PingMs = rtt
+				} else {
+					// Exponential Moving Average (EMA) with 70% history, 30% new sample
+					// Eliminates sudden jitter spikes while keeping display smooth and responsive
+					peer.PingMs = int64(math.Round(float64(peer.PingMs)*0.70 + float64(rtt)*0.30))
+					if peer.PingMs <= 0 {
+						peer.PingMs = 1
+					}
+				}
 			}
 		}
 
@@ -3635,18 +3671,7 @@ func (n *P2PNode) heartbeatLoop() {
 				continue
 			}
 
-			pingPkt := P2PPacket{
-				Type:            PacketPing,
-				RoomCode:        n.RoomCode,
-				SenderID:        n.LocalID,
-				Nickname:        n.Nickname,
-				IsMuted:         n.audio.Muted,
-				IsDeafened:      n.audio.Deafened,
-				IsSharingScreen: n.IsSharingScreen,
-				VideoPort:       n.ScreenSharePort,
-				Timestamp:       now.UnixMilli(),
-			}
-			go n.sendPacketTo(peer.Addr, &pingPkt)
+			go n.sendPingToPeer(peer)
 		}
 
 		// If all peers disconnected, stop watching
@@ -3657,6 +3682,46 @@ func (n *P2PNode) heartbeatLoop() {
 		}
 		n.mu.Unlock()
 	}
+}
+
+// sendPingToPeer transmits a high-priority latency measurement packet to a specific peer
+func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
+	if peer == nil {
+		return
+	}
+	n.mu.RLock()
+	if !n.IsConnected {
+		n.mu.RUnlock()
+		return
+	}
+	roomCode := n.RoomCode
+	localID := n.LocalID
+	nickname := n.Nickname
+	muted := false
+	deafened := false
+	if n.audio != nil {
+		muted = n.audio.Muted
+		deafened = n.audio.Deafened
+	}
+	sharing := n.IsSharingScreen
+	videoPort := n.ScreenSharePort
+	peerAddr := peer.Addr
+	n.mu.RUnlock()
+
+	pingSeq := atomic.AddUint32(&n.pingSeq, 1)
+	pingPkt := P2PPacket{
+		Type:            PacketPing,
+		RoomCode:        roomCode,
+		SenderID:        localID,
+		Nickname:        nickname,
+		Seq:             pingSeq,
+		IsMuted:         muted,
+		IsDeafened:      deafened,
+		IsSharingScreen: sharing,
+		VideoPort:       videoPort,
+		Timestamp:       time.Now().UnixMilli(),
+	}
+	n.sendPacketTo(peerAddr, &pingPkt)
 }
 
 func (n *P2PNode) GetPeersList() []*PeerInfo {
