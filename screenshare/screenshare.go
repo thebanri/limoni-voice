@@ -893,10 +893,11 @@ func DefaultBroadcastOptions() BroadcastOptions {
 
 // ReceiverOptions defines configuration for the video player
 type ReceiverOptions struct {
-	WindowTitle    string   // e.g. "Limoni Voice - User Stream"
-	KeepAspect     bool     // preserve aspect ratio
-	FPS            int      // Stream framerate (30, 60, 120)
-	CustomMpvFlags []string // additional mpv flags
+	WindowTitle     string   // e.g. "Limoni Voice - User Stream"
+	KeepAspect      bool     // preserve aspect ratio
+	FPS             int      // Stream framerate (30, 60, 120)
+	PreferredPlayer string   // "ffplay", "mpv", or "" (auto)
+	CustomMpvFlags  []string // additional mpv flags
 }
 
 // DefaultReceiverOptions returns ultra-low-latency receiver defaults
@@ -936,6 +937,15 @@ func (s *Session) Stdin() io.WriteCloser {
 
 func (s *Session) Stdout() io.ReadCloser {
 	return s.stdout
+}
+
+func (s *Session) BinPath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd != nil {
+		return s.cmd.Path
+	}
+	return ""
 }
 
 var execCache sync.Map
@@ -1839,51 +1849,74 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	var binPath string
 	var args []string
 
-	if p, err := FindExecutable("mpv"); err == nil {
-		binPath = p
-		args = []string{
-			streamURL,
-			"--no-config",
-			"--ytdl=no",
-			"--really-quiet",
-			"--no-audio",
-			"--profile=low-latency",
-			"--untimed",
-			"--vd-lavc-threads=0",
-			"--cache=yes",
-			"--cache-pause=no",
-			"--demuxer-readahead-secs=0.05",
-			"--demuxer-max-bytes=4M",
-			"--demuxer-max-back-bytes=0",
-			"--framedrop=vo",
-			"--hwdec=auto",
-			"--vd-lavc-show-all=no",
-			"--video-sync=desync",
-			"--force-window=yes",
-			"--ontop=yes",
-			"--keep-open=yes",
-			"--idle=yes",
-			"--no-osc",
-			"--no-osd-bar",
-			"--osd-level=1",
-			fmt.Sprintf("--osd-playing-msg=Limoni Voice Stream (%d FPS) - Press 'Shift+I' for live stats", opt.FPS),
-			"--cursor-autohide=1000",
-			"--demuxer-lavf-format=mpegts",
-			"--demuxer-lavf-analyzeduration=0.1",
-			"--demuxer-lavf-probesize=32768",
-			"--title=" + windowTitle,
-			"--autofit=65%x65%",
+	useFfplay := strings.EqualFold(opt.PreferredPlayer, "ffplay")
+	if !useFfplay && opt.PreferredPlayer == "" {
+		// On Linux, prefer ffplay by default as it is immune to GPU/OpenGL/EGL driver crashes (e.g. NVIDIA update library mismatch)
+		if runtime.GOOS == "linux" {
+			if p, err := FindExecutable("ffplay"); err == nil {
+				useFfplay = true
+				binPath = p
+			}
 		}
-		if runtime.GOOS == "windows" {
-			args = append(args, "--d3d11-sync-interval=0", "--swapchain-depth=1")
-		} else {
-			args = append(args, "--opengl-waitvsync=no", "--wayland-internal-vsync=no")
+	}
+
+	if !useFfplay && !strings.EqualFold(opt.PreferredPlayer, "ffplay") {
+		if p, err := FindExecutable("mpv"); err == nil {
+			binPath = p
+			args = []string{
+				streamURL,
+				"--no-config",
+				"--ytdl=no",
+				"--really-quiet",
+				"--no-audio",
+				"--profile=low-latency",
+				"--untimed",
+				"--vd-lavc-threads=0",
+				"--cache=no",
+				"--demuxer-readahead-secs=0",
+				"--stream-buffer-size=32k",
+				"--demuxer-max-bytes=256k",
+				"--framedrop=vo",
+				"--hwdec=auto",
+				"--vd-lavc-show-all=no",
+				"--video-sync=desync",
+				"--force-window=yes",
+				"--ontop=yes",
+				"--keep-open=yes",
+				"--idle=yes",
+				"--no-osc",
+				"--no-osd-bar",
+				"--osd-level=1",
+				fmt.Sprintf("--osd-playing-msg=Limoni Voice Stream (%d FPS) - Press 'Shift+I' for live stats", opt.FPS),
+				"--cursor-autohide=1000",
+				"--demuxer-lavf-format=mpegts",
+				"--demuxer-lavf-analyzeduration=0.1",
+				"--demuxer-lavf-probesize=32768",
+				"--title=" + windowTitle,
+				"--autofit=65%x65%",
+			}
+			if runtime.GOOS == "windows" {
+				args = append(args, "--d3d11-sync-interval=0", "--swapchain-depth=1")
+			} else {
+				args = append(args, "--vo=gpu-next,gpu,sdl,xv,x11")
+			}
+			if len(opt.CustomMpvFlags) > 0 {
+				args = append(args, opt.CustomMpvFlags...)
+			}
+		} else if p, err := FindExecutable("ffplay"); err == nil {
+			useFfplay = true
+			binPath = p
 		}
-		if len(opt.CustomMpvFlags) > 0 {
-			args = append(args, opt.CustomMpvFlags...)
+	}
+
+	if useFfplay {
+		if binPath == "" {
+			if p, err := FindExecutable("ffplay"); err == nil {
+				binPath = p
+			} else {
+				return nil, errors.New("'ffplay' executable not found")
+			}
 		}
-	} else if p, err := FindExecutable("ffplay"); err == nil {
-		binPath = p
 		args = []string{
 			"-an",
 			"-sn",
@@ -1897,13 +1930,15 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-f", "mpegts",
 			"-alwaysontop",
 			"-window_title", windowTitle,
-			"-i", streamURL,
+			"-x", "1280",
+			"-y", "720",
+			streamURL,
 		}
-	} else {
+	} else if binPath == "" {
 		if runtime.GOOS == "windows" {
 			return nil, errors.New("'mpv.exe' or 'ffplay.exe' not found to watch stream. Please place 'mpv.exe' next to the application or run 'winget install mpv.mpv' in PowerShell.")
 		}
-		return nil, errors.New("'mpv' or 'ffplay' (ffmpeg) not found on system to watch stream. Please install 'mpv' (e.g., sudo apt install mpv / brew install mpv).")
+		return nil, errors.New("'ffplay' or 'mpv' not found on system to watch stream. Please install ffmpeg or mpv (e.g., sudo pacman -S ffmpeg / sudo apt install ffmpeg).")
 	}
 
 	logMsg("[RECEIVER] Starting command: %s %s", binPath, strings.Join(args, " "))

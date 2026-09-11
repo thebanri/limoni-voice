@@ -1148,7 +1148,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		wsPriorityCh := make(chan []byte, 256)
-		wsVideoCh := make(chan []byte, 256)
+		wsVideoCh := make(chan []byte, 64)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -2615,14 +2615,13 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		select {
 		case wsVideoCh <- data:
 		default:
-			// If channel is backlogged, drain stale packets to maintain zero latency and eliminate bufferbloat
-			drainCount := 0
-			for len(wsVideoCh) > 48 && drainCount < 32 {
+			// If channel is backlogged, drain stale packets down to 16 to keep broadcast zero-latency
+		drainLoop:
+			for len(wsVideoCh) > 16 {
 				select {
 				case <-wsVideoCh:
-					drainCount++
 				default:
-					break
+					break drainLoop
 				}
 			}
 			select {
@@ -3662,7 +3661,20 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 				select {
 				case playerCh <- chunk:
 				default:
-					// Dedicated pump channel full (player choked) - drop chunk non-blocking to protect voice and ping
+					// Dedicated pump channel full (player backlogged):
+					// Drain older chunks down to 16 so the player ALWAYS receives the fresh live frames!
+				drainPlayer:
+					for len(playerCh) > 16 {
+						select {
+						case <-playerCh:
+						default:
+							break drainPlayer
+						}
+					}
+					select {
+					case playerCh <- chunk:
+					default:
+					}
 				}
 			}
 		}
@@ -3971,7 +3983,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	}
 	n.videoReorder.Reset()
 	n.videoPreBuf = nil
-	playerCh := make(chan []byte, 1024)
+	playerCh := make(chan []byte, 64)
 	cancelCh := make(chan struct{})
 	n.videoPlayerCh = playerCh
 	n.videoPlayerCancel = cancelCh
@@ -4000,8 +4012,8 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.debugLog(fmt.Sprintf("[VIEWER] [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
-			_ = tcp.SetWriteBuffer(512 * 1024)
-			_ = tcp.SetReadBuffer(512 * 1024)
+			_ = tcp.SetWriteBuffer(64 * 1024)
+			_ = tcp.SetReadBuffer(64 * 1024)
 		}
 		n.mu.Lock()
 		if n.IsWatchingScreen {
@@ -4020,7 +4032,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		}
 	}()
 
-	// 3. Start MPV connecting to tcp://127.0.0.1:assignedTCPPort
+	// 3. Start player connecting to tcp://127.0.0.1:assignedTCPPort
 	session, err := screenshare.StartReceiving(context.Background(), assignedTCPPort, opt)
 	if err != nil {
 		n.mu.Lock()
@@ -4049,44 +4061,77 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 
 	n.log(fmt.Sprintf("[VIEWER] Live screen stream viewer window opened (%d FPS).", opt.FPS))
 
-	// 4. Monitor receiver session lifecycle
-	go func(curSession *screenshare.Session) {
-		select {
-		case err := <-curSession.Err():
-			n.log(fmt.Sprintf("[WARN] Screen viewer closed/error: %v", err))
-		case <-curSession.Done():
-			n.log("[INFO] Screen viewer window closed.")
-		}
-
-		n.mu.Lock()
-		if n.receiverSession == curSession {
-			n.IsWatchingScreen = false
-			n.WatchingPeerID = ""
-			n.WatchingPeerNick = ""
-			n.receiverSession = nil
-			cancelCh := n.videoPlayerCancel
-			n.videoPlayerCh = nil
-			n.videoPlayerCancel = nil
-			if cancelCh != nil {
-				select {
-				case <-cancelCh:
-				default:
-					close(cancelCh)
-				}
-			}
-			if n.videoTCPConn != nil {
-				_ = n.videoTCPConn.Close()
-				n.videoTCPConn = nil
-			}
-			if n.videoTCPListener != nil {
-				_ = n.videoTCPListener.Close()
-				n.videoTCPListener = nil
-			}
-		}
-		n.mu.Unlock()
-	}(session)
+	// 4. Monitor receiver session lifecycle with automatic self-healing fallback
+	go n.monitorViewerSession(session, assignedTCPPort, opt)
 
 	return nil
+}
+
+func (n *P2PNode) monitorViewerSession(curSession *screenshare.Session, assignedPort int, curOpt screenshare.ReceiverOptions) {
+	startTime := time.Now()
+	select {
+	case err := <-curSession.Err():
+		n.log(fmt.Sprintf("[WARN] Screen viewer closed/error: %v", err))
+
+		// Auto-fallback: if player crashed on startup (< 3 seconds),
+		// try the alternate player automatically so user is never left hanging
+		if time.Since(startTime) < 3*time.Second {
+			n.mu.Lock()
+			stillWatching := n.IsWatchingScreen && n.receiverSession == curSession
+			n.mu.Unlock()
+			if stillWatching {
+				altPlayer := "ffplay"
+				if strings.Contains(curSession.BinPath(), "ffplay") {
+					altPlayer = "mpv"
+				}
+				if _, altErr := screenshare.FindExecutable(altPlayer); altErr == nil {
+					n.log(fmt.Sprintf("[VIEWER] Player exited unexpectedly. Automatically falling back to %s...", altPlayer))
+					curOpt.PreferredPlayer = altPlayer
+					newSession, sErr := screenshare.StartReceiving(context.Background(), assignedPort, curOpt)
+					if sErr == nil {
+						n.mu.Lock()
+						if n.IsWatchingScreen {
+							n.receiverSession = newSession
+							n.mu.Unlock()
+							go n.monitorViewerSession(newSession, assignedPort, curOpt)
+							return
+						}
+						n.mu.Unlock()
+						_ = newSession.Stop()
+					}
+				}
+			}
+		}
+	case <-curSession.Done():
+		n.log("[INFO] Screen viewer window closed.")
+	}
+
+	n.mu.Lock()
+	if n.receiverSession == curSession {
+		n.IsWatchingScreen = false
+		n.WatchingPeerID = ""
+		n.WatchingPeerNick = ""
+		n.receiverSession = nil
+		cancelCh := n.videoPlayerCancel
+		n.videoPlayerCh = nil
+		n.videoPlayerCancel = nil
+		if cancelCh != nil {
+			select {
+			case <-cancelCh:
+			default:
+				close(cancelCh)
+			}
+		}
+		if n.videoTCPConn != nil {
+			_ = n.videoTCPConn.Close()
+			n.videoTCPConn = nil
+		}
+		if n.videoTCPListener != nil {
+			_ = n.videoTCPListener.Close()
+			n.videoTCPListener = nil
+		}
+	}
+	n.mu.Unlock()
 }
 
 // StopWatchingScreen stops the active mpv receiver

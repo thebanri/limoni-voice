@@ -175,7 +175,7 @@ func (s *RelayServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		conn:     conn,
 		publicIP: clientIP,
-		sendCh:   make(chan []byte, 512),
+		sendCh:   make(chan []byte, 128),
 	}
 
 	// Start write pump
@@ -594,7 +594,7 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 			case member.sendCh <- data:
 			default:
 			drainLoop:
-				for len(member.sendCh) > 48 {
+				for len(member.sendCh) > 24 {
 					select {
 					case <-member.sendCh:
 					default:
