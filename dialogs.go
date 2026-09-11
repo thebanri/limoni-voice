@@ -1113,9 +1113,20 @@ func DrawRelayModal(
 	btnY := inner.Y + 8
 	saveBtnText := "[ Save & Connect ]"
 	isLan := statusStr == "LAN Mode" || strings.EqualFold(currentURL, "lan") || strings.EqualFold(currentURL, "none") || currentURL == ""
-	modeBtnText := "[ Switch to LAN Mode ]"
+	forceRelay := strings.EqualFold(statusStr, "Force Relay") || strings.EqualFold(currentURL, "relay")
+	if len(extraStatus) > 1 && strings.EqualFold(extraStatus[1], "relay") {
+		forceRelay = true
+		isLan = false
+	} else if len(extraStatus) > 1 && strings.EqualFold(extraStatus[1], "lan") {
+		isLan = true
+		forceRelay = false
+	}
+
+	modeBtnText := "[ Mode: Auto ]"
 	if isLan {
-		modeBtnText = "[ Switch to Relay ]"
+		modeBtnText = "[ Mode: LAN Only ]"
+	} else if forceRelay {
+		modeBtnText = "[ Mode: Force Relay ]"
 	}
 	cancelBtnText := "[ Cancel ]"
 
@@ -1149,12 +1160,19 @@ func DrawRelayModal(
 		drawBoundedString(buf, bX, btnY, modeBtnText, modeBtnStyle, maxX)
 		frame.RegisterClickHandler(modeRect, func(_ driver.MouseEvent) {
 			if isLan {
+				// From LAN Only -> Auto
 				if onReset != nil {
 					onReset()
 				}
-			} else {
+			} else if forceRelay {
+				// From Force Relay -> LAN Only
 				if onSave != nil {
 					onSave("lan", "")
+				}
+			} else {
+				// From Auto -> Force Relay
+				if onSave != nil {
+					onSave("relay", tokenState.Value())
 				}
 			}
 		})

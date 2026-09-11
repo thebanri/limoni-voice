@@ -1252,14 +1252,44 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			gsrTarget = targetID
 		}
 
+		bitrateKbps := 1800
+		if fps >= 120 {
+			bitrateKbps = 2400
+		} else if fps <= 30 {
+			bitrateKbps = 1000
+		}
+		if opt.Bitrate != "" {
+			bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))
+			if strings.HasSuffix(bStr, "M") {
+				if val, err := strconv.ParseFloat(strings.TrimSuffix(bStr, "M"), 64); err == nil && val > 0 {
+					bitrateKbps = int(val * 1000)
+				}
+			} else if strings.HasSuffix(bStr, "K") {
+				if val, err := strconv.Atoi(strings.TrimSuffix(bStr, "K")); err == nil && val > 0 {
+					bitrateKbps = val
+				}
+			} else if val, err := strconv.Atoi(bStr); err == nil && val > 0 {
+				bitrateKbps = val
+			}
+		}
+
+		gopSize := fps
+		if gopSize > 60 {
+			gopSize = 60
+		}
+		if gopSize < 30 {
+			gopSize = 30
+		}
+
 		args := []string{
 			"-w", gsrTarget,
 			"-s", opt.Resolution,
 			"-f", fmt.Sprintf("%d", fps),
 			"-k", "h264",
-			"-q", "high",
+			"-bm", "cbr",
+			"-q", fmt.Sprintf("%d", bitrateKbps),
 			"-tune", "performance",
-			"-keyint", "15",
+			"-keyint", fmt.Sprintf("%d", gopSize),
 			"-restore-portal-session", "no",
 			"-c", "mpegts",
 			"-o", targetURL,
@@ -1366,7 +1396,6 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
 			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", gopSize, gopSize),
-			"-crf", "22",
 			"-b:v", bitrate,
 			"-maxrate", maxRate,
 			"-bufsize", bufSize,
@@ -1504,7 +1533,6 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
 				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
-				"-crf", "23",
 				"-b:v", winBitrate,
 				"-maxrate", winMaxRate,
 				"-bufsize", winBufSize,
@@ -1558,7 +1586,6 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
 				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
-				"-crf", "23",
 				"-b:v", winBitrate,
 				"-maxrate", winMaxRate,
 				"-bufsize", winBufSize,

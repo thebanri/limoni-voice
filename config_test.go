@@ -527,3 +527,56 @@ func TestDefaultRelayLive(t *testing.T) {
 		t.Fatalf("Expected DefaultRelayURL to probe online, got online=%v status=%s", online, status)
 	}
 }
+
+func TestNetworkModeAndForceRelay(t *testing.T) {
+	node := &P2PNode{
+		LocalID:     "node_mode_test",
+		RoomCode:    "room-mode",
+		IsConnected: true,
+		Peers:       make(map[string]*PeerInfo),
+		audio:       NewAudioEngine(),
+	}
+	node.aead, _ = deriveRoomCipher(deriveRoomKey("room-mode"))
+
+	// 1. Default mode is auto
+	node.SetNetworkMode("auto")
+	if node.ForceRelay || node.LanOnly {
+		t.Fatalf("Expected auto mode to have ForceRelay=false, LanOnly=false")
+	}
+
+	// 2. Switch to force relay
+	node.SetNetworkMode("relay")
+	if !node.ForceRelay || node.LanOnly {
+		t.Fatalf("Expected relay mode to have ForceRelay=true, LanOnly=false")
+	}
+
+	// 3. In ForceRelay mode, even direct private LAN packet must NOT switch peer to LAN mode
+	lanAddr := &net.UDPAddr{IP: net.ParseIP("192.168.1.88"), Port: 50005}
+	pkt := P2PPacket{
+		Type:      PacketPing,
+		RoomCode:  "room-mode",
+		SenderID:  "peer_bob",
+		Nickname:  "Bob",
+		LocalPort: 50005,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	node.handlePacket(&pkt, lanAddr)
+
+	peer, exists := node.Peers["peer_bob"]
+	if !exists {
+		t.Fatalf("Expected peer_bob to be registered")
+	}
+	if !peer.ViaRelay {
+		t.Fatalf("Expected peer.ViaRelay to stay TRUE in ForceRelay mode")
+	}
+	if peer.Addr != nil {
+		t.Fatalf("Expected peer.Addr to be nil in ForceRelay mode, got %v", peer.Addr)
+	}
+
+	// 4. Switch to LAN Only mode
+	node.SetNetworkMode("lan")
+	if !node.LanOnly || node.ForceRelay {
+		t.Fatalf("Expected lan mode to have LanOnly=true, ForceRelay=false")
+	}
+}
+

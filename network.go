@@ -226,6 +226,8 @@ type P2PNode struct {
 	RelayURL         string
 	RelayToken       string
 	LanOnly          bool
+	NetworkMode      string // "auto", "relay", "lan"
+	ForceRelay       bool   // when true, never switch to LAN mode; route 100% via Relay
 	wsConn           *websocket.Conn
 	wsPriorityCh     chan []byte // dedicated real-time channel for Audio, Ping, Pong & Control (never delayed by video)
 	wsVideoCh        chan []byte // video stream channel with bounded queue to eliminate bufferbloat
@@ -646,6 +648,7 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 		RelayURL:            relayURL,
 		RelayToken:          strings.TrimSpace(relayToken),
 		LanOnly:             lanOnly,
+		NetworkMode:         "auto",
 		Peers:               make(map[string]*PeerInfo),
 		audio:               audio,
 		stopChan:            make(chan struct{}),
@@ -1087,14 +1090,30 @@ func (n *P2PNode) Close() {
 
 // UpdateRelaySettings dynamically updates the relay server URL and authentication token,
 // reconnecting to the new relay server if a room session is currently active.
-func (n *P2PNode) UpdateRelaySettings(newURL, newToken string) {
+func (n *P2PNode) UpdateRelaySettings(newURL, newToken string, mode ...string) {
 	n.mu.Lock()
 	n.RelayURL = NormalizeRelayURL(newURL)
 	n.RelayToken = strings.TrimSpace(newToken)
-	if n.RelayURL == "" {
-		n.LanOnly = true
-	} else {
+	if len(mode) > 0 && mode[0] != "" {
+		n.NetworkMode = strings.ToLower(strings.TrimSpace(mode[0]))
+	} else if n.NetworkMode == "" {
+		n.NetworkMode = "auto"
+	}
+	switch n.NetworkMode {
+	case "relay":
 		n.LanOnly = false
+		n.ForceRelay = true
+	case "lan":
+		n.LanOnly = true
+		n.ForceRelay = false
+	default:
+		n.NetworkMode = "auto"
+		n.ForceRelay = false
+		if n.RelayURL == "" {
+			n.LanOnly = true
+		} else {
+			n.LanOnly = false
+		}
 	}
 	isActiveRoom := n.RoomCode != ""
 	currentRoom := n.RoomCode
@@ -1107,6 +1126,28 @@ func (n *P2PNode) UpdateRelaySettings(newURL, newToken string) {
 			action = "host"
 		}
 		n.connectRelay(action, currentRoom)
+	}
+}
+
+// SetNetworkMode explicitly switches the node between "auto", "relay" (force relay), and "lan" (LAN only).
+func (n *P2PNode) SetNetworkMode(mode string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.NetworkMode = strings.ToLower(strings.TrimSpace(mode))
+	switch n.NetworkMode {
+	case "relay":
+		n.LanOnly = false
+		n.ForceRelay = true
+		for _, peer := range n.Peers {
+			peer.ViaRelay = true
+			peer.Addr = nil
+		}
+	case "lan":
+		n.LanOnly = true
+		n.ForceRelay = false
+	default:
+		n.NetworkMode = "auto"
+		n.ForceRelay = false
 	}
 }
 
@@ -1353,10 +1394,13 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan 
 		conn.Close()
 	}()
 
-	writeMsg := func(data []byte) error {
+	writeTaggedMsg := func(tag byte, data []byte) error {
 		n.wsMu.Lock()
 		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		err := conn.WriteMessage(websocket.BinaryMessage, data)
+		buf := make([]byte, 1+len(data))
+		buf[0] = tag
+		copy(buf[1:], data)
+		err := conn.WriteMessage(websocket.BinaryMessage, buf)
 		n.wsMu.Unlock()
 		return err
 	}
@@ -1370,7 +1414,7 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan 
 				if !ok {
 					return
 				}
-				if writeMsg(data) != nil {
+				if writeTaggedMsg(0x01, data) != nil {
 					return
 				}
 			default:
@@ -1386,14 +1430,14 @@ func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, videoCh chan 
 			if !ok {
 				return
 			}
-			if writeMsg(data) != nil {
+			if writeTaggedMsg(0x01, data) != nil {
 				return
 			}
 		case data, ok := <-videoCh:
 			if !ok {
 				return
 			}
-			if writeMsg(data) != nil {
+			if writeTaggedMsg(0x02, data) != nil {
 				return
 			}
 		case <-ticker.C:
@@ -1449,6 +1493,14 @@ func (n *P2PNode) relayListenLoop(conn *websocket.Conn, cancel chan struct{}) {
 			n.handleRelayControl(msg)
 
 		case websocket.BinaryMessage:
+			if len(data) == 0 {
+				continue
+			}
+			// Strip 1-byte priority/video tag if present
+			if (data[0] == 0x01 || data[0] == 0x02) && len(data) > 1 {
+				data = data[1:]
+			}
+
 			n.mu.RLock()
 			aead := n.aead
 			prevAead := n.prevAead
@@ -2397,7 +2449,7 @@ func (n *P2PNode) broadcastHello() {
 	targetPeer := n.TargetPeerAddr
 	n.mu.RUnlock()
 
-	if !isConnected || room == "" {
+	if !isConnected || room == "" || n.ForceRelay {
 		return
 	}
 
@@ -2803,13 +2855,13 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					}
 					isPrivateAddr := (raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())) ||
 						(peerAddr != nil && (peerAddr.IP.IsPrivate() || peerAddr.IP.IsLoopback()))
-					isRelayed := (raddr == nil && peerAddr == nil) || (!n.LanOnly && isPrivateAddr)
+					isRelayed := (raddr == nil && peerAddr == nil) || (!n.LanOnly && isPrivateAddr) || n.ForceRelay
 					effectiveAddr := peerAddr
-					if !n.LanOnly && isPrivateAddr {
+					if (!n.LanOnly && isPrivateAddr) || n.ForceRelay {
 						effectiveAddr = nil
 					}
 					var lastDirect time.Time
-					if raddr != nil && (n.LanOnly || !isPrivateAddr) {
+					if !n.ForceRelay && raddr != nil && (n.LanOnly || !isPrivateAddr) {
 						lastDirect = time.Now()
 					}
 					peer = &PeerInfo{
@@ -2833,11 +2885,14 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			} else {
 				isPrivateAddr := (raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())) ||
 					(peerAddr != nil && (peerAddr.IP.IsPrivate() || peerAddr.IP.IsLoopback()))
-				if peerAddr != nil && (n.LanOnly || !isPrivateAddr) {
+				if peerAddr != nil && !n.ForceRelay && (n.LanOnly || !isPrivateAddr) {
 					peer.Addr = peerAddr
 				}
 				peer.LastSeen = time.Now()
-				if raddr != nil && (n.LanOnly || !isPrivateAddr) {
+				if n.ForceRelay {
+					peer.ViaRelay = true
+					peer.Addr = nil
+				} else if raddr != nil && (n.LanOnly || !isPrivateAddr) {
 					peer.LastDirectSeen = time.Now()
 					peer.ViaRelay = false
 					peer.Addr = raddr
@@ -3213,7 +3268,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 		var destAddr *net.UDPAddr = raddr
 		peer, hasPeer := n.Peers[pkt.SenderID]
-		if raddr == nil || (hasPeer && peer.ViaRelay) {
+		if raddr == nil || (hasPeer && peer.ViaRelay) || n.ForceRelay {
 			destAddr = nil
 		}
 		var isMuted, isDeafened bool
@@ -3245,7 +3300,10 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			}
 
 			isPrivateAddr := raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())
-			if raddr != nil && (n.LanOnly || !isPrivateAddr) {
+			if n.ForceRelay {
+				peer.ViaRelay = true
+				peer.Addr = nil
+			} else if raddr != nil && (n.LanOnly || !isPrivateAddr) {
 				peer.LastDirectSeen = time.Now()
 				peer.ViaRelay = false
 				peer.Addr = raddr
@@ -3264,7 +3322,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if rtt <= 0 {
 				rtt = 1
 			}
-			if rtt < 3000 {
+			if rtt < 10000 {
 				if peer.PingMs <= 0 {
 					peer.PingMs = rtt
 				} else {
@@ -4113,6 +4171,7 @@ func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
 	videoFPS := n.ActiveScreenShareFPS
 	peerAddr := peer.Addr
 	viaRelay := peer.ViaRelay
+	forceRelay := n.ForceRelay
 	n.mu.RUnlock()
 
 	pingSeq := atomic.AddUint32(&n.pingSeq, 1)
@@ -4129,7 +4188,7 @@ func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
 		VideoFPS:        videoFPS,
 		Timestamp:       time.Now().UnixMilli(),
 	}
-	if viaRelay || peerAddr == nil {
+	if viaRelay || peerAddr == nil || forceRelay {
 		n.sendPacketTo(nil, &pingPkt)
 	} else {
 		n.sendPacketTo(peerAddr, &pingPkt)

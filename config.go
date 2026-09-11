@@ -15,8 +15,9 @@ import (
 
 // AppConfig stores user-customizable persistent configuration
 type AppConfig struct {
-	RelayURL   string `json:"relay_url,omitempty"`
-	RelayToken string `json:"relay_token,omitempty"`
+	RelayURL    string `json:"relay_url,omitempty"`
+	RelayToken  string `json:"relay_token,omitempty"`
+	NetworkMode string `json:"network_mode,omitempty"` // "auto", "relay", "lan"
 }
 
 func getConfigFilePath() (string, error) {
