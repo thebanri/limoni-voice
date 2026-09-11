@@ -1157,13 +1157,27 @@ func DrawRelayModal(
 	}
 }
 
-// DrawScreenShareModal renders the screen and window selection modal with opening/closing scale animation and drop shadow
-func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, selectedIdx int, targets []screenshare.WindowInfo, onSelect func(target screenshare.WindowInfo), onCancel func()) {
+// DrawScreenShareModal renders the screen and window selection modal with selectable FPS modes, opening/closing scale animation and drop shadow
+func DrawScreenShareModal(
+	frame *terminal.Frame,
+	screenArea cell.Rect,
+	progress float64,
+	selectedIdx int,
+	selectedFPS int,
+	targets []screenshare.WindowInfo,
+	onSelectFPS func(fps int),
+	onSelectTarget func(target screenshare.WindowInfo),
+	onCancel func(),
+) {
 	if progress <= 0.001 {
 		return
 	}
 
-	modalW, modalH := uint16(64), uint16(15)
+	if selectedFPS != 30 && selectedFPS != 60 && selectedFPS != 120 {
+		selectedFPS = 60
+	}
+
+	modalW, modalH := uint16(68), uint16(16)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -1206,22 +1220,76 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 	frame.RenderWidget(block, animatedArea)
 
 	inner := block.Inner(animatedArea)
-	if inner.Height < 3 || inner.Width < 4 {
+	if inner.Height < 4 || inner.Width < 6 {
 		return
 	}
 
-	// 4. Header title
+	// 4. Framerate Mode Selector Row
+	fpsLabel := "Framerate Mode:"
+	buf.SetString(inner.X+1, inner.Y, fpsLabel, cell.Style{
+		Fg:       theme.TextMuted,
+		Bg:       dialogBg,
+		Modifier: cell.ModifierBold,
+	})
+
+	type fpsOption struct {
+		fps   int
+		label string
+		short string
+	}
+	fpsOptions := []fpsOption{
+		{fps: 30, label: " [1] 30 FPS (Eco) ", short: " [1] 30 FPS "},
+		{fps: 60, label: " [2] 60 FPS (Balanced) ", short: " [2] 60 FPS "},
+		{fps: 120, label: " [3] 120 FPS (Ultra) ", short: " [3] 120 FPS "},
+	}
+
+	useShort := inner.Width < 66
+	curPillX := inner.X + 1 + uint16(len([]rune(fpsLabel))) + 1
+	for _, opt := range fpsOptions {
+		pillText := opt.label
+		if useShort {
+			pillText = opt.short
+		}
+		pillLen := uint16(len([]rune(pillText)))
+		if curPillX+pillLen > inner.X+inner.Width-1 {
+			break
+		}
+
+		pillStyle := cell.Style{
+			Fg: theme.Text,
+			Bg: theme.InputBg,
+		}
+		if opt.fps == selectedFPS {
+			pillStyle = cell.Style{
+				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
+				Bg:       theme.Accent,
+				Modifier: cell.ModifierBold,
+			}
+		}
+
+		buf.SetString(curPillX, inner.Y, pillText, pillStyle)
+		if onSelectFPS != nil {
+			targetFPS := opt.fps
+			frame.RegisterClickHandler(cell.NewRect(curPillX, inner.Y, pillLen, 1), func(_ driver.MouseEvent) {
+				onSelectFPS(targetFPS)
+			})
+		}
+		curPillX += pillLen + 1
+	}
+
+	// 5. Header title for targets
+	headerY := inner.Y + 1
 	headerText := fmt.Sprintf("Select target to broadcast (%d available):", len(targets))
 	if maxH := int(inner.Width - 2); len([]rune(headerText)) > maxH {
 		headerText = string([]rune(headerText)[:maxH])
 	}
-	buf.SetString(inner.X+1, inner.Y, headerText, cell.Style{
+	buf.SetString(inner.X+1, headerY, headerText, cell.Style{
 		Fg:       theme.Accent,
 		Bg:       dialogBg,
 		Modifier: cell.ModifierBold,
 	})
 
-	// 5. List targets with scrolling window around selectedIdx
+	// 6. List targets with scrolling window around selectedIdx
 	listY := inner.Y + 2
 	maxDisplay := int(inner.Height - 3)
 	if maxDisplay < 1 {
@@ -1280,12 +1348,14 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		buf.SetString(inner.X+1, rowY, itemText, itemStyle)
 
 		targetItem := t
-		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, listWidth, 1), func(_ driver.MouseEvent) {
-			onSelect(targetItem)
-		})
+		if onSelectTarget != nil {
+			frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, listWidth, 1), func(_ driver.MouseEvent) {
+				onSelectTarget(targetItem)
+			})
+		}
 	}
 
-	// 6. Draw Vertical Scrollbar on the right border margin
+	// 7. Draw Vertical Scrollbar on the right border margin
 	if hasScrollbar {
 		scrollX := inner.X + inner.Width - 2
 		trackHeight := maxDisplay
@@ -1317,9 +1387,9 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		}
 	}
 
-	// 7. Bottom Navigation Guide
+	// 8. Bottom Navigation Guide
 	bottomY := inner.Y + inner.Height - 1
-	guideText := "[ENTER/CLICK] Select   [↑/↓] Navigate   [ESC] Cancel"
+	guideText := "[1/2/3/F] FPS   [↑/↓] Target   [ENTER/CLICK] Share   [ESC] Cancel"
 	if len(targets) > maxDisplay {
 		guideText = fmt.Sprintf("[%d/%d]  %s", selectedIdx+1, len(targets), guideText)
 	}

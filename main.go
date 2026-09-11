@@ -197,6 +197,7 @@ func main() {
 	debugScrollOffset := 0
 	var screenShareTargets []screenshare.WindowInfo
 	selectedScreenShareIdx := 0
+	selectedScreenShareFPS := 60
 
 	showRelayModal := false
 	relayDialogAnim := animation.NewFloat(0.0)
@@ -502,16 +503,19 @@ func main() {
 	}
 
 	startSelectedScreenShare := func(target screenshare.WindowInfo) {
+		fps := selectedScreenShareFPS
+		if fps != 30 && fps != 60 && fps != 120 {
+			fps = 60
+		}
 		closeScreenShareModal()
-		room.SetToast(fmt.Sprintf("🎬 Starting %s stream...", target.Title))
+		room.SetToast(fmt.Sprintf("🎬 Starting %s stream (%d FPS)...", target.Title, fps))
 		go func() {
-			opts := screenshare.DefaultBroadcastOptions()
-			opts.WindowID = target.ID
+			opts := screenshare.GetPresetOptions(fps, target.ID)
 			err := node.StartScreenShare("", 50100, opts)
 			if err != nil {
 				room.SetToast(fmt.Sprintf("Error: %v", err))
 			} else {
-				room.SetToast(fmt.Sprintf("%s sharing started (60 FPS)", target.Title))
+				room.SetToast(fmt.Sprintf("%s sharing started (%d FPS)", target.Title, fps))
 			}
 		}()
 	}
@@ -1365,6 +1369,45 @@ func main() {
 					case driver.KeyArrowDown:
 						if selectedScreenShareIdx < len(screenShareTargets)-1 {
 							selectedScreenShareIdx++
+						}
+					case driver.KeyArrowLeft:
+						if selectedScreenShareFPS == 120 {
+							selectedScreenShareFPS = 60
+						} else if selectedScreenShareFPS == 60 {
+							selectedScreenShareFPS = 30
+						}
+					case driver.KeyArrowRight:
+						if selectedScreenShareFPS == 30 {
+							selectedScreenShareFPS = 60
+						} else if selectedScreenShareFPS == 60 {
+							selectedScreenShareFPS = 120
+						}
+					case driver.KeyTab:
+						switch selectedScreenShareFPS {
+						case 30:
+							selectedScreenShareFPS = 60
+						case 60:
+							selectedScreenShareFPS = 120
+						default:
+							selectedScreenShareFPS = 30
+						}
+					case driver.KeyRune:
+						switch e.Ch {
+						case '1':
+							selectedScreenShareFPS = 30
+						case '2':
+							selectedScreenShareFPS = 60
+						case '3':
+							selectedScreenShareFPS = 120
+						case 'f', 'F':
+							switch selectedScreenShareFPS {
+							case 30:
+								selectedScreenShareFPS = 60
+							case 60:
+								selectedScreenShareFPS = 120
+							default:
+								selectedScreenShareFPS = 30
+							}
 						}
 					case driver.KeyEnter, driver.KeySpace:
 						if selectedScreenShareIdx >= 0 && selectedScreenShareIdx < len(screenShareTargets) {
@@ -2235,7 +2278,9 @@ func main() {
 							closeLeaveModal()
 						})
 					} else if showScreenShareModal || screenShareProg > 0.001 {
-						DrawScreenShareModal(f, f.Area(), screenShareProg, selectedScreenShareIdx, screenShareTargets, func(target screenshare.WindowInfo) {
+						DrawScreenShareModal(f, f.Area(), screenShareProg, selectedScreenShareIdx, selectedScreenShareFPS, screenShareTargets, func(fps int) {
+							selectedScreenShareFPS = fps
+						}, func(target screenshare.WindowInfo) {
 							startSelectedScreenShare(target)
 						}, func() {
 							closeScreenShareModal()

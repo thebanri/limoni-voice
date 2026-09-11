@@ -850,29 +850,65 @@ func getOrBuildMacCaptureBinary() (string, error) {
 	return binPath, nil
 }
 
-// DefaultBroadcastOptions returns sensible low-latency defaults
-func DefaultBroadcastOptions() BroadcastOptions {
+// GetPresetOptions returns tailored broadcasting options for 30, 60, or 120 FPS
+func GetPresetOptions(fps int, targetID string) BroadcastOptions {
+	if fps <= 0 {
+		fps = 60
+	}
+	if targetID == "" {
+		targetID = "portal"
+	}
+
+	bitrate := "3.5M"
+	quality := "high"
+	switch fps {
+	case 120:
+		bitrate = "5.5M"
+		quality = "ultra"
+	case 30:
+		bitrate = "2M"
+		quality = "fast"
+	case 60:
+		bitrate = "3.5M"
+		quality = "high"
+	default:
+		fps = 60
+		bitrate = "3.5M"
+		quality = "high"
+	}
+
 	return BroadcastOptions{
 		Resolution: "1920x1080",
-		FPS:        30,
-		Bitrate:    "2M",
-		WindowID:   "portal",
-		Quality:    "high",
+		FPS:        fps,
+		Bitrate:    bitrate,
+		WindowID:   targetID,
+		Quality:    quality,
 	}
+}
+
+// DefaultBroadcastOptions returns sensible low-latency defaults (60 FPS balanced)
+func DefaultBroadcastOptions() BroadcastOptions {
+	return GetPresetOptions(60, "portal")
 }
 
 // ReceiverOptions defines configuration for the video player
 type ReceiverOptions struct {
 	WindowTitle    string   // e.g. "Limoni Voice - User Stream"
 	KeepAspect     bool     // preserve aspect ratio
+	FPS            int      // Stream framerate (30, 60, 120)
 	CustomMpvFlags []string // additional mpv flags
 }
 
 // DefaultReceiverOptions returns ultra-low-latency receiver defaults
-func DefaultReceiverOptions() ReceiverOptions {
+func DefaultReceiverOptions(fps ...int) ReceiverOptions {
+	streamFPS := 60
+	if len(fps) > 0 && fps[0] > 0 {
+		streamFPS = fps[0]
+	}
 	return ReceiverOptions{
-		WindowTitle: "Limoni Voice - Live Screen Stream (HD 60 FPS)",
+		WindowTitle: fmt.Sprintf("Limoni Voice - Live Screen Stream (%d FPS)", streamFPS),
 		KeepAspect:  true,
+		FPS:         streamFPS,
 	}
 }
 
@@ -1303,17 +1339,32 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-draw_mouse", "1",
 		}
 		args = append(args, inputArgs...)
+		bitrate := "3.5M"
+		maxRate := "4.5M"
+		if fps >= 120 {
+			bitrate = "5.5M"
+			maxRate = "6.5M"
+		} else if fps <= 30 {
+			bitrate = "2M"
+			maxRate = "2.5M"
+		}
+		if opt.Bitrate != "" {
+			bitrate = opt.Bitrate
+			maxRate = opt.Bitrate
+		}
+
 		args = append(args,
 			"-vf", vf,
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", "intra-refresh=1:keyint=60:min-keyint=60:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1",
+			"-x264-params", fmt.Sprintf("intra-refresh=1:keyint=%d:min-keyint=%d:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", fps, fps),
 			"-crf", "22",
-			"-maxrate", "3M",
-			"-bufsize", "3M",
+			"-b:v", bitrate,
+			"-maxrate", maxRate,
+			"-bufsize", maxRate,
 			"-pix_fmt", "yuv420p",
-			"-g", "60",
+			"-g", fmt.Sprintf("%d", fps),
 			"-bf", "0",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
@@ -1392,6 +1443,24 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			}
 		}
 
+		winFps := opt.FPS
+		if winFps <= 0 {
+			winFps = 60
+		}
+		winBitrate := "3.5M"
+		winMaxRate := "4.5M"
+		if winFps >= 120 {
+			winBitrate = "5.5M"
+			winMaxRate = "6.5M"
+		} else if winFps <= 30 {
+			winBitrate = "2M"
+			winMaxRate = "2.5M"
+		}
+		if opt.Bitrate != "" {
+			winBitrate = opt.Bitrate
+			winMaxRate = opt.Bitrate
+		}
+
 		if targetHwnd != 0 {
 			winWidth = 1920
 			winHeight = 1080
@@ -1414,19 +1483,19 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-f", "rawvideo",
 				"-pixel_format", "bgra",
 				"-video_size", fmt.Sprintf("%dx%d", winWidth, winHeight),
-				"-framerate", fmt.Sprintf("%d", opt.FPS),
+				"-framerate", fmt.Sprintf("%d", winFps),
 				"-i", "pipe:0",
 				"-vf", scaleOpt,
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "intra-refresh=1:keyint=60:min-keyint=60:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1",
+				"-x264-params", fmt.Sprintf("intra-refresh=1:keyint=%d:min-keyint=%d:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winFps, winFps),
 				"-crf", "23",
-				"-b:v", "2M",
-				"-maxrate", "2.5M",
-				"-bufsize", "2.5M",
+				"-b:v", winBitrate,
+				"-maxrate", winMaxRate,
+				"-bufsize", winMaxRate,
 				"-pix_fmt", "yuv420p",
-				"-g", "60",
+				"-g", fmt.Sprintf("%d", winFps),
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
@@ -1441,7 +1510,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-probesize", "32",
 				"-analyzeduration", "0",
 				"-f", "gdigrab",
-				"-framerate", fmt.Sprintf("%d", opt.FPS),
+				"-framerate", fmt.Sprintf("%d", winFps),
 				"-draw_mouse", "1",
 			}
 
@@ -1474,13 +1543,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", "intra-refresh=1:keyint=60:min-keyint=60:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1",
+				"-x264-params", fmt.Sprintf("intra-refresh=1:keyint=%d:min-keyint=%d:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=1:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winFps, winFps),
 				"-crf", "23",
-				"-b:v", "2M",
-				"-maxrate", "2.5M",
-				"-bufsize", "2.5M",
+				"-b:v", winBitrate,
+				"-maxrate", winMaxRate,
+				"-bufsize", winMaxRate,
 				"-pix_fmt", "yuv420p",
-				"-g", "60",
+				"-g", fmt.Sprintf("%d", winFps),
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",

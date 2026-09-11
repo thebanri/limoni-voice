@@ -359,9 +359,9 @@ func TestVerticalMeterAndDialogs(t *testing.T) {
 	_ = closed
 	DrawLeaveModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
 	DrawExitModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
-	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, 0, []screenshare.WindowInfo{
+	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, 0, 60, []screenshare.WindowInfo{
 		{ID: "desktop", Title: "[Desktop] Entire Screen (Primary View)"},
-	}, func(_ screenshare.WindowInfo) {}, func() {})
+	}, func(_ int) {}, func(_ screenshare.WindowInfo) {}, func() {})
 }
 
 func TestNoiseSuppressionAndTestMode(t *testing.T) {
@@ -3106,6 +3106,84 @@ func TestLobbyPinToggleAndHostHygiene(t *testing.T) {
 	node.HostRoom("clean_room")
 	if node.IsLocked || node.RoomPIN != "" {
 		t.Fatalf("HostRoom did not reset IsLocked (%v) or RoomPIN (%q)", node.IsLocked, node.RoomPIN)
+	}
+}
+
+func TestScreenShareFPSModes(t *testing.T) {
+	opt120 := screenshare.GetPresetOptions(120, "win-120")
+	if opt120.FPS != 120 || opt120.Bitrate != "5.5M" || opt120.Quality != "ultra" || opt120.WindowID != "win-120" {
+		t.Fatalf("Unexpected 120 FPS preset: %+v", opt120)
+	}
+
+	opt60 := screenshare.GetPresetOptions(60, "win-60")
+	if opt60.FPS != 60 || opt60.Bitrate != "3.5M" || opt60.Quality != "high" || opt60.WindowID != "win-60" {
+		t.Fatalf("Unexpected 60 FPS preset: %+v", opt60)
+	}
+
+	opt30 := screenshare.GetPresetOptions(30, "win-30")
+	if opt30.FPS != 30 || opt30.Bitrate != "2M" || opt30.Quality != "fast" || opt30.WindowID != "win-30" {
+		t.Fatalf("Unexpected 30 FPS preset: %+v", opt30)
+	}
+
+	// Unknown defaults to 60 FPS
+	optDef := screenshare.GetPresetOptions(999, "win-def")
+	if optDef.FPS != 60 {
+		t.Fatalf("Expected fallback to 60 FPS, got %d", optDef.FPS)
+	}
+
+	rec120 := screenshare.DefaultReceiverOptions(120)
+	if rec120.FPS != 120 || !strings.Contains(rec120.WindowTitle, "120 FPS") {
+		t.Fatalf("Unexpected receiver options for 120 FPS: %+v", rec120)
+	}
+
+	rec30 := screenshare.DefaultReceiverOptions(30)
+	if rec30.FPS != 30 || !strings.Contains(rec30.WindowTitle, "30 FPS") {
+		t.Fatalf("Unexpected receiver options for 30 FPS: %+v", rec30)
+	}
+}
+
+func TestP2PScreenShareFPSPacket(t *testing.T) {
+	node := NewP2PNode("fps-test-id", "Tester", nil)
+	node.HostRoom("fps-room")
+	defer node.LeaveRoom()
+
+	peerID := "peer-fps"
+	node.Peers[peerID] = &PeerInfo{
+		ID:       peerID,
+		Nickname: "GamerPeer",
+		LastSeen: time.Now(),
+	}
+
+	// Simulate PacketScreenShareStart with 120 FPS
+	startPkt := P2PPacket{
+		Type:            PacketScreenShareStart,
+		RoomCode:        node.RoomCode,
+		SenderID:        peerID,
+		Nickname:        "GamerPeer",
+		IsSharingScreen: true,
+		VideoPort:       50100,
+		VideoFPS:        120,
+	}
+
+	node.handlePacket(&startPkt, nil)
+
+	peer := node.Peers[peerID]
+	if !peer.IsSharingScreen || peer.VideoFPS != 120 {
+		t.Fatalf("Expected peer to be sharing at 120 FPS, got sharing=%v fps=%d", peer.IsSharingScreen, peer.VideoFPS)
+	}
+
+	// Simulate PacketScreenShareStop
+	stopPkt := P2PPacket{
+		Type:            PacketScreenShareStop,
+		RoomCode:        node.RoomCode,
+		SenderID:        peerID,
+		Nickname:        "GamerPeer",
+		IsSharingScreen: false,
+	}
+
+	node.handlePacket(&stopPkt, nil)
+	if peer.IsSharingScreen || peer.VideoFPS != 0 {
+		t.Fatalf("Expected peer sharing to stop and fps reset to 0, got sharing=%v fps=%d", peer.IsSharingScreen, peer.VideoFPS)
 	}
 }
 

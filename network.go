@@ -122,6 +122,7 @@ type P2PPacket struct {
 	Payload         []byte        `json:"payload"`
 	IsSharingScreen bool          `json:"is_sharing_screen"`
 	VideoPort       int           `json:"video_port"` // Port used for UDP screen streaming
+	VideoFPS        int           `json:"video_fps,omitempty"`
 	LocalPort       int           `json:"local_port"` // Local listening UDP port of the sender
 	PIN             string        `json:"pin,omitempty"`
 	IsLocked        bool          `json:"is_locked,omitempty"`
@@ -139,6 +140,7 @@ type PeerSummary struct {
 	IsDeafened      bool
 	IsSharingScreen bool
 	VideoPort       int
+	VideoFPS        int
 }
 
 type PeerInfo struct {
@@ -154,6 +156,7 @@ type PeerInfo struct {
 	RMS             float64
 	IsSharingScreen bool
 	VideoPort       int
+	VideoFPS        int
 	ViaRelay        bool      // True if routing through WebSocket relay, false if direct P2P/LAN
 	LastDirectSeen  time.Time // Last time a direct UDP packet arrived from this peer
 }
@@ -236,11 +239,12 @@ type P2PNode struct {
 	OnPortHopped        func(newPort int, epoch uint32)
 
 	// Screen Sharing State & Subprocesses
-	IsSharingScreen  bool
-	IsWatchingScreen bool
-	WatchingPeerID   string
-	WatchingPeerNick string
-	ScreenSharePort    int
+	IsSharingScreen      bool
+	ActiveScreenShareFPS int
+	IsWatchingScreen     bool
+	WatchingPeerID       string
+	WatchingPeerNick     string
+	ScreenSharePort      int
 	screenSession      *screenshare.Session
 	receiverSession    *screenshare.Session
 	videoCaptureConn   *net.UDPConn
@@ -2699,28 +2703,34 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					addrStr = p.Addr.String()
 				}
 				summaries = append(summaries, PeerSummary{
-					ID:         p.ID,
-					Nickname:   p.Nickname,
-					AddrStr:    addrStr,
-					LocalPort:  p.LocalPort,
-					IsMuted:    p.IsMuted,
-					IsDeafened: p.IsDeafened,
+					ID:              p.ID,
+					Nickname:        p.Nickname,
+					AddrStr:         addrStr,
+					LocalPort:       p.LocalPort,
+					IsMuted:         p.IsMuted,
+					IsDeafened:      p.IsDeafened,
+					IsSharingScreen: p.IsSharingScreen,
+					VideoPort:       p.VideoPort,
+					VideoFPS:        p.VideoFPS,
 				})
 			}
 		}
 
 		welcomePkt := P2PPacket{
-			Type:       PacketWelcome,
-			RoomCode:   n.RoomCode,
-			SenderID:   n.LocalID,
-			Nickname:   n.Nickname,
-			LocalPort:  n.Port,
-			IsMuted:    n.audio.Muted,
-			IsDeafened: n.audio.Deafened,
-			Peers:      summaries,
-			PIN:        n.RoomPIN,
-			IsLocked:   n.IsLocked,
-			Timestamp:  time.Now().UnixMilli(),
+			Type:            PacketWelcome,
+			RoomCode:        n.RoomCode,
+			SenderID:        n.LocalID,
+			Nickname:        n.Nickname,
+			LocalPort:       n.Port,
+			IsMuted:         n.audio.Muted,
+			IsDeafened:      n.audio.Deafened,
+			IsSharingScreen: n.IsSharingScreen,
+			VideoPort:       n.ScreenSharePort,
+			VideoFPS:        n.ActiveScreenShareFPS,
+			Peers:           summaries,
+			PIN:             n.RoomPIN,
+			IsLocked:        n.IsLocked,
+			Timestamp:       time.Now().UnixMilli(),
 		}
 		if peerAddr != nil {
 			go n.sendDirectUDPPacket(peerAddr, &welcomePkt)
@@ -2763,28 +2773,34 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					addrStr = p.Addr.String()
 				}
 				summaries = append(summaries, PeerSummary{
-					ID:         p.ID,
-					Nickname:   p.Nickname,
-					AddrStr:    addrStr,
-					LocalPort:  p.LocalPort,
-					IsMuted:    p.IsMuted,
-					IsDeafened: p.IsDeafened,
+					ID:              p.ID,
+					Nickname:        p.Nickname,
+					AddrStr:         addrStr,
+					LocalPort:       p.LocalPort,
+					IsMuted:         p.IsMuted,
+					IsDeafened:      p.IsDeafened,
+					IsSharingScreen: p.IsSharingScreen,
+					VideoPort:       p.VideoPort,
+					VideoFPS:        p.VideoFPS,
 				})
 			}
 		}
 
 		welcomePkt := P2PPacket{
-			Type:       PacketWelcome,
-			RoomCode:   n.RoomCode,
-			SenderID:   n.LocalID,
-			Nickname:   n.Nickname,
-			LocalPort:  n.Port,
-			IsMuted:    n.audio.Muted,
-			IsDeafened: n.audio.Deafened,
-			Peers:      summaries,
-			PIN:        n.RoomPIN,
-			IsLocked:   n.IsLocked,
-			Timestamp:  time.Now().UnixMilli(),
+			Type:            PacketWelcome,
+			RoomCode:        n.RoomCode,
+			SenderID:        n.LocalID,
+			Nickname:        n.Nickname,
+			LocalPort:       n.Port,
+			IsMuted:         n.audio.Muted,
+			IsDeafened:      n.audio.Deafened,
+			IsSharingScreen: n.IsSharingScreen,
+			VideoPort:       n.ScreenSharePort,
+			VideoFPS:        n.ActiveScreenShareFPS,
+			Peers:           summaries,
+			PIN:             n.RoomPIN,
+			IsLocked:        n.IsLocked,
+			Timestamp:       time.Now().UnixMilli(),
 		}
 		if peerAddr != nil {
 			go n.sendDirectUDPPacket(peerAddr, &welcomePkt)
@@ -2816,15 +2832,18 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				lastDirect = time.Now()
 			}
 			hostPeer := &PeerInfo{
-				ID:             pkt.SenderID,
-				Nickname:       pkt.Nickname,
-				Addr:           peerAddr,
-				LocalPort:      pkt.LocalPort,
-				LastSeen:       time.Now(),
-				LastDirectSeen: lastDirect,
-				ViaRelay:       isRelayed,
-				IsMuted:        pkt.IsMuted,
-				IsDeafened:     pkt.IsDeafened,
+				ID:              pkt.SenderID,
+				Nickname:        pkt.Nickname,
+				Addr:            peerAddr,
+				LocalPort:       pkt.LocalPort,
+				LastSeen:        time.Now(),
+				LastDirectSeen:  lastDirect,
+				ViaRelay:        isRelayed,
+				IsMuted:         pkt.IsMuted,
+				IsDeafened:      pkt.IsDeafened,
+				IsSharingScreen: pkt.IsSharingScreen,
+				VideoPort:       pkt.VideoPort,
+				VideoFPS:        pkt.VideoFPS,
 			}
 			n.Peers[pkt.SenderID] = hostPeer
 			go n.sendPingToPeer(hostPeer)
@@ -2844,15 +2863,18 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 						pDirect = time.Now()
 					}
 					newPeer := &PeerInfo{
-						ID:             pSum.ID,
-						Nickname:       pSum.Nickname,
-						Addr:           pAddr,
-						LocalPort:      pSum.LocalPort,
-						LastSeen:       time.Now(),
-						LastDirectSeen: pDirect,
-						ViaRelay:       (pAddr == nil),
-						IsMuted:        pSum.IsMuted,
-						IsDeafened:     pSum.IsDeafened,
+						ID:              pSum.ID,
+						Nickname:        pSum.Nickname,
+						Addr:            pAddr,
+						LocalPort:       pSum.LocalPort,
+						LastSeen:        time.Now(),
+						LastDirectSeen:  pDirect,
+						ViaRelay:        (pAddr == nil),
+						IsMuted:         pSum.IsMuted,
+						IsDeafened:      pSum.IsDeafened,
+						IsSharingScreen: pSum.IsSharingScreen,
+						VideoPort:       pSum.VideoPort,
+						VideoFPS:        pSum.VideoFPS,
 					}
 					n.Peers[pSum.ID] = newPeer
 					if pAddr != nil {
@@ -2930,6 +2952,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = pkt.IsSharingScreen
 			peer.VideoPort = pkt.VideoPort
+			if pkt.VideoFPS > 0 {
+				peer.VideoFPS = pkt.VideoFPS
+			}
 		}
 		// Dedup incoming ping: if we already received and answered this exact ping seq/timestamp, don't echo again
 		if pkt.Timestamp > 0 && !n.ctrlDedup.ShouldProcess(pkt.SenderID, PacketPing, pkt.Seq, pkt.Timestamp) {
@@ -2956,6 +2981,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			IsDeafened:      isDeafened,
 			IsSharingScreen: n.IsSharingScreen,
 			VideoPort:       n.ScreenSharePort,
+			VideoFPS:        n.ActiveScreenShareFPS,
 			Timestamp:       pkt.Timestamp, // Echo timestamp
 		}
 		go n.sendPacketTo(destAddr, &pong)
@@ -2964,6 +2990,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = pkt.IsSharingScreen
 			peer.VideoPort = pkt.VideoPort
+			if pkt.VideoFPS > 0 {
+				peer.VideoFPS = pkt.VideoFPS
+			}
 
 			if raddr != nil {
 				peer.LastDirectSeen = time.Now()
@@ -3014,7 +3043,12 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = true
 			peer.VideoPort = pkt.VideoPort
-			n.log(fmt.Sprintf("[SCREEN] %s started screen sharing (Port: %d)", peer.Nickname, pkt.VideoPort))
+			fps := pkt.VideoFPS
+			if fps <= 0 {
+				fps = 60
+			}
+			peer.VideoFPS = fps
+			n.log(fmt.Sprintf("[SCREEN] %s started screen sharing (%d FPS, Port: %d)", peer.Nickname, peer.VideoFPS, pkt.VideoPort))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, true, pkt.VideoPort)
 			}
@@ -3024,6 +3058,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			peer.IsSharingScreen = false
 			peer.VideoPort = 0
+			peer.VideoFPS = 0
 			n.log(fmt.Sprintf("[SCREEN] %s stopped screen sharing.", peer.Nickname))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, false, 0)
@@ -3082,6 +3117,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					IsDeafened:      n.audio.Deafened,
 					IsSharingScreen: n.IsSharingScreen,
 					VideoPort:       n.ScreenSharePort,
+					VideoFPS:        n.ActiveScreenShareFPS,
 					Timestamp:       pkt.Timestamp,
 				}
 				go n.sendDirectUDPPacket(peer.Addr, &pong)
@@ -3420,6 +3456,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	n.screenSession = session
 	n.videoCaptureConn = captureConn
 	n.IsSharingScreen = true
+	n.ActiveScreenShareFPS = opts.FPS
 	roomCode := n.RoomCode
 	localID := n.LocalID
 	nickname := n.Nickname
@@ -3432,9 +3469,10 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 		Nickname:        nickname,
 		IsSharingScreen: true,
 		VideoPort:       localAssignedPort,
+		VideoFPS:        opts.FPS,
 	}
 	n.broadcastToPeers(&startPkt)
-	n.log("[SCREEN] Screen share started (1080p 60 FPS - Internet)")
+	n.log(fmt.Sprintf("[SCREEN] Screen share started (%s %d FPS - Internet)", opts.Resolution, opts.FPS))
 
 	// 2. Read raw MPEG-TS video chunks and broadcast to all room peers over WebSocket Relay (Internet)
 	go func() {
@@ -3500,6 +3538,7 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 
 		n.mu.Lock()
 		n.IsSharingScreen = false
+		n.ActiveScreenShareFPS = 0
 		n.screenSession = nil
 		n.videoCaptureConn = nil
 		n.mu.Unlock()
@@ -3531,6 +3570,7 @@ func (n *P2PNode) StopScreenShare() error {
 	n.screenSession = nil
 	n.videoCaptureConn = nil
 	n.IsSharingScreen = false
+	n.ActiveScreenShareFPS = 0
 	roomCode := n.RoomCode
 	localID := n.LocalID
 	nickname := n.Nickname
@@ -3588,7 +3628,11 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	if len(opts) > 0 {
 		opt = opts[0]
 	} else {
-		opt = screenshare.DefaultReceiverOptions()
+		fps := 60
+		if p, ok := n.Peers[peerID]; ok && p.VideoFPS > 0 {
+			fps = p.VideoFPS
+		}
+		opt = screenshare.DefaultReceiverOptions(fps)
 	}
 	n.videoReorder.Reset()
 	n.videoPreBuf = nil
@@ -3652,7 +3696,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	n.receiverSession = session
 	n.mu.Unlock()
 
-	n.log("[VIEWER] Live screen stream viewer window opened (HD 60 FPS).")
+	n.log(fmt.Sprintf("[VIEWER] Live screen stream viewer window opened (HD %d FPS).", opt.FPS))
 
 	// 4. Monitor receiver session lifecycle
 	go func(curSession *screenshare.Session) {
@@ -3804,6 +3848,7 @@ func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
 	}
 	sharing := n.IsSharingScreen
 	videoPort := n.ScreenSharePort
+	videoFPS := n.ActiveScreenShareFPS
 	peerAddr := peer.Addr
 	n.mu.RUnlock()
 
@@ -3818,6 +3863,7 @@ func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
 		IsDeafened:      deafened,
 		IsSharingScreen: sharing,
 		VideoPort:       videoPort,
+		VideoFPS:        videoFPS,
 		Timestamp:       time.Now().UnixMilli(),
 	}
 	n.sendPacketTo(peerAddr, &pingPkt)
