@@ -1339,14 +1339,14 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-draw_mouse", "1",
 		}
 		args = append(args, inputArgs...)
-		bitrate := "3.5M"
-		maxRate := "4.5M"
+		bitrate := "1.8M"
+		maxRate := "2.4M"
 		if fps >= 120 {
-			bitrate = "5.5M"
-			maxRate = "6.5M"
+			bitrate = "2.4M"
+			maxRate = "3.2M"
 		} else if fps <= 30 {
-			bitrate = "2M"
-			maxRate = "2.5M"
+			bitrate = "1M"
+			maxRate = "1.5M"
 		}
 		if opt.Bitrate != "" {
 			bitrate = opt.Bitrate
@@ -1447,14 +1447,14 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		if winFps <= 0 {
 			winFps = 60
 		}
-		winBitrate := "3.5M"
-		winMaxRate := "4.5M"
+		winBitrate := "1.8M"
+		winMaxRate := "2.4M"
 		if winFps >= 120 {
-			winBitrate = "5.5M"
-			winMaxRate = "6.5M"
+			winBitrate = "2.4M"
+			winMaxRate = "3.2M"
 		} else if winFps <= 30 {
-			winBitrate = "2M"
-			winMaxRate = "2.5M"
+			winBitrate = "1M"
+			winMaxRate = "1.5M"
 		}
 		if opt.Bitrate != "" {
 			winBitrate = opt.Bitrate
@@ -1812,7 +1812,7 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
-			"--framedrop=no",
+			"--framedrop=vo",
 			"--hwdec=auto",
 			"--vd-lavc-fast=yes",
 			"--video-sync=desync",
@@ -1827,10 +1827,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--cursor-autohide=1000",
 			"--demuxer-lavf-format=mpegts",
 			"--demuxer-lavf-analyzeduration=0.1",
-			"--demuxer-lavf-probesize=65536",
-			"--cache=yes",
-			"--demuxer-readahead-secs=0.1",
-			"--demuxer-max-bytes=16M",
+			"--demuxer-lavf-probesize=32768",
+			"--cache=no",
+			"--demuxer-readahead-secs=0",
+			"--demuxer-max-bytes=512K",
+			"--demuxer-max-back-bytes=0",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
 		}
