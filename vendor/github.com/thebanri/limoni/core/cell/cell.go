@@ -400,35 +400,6 @@ var ansi16Colors = []struct {
 
 // RGBToANSI16 maps an RGB color to the closest 16-color ANSI index.
 func RGBToANSI16(r, g, b uint8) uint8 {
-	maxC := r
-	if g > maxC {
-		maxC = g
-	}
-	if b > maxC {
-		maxC = b
-	}
-	minC := r
-	if g < minC {
-		minC = g
-	}
-	if b < minC {
-		minC = b
-	}
-
-	// If the color has low saturation (near grayscale), map directly to neutral grayscale ANSI tones
-	// to prevent dark slates, grays, and shadows from snapping to harsh Blue (ANSI 4) or Cyan (ANSI 6).
-	if int(maxC)-int(minC) <= 32 {
-		lum := (int(r)*299 + int(g)*587 + int(b)*114) / 1000
-		if lum < 45 {
-			return 0 // Black
-		} else if lum < 155 {
-			return 8 // Bright Black (Dark Gray)
-		} else if lum < 220 {
-			return 7 // White (Light Gray)
-		}
-		return 15 // Bright White
-	}
-
 	minDist := int64(1 << 30)
 	var bestAnsi uint8
 	for _, c := range ansi16Colors {

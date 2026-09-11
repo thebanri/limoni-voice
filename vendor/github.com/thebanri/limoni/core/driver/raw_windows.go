@@ -12,8 +12,6 @@ type WindowsConsoleState struct {
 	outHandle windows.Handle
 	inMode    uint32
 	outMode   uint32
-	inCP      uint32
-	outCP     uint32
 }
 
 // MakeRaw Windows konsolunu VT100 / Sanal Terminal (Raw) moduna geçirir.
@@ -29,18 +27,11 @@ func MakeRaw(inFd, outFd uintptr) (*WindowsConsoleState, error) {
 		return nil, err
 	}
 
-	inCP, _ := windows.GetConsoleCP()
-	outCP, _ := windows.GetConsoleOutputCP()
-	_ = windows.SetConsoleCP(65001)
-	_ = windows.SetConsoleOutputCP(65001)
-
 	state := &WindowsConsoleState{
 		inHandle:  inHandle,
 		outHandle: outHandle,
 		inMode:    inMode,
 		outMode:   outMode,
-		inCP:      inCP,
-		outCP:     outCP,
 	}
 
 	// Ham giriş modu: Line/Echo/Processed kapat, Virtual Terminal Input ve Window/Mouse Input aç
@@ -67,12 +58,6 @@ func RestoreConsole(state *WindowsConsoleState) error {
 		return nil
 	}
 	var lastErr error
-	if state.inCP != 0 {
-		_ = windows.SetConsoleCP(state.inCP)
-	}
-	if state.outCP != 0 {
-		_ = windows.SetConsoleOutputCP(state.outCP)
-	}
 	if err := windows.SetConsoleMode(state.inHandle, state.inMode); err != nil {
 		lastErr = err
 	}

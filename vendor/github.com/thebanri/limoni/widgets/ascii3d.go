@@ -88,7 +88,7 @@ type Ascii3D struct {
 	Colored   bool       // True for 24-bit TrueColor RGB, False for monochrome
 	Invert    bool       // Invert luminance character ramp
 	Color     cell.Color // Primary surface/diffuse fallback color (default: Yellow #ffd700)
-	Highlight cell.Color // Specular highlight color (default: White #ffffff)
+	Highlight cell.Color // Specular highlight color (default: #066aff Electric Blue)
 	Ramp      string     // Custom character luminance ramp (default: RampCanvasUI)
 }
 
@@ -190,7 +190,7 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 	highlightColor := a.Highlight
 	if highlightColor == 0 {
-		highlightColor = cell.NewColorRGB(255, 255, 255) // Default Clean White specular highlight
+		highlightColor = cell.NewColorRGB(6, 106, 255) // #066aff Electric Blue
 	}
 
 	// Two-Light Studio Setup

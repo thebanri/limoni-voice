@@ -2,7 +2,6 @@ package terminal
 
 import (
 	"os"
-	"runtime"
 	"strings"
 
 	"github.com/thebanri/limoni/graphics"
@@ -51,18 +50,6 @@ func DetectCapabilities() CapabilityProfile {
 	// Some known modern terminals support TrueColor
 	termProg := os.Getenv("TERM_PROGRAM")
 	if termProg == "kitty" || termProg == "WezTerm" || termProg == "Ghostty" || termProg == "iTerm.app" || termProg == "Apple_Terminal" {
-		profile.TrueColor = true
-		profile.Colors256 = true
-	}
-
-	// Windows 10 build 1709+ (and all Windows 11) conhost, PowerShell, Windows Terminal, and ConEmu natively support
-	// 24-bit TrueColor and 256 colors when Virtual Terminal Processing is enabled (handled in driver.MakeRaw).
-	if runtime.GOOS == "windows" && term != "dumb" {
-		profile.TrueColor = true
-		profile.Colors256 = true
-	}
-
-	if os.Getenv("WT_SESSION") != "" || os.Getenv("ConEmuANSI") == "ON" {
 		profile.TrueColor = true
 		profile.Colors256 = true
 	}

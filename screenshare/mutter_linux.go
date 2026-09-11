@@ -202,7 +202,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		parts := strings.Split(cleanURL, ":")
 		if len(parts) == 2 {
 			host = parts[0]
-			port = parts
+			port = parts[1]
 		}
 	}
 
@@ -214,7 +214,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			if w, err := strconv.Atoi(parts[0]); err == nil && w > 0 {
 				outWidth = w
 			}
-			if h, err := strconv.Atoi(parts); err == nil && h > 0 {
+			if h, err := strconv.Atoi(parts[1]); err == nil && h > 0 {
 				outHeight = h
 			}
 		}
