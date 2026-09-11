@@ -872,14 +872,14 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 					fps = 60
 				}
 				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", targetPeer.Nickname, fps)
+				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 				r.SetToast(fmt.Sprintf("Starting %s stream (%d FPS)...", targetPeer.Nickname, fps))
 				go func() {
 					err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 					if err != nil {
 						r.SetToast(fmt.Sprintf("Error: %v", err))
 					} else {
-						r.SetToast(fmt.Sprintf("%s stream opened (HD %d FPS)", targetPeer.Nickname, fps))
+						r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", targetPeer.Nickname, fps))
 					}
 				}()
 			})
@@ -1026,7 +1026,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		if p, ok := node.Peers[node.WatchingPeerID]; ok && p.VideoFPS > 0 {
 			streamFPS = p.VideoFPS
 		}
-		topBarText := fmt.Sprintf(" %s'S LIVE STREAM ACTIVE (HD %d FPS) ", strings.ToUpper(watchedNick), streamFPS)
+		topBarText := fmt.Sprintf(" %s'S LIVE STREAM ACTIVE (%d FPS) ", strings.ToUpper(watchedNick), streamFPS)
 		buf.SetString(inner.X+3, inner.Y+1, topBarText, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 
 		msg1 := "Playing in high-performance hardware-accelerated video window."
@@ -1065,7 +1065,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				if fps <= 0 {
 					fps = 60
 				}
-				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream (HD %d FPS)   ", p.Nickname, fps)
+				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream (%d FPS)   ", p.Nickname, fps)
 				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
@@ -1075,14 +1075,14 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 						port = 50100
 					}
 					opts := screenshare.DefaultReceiverOptions(fps)
-					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", targetPeer.Nickname, fps)
+					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 					r.SetToast(fmt.Sprintf("Switching to %s...", targetPeer.Nickname))
 					go func() {
 						err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 						if err != nil {
 							r.SetToast(fmt.Sprintf("Error: %v", err))
 						} else {
-							r.SetToast(fmt.Sprintf("Switched to %s (HD %d FPS)", targetPeer.Nickname, fps))
+							r.SetToast(fmt.Sprintf("Switched to %s (%d FPS)", targetPeer.Nickname, fps))
 						}
 					}()
 				})
@@ -1097,7 +1097,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		if localFPS <= 0 {
 			localFPS = 60
 		}
-		msg1 := fmt.Sprintf("YOUR SCREEN IS LIVE (%d FPS - 1080p Full HD)", localFPS)
+		msg1 := fmt.Sprintf("YOUR SCREEN IS LIVE (%d FPS)", localFPS)
 		msg2 := "All room participants can watch your screen with ultra-low latency."
 		btnText := "   [V] STOP BROADCAST (Click)   "
 
@@ -1137,14 +1137,14 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 						fps = 60
 					}
 					opts := screenshare.DefaultReceiverOptions(fps)
-					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", targetPeer.Nickname, fps)
+					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 					r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
 					go func() {
 						err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 						if err != nil {
 							r.SetToast(fmt.Sprintf("Error: %v", err))
 						} else {
-							r.SetToast(fmt.Sprintf("%s stream opened (HD %d FPS)", targetPeer.Nickname, fps))
+							r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", targetPeer.Nickname, fps))
 						}
 					}()
 				})
@@ -1176,14 +1176,14 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				port = 50100
 			}
 			opts := screenshare.DefaultReceiverOptions(streamFPS)
-			opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", p.Nickname, streamFPS)
+			opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", p.Nickname, streamFPS)
 			r.SetToast("Starting stream viewer...")
 			go func() {
 				err := node.StartWatchingScreen(p.ID, port, opts)
 				if err != nil {
 					r.SetToast(fmt.Sprintf("Error: %v", err))
 				} else {
-					r.SetToast(fmt.Sprintf("%s stream opened (HD %d FPS)", p.Nickname, streamFPS))
+					r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", p.Nickname, streamFPS))
 				}
 			}()
 		})
@@ -1206,7 +1206,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			if fps <= 0 {
 				fps = 60
 			}
-			btnText := fmt.Sprintf("   ► WATCH %s'S LIVE STREAM (HD %d FPS)   ", strings.ToUpper(p.Nickname), fps)
+			btnText := fmt.Sprintf("   ► WATCH %s'S LIVE STREAM (%d FPS)   ", strings.ToUpper(p.Nickname), fps)
 			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 			buf.SetString(inner.X+3, btnRowY, btnText, btnStyle)
 
@@ -1216,14 +1216,14 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 					port = 50100
 				}
 				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", targetPeer.Nickname, fps)
+				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 				r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
 				go func() {
 					err := node.StartWatchingScreen(targetPeer.ID, port, opts)
 					if err != nil {
 						r.SetToast(fmt.Sprintf("Error: %v", err))
 					} else {
-						r.SetToast(fmt.Sprintf("%s stream opened (HD %d FPS)", targetPeer.Nickname, fps))
+						r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", targetPeer.Nickname, fps))
 					}
 				}()
 			})
@@ -1610,14 +1610,14 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 					port = 50100
 				}
 				opts := screenshare.DefaultReceiverOptions(peerFPS)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", peer.Nickname, peerFPS)
+				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", peer.Nickname, peerFPS)
 				r.SetToast("🎬 Starting stream viewer...")
 				go func() {
 					err := node.StartWatchingScreen(peer.ID, port, opts)
 					if err != nil {
 						r.SetToast(fmt.Sprintf("Error: %v", err))
 					} else {
-						r.SetToast(fmt.Sprintf("%s stream opened (HD %d FPS)", peer.Nickname, peerFPS))
+						r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", peer.Nickname, peerFPS))
 					}
 				}()
 			}
@@ -1907,14 +1907,14 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 					fps = 60
 				}
 				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", streamingPeer.Nickname, fps)
+				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", streamingPeer.Nickname, fps)
 				r.SetToast("Starting stream viewer...")
 				go func() {
 					err := node.StartWatchingScreen(streamingPeer.ID, port, opts)
 					if err != nil {
 						r.SetToast(fmt.Sprintf("Error: %v", err))
 					} else {
-						r.SetToast(fmt.Sprintf("%s stream opened (HD %d FPS)", streamingPeer.Nickname, fps))
+						r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", streamingPeer.Nickname, fps))
 					}
 				}()
 			} else {
@@ -3206,7 +3206,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 					fps = 60
 				}
 				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", target.Nickname, fps)
+				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", target.Nickname, fps)
 				r.SetToast(fmt.Sprintf("Opening %s stream...", target.Nickname))
 				go func() {
 					_ = node.StartWatchingScreen(target.ID, port, opts)
@@ -3444,7 +3444,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 					fps = 60
 				}
 				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", target.Nickname, fps)
+				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", target.Nickname, fps)
 				r.SetToast(fmt.Sprintf("Opening %s stream...", target.Nickname))
 				go func() {
 					_ = node.StartWatchingScreen(target.ID, port, opts)
@@ -3688,7 +3688,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 				fps = 60
 			}
 			opts := screenshare.DefaultReceiverOptions(fps)
-			opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", target.Nickname, fps)
+			opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", target.Nickname, fps)
 			r.SetToast(fmt.Sprintf("Opening %s stream...", target.Nickname))
 			go func() {
 				_ = node.StartWatchingScreen(target.ID, port, opts)
@@ -4003,7 +4003,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 						fps = 60
 					}
 					opts := screenshare.DefaultReceiverOptions(fps)
-					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (HD %d FPS)", targetPeer.Nickname, fps)
+					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 					r.SetToast(fmt.Sprintf("Opening %s stream...", targetPeer.Nickname))
 					go func() {
 						_ = node.StartWatchingScreen(targetPeer.ID, port, opts)

@@ -3696,7 +3696,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	n.receiverSession = session
 	n.mu.Unlock()
 
-	n.log(fmt.Sprintf("[VIEWER] Live screen stream viewer window opened (HD %d FPS).", opt.FPS))
+	n.log(fmt.Sprintf("[VIEWER] Live screen stream viewer window opened (%d FPS).", opt.FPS))
 
 	// 4. Monitor receiver session lifecycle
 	go func(curSession *screenshare.Session) {

@@ -3132,13 +3132,46 @@ func TestScreenShareFPSModes(t *testing.T) {
 	}
 
 	rec120 := screenshare.DefaultReceiverOptions(120)
-	if rec120.FPS != 120 || !strings.Contains(rec120.WindowTitle, "120 FPS") {
+	if rec120.FPS != 120 || !strings.Contains(rec120.WindowTitle, "120 FPS") || strings.Contains(rec120.WindowTitle, "HD") {
 		t.Fatalf("Unexpected receiver options for 120 FPS: %+v", rec120)
 	}
 
 	rec30 := screenshare.DefaultReceiverOptions(30)
-	if rec30.FPS != 30 || !strings.Contains(rec30.WindowTitle, "30 FPS") {
+	if rec30.FPS != 30 || !strings.Contains(rec30.WindowTitle, "30 FPS") || strings.Contains(rec30.WindowTitle, "HD") {
 		t.Fatalf("Unexpected receiver options for 30 FPS: %+v", rec30)
+	}
+}
+
+func TestScreenShareModalResponsiveFPSPills(t *testing.T) {
+	testWidths := []uint16{40, 50, 60, 80}
+	for _, w := range testWidths {
+		buf := buffer.NewBuffer(cell.NewRect(0, 0, w, 24))
+		frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+		fpsSelected := 0
+		DrawScreenShareModal(frame, cell.NewRect(0, 0, w, 24), 1.0, 0, 120, []screenshare.WindowInfo{
+			{ID: "desktop", Title: "Desktop 1"},
+		}, func(fps int) {
+			fpsSelected = fps
+		}, func(_ screenshare.WindowInfo) {}, func() {})
+
+		// Check that "120" is present in buffer text
+		found120 := false
+		for y := uint16(0); y < 24; y++ {
+			line := ""
+			for x := uint16(0); x < w; x++ {
+				if c := buf.Get(x, y); c != nil {
+					line += string(c.Content)
+				}
+			}
+			if strings.Contains(line, "120") {
+				found120 = true
+				break
+			}
+		}
+		if !found120 {
+			t.Fatalf("Width %d: Expected 120 FPS option to be rendered on screen, but was missing", w)
+		}
+		_ = fpsSelected
 	}
 }
 

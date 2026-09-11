@@ -1016,7 +1016,11 @@ func DrawRelayModal(
 		cursorX := urlInputRect.X + uint16(cursorCol)
 		if cursorX < urlInputRect.X+urlInputRect.Width {
 			if c := buf.Get(cursorX, urlInputRect.Y); c != nil {
-				c.Style.Modifier |= cell.ModifierReverse
+				c.Style = cell.Style{
+					Fg:       cell.NewColorRGB(0, 0, 0),
+					Bg:       cell.NewColorRGB(255, 255, 255),
+					Modifier: cell.ModifierBold,
+				}
 			}
 		}
 	}
@@ -1081,7 +1085,11 @@ func DrawRelayModal(
 		cursorX := tokenInputRect.X + uint16(cursorCol)
 		if cursorX < tokenInputRect.X+tokenInputRect.Width {
 			if c := buf.Get(cursorX, tokenInputRect.Y); c != nil {
-				c.Style.Modifier |= cell.ModifierReverse
+				c.Style = cell.Style{
+					Fg:       cell.NewColorRGB(0, 0, 0),
+					Bg:       cell.NewColorRGB(255, 255, 255),
+					Modifier: cell.ModifierBold,
+				}
 			}
 		}
 	}
@@ -1226,34 +1234,68 @@ func DrawScreenShareModal(
 
 	// 4. Framerate Mode Selector Row
 	fpsLabel := "Framerate Mode:"
-	buf.SetString(inner.X+1, inner.Y, fpsLabel, cell.Style{
-		Fg:       theme.TextMuted,
-		Bg:       dialogBg,
-		Modifier: cell.ModifierBold,
-	})
+	if inner.Width < 70 {
+		fpsLabel = "FPS:"
+	}
+	if inner.Width < 45 {
+		fpsLabel = ""
+	}
+
+	startX := inner.X + 1
+	if fpsLabel != "" {
+		buf.SetString(startX, inner.Y, fpsLabel, cell.Style{
+			Fg:       theme.TextMuted,
+			Bg:       dialogBg,
+			Modifier: cell.ModifierBold,
+		})
+		startX += uint16(len([]rune(fpsLabel))) + 1
+	}
 
 	type fpsOption struct {
-		fps   int
-		label string
-		short string
+		fps     int
+		full    string
+		medium  string
+		compact string
+		tiny    string
 	}
 	fpsOptions := []fpsOption{
-		{fps: 30, label: " [1] 30 FPS (Eco) ", short: " [1] 30 FPS "},
-		{fps: 60, label: " [2] 60 FPS (Balanced) ", short: " [2] 60 FPS "},
-		{fps: 120, label: " [3] 120 FPS (Ultra) ", short: " [3] 120 FPS "},
+		{fps: 30, full: " [1] 30 FPS (Eco) ", medium: " [1] 30 FPS ", compact: " 30 FPS ", tiny: " 30 "},
+		{fps: 60, full: " [2] 60 FPS (Balanced) ", medium: " [2] 60 FPS ", compact: " 60 FPS ", tiny: " 60 "},
+		{fps: 120, full: " [3] 120 FPS (Ultra) ", medium: " [3] 120 FPS ", compact: " 120 FPS ", tiny: " 120 "},
 	}
 
-	useShort := inner.Width < 66
-	curPillX := inner.X + 1 + uint16(len([]rune(fpsLabel))) + 1
-	for _, opt := range fpsOptions {
-		pillText := opt.label
-		if useShort {
-			pillText = opt.short
+	// Choose appropriate size tier so ALL 3 options ALWAYS fit within inner.Width
+	availW := int(inner.Width) - int(startX-inner.X) - 1
+	var pillTexts []string
+	for t := 0; t <= 3; t++ {
+		totalW := 0
+		var texts []string
+		for idx, opt := range fpsOptions {
+			txt := opt.full
+			switch t {
+			case 1:
+				txt = opt.medium
+			case 2:
+				txt = opt.compact
+			case 3:
+				txt = opt.tiny
+			}
+			texts = append(texts, txt)
+			totalW += len([]rune(txt))
+			if idx < len(fpsOptions)-1 {
+				totalW += 1 // spacing between pills
+			}
 		}
-		pillLen := uint16(len([]rune(pillText)))
-		if curPillX+pillLen > inner.X+inner.Width-1 {
+		if totalW <= availW || t == 3 {
+			pillTexts = texts
 			break
 		}
+	}
+
+	curPillX := startX
+	for idx, opt := range fpsOptions {
+		pillText := pillTexts[idx]
+		pillLen := uint16(len([]rune(pillText)))
 
 		pillStyle := cell.Style{
 			Fg: theme.Text,

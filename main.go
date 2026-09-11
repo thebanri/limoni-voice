@@ -1733,16 +1733,19 @@ func main() {
 									if port <= 0 {
 										port = 50100
 									}
-									opts := screenshare.ReceiverOptions{
-										WindowTitle: fmt.Sprintf("Limoni Voice - %s Live Stream (HD 60 FPS)", target.Nickname),
+									fps := target.VideoFPS
+									if fps <= 0 {
+										fps = 60
 									}
-									room.SetToast(fmt.Sprintf("🎬 Starting %s stream...", target.Nickname))
+									opts := screenshare.DefaultReceiverOptions(fps)
+									opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", target.Nickname, fps)
+									room.SetToast(fmt.Sprintf("🎬 Starting %s stream (%d FPS)...", target.Nickname, fps))
 									go func() {
 										err := node.StartWatchingScreen(target.ID, port, opts)
 										if err != nil {
 											room.SetToast(fmt.Sprintf("Error: %v", err))
 										} else {
-											room.SetToast(fmt.Sprintf("%s stream opened (HD 60 FPS)", target.Nickname))
+											room.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", target.Nickname, fps))
 										}
 									}()
 								} else {

@@ -1791,7 +1791,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 
 	windowTitle := opt.WindowTitle
 	if windowTitle == "" {
-		windowTitle = "Limoni Voice - Live Screen Stream (HD 60 FPS)"
+		if opt.FPS > 0 {
+			windowTitle = fmt.Sprintf("Limoni Voice - Live Screen Stream (%d FPS)", opt.FPS)
+		} else {
+			windowTitle = "Limoni Voice - Live Screen Stream"
+		}
 	}
 
 	streamURL := fmt.Sprintf("tcp://127.0.0.1:%d", port)
