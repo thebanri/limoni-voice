@@ -115,8 +115,8 @@ func GenerateMicrophoneModel() graphics.Model3D {
 	// Palette
 	darkMetal := cell.NewColorRGB(0x2D, 0x34, 0x36)      // Gunmetal gray
 	goldMetal := cell.NewColorRGB(0xFD, 0xCB, 0x6E)      // Warm polished gold
-	silverChassis := cell.NewColorRGB(220, 225, 235)  // Chrome body
-	cyanGrill := cell.NewColorRGB(0x00, 0xF5, 0xD4)      // Glowing cyan inner element
+	silverChassis := cell.NewColorRGB(220, 225, 235)      // Chrome body
+	meshGrill := cell.NewColorRGB(165, 172, 185)          // Classic steel condenser mesh
 	blackCord := cell.NewColorRGB(0x0A, 0x0E, 0x17)      // Elastic cords
 
 	// 1. BEVELED BASE
@@ -153,7 +153,7 @@ func GenerateMicrophoneModel() graphics.Model3D {
 	capRing(capsuleRing1, segs, silverChassis, false)
 	bridgeRings(capsuleRing1, capsuleRing2, segs, silverChassis)
 	bridgeRings(capsuleRing2, capsuleRing3, segs, goldMetal) // Gold middle band
-	bridgeRings(capsuleRing3, capsuleRing4, segs, cyanGrill)  // Main microphone grill
+	bridgeRings(capsuleRing3, capsuleRing4, segs, meshGrill) // Main microphone grill
 	bridgeRings(capsuleRing4, capsuleRing5, segs, silverChassis)
 	domeToPoint(capsuleRing5, domePeakIdx, segs, silverChassis)
 
