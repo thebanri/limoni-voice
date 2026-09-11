@@ -594,7 +594,7 @@ func (s *RelayServer) relayBinaryData(sender *Client, data []byte) {
 			case member.sendCh <- data:
 			default:
 			drainLoop:
-				for len(member.sendCh) > 128 {
+				for len(member.sendCh) > 48 {
 					select {
 					case <-member.sendCh:
 					default:

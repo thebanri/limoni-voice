@@ -1331,7 +1331,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 
 		args := []string{
 			"-fflags", "nobuffer+flush_packets",
-			"-thread_queue_size", "512",
+			"-thread_queue_size", "64",
 			"-probesize", "32",
 			"-analyzeduration", "0",
 			"-f", "x11grab",
@@ -1341,12 +1341,19 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 		args = append(args, inputArgs...)
 		bitrate := "1.8M"
 		maxRate := "2.4M"
+		bufSize := "600k"
+		gopSize := fps
+		if gopSize > 60 {
+			gopSize = 60
+		}
 		if fps >= 120 {
 			bitrate = "2.4M"
 			maxRate = "3.2M"
+			bufSize = "800k"
 		} else if fps <= 30 {
 			bitrate = "1M"
 			maxRate = "1.5M"
+			bufSize = "400k"
 		}
 		if opt.Bitrate != "" {
 			bitrate = opt.Bitrate
@@ -1358,13 +1365,13 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
-			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", fps, fps),
+			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", gopSize, gopSize),
 			"-crf", "22",
 			"-b:v", bitrate,
 			"-maxrate", maxRate,
-			"-bufsize", maxRate,
+			"-bufsize", bufSize,
 			"-pix_fmt", "yuv420p",
-			"-g", fmt.Sprintf("%d", fps),
+			"-g", fmt.Sprintf("%d", gopSize),
 			"-bf", "0",
 			"-bsf:v", "dump_extra",
 			"-f", "mpegts",
@@ -1447,14 +1454,21 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		if winFps <= 0 {
 			winFps = 60
 		}
+		winGop := winFps
+		if winGop > 60 {
+			winGop = 60
+		}
 		winBitrate := "1.8M"
 		winMaxRate := "2.4M"
+		winBufSize := "600k"
 		if winFps >= 120 {
 			winBitrate = "2.4M"
 			winMaxRate = "3.2M"
+			winBufSize = "800k"
 		} else if winFps <= 30 {
 			winBitrate = "1M"
 			winMaxRate = "1.5M"
+			winBufSize = "400k"
 		}
 		if opt.Bitrate != "" {
 			winBitrate = opt.Bitrate
@@ -1489,13 +1503,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winFps, winFps),
+				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
 				"-crf", "23",
 				"-b:v", winBitrate,
 				"-maxrate", winMaxRate,
-				"-bufsize", winMaxRate,
+				"-bufsize", winBufSize,
 				"-pix_fmt", "yuv420p",
-				"-g", fmt.Sprintf("%d", winFps),
+				"-g", fmt.Sprintf("%d", winGop),
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
@@ -1506,7 +1520,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		} else {
 			inputArgs := []string{
 				"-fflags", "nobuffer+flush_packets",
-				"-thread_queue_size", "512",
+				"-thread_queue_size", "64",
 				"-probesize", "32",
 				"-analyzeduration", "0",
 				"-f", "gdigrab",
@@ -1543,13 +1557,13 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
 				"-tune", "zerolatency",
-				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winFps, winFps),
+				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
 				"-crf", "23",
 				"-b:v", winBitrate,
 				"-maxrate", winMaxRate,
-				"-bufsize", winMaxRate,
+				"-bufsize", winBufSize,
 				"-pix_fmt", "yuv420p",
-				"-g", fmt.Sprintf("%d", winFps),
+				"-g", fmt.Sprintf("%d", winGop),
 				"-bf", "0",
 				"-bsf:v", "dump_extra",
 				"-f", "mpegts",
@@ -1812,6 +1826,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--really-quiet",
 			"--no-audio",
 			"--profile=low-latency",
+			"--untimed",
+			"--vd-lavc-threads=0",
+			"--cache=no",
+			"--demuxer-readahead-secs=0",
+			"--stream-buffer-size=4k",
 			"--framedrop=vo",
 			"--hwdec=auto",
 			"--vd-lavc-show-all=no",
@@ -1828,11 +1847,6 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--demuxer-lavf-format=mpegts",
 			"--demuxer-lavf-analyzeduration=0.1",
 			"--demuxer-lavf-probesize=32768",
-			"--cache=yes",
-			"--cache-pause=no",
-			"--demuxer-readahead-secs=0.05",
-			"--demuxer-max-bytes=2M",
-			"--demuxer-max-back-bytes=0",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
 		}
@@ -1842,13 +1856,15 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 	} else if p, err := FindExecutable("ffplay"); err == nil {
 		binPath = p
 		args = []string{
+			"-an",
+			"-sn",
 			"-loglevel", "warning",
 			"-flags", "low_delay",
 			"-fflags", "nobuffer+flush_packets",
 			"-framedrop",
 			"-sync", "ext",
-			"-probesize", "65536",
-			"-analyzeduration", "100000",
+			"-probesize", "32768",
+			"-analyzeduration", "0",
 			"-f", "mpegts",
 			"-alwaysontop",
 			"-window_title", windowTitle,

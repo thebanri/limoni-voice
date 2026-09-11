@@ -188,8 +188,8 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	if gopSize < 30 {
 		gopSize = 30
 	}
-	if gopSize > 120 {
-		gopSize = 120
+	if gopSize > 60 {
+		gopSize = 60
 	}
 
 	usePipe := (targetURL == "-")
@@ -248,7 +248,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"!", "queue", "max-size-buffers=3", "max-size-bytes=0", "max-size-time=0", "leaky=downstream",
 		"!", "videoconvert",
 		"!", "videoscale",
-		"!", "videorate", "skip-to-first=true", "drop-only=false", "max-duplication-time=0",
+		"!", "videorate", "skip-to-first=true", "drop-only=true", "max-duplication-time=0",
 		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=%s", outWidth, outHeight, fps, rawFormat),
 	)
 

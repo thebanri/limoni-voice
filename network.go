@@ -2613,7 +2613,20 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		select {
 		case wsVideoCh <- data:
 		default:
-			// Non-blocking drop on congestion to maintain zero latency and eliminate bufferbloat
+			// If channel is backlogged, drain stale packets to maintain zero latency and eliminate bufferbloat
+			drainCount := 0
+			for len(wsVideoCh) > 48 && drainCount < 32 {
+				select {
+				case <-wsVideoCh:
+					drainCount++
+				default:
+					break
+				}
+			}
+			select {
+			case wsVideoCh <- data:
+			default:
+			}
 		}
 	}
 	n.mu.RUnlock()
@@ -3624,11 +3637,11 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 	}
 
 	n.mu.Lock()
-	// Keep prebuffer of recent video chunks (~30 chunks = ~35KB) so player gets headers immediately on connect
+	// Keep prebuffer of recent video chunks (~10 chunks = ~12KB) so player gets headers immediately on connect
 	// Zero-allocation ring buffer: reuses slice backing array instead of append(slice[1:], chunk)
 	for _, chunk := range readyChunks {
 		if len(chunk) > 0 {
-			if len(n.videoPreBuf) < 30 {
+			if len(n.videoPreBuf) < 10 {
 				n.videoPreBuf = append(n.videoPreBuf, chunk)
 			} else {
 				copy(n.videoPreBuf, n.videoPreBuf[1:])
@@ -3904,8 +3917,8 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.debugLog(fmt.Sprintf("[VIEWER] [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
-			_ = tcp.SetWriteBuffer(2 * 1024 * 1024)
-			_ = tcp.SetReadBuffer(2 * 1024 * 1024)
+			_ = tcp.SetWriteBuffer(64 * 1024)
+			_ = tcp.SetReadBuffer(64 * 1024)
 		}
 		n.mu.Lock()
 		if n.IsWatchingScreen {
