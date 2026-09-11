@@ -286,6 +286,48 @@ func watchPIDLiveness(ctx context.Context, pid int, cancel context.CancelFunc) {
 	}
 }
 
+func findX11WindowByPID(pid int) string {
+	if pid <= 1 {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	if xdotoolBin, err := FindExecutable("xdotool"); err == nil {
+		out, err := exec.CommandContext(ctx, xdotoolBin, "search", "--pid", strconv.Itoa(pid)).Output()
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			for i := len(lines) - 1; i >= 0; i-- {
+				w := strings.TrimSpace(lines[i])
+				if w != "" && w != "0" {
+					return w
+				}
+			}
+		}
+	}
+
+	if xpropBin, err := FindExecutable("xprop"); err == nil {
+		out, err := exec.CommandContext(ctx, xpropBin, "-root", "_NET_CLIENT_LIST").Output()
+		if err == nil {
+			outStr := string(out)
+			if idx := strings.Index(outStr, "#"); idx != -1 {
+				winIDs := strings.Split(outStr[idx+1:], ",")
+				for _, rawID := range winIDs {
+					winID := strings.TrimSpace(rawID)
+					if winID == "" || winID == "0x0" {
+						continue
+					}
+					pidOut, err := exec.CommandContext(ctx, xpropBin, "-id", winID, "_NET_WM_PID").Output()
+					if err == nil && strings.Contains(string(pidOut), fmt.Sprintf("= %d", pid)) {
+						return winID
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func getLinuxDisplay() string {
 	if disp := os.Getenv("DISPLAY"); disp != "" {
 		return disp
@@ -1177,93 +1219,117 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 		fps = 60
 	}
 
-	// 1. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS zero-copy)
-	// Prioritized for monitor, desktop, screen, and focused targets to avoid CPU portal encoding overhead.
-	if targetID != "portal:window" {
+	wayland := isWayland()
+	isWindowTarget := targetID == "portal:window" ||
+		targetID == "portal" ||
+		strings.HasPrefix(targetID, "app:") ||
+		strings.HasPrefix(targetID, "win:") ||
+		targetID == "focused"
+
+	// 1. If user selected a Window or App on Wayland -> Route to XDG Desktop Portal Window Cast
+	// (GPU Screen Recorder window capture only works in pure X11; Wayland window capture requires XDG Desktop Portal)
+	if wayland && isWindowTarget {
+		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
+			defer cancel()
+			sourceType := uint32(2) // 2 = Window Only
+			if targetID == "portal" {
+				sourceType = 3 // 3 = Monitor or Window
+			}
+			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, sourceType, onCancel...)
+			if errPortal == nil && nodeID != 0 {
+				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
+				if errGst == nil {
+					return bin, args, pwFile, cleanup, nil
+				}
+				if cleanup != nil {
+					cleanup()
+				}
+			} else if errPortal != nil {
+				logMsg("[PORTAL] Window selection failed or cancelled: %v", errPortal)
+				return "", nil, nil, nil, errPortal
+			}
+		}
+	}
+
+	// 2. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS zero-copy)
+	// Prioritized for monitor/screen capture on both Wayland and X11, and window capture on pure X11.
+	if (!wayland || !isWindowTarget) && targetID != "portal" && targetID != "portal:window" {
 		if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
-			gsrTarget := "screen"
-			if targetID == "focused" {
-				gsrTarget = "focused"
+			gsrTarget := ""
+			if targetID == "desktop" || targetID == "screen" || targetID == "" {
+				gsrTarget = "screen"
 			} else if strings.HasPrefix(targetID, "monitor:") {
 				parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
 				if len(parts) > 0 && parts[0] != "" {
 					gsrTarget = parts[0]
+				} else {
+					gsrTarget = "screen"
 				}
-			} else if strings.HasPrefix(targetID, "win:") {
-				parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
-				if len(parts) > 0 && parts[0] != "" {
-					gsrTarget = parts[0]
-				}
-			} else if targetID == "desktop" || targetID == "screen" || targetID == "" || targetID == "portal" {
-				gsrTarget = "screen"
-			} else {
-				gsrTarget = targetID
-			}
-
-			bitrateKbps := 1800
-			if fps >= 120 {
-				bitrateKbps = 2500
-			} else if fps <= 30 {
-				bitrateKbps = 1200
-			}
-			if opt.Bitrate != "" {
-				clean := strings.TrimSpace(strings.ToLower(opt.Bitrate))
-				if strings.HasSuffix(clean, "m") {
-					val, _ := strconv.ParseFloat(strings.TrimSuffix(clean, "m"), 64)
-					if val > 0 {
-						bitrateKbps = int(val * 1000)
+			} else if !wayland {
+				// Pure X11 window capture support in GPU Screen Recorder
+				if targetID == "focused" {
+					gsrTarget = "focused"
+				} else if strings.HasPrefix(targetID, "win:") {
+					parts := strings.SplitN(strings.TrimPrefix(targetID, "win:"), ":", 2)
+					if len(parts) > 0 && parts[0] != "" {
+						gsrTarget = parts[0]
 					}
-				} else if strings.HasSuffix(clean, "k") {
-					val, _ := strconv.Atoi(strings.TrimSuffix(clean, "k"))
-					if val > 0 {
-						bitrateKbps = val
+				} else if strings.HasPrefix(targetID, "app:") {
+					parts := strings.Split(strings.TrimPrefix(targetID, "app:"), ":")
+					if len(parts) > 0 {
+						if pid, err := strconv.Atoi(parts[0]); err == nil {
+							if winID := findX11WindowByPID(pid); winID != "" {
+								gsrTarget = winID
+							}
+						}
 					}
 				}
 			}
 
-			args := []string{
-				"-w", gsrTarget,
-				"-s", opt.Resolution,
-				"-f", fmt.Sprintf("%d", fps),
-				"-k", "h264",
-				"-bm", "cbr",
-				"-q", fmt.Sprintf("%d", bitrateKbps),
-				"-tune", "performance",
-				"-keyint", "1",
-				"-fallback-cpu-encoding", "yes",
-				"-restore-portal-session", "no",
-				"-c", "mpegts",
-				"-o", targetURL,
-			}
-			return p, args, nil, nil, nil
-		}
-	}
-
-	// 2. If user selected a specific Window / App on Wayland -> use Desktop Portal Window Cast
-	if targetID == "portal:window" || targetID == "portal" || strings.HasPrefix(targetID, "app:") || strings.HasPrefix(targetID, "win:") || targetID == "focused" {
-		if isWayland() {
-			if _, err := FindExecutable("gst-launch-1.0"); err == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
-				defer cancel()
-				nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 2, onCancel...) // 2 = Window Only
-				if errPortal == nil && nodeID != 0 {
-					bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
-					if errGst == nil {
-						return bin, args, pwFile, cleanup, nil
-					}
-					if cleanup != nil {
-						cleanup()
-					}
-				} else if errPortal != nil {
-					logMsg("[PORTAL] Window selection failed or cancelled: %v", errPortal)
-					return "", nil, nil, nil, errPortal
+			if gsrTarget != "" {
+				bitrateKbps := 1800
+				if fps >= 120 {
+					bitrateKbps = 2500
+				} else if fps <= 30 {
+					bitrateKbps = 1200
 				}
+				if opt.Bitrate != "" {
+					clean := strings.TrimSpace(strings.ToLower(opt.Bitrate))
+					if strings.HasSuffix(clean, "m") {
+						val, _ := strconv.ParseFloat(strings.TrimSuffix(clean, "m"), 64)
+						if val > 0 {
+							bitrateKbps = int(val * 1000)
+						}
+					} else if strings.HasSuffix(clean, "k") {
+						val, _ := strconv.Atoi(strings.TrimSuffix(clean, "k"))
+						if val > 0 {
+							bitrateKbps = val
+						}
+					}
+				}
+
+				args := []string{
+					"-w", gsrTarget,
+					"-s", opt.Resolution,
+					"-f", fmt.Sprintf("%d", fps),
+					"-k", "h264",
+					"-bm", "cbr",
+					"-q", fmt.Sprintf("%d", bitrateKbps),
+					"-tune", "performance",
+					"-keyint", "1",
+					"-fallback-cpu-encoding", "yes",
+					"-restore-portal-session", "no",
+					"-c", "mpegts",
+					"-o", targetURL,
+				}
+				return p, args, nil, nil, nil
 			}
 		}
 	}
 
 	// 3. If GNOME Mutter compositor is available (for Screen 1 / Monitors) -> direct popup-less full monitor capture
-	if isMutterAvailable() {
+	if !isWindowTarget && isMutterAvailable() {
 		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 			connector := ""
 			if strings.HasPrefix(targetID, "monitor:") {
@@ -1285,12 +1351,18 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 				}
 			}
 		}
-	} else if isWayland() {
+	} else if wayland {
 		// 3b. On KDE Plasma / non-GNOME Wayland compositors -> capture Screen via Desktop Portal
 		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 			defer cancel()
-			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, 3, onCancel...) // 3 = Screen or Window
+			sourceType := uint32(1) // 1 = Screen only
+			if isWindowTarget {
+				sourceType = 2
+			} else if targetID == "portal" {
+				sourceType = 3
+			}
+			nodeID, pwFile, cleanup, errPortal := RequestPortalScreenCast(ctx, sourceType, onCancel...)
 			if errPortal == nil && nodeID != 0 {
 				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
 				if errGst == nil {
@@ -1304,7 +1376,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 	}
 
 	// 4. Try wf-recorder on Wayland / wlroots (Sway, Hyprland, Wayfire)
-	if isWayland() {
+	if wayland {
 		if p, err := FindExecutable("wf-recorder"); err == nil {
 			var wfArgs []string
 			if strings.HasPrefix(targetID, "monitor:") {
@@ -1358,6 +1430,19 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 					"-window_id", parts[0],
 					"-i", display,
 				)
+			} else {
+				inputArgs = append(inputArgs, "-i", display)
+			}
+		} else if strings.HasPrefix(targetID, "app:") {
+			parts := strings.Split(strings.TrimPrefix(targetID, "app:"), ":")
+			winID := ""
+			if len(parts) > 0 {
+				if pid, err := strconv.Atoi(parts[0]); err == nil {
+					winID = findX11WindowByPID(pid)
+				}
+			}
+			if winID != "" {
+				inputArgs = append(inputArgs, "-window_id", winID, "-i", display)
 			} else {
 				inputArgs = append(inputArgs, "-i", display)
 			}

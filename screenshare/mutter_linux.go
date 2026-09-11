@@ -274,7 +274,6 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("gop-size=%d", gopSize),
 			"repeat-sequence-header=true",
-			"intra-refresh=true", // Periyodik intra-refresh: Trafik patlamalarını ve paket kaybını önler
 		)
 	case "vaapih264enc":
 		args = append(args,
@@ -287,7 +286,8 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		args = append(args,
 			"!", "vulkanupload",
 			"!", "vulkanh264enc",
-			fmt.Sprintf("bitrate=%d", bitrateKbps*1000),
+			"rate-control=cbr",
+			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("idr-period=%d", gopSize),
 		)
 	default: // "x264enc"

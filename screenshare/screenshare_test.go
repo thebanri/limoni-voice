@@ -108,30 +108,108 @@ func TestListWindowsLinuxTargets(t *testing.T) {
 }
 
 func TestBuildLinuxBroadcastCommand(t *testing.T) {
-	opts := BroadcastOptions{
-		Resolution: "1920x1080",
-		FPS:        60,
-		Bitrate:    "6M",
-	}
-
-	opts.WindowID = "desktop"
-	bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
-			t.Skipf("Skipping TestBuildLinuxBroadcastCommand on CI without screen capture tools: %v", err)
+	t.Run("DesktopTarget", func(t *testing.T) {
+		opts := BroadcastOptions{
+			Resolution: "1920x1080",
+			FPS:        60,
+			Bitrate:    "6M",
+			WindowID:   "desktop",
 		}
-		t.Fatalf("buildLinuxBroadcastCommand desktop failed: %v", err)
-	}
-	if pwFile != nil {
-		defer pwFile.Close()
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	if bin == "" || len(args) == 0 {
-		t.Fatal("expected non-empty bin and args")
-	}
-	t.Logf("Built desktop broadcast command: %s %v", bin, args)
+		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
+				t.Skipf("Skipping on CI without screen capture tools: %v", err)
+			}
+			t.Fatalf("buildLinuxBroadcastCommand desktop failed: %v", err)
+		}
+		if pwFile != nil {
+			defer pwFile.Close()
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if bin == "" || len(args) == 0 {
+			t.Fatal("expected non-empty bin and args")
+		}
+		t.Logf("Built desktop broadcast command: %s %v", bin, args)
+	})
+
+	t.Run("MonitorTarget", func(t *testing.T) {
+		opts := BroadcastOptions{
+			Resolution: "1920x1080",
+			FPS:        60,
+			Bitrate:    "6M",
+			WindowID:   "monitor:DP-1:1920:1080:1920:0",
+		}
+		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
+				t.Skipf("Skipping on CI without screen capture tools: %v", err)
+			}
+			t.Fatalf("buildLinuxBroadcastCommand monitor failed: %v", err)
+		}
+		if pwFile != nil {
+			defer pwFile.Close()
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if strings.Contains(bin, "gpu-screen-recorder") {
+			foundDP1 := false
+			for i, a := range args {
+				if a == "-w" && i+1 < len(args) && args[i+1] == "DP-1" {
+					foundDP1 = true
+					break
+				}
+			}
+			if !foundDP1 {
+				t.Fatalf("expected gpu-screen-recorder -w DP-1, got args: %v", args)
+			}
+		}
+		t.Logf("Built monitor broadcast command: %s %v", bin, args)
+	})
+
+	t.Run("WaylandAppTarget", func(t *testing.T) {
+		if !isWayland() {
+			t.Skip("Skipping WaylandAppTarget on non-Wayland environment")
+		}
+		opts := BroadcastOptions{
+			Resolution: "1920x1080",
+			FPS:        60,
+			Bitrate:    "6M",
+			WindowID:   "app:1416:zen",
+		}
+		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
+				t.Skipf("Skipping on CI without screen capture tools: %v", err)
+			}
+			t.Fatalf("buildLinuxBroadcastCommand app failed: %v", err)
+		}
+		if pwFile != nil {
+			defer pwFile.Close()
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if strings.Contains(bin, "gpu-screen-recorder") {
+			t.Fatalf("FATAL: gpu-screen-recorder was selected for Wayland window target: %s %v", bin, args)
+		}
+		if !strings.Contains(bin, "gst-launch-1.0") {
+			t.Fatalf("expected gst-launch-1.0 for Wayland window portal capture, got: %s", bin)
+		}
+		foundPipewire := false
+		for _, a := range args {
+			if strings.Contains(a, "pipewiresrc") {
+				foundPipewire = true
+				break
+			}
+		}
+		if !foundPipewire {
+			t.Fatalf("expected pipewiresrc in gst args, got: %v", args)
+		}
+		t.Logf("Built Wayland app broadcast command: %s %v", bin, args)
+	})
 }
 
 func TestWatchPIDLiveness(t *testing.T) {
