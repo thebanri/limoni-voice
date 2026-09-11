@@ -767,6 +767,9 @@ func (n *P2PNode) HostRoom(roomCode string) {
 	hopCancel := make(chan struct{})
 	n.hopCancel = hopCancel
 
+	n.IsLocked = false
+	n.RoomPIN = ""
+
 	n.IsConnected = true
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
@@ -925,6 +928,7 @@ func (n *P2PNode) CancelJoin() {
 		n.Connecting = false
 		n.aead = nil
 		n.RoomCode = ""
+		n.RoomPIN = ""
 		n.log("Room join request cancelled.")
 	}
 }
@@ -962,6 +966,8 @@ func (n *P2PNode) LeaveRoom() {
 	n.HostNick = ""
 	n.RoomCode = ""
 	n.RoomKey = nil
+	n.IsLocked = false
+	n.RoomPIN = ""
 	n.nextHopTime = time.Time{}
 	n.lastHopTime = time.Time{}
 	peers := make([]*PeerInfo, 0, len(n.Peers))

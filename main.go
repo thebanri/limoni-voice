@@ -640,6 +640,8 @@ func main() {
 				pinVal = "1234"
 			}
 			node.LockRoom(pinVal)
+		} else {
+			node.UnlockRoom()
 		}
 		room = NewRoomView()
 		currentScreen = ScreenRoom
@@ -687,6 +689,9 @@ func main() {
 		audio.PlaySound(SoundLeave)
 		node.LeaveRoom()
 		lobby.CurrentCode = GenerateRoomCode()
+		lobby.IsPinProtected = false
+		lobby.PinState.SetValue("")
+		lobby.ActiveInput = 2
 		currentScreen = ScreenLobby
 		closeLeaveModal()
 	}
@@ -1477,6 +1482,7 @@ func main() {
 									lobby.ActiveInput = 3
 									lobby.SetToast("PIN Protection Enabled (4 Digits)")
 								} else {
+									lobby.PinState.SetValue("")
 									lobby.ActiveInput = 2
 									lobby.SetToast("PIN Protection Disabled")
 								}

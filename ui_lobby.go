@@ -244,7 +244,6 @@ func NewLobbyView() *LobbyView {
 
 	codeState := widgets.NewTextInputState()
 	pinState := widgets.NewTextInputState()
-	pinState.SetValue("1234")
 
 	return &LobbyView{
 		MicModel:        loadMicrophoneModel(),
@@ -520,7 +519,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	})
 
 	// PIN Protection Checkbox row
-	pinCheckStr := "[ ] PIN / Password Protected (4 Digits)"
+	pinCheckStr := "[ ] PIN Protected (4 Digits)"
 	pinCheckStyle := cell.Style{Fg: theme.TextMuted, Bg: hostBgStyle.Bg}
 	if l.IsPinProtected {
 		pinCheckStr = "[X] PIN Protected (4 Digits):"
@@ -539,6 +538,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			}
 			l.ActiveInput = 3
 		} else {
+			l.PinState.SetValue("")
 			l.ActiveInput = 2
 		}
 	})

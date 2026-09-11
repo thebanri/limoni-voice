@@ -3052,6 +3052,63 @@ func TestRelayTokenConfig(t *testing.T) {
 	}
 }
 
+func TestLobbyPinToggleAndHostHygiene(t *testing.T) {
+	lobby := NewLobbyView()
+	if lobby.IsPinProtected {
+		t.Fatalf("Expected LobbyView.IsPinProtected to start as false")
+	}
+	if lobby.PinState.Value() != "" {
+		t.Fatalf("Expected initial PinState to be empty, got %q", lobby.PinState.Value())
+	}
+
+	// 1. User checks PIN protection and enters PIN
+	lobby.IsPinProtected = true
+	lobby.PinState.SetValue("5678")
+	if !lobby.IsPinProtected || lobby.PinState.Value() != "5678" {
+		t.Fatalf("Failed to enable PIN protection in lobby")
+	}
+
+	// 2. User unchecks PIN protection
+	lobby.IsPinProtected = false
+	lobby.PinState.SetValue("")
+	lobby.ActiveInput = 2
+
+	// 3. Node hosts room based on unchecked lobby
+	audio := NewAudioEngine()
+	node := NewP2PNode("host_node_1", "HostUser", audio)
+	defer node.Close()
+
+	node.HostRoom(lobby.CurrentCode)
+	if lobby.IsPinProtected {
+		node.LockRoom(lobby.PinState.Value())
+	} else {
+		node.UnlockRoom()
+	}
+
+	if node.IsLocked {
+		t.Fatalf("Expected room to NOT be locked when lobby.IsPinProtected is false")
+	}
+	if node.RoomPIN != "" {
+		t.Fatalf("Expected room PIN to be empty when lobby.IsPinProtected is false, got %q", node.RoomPIN)
+	}
+
+	// 4. Verify that leaving and re-hosting clears any lingering lock state
+	node.LockRoom("1234")
+	if !node.IsLocked || node.RoomPIN != "1234" {
+		t.Fatalf("Failed to lock room with PIN 1234")
+	}
+
+	node.LeaveRoom()
+	if node.IsLocked || node.RoomPIN != "" {
+		t.Fatalf("LeaveRoom did not reset IsLocked (%v) or RoomPIN (%q)", node.IsLocked, node.RoomPIN)
+	}
+
+	node.HostRoom("clean_room")
+	if node.IsLocked || node.RoomPIN != "" {
+		t.Fatalf("HostRoom did not reset IsLocked (%v) or RoomPIN (%q)", node.IsLocked, node.RoomPIN)
+	}
+}
+
 
 
 
