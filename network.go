@@ -36,7 +36,7 @@ import (
 const MaxPeers = 4
 
 // DefaultRelayURL is the default public WebSocket relay server URL
-const DefaultRelayURL = "wss://limoni-voice-production.up.railway.app/ws"
+const DefaultRelayURL = "wss://relay.thebanri.dpdns.org/ws"
 
 // File transfer limits preventing DoS and memory exhaustion
 const (

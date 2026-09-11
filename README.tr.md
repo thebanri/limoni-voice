@@ -341,7 +341,7 @@ export LIMONI_LAN_ONLY=1
 
 | Parametre | Ortam Değişkeni | Varsayılan | Açıklama |
 |-----------|-----------------|------------|----------|
-| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Kendi relay sunucunuzun WebSocket adresi |
+| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://relay.thebanri.dpdns.org/ws` | Kendi relay sunucunuzun WebSocket adresi |
 | `--relay-token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Parola korumalı relay sunucuları için kimlik doğrulama anahtarı |
 | `--token <token>` | `LIMONI_RELAY_TOKEN` | `""` | `--relay-token` parametresinin takma adı |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Sadece yerel ağ modunu zorlar (internet relay'i kapatır) |

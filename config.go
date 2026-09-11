@@ -78,11 +78,11 @@ func ResetAppConfig() error {
 }
 
 // NormalizeRelayURL converts user-entered URL, web link, or raw domain into a valid WebSocket relay URL.
-// If empty, "default", or "reset", it returns DefaultRelayURL (official Railway relay).
+// If empty, "default", or "reset", it returns DefaultRelayURL (official relay).
 // Explicit LAN keywords ("none", "off", "lan", "local") return "" (LAN Mode).
 // Examples:
-//   - "" -> "wss://limoni-voice-production.up.railway.app/ws"
-//   - "default" -> "wss://limoni-voice-production.up.railway.app/ws"
+//   - "" -> "wss://relay.thebanri.dpdns.org/ws"
+//   - "default" -> "wss://relay.thebanri.dpdns.org/ws"
 //   - "none" / "off" / "lan" -> ""
 //   - "voice.thebanri.dpdns.org" -> "wss://voice.thebanri.dpdns.org/ws"
 //   - "https://voice.thebanri.dpdns.org" -> "wss://voice.thebanri.dpdns.org/ws"

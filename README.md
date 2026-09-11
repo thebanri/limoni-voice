@@ -340,7 +340,7 @@ export LIMONI_LAN_ONLY=1
 
 | Flag | Env Variable | Default | Description |
 |------|--------------|---------|-------------|
-| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://limoni-voice-production.up.railway.app/ws` | Custom WebSocket relay URL for self-hosted servers |
+| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://relay.thebanri.dpdns.org/ws` | Custom WebSocket relay URL for self-hosted servers |
 | `--relay-token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Authentication token for password-protected relay servers |
 | `--token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Alias for `--relay-token` |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Force LAN-only offline mode (disables internet relay) |
