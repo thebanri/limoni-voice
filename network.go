@@ -1149,8 +1149,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		default:
 		}
 
-		wsPriorityCh := make(chan []byte, 256)
-		wsVideoCh := make(chan []byte, 512)
+		wsPriorityCh := make(chan []byte, 128)
+		wsVideoCh := make(chan []byte, 1024)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -2617,14 +2617,10 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		select {
 		case wsVideoCh <- data:
 		default:
-			// If channel is backlogged beyond capacity (512), drain down to 256
-		drainLoop:
-			for len(wsVideoCh) > 256 {
-				select {
-				case <-wsVideoCh:
-				default:
-					break drainLoop
-				}
+			// If channel is momentarily full, drop oldest single packet non-blocking to maintain live streaming
+			select {
+			case <-wsVideoCh:
+			default:
 			}
 			select {
 			case wsVideoCh <- data:
@@ -3608,40 +3604,35 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 		return
 	}
 
-	n.mu.Lock()
-	if peer, exists := n.Peers[senderID]; exists {
-		peer.LastSeen = time.Now()
-		peer.IsSharingScreen = true
-	} else if senderID != "" {
-		for _, p := range n.Peers {
-			if p.Nickname == nickname {
-				p.LastSeen = time.Now()
-				p.IsSharingScreen = true
-			}
-		}
-	}
-
+	n.mu.RLock()
 	watching := n.IsWatchingScreen
 	watchingPeerID := n.WatchingPeerID
+	playerCh := n.videoPlayerCh
+	peer, exists := n.Peers[senderID]
+	needsUpdate := false
+	if exists && (time.Since(peer.LastSeen) > 1*time.Second || !peer.IsSharingScreen) {
+		needsUpdate = true
+	}
+	n.mu.RUnlock()
+
+	if needsUpdate {
+		n.mu.Lock()
+		if p, ok := n.Peers[senderID]; ok {
+			p.LastSeen = time.Now()
+			p.IsSharingScreen = true
+		}
+		n.mu.Unlock()
+	}
 
 	// If we are watching a specific peer, ignore stream packets from other broadcasters
 	if watching && watchingPeerID != "" && senderID != "" && senderID != watchingPeerID {
-		n.mu.Unlock()
 		return
 	}
-
-	n.lastVideoChunkTime = time.Now()
-	n.mu.Unlock()
 
 	readyChunks := n.videoReorder.Push(seq, payload)
 	if len(readyChunks) == 0 {
 		return
 	}
-
-	n.mu.RLock()
-	watching = n.IsWatchingScreen
-	playerCh := n.videoPlayerCh
-	n.mu.RUnlock()
 
 	// Non-blocking asynchronous dispatch to dedicated player pump.
 	// Network receive loops (relay WebSocket & UDP) NEVER block on player TCP writes!
@@ -3651,15 +3642,11 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 				select {
 				case playerCh <- chunk:
 				default:
-					// Dedicated pump channel full (player backlogged beyond 512):
-					// Drain down to 256 so the player ALWAYS receives fresh live frames!
-				drainPlayer:
-					for len(playerCh) > 256 {
-						select {
-						case <-playerCh:
-						default:
-							break drainPlayer
-						}
+					// Dedicated pump channel full (player backlogged beyond 1024):
+					// Non-blocking drop of oldest single packet to keep stream moving without GOP destruction
+					select {
+					case <-playerCh:
+					default:
 					}
 					select {
 					case playerCh <- chunk:
@@ -3711,7 +3698,7 @@ func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, canc
 				select {
 				case nextChunk, ok := <-playerCh:
 					if !ok {
-						_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+						_ = conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 						_, _ = batch.WriteTo(conn)
 						return
 					}
@@ -3723,7 +3710,7 @@ func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, canc
 				}
 			}
 
-			_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+			_ = conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 			if _, err := batch.WriteTo(conn); err != nil {
 				n.debugLog(fmt.Sprintf("⚠️ [WATCH] Player TCP write error: %v", err))
 				return
@@ -3962,7 +3949,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		opt = screenshare.DefaultReceiverOptions(fps)
 	}
 	n.videoReorder.Reset()
-	playerCh := make(chan []byte, 512)
+	playerCh := make(chan []byte, 1024)
 	cancelCh := make(chan struct{})
 	n.videoPlayerCh = playerCh
 	n.videoPlayerCancel = cancelCh

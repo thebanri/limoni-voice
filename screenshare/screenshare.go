@@ -1292,6 +1292,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			"-q", fmt.Sprintf("%d", bitrateKbps),
 			"-tune", "performance",
 			"-keyint", "2",
+			"-fallback-cpu-encoding", "yes",
 			"-restore-portal-session", "no",
 			"-c", "mpegts",
 			"-o", targetURL,
@@ -1874,10 +1875,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 				"--vd-lavc-threads=0",
 				"--cache=no",
 				"--demuxer-readahead-secs=0",
-				"--stream-buffer-size=256k",
-				"--demuxer-max-bytes=2048k",
+				"--stream-buffer-size=4k",
 				"--framedrop=vo",
-				"--hwdec=auto",
+				"--hwdec=auto-safe",
 				"--vd-lavc-show-all=no",
 				"--video-sync=desync",
 				"--force-window=yes",
@@ -1890,15 +1890,15 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 				fmt.Sprintf("--osd-playing-msg=Limoni Voice Stream (%d FPS) - Press 'Shift+I' for live stats", opt.FPS),
 				"--cursor-autohide=1000",
 				"--demuxer-lavf-format=mpegts",
-				"--demuxer-lavf-analyzeduration=1.0",
-				"--demuxer-lavf-probesize=524288",
+				"--demuxer-lavf-analyzeduration=0.1",
+				"--demuxer-lavf-probesize=32768",
 				"--title=" + windowTitle,
 				"--autofit=65%x65%",
 			}
 			if runtime.GOOS == "windows" {
 				args = append(args, "--d3d11-sync-interval=0", "--swapchain-depth=1")
 			} else {
-				args = append(args, "--vo=gpu-next,gpu,sdl,xv,x11")
+				args = append(args, "--vo=gpu-next,gpu,wlshm,sdl")
 			}
 			if len(opt.CustomMpvFlags) > 0 {
 				args = append(args, opt.CustomMpvFlags...)
@@ -1917,6 +1917,12 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 				return nil, errors.New("'ffplay' executable not found")
 			}
 		}
+		threads := runtime.NumCPU()
+		if threads > 8 {
+			threads = 8
+		} else if threads < 2 {
+			threads = 2
+		}
 		args = []string{
 			"-an",
 			"-sn",
@@ -1924,9 +1930,10 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-flags", "low_delay",
 			"-fflags", "nobuffer+flush_packets",
 			"-framedrop",
-			"-sync", "video",
-			"-probesize", "524288",
-			"-analyzeduration", "1000000",
+			"-sync", "ext",
+			"-probesize", "32768",
+			"-analyzeduration", "0",
+			"-threads", fmt.Sprintf("%d", threads),
 			"-f", "mpegts",
 			"-alwaysontop",
 			"-window_title", windowTitle,
