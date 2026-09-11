@@ -3,6 +3,7 @@
 package screenshare
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -13,9 +14,10 @@ import (
 )
 
 var (
-	modWinUser32  = syscall.NewLazyDLL("user32.dll")
-	modWinGdi32   = syscall.NewLazyDLL("gdi32.dll")
-	modWinDwmapi  = syscall.NewLazyDLL("dwmapi.dll")
+	modWinUser32 = syscall.NewLazyDLL("user32.dll")
+	modWinGdi32  = syscall.NewLazyDLL("gdi32.dll")
+	modWinDwmapi = syscall.NewLazyDLL("dwmapi.dll")
+	modWinMm     = syscall.NewLazyDLL("winmm.dll")
 
 	procWinGetDC                  = modWinUser32.NewProc("GetDC")
 	procWinReleaseDC              = modWinUser32.NewProc("ReleaseDC")
@@ -44,6 +46,9 @@ var (
 	procWinSetBrushOrgEx          = modWinGdi32.NewProc("SetBrushOrgEx")
 
 	procWinDwmGetWindowAttribute  = modWinDwmapi.NewProc("DwmGetWindowAttribute")
+
+	procWinTimeBeginPeriod        = modWinMm.NewProc("timeBeginPeriod")
+	procWinTimeEndPeriod          = modWinMm.NewProc("timeEndPeriod")
 )
 
 const (
@@ -58,6 +63,7 @@ const (
 	SW_RESTORE                                 = 9
 	SRCCOPY                                    = 0x00CC0020
 	BLACKNESS                                  = 0x00000042
+	COLORONCOLOR                               = 3
 	HALFTONE                                   = 4
 )
 
@@ -168,8 +174,15 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int, outHeight int, outPipe io.WriteCloser) error {
 	defer outPipe.Close()
 
-	if fps <= 0 || fps > 60 {
+	if procWinTimeBeginPeriod.Find() == nil {
+		procWinTimeBeginPeriod.Call(1)
+		defer procWinTimeEndPeriod.Call(1)
+	}
+
+	if fps <= 0 {
 		fps = 60
+	} else if fps > 120 {
+		fps = 120
 	}
 	if outWidth <= 0 {
 		outWidth = 1920
@@ -215,7 +228,7 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 
 	procWinSelectObject.Call(hdcOutMem, hOutBitmap)
 	if procWinSetStretchBltMode.Find() == nil {
-		procWinSetStretchBltMode.Call(hdcOutMem, uintptr(HALFTONE))
+		procWinSetStretchBltMode.Call(hdcOutMem, uintptr(COLORONCOLOR))
 	}
 
 	// Dynamic window capture DC & Bitmap (adapted dynamically when window is resized)
@@ -257,6 +270,9 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 	lastGoodFrame := make([]byte, frameSize)
 	hasValidFrame := false
 
+	bufWriter := bufio.NewWriterSize(outPipe, 256*1024)
+	defer bufWriter.Flush()
+
 	defer func() {
 		if curWinBitmap != 0 {
 			procWinDeleteObject.Call(uintptr(curWinBitmap))
@@ -290,14 +306,15 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 				// Window is minimized - preserve and send the last valid frame
 				// so viewers never get a black void!
 				if hasValidFrame {
-					if _, err := outPipe.Write(lastGoodFrame); err != nil {
+					if _, err := bufWriter.Write(lastGoodFrame); err != nil {
 						return err
 					}
 				} else {
-					if _, err := outPipe.Write(rawBytes); err != nil {
+					if _, err := bufWriter.Write(rawBytes); err != nil {
 						return err
 					}
 				}
+				_ = bufWriter.Flush()
 				continue
 			}
 
@@ -402,7 +419,10 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 			hasValidFrame = true
 
 			// 6. Write to FFmpeg rawvideo pipe
-			if _, err := outPipe.Write(rawBytes); err != nil {
+			if _, err := bufWriter.Write(rawBytes); err != nil {
+				return err
+			}
+			if err := bufWriter.Flush(); err != nil {
 				return err
 			}
 		}

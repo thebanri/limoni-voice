@@ -244,3 +244,86 @@ func TestWatchPIDLiveness(t *testing.T) {
 	}
 }
 
+func TestBuildWindowsEncoderArgs(t *testing.T) {
+	encoders := []string{"h264_nvenc", "h264_amf", "h264_qsv", "libx264"}
+	for _, enc := range encoders {
+		args := buildWindowsEncoderArgs(enc, "2.5M", "3.2M", "800k", 60)
+		if len(args) == 0 {
+			t.Fatalf("expected non-empty encoder args for %s", enc)
+		}
+		foundEnc := false
+		for i, a := range args {
+			if a == "-c:v" && i+1 < len(args) && args[i+1] == enc {
+				foundEnc = true
+				break
+			}
+		}
+		if !foundEnc {
+			t.Fatalf("expected -c:v %s in args, got: %v", enc, args)
+		}
+		t.Logf("Encoder %s args: %v", enc, args)
+	}
+}
+
+func TestBuildWindowsBroadcastArgs(t *testing.T) {
+	t.Run("DesktopDDAOrGDI", func(t *testing.T) {
+		opt := BroadcastOptions{
+			Resolution: "1920x1080",
+			FPS:        120,
+			Bitrate:    "2.5M",
+			WindowID:   "desktop",
+		}
+		args := buildWindowsBroadcastArgs(opt, "udp://127.0.0.1:50100", "ffmpeg", 0, 0, 0)
+		if len(args) == 0 {
+			t.Fatal("expected non-empty args for Windows desktop broadcast")
+		}
+		foundMpegts := false
+		for i, a := range args {
+			if a == "-f" && i+1 < len(args) && args[i+1] == "mpegts" {
+				foundMpegts = true
+				break
+			}
+		}
+		if !foundMpegts {
+			t.Fatalf("expected mpegts format in args: %v", args)
+		}
+		t.Logf("Windows desktop broadcast args: %v", args)
+	})
+
+	t.Run("MonitorIndexSupport", func(t *testing.T) {
+		opt := BroadcastOptions{
+			Resolution: "1920x1080",
+			FPS:        60,
+			WindowID:   "monitor:1:1920:0:1920:1080",
+		}
+		args := buildWindowsBroadcastArgs(opt, "udp://127.0.0.1:50100", "ffmpeg", 0, 0, 0)
+		if len(args) == 0 {
+			t.Fatal("expected non-empty args for Windows monitor broadcast")
+		}
+		t.Logf("Windows monitor 1 broadcast args: %v", args)
+	})
+
+	t.Run("WindowCapturePipe", func(t *testing.T) {
+		opt := BroadcastOptions{
+			Resolution: "1280x720",
+			FPS:        60,
+			WindowID:   "hwnd:12345:Notepad",
+		}
+		args := buildWindowsBroadcastArgs(opt, "udp://127.0.0.1:50100", "ffmpeg", 12345, 1280, 720)
+		if len(args) == 0 {
+			t.Fatal("expected non-empty args for Windows window broadcast")
+		}
+		foundPipe := false
+		for i, a := range args {
+			if a == "-i" && i+1 < len(args) && args[i+1] == "pipe:0" {
+				foundPipe = true
+				break
+			}
+		}
+		if !foundPipe {
+			t.Fatalf("expected -i pipe:0 in window capture args, got: %v", args)
+		}
+		t.Logf("Windows window capture args: %v", args)
+	})
+}
+

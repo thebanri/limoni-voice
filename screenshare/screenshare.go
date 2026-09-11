@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -61,10 +62,10 @@ func ListWindows() []WindowInfo {
 		psScript := `
 		Add-Type -AssemblyName System.Windows.Forms
 		$screens = [System.Windows.Forms.Screen]::AllScreens
-		$idx = 1
+		$idx = 0
 		foreach ($s in $screens) {
 			$p = if ($s.Primary) {" (Primary)"} else {""}
-			"SCREEN|$($s.Bounds.X)|$($s.Bounds.Y)|$($s.Bounds.Width)|$($s.Bounds.Height)|Screen $idx$p ($($s.Bounds.Width)x$($s.Bounds.Height))"
+			"SCREEN|$idx|$($s.Bounds.X)|$($s.Bounds.Y)|$($s.Bounds.Width)|$($s.Bounds.Height)|Screen $($idx+1)$p ($($s.Bounds.Width)x$($s.Bounds.Height))"
 			$idx++
 		}
 		if ($screens.Count -gt 1) {
@@ -93,7 +94,17 @@ func ListWindows() []WindowInfo {
 				}
 				if parts[0] == "SCREEN" {
 					sub := strings.Split(parts[1], "|")
-					if len(sub) >= 5 {
+					if len(sub) >= 6 {
+						sIdx, x, y, w, h, name := sub[0], sub[1], sub[2], sub[3], sub[4], sub[5]
+						id := fmt.Sprintf("monitor:%s:%s:%s:%s:%s", sIdx, x, y, w, h)
+						if x == "0" && y == "0" && sIdx == "0" {
+							id = "desktop"
+						}
+						screenTargets = append(screenTargets, WindowInfo{
+							ID:    id,
+							Title: "[Screen] " + name,
+						})
+					} else if len(sub) >= 5 {
 						x, y, w, h, name := sub[0], sub[1], sub[2], sub[3], sub[4]
 						id := fmt.Sprintf("monitor:%s:%s:%s:%s", x, y, w, h)
 						if x == "0" && y == "0" {
@@ -1505,6 +1516,278 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 	return "", nil, nil, nil, errors.New("required screen capture tools ('gpu-screen-recorder', 'gst-launch-1.0' or 'ffmpeg') not found on system")
 }
 
+var (
+	winEncoderOnce     sync.Once
+	winSelectedEncoder string
+
+	winDDAOnce      sync.Once
+	winDDAAvailable bool
+)
+
+func probeWindowsEncoder(ffmpegBin string, encoder string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpegBin, "-y", "-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.01",
+		"-c:v", encoder, "-f", "null", "-")
+	return cmd.Run() == nil
+}
+
+func isWindowsDDAAvailable(ffmpegBin string) bool {
+	winDDAOnce.Do(func() {
+		if runtime.GOOS != "windows" && !testing.Testing() {
+			winDDAAvailable = false
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, ffmpegBin, "-y", "-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30:draw_mouse=0,hwdownload,format=bgra",
+			"-vframes", "1", "-f", "null", "-")
+		if cmd.Run() == nil {
+			winDDAAvailable = true
+			logMsg("[SCREENSHARE] Windows DXGI Desktop Duplication (ddagrab) active: 0ms GPU capture")
+		} else {
+			winDDAAvailable = false
+			logMsg("[SCREENSHARE] Windows DXGI Desktop Duplication unavailable, falling back to gdigrab")
+		}
+	})
+	return winDDAAvailable
+}
+
+func getBestWindowsEncoder(ffmpegBin string) string {
+	winEncoderOnce.Do(func() {
+		if runtime.GOOS != "windows" && !testing.Testing() {
+			winSelectedEncoder = "libx264"
+			return
+		}
+		// 1. Try NVIDIA NVENC (Fastest, zero CPU overhead)
+		if probeWindowsEncoder(ffmpegBin, "h264_nvenc") {
+			winSelectedEncoder = "h264_nvenc"
+			logMsg("[SCREENSHARE] Windows hardware encoder detected: NVIDIA NVENC (h264_nvenc)")
+			return
+		}
+		// 2. Try AMD AMF
+		if probeWindowsEncoder(ffmpegBin, "h264_amf") {
+			winSelectedEncoder = "h264_amf"
+			logMsg("[SCREENSHARE] Windows hardware encoder detected: AMD AMF (h264_amf)")
+			return
+		}
+		// 3. Try Intel QuickSync (QSV)
+		if probeWindowsEncoder(ffmpegBin, "h264_qsv") {
+			winSelectedEncoder = "h264_qsv"
+			logMsg("[SCREENSHARE] Windows hardware encoder detected: Intel QuickSync (h264_qsv)")
+			return
+		}
+		// 4. Software CPU fallback
+		winSelectedEncoder = "libx264"
+		logMsg("[SCREENSHARE] Windows encoder active: CPU multi-core (libx264)")
+	})
+	return winSelectedEncoder
+}
+
+func buildWindowsEncoderArgs(encoder string, winBitrate, winMaxRate, winBufSize string, winGop int) []string {
+	switch encoder {
+	case "h264_nvenc":
+		return []string{
+			"-c:v", "h264_nvenc",
+			"-preset", "p1",
+			"-tune", "ll",
+			"-rc", "cbr",
+			"-b:v", winBitrate,
+			"-maxrate", winMaxRate,
+			"-bufsize", winBufSize,
+			"-g", fmt.Sprintf("%d", winGop),
+			"-bf", "0",
+			"-forced-idr", "1",
+			"-repeat-headers", "1",
+			"-delay", "0",
+		}
+	case "h264_amf":
+		return []string{
+			"-c:v", "h264_amf",
+			"-quality", "speed",
+			"-rc", "cbr",
+			"-b:v", winBitrate,
+			"-maxrate", winMaxRate,
+			"-bufsize", winBufSize,
+			"-g", fmt.Sprintf("%d", winGop),
+			"-bf", "0",
+			"-header_insertion_mode", "gop",
+		}
+	case "h264_qsv":
+		return []string{
+			"-c:v", "h264_qsv",
+			"-preset", "veryfast",
+			"-b:v", winBitrate,
+			"-maxrate", winMaxRate,
+			"-bufsize", winBufSize,
+			"-g", fmt.Sprintf("%d", winGop),
+			"-bf", "0",
+		}
+	default: // libx264
+		return []string{
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-tune", "zerolatency",
+			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
+			"-crf", "22",
+			"-b:v", winBitrate,
+			"-maxrate", winMaxRate,
+			"-bufsize", winBufSize,
+			"-g", fmt.Sprintf("%d", winGop),
+			"-bf", "0",
+		}
+	}
+}
+
+func buildWindowsBroadcastArgs(opt BroadcastOptions, targetURL string, ffmpegBin string, targetHwnd uintptr, winWidth, winHeight int) []string {
+	scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
+	if scaleRes == "" {
+		scaleRes = "1920:1080"
+	}
+	scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p", scaleRes)
+
+	winFps := opt.FPS
+	if winFps <= 0 {
+		winFps = 60
+	}
+	winGop := winFps
+	if winGop > 120 {
+		winGop = 120
+	}
+	winBitrate := "1.8M"
+	winMaxRate := "2.4M"
+	winBufSize := "600k"
+	if winFps >= 120 {
+		winBitrate = "2.5M"
+		winMaxRate = "3.2M"
+		winBufSize = "800k"
+	} else if winFps <= 30 {
+		winBitrate = "1.2M"
+		winMaxRate = "1.6M"
+		winBufSize = "400k"
+	}
+	if opt.Bitrate != "" {
+		winBitrate = opt.Bitrate
+		winMaxRate = opt.Bitrate
+	}
+
+	encoder := getBestWindowsEncoder(ffmpegBin)
+	encArgs := buildWindowsEncoderArgs(encoder, winBitrate, winMaxRate, winBufSize, winGop)
+
+	var args []string
+	if targetHwnd != 0 {
+		if winWidth <= 0 {
+			winWidth = 1920
+		}
+		if winHeight <= 0 {
+			winHeight = 1080
+		}
+		args = []string{
+			"-fflags", "nobuffer+flush_packets",
+			"-f", "rawvideo",
+			"-pixel_format", "bgra",
+			"-video_size", fmt.Sprintf("%dx%d", winWidth, winHeight),
+			"-framerate", fmt.Sprintf("%d", winFps),
+			"-i", "pipe:0",
+			"-vf", scaleOpt,
+		}
+		args = append(args, encArgs...)
+		args = append(args,
+			"-pix_fmt", "yuv420p",
+			"-bsf:v", "dump_extra",
+			"-f", "mpegts",
+			"-mpegts_flags", "+latm+pat_pmt_at_frames",
+			"-pcr_period", "20",
+			targetURL,
+		)
+		return args
+	}
+
+	// Desktop / Monitor capture
+	outIdx := 0
+	offsetX := "0"
+	offsetY := "0"
+	sizeW := ""
+	sizeH := ""
+
+	if strings.HasPrefix(opt.WindowID, "monitor:") {
+		mParts := strings.Split(strings.TrimPrefix(opt.WindowID, "monitor:"), ":")
+		if len(mParts) >= 5 {
+			// Format: monitor:<idx>:<x>:<y>:<w>:<h>
+			if idxVal, err := strconv.Atoi(mParts[0]); err == nil && idxVal >= 0 {
+				outIdx = idxVal
+			}
+			offsetX, offsetY = mParts[1], mParts[2]
+			sizeW, sizeH = mParts[3], mParts[4]
+		} else if len(mParts) >= 4 {
+			// Format: monitor:<x>:<y>:<w>:<h>
+			offsetX, offsetY = mParts[0], mParts[1]
+			sizeW, sizeH = mParts[2], mParts[3]
+		}
+	}
+
+	if isWindowsDDAAvailable(ffmpegBin) {
+		ddaInput := fmt.Sprintf("ddagrab=output_idx=%d:framerate=%d:draw_mouse=1,hwdownload,format=bgra", outIdx, winFps)
+		args = []string{
+			"-fflags", "nobuffer+flush_packets",
+			"-f", "lavfi",
+			"-i", ddaInput,
+			"-vf", scaleOpt,
+		}
+		args = append(args, encArgs...)
+		args = append(args,
+			"-pix_fmt", "yuv420p",
+			"-bsf:v", "dump_extra",
+			"-f", "mpegts",
+			"-mpegts_flags", "+latm+pat_pmt_at_frames",
+			"-pcr_period", "20",
+			targetURL,
+		)
+		return args
+	}
+
+	// Fallback to gdigrab
+	inputArgs := []string{
+		"-fflags", "nobuffer+flush_packets",
+		"-thread_queue_size", "64",
+		"-probesize", "32",
+		"-analyzeduration", "0",
+		"-f", "gdigrab",
+		"-framerate", fmt.Sprintf("%d", winFps),
+		"-draw_mouse", "1",
+	}
+
+	if sizeW != "" && sizeH != "" && (offsetX != "0" || offsetY != "0") {
+		inputArgs = append(inputArgs,
+			"-offset_x", offsetX,
+			"-offset_y", offsetY,
+			"-video_size", fmt.Sprintf("%sx%s", sizeW, sizeH),
+			"-i", "desktop",
+		)
+	} else {
+		physW, physH := GetPhysicalDesktopSize()
+		if physW > 0 && physH > 0 {
+			inputArgs = append(inputArgs, "-video_size", fmt.Sprintf("%dx%d", physW, physH), "-offset_x", "0", "-offset_y", "0")
+		}
+		inputArgs = append(inputArgs, "-i", "desktop")
+	}
+
+	args = append(args, inputArgs...)
+	args = append(args, "-vf", scaleOpt)
+	args = append(args, encArgs...)
+	args = append(args,
+		"-pix_fmt", "yuv420p",
+		"-bsf:v", "dump_extra",
+		"-f", "mpegts",
+		"-mpegts_flags", "+latm+pat_pmt_at_frames",
+		"-pcr_period", "20",
+		targetURL,
+	)
+	return args
+}
+
 // StartBroadcasting starts hardware-accelerated screen capture and streams over pipe or UDP
 func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...BroadcastOptions) (*Session, error) {
 	if targetIP == "" {
@@ -1550,18 +1833,12 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 
 	case "windows":
-		// Windows desktop & window capture via FFmpeg
+		// Windows desktop & window capture via FFmpeg (DXGI Desktop Duplication & NVENC/AMF/QSV hardware acceleration)
 		p, err := FindExecutable("ffmpeg")
 		if err != nil {
 			return nil, errors.New("'ffmpeg.exe' not found. Please place 'ffmpeg.exe' next to the application or run 'winget install Gyan.FFmpeg' in PowerShell.")
 		}
 		binPath = p
-
-		scaleRes := strings.ReplaceAll(opt.Resolution, "x", ":")
-		if scaleRes == "" {
-			scaleRes = "1920:1080"
-		}
-		scaleOpt := fmt.Sprintf("scale=%s:flags=bicubic:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p", scaleRes)
 
 		if strings.HasPrefix(opt.WindowID, "hwnd:") {
 			parts := strings.SplitN(strings.TrimPrefix(opt.WindowID, "hwnd:"), ":", 2)
@@ -1569,31 +1846,6 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 				parsed, _ := strconv.ParseUint(parts[0], 10, 64)
 				targetHwnd = uintptr(parsed)
 			}
-		}
-
-		winFps := opt.FPS
-		if winFps <= 0 {
-			winFps = 60
-		}
-		winGop := winFps
-		if winGop > 120 {
-			winGop = 120
-		}
-		winBitrate := "1.8M"
-		winMaxRate := "2.4M"
-		winBufSize := "600k"
-		if winFps >= 120 {
-			winBitrate = "2.4M"
-			winMaxRate = "3.2M"
-			winBufSize = "800k"
-		} else if winFps <= 30 {
-			winBitrate = "1M"
-			winMaxRate = "1.5M"
-			winBufSize = "400k"
-		}
-		if opt.Bitrate != "" {
-			winBitrate = opt.Bitrate
-			winMaxRate = opt.Bitrate
 		}
 
 		if targetHwnd != 0 {
@@ -1612,87 +1864,9 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 			}
 			winWidth = (winWidth / 2) * 2
 			winHeight = (winHeight / 2) * 2
-
-			args = []string{
-				"-fflags", "nobuffer+flush_packets",
-				"-f", "rawvideo",
-				"-pixel_format", "bgra",
-				"-video_size", fmt.Sprintf("%dx%d", winWidth, winHeight),
-				"-framerate", fmt.Sprintf("%d", winFps),
-				"-i", "pipe:0",
-				"-vf", scaleOpt,
-				"-c:v", "libx264",
-				"-preset", "ultrafast",
-				"-tune", "zerolatency",
-				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
-				"-crf", "23",
-				"-b:v", winBitrate,
-				"-maxrate", winMaxRate,
-				"-bufsize", winBufSize,
-				"-pix_fmt", "yuv420p",
-				"-g", fmt.Sprintf("%d", winGop),
-				"-bf", "0",
-				"-bsf:v", "dump_extra",
-				"-f", "mpegts",
-				"-mpegts_flags", "+latm+pat_pmt_at_frames",
-				"-pcr_period", "20",
-				targetURL,
-			}
-		} else {
-			inputArgs := []string{
-				"-fflags", "nobuffer+flush_packets",
-				"-thread_queue_size", "64",
-				"-probesize", "32",
-				"-analyzeduration", "0",
-				"-f", "gdigrab",
-				"-framerate", fmt.Sprintf("%d", winFps),
-				"-draw_mouse", "1",
-			}
-
-			if strings.HasPrefix(opt.WindowID, "monitor:") {
-				mParts := strings.Split(opt.WindowID, ":")
-				if len(mParts) >= 5 && (mParts[1] != "0" || mParts[2] != "0") {
-					inputArgs = append(inputArgs,
-						"-offset_x", mParts[1],
-						"-offset_y", mParts[2],
-						"-video_size", fmt.Sprintf("%sx%s", mParts[3], mParts[4]),
-						"-i", "desktop",
-					)
-				} else {
-					physW, physH := GetPhysicalDesktopSize()
-					if physW > 0 && physH > 0 {
-						inputArgs = append(inputArgs, "-video_size", fmt.Sprintf("%dx%d", physW, physH), "-offset_x", "0", "-offset_y", "0")
-					}
-					inputArgs = append(inputArgs, "-i", "desktop")
-				}
-			} else {
-				physW, physH := GetPhysicalDesktopSize()
-				if physW > 0 && physH > 0 {
-					inputArgs = append(inputArgs, "-video_size", fmt.Sprintf("%dx%d", physW, physH), "-offset_x", "0", "-offset_y", "0")
-				}
-				inputArgs = append(inputArgs, "-i", "desktop")
-			}
-
-			args = append(inputArgs,
-				"-vf", scaleOpt,
-				"-c:v", "libx264",
-				"-preset", "ultrafast",
-				"-tune", "zerolatency",
-				"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", winGop, winGop),
-				"-crf", "23",
-				"-b:v", winBitrate,
-				"-maxrate", winMaxRate,
-				"-bufsize", winBufSize,
-				"-pix_fmt", "yuv420p",
-				"-g", fmt.Sprintf("%d", winGop),
-				"-bf", "0",
-				"-bsf:v", "dump_extra",
-				"-f", "mpegts",
-				"-mpegts_flags", "+latm+pat_pmt_at_frames",
-				"-pcr_period", "20",
-				targetURL,
-			)
 		}
+
+		args = buildWindowsBroadcastArgs(opt, targetURL, binPath, targetHwnd, winWidth, winHeight)
 
 	case "darwin":
 		p, err := FindExecutable("ffmpeg")
