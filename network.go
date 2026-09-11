@@ -574,8 +574,8 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 		}
 	}
 
-	// If pending buffer grows too large (> 48 packets ~40ms burst window), force advance to avoid stalling
-	if len(b.pending) > 48 {
+	// If pending buffer grows too large (> 160 packets ~150KB burst window), force advance to avoid stalling
+	if len(b.pending) > 160 {
 		var minSeq uint32
 		var found bool
 		for s := range b.pending {
@@ -1146,7 +1146,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		wsPriorityCh := make(chan []byte, 256)
-		wsVideoCh := make(chan []byte, 48)
+		wsVideoCh := make(chan []byte, 256)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -1202,8 +1202,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 
 		if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
 			_ = tcpConn.SetNoDelay(true)
-			_ = tcpConn.SetWriteBuffer(64 * 1024) // Cap kernel socket send buffer to 64KB (strictly prevents TCP bufferbloat & 1000ms spikes)
-			_ = tcpConn.SetReadBuffer(64 * 1024)
+			_ = tcpConn.SetWriteBuffer(256 * 1024)
+			_ = tcpConn.SetReadBuffer(256 * 1024)
 		}
 
 		if firstConnect {

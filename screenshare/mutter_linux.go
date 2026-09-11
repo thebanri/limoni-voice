@@ -294,7 +294,6 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			fmt.Sprintf("key-int-max=%d", gopSize),
 			"bframes=0",
 			"byte-stream=true",
-			"sliced-threads=true", // Slice each frame into concurrent core jobs for lowest latency
 			"insert-vui=true",
 		)
 	}
