@@ -797,13 +797,14 @@ func (n *P2PNode) HostRoom(roomCode string) {
 
 	go n.portHopSupervisor(hopCancel)
 
-	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
+	isLan := n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") || strings.EqualFold(n.RelayURL, "lan")
+	if isLan {
 		n.log(fmt.Sprintf("[HOST] Room opened: %s (Port: %d | LAN Mode | Anti-Tracking Active)", n.RoomCode, n.Port))
+		n.broadcastHello()
 	} else {
 		n.log(fmt.Sprintf("[HOST] Room opened: %s (Port: %d | E2EE Secure | Anti-Tracking Active)", n.RoomCode, n.Port))
+		n.connectRelay("host", n.RoomCode)
 	}
-	n.broadcastHello()
-	n.connectRelay("host", n.RoomCode)
 }
 
 // RequestJoinRoom searches for an active host and requests admission. Fails if no open room exists.
@@ -848,18 +849,11 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 		close(n.connectCancel)
 		n.connectCancel = nil
 	}
-	if n.hopCancel != nil {
-		close(n.hopCancel)
-		n.hopCancel = nil
-	}
-
 	cancelChan := make(chan struct{})
+	hopCancel := make(chan struct{})
+	n.hopCancel = hopCancel
 	n.connectCancel = cancelChan
-	n.Connecting = true
-	n.IsConnected = false
-	n.IsHost = false
-	n.HostID = ""
-	n.HostNick = ""
+
 	n.RoomPIN = customPIN
 	n.ConnectTargetRoom = cleanCode
 	n.RoomCode = cleanCode
@@ -869,9 +863,11 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.aead, _ = deriveRoomCipher(n.RoomKey)
 	n.lastHopTime = time.Now()
 	n.nextHopTime = time.Now().Add(n.hopInterval)
-	hopCancel := make(chan struct{})
-	n.hopCancel = hopCancel
-
+	n.Connecting = true
+	n.IsConnected = false
+	n.IsHost = false
+	n.HostID = ""
+	n.HostNick = ""
 	n.Peers = make(map[string]*PeerInfo)
 	n.OnJoinSuccess = onSuccess
 	n.OnJoinFailed = onFailed
@@ -879,42 +875,72 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 
 	go n.portHopSupervisor(hopCancel)
 
-	if n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
+	isLan := n.LanOnly || n.RelayURL == "" || strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") || strings.EqualFold(n.RelayURL, "lan")
+	if isLan {
 		n.log(fmt.Sprintf("[CONNECT] Searching room '%s' on local network (LAN)...", cleanCode))
 	} else {
 		n.log(fmt.Sprintf("[CONNECT] Searching room '%s' and verifying host...", cleanCode))
+		// Connect to internet relay server for cross-network join
+		n.connectRelay("join", cleanCode)
 	}
 
-	// Connect to internet relay server for cross-network join
-	n.connectRelay("join", cleanCode)
+	// Only probe local LAN via UDP broadcast if explicitly in LAN mode or if TargetPeerAddr is configured
+	if isLan || n.TargetPeerAddr != nil {
+		go func() {
+			probeTicker := time.NewTicker(250 * time.Millisecond)
+			defer probeTicker.Stop()
 
-	// Background LAN probe and timeout handler
-	go func() {
-		probeTicker := time.NewTicker(250 * time.Millisecond)
-		defer probeTicker.Stop()
+			timeoutTimer := time.NewTimer(timeout)
+			defer timeoutTimer.Stop()
 
-		timeoutTimer := time.NewTimer(timeout)
-		defer timeoutTimer.Stop()
+			// Initial probe
+			n.broadcastJoinRequest()
 
-		// Initial probe
-		n.broadcastJoinRequest()
+			for {
+				select {
+				case <-cancelChan:
+					return
 
-		for {
+				case <-probeTicker.C:
+					n.mu.RLock()
+					isConn := n.IsConnected
+					isConnecting := n.Connecting
+					n.mu.RUnlock()
+
+					if !isConnecting || isConn {
+						return
+					}
+					n.broadcastJoinRequest()
+
+				case <-timeoutTimer.C:
+					n.mu.Lock()
+					if n.Connecting && !n.IsConnected {
+						n.Connecting = false
+						n.aead = nil
+						n.RoomCode = ""
+						failedCb := n.OnJoinFailed
+						n.mu.Unlock()
+
+						n.log(fmt.Sprintf("[ERROR] Room '%s' not found on LAN (Host offline or room not created).", cleanCode))
+						if failedCb != nil {
+							failedCb("Room not found on local network! Make sure your friend has opened the room.")
+						}
+					} else {
+						n.mu.Unlock()
+					}
+					return
+				}
+			}
+		}()
+	} else {
+		// Relay Mode: wait for relay welcome or timeout without polluting LAN with broadcasts
+		go func() {
+			timeoutTimer := time.NewTimer(timeout)
+			defer timeoutTimer.Stop()
+
 			select {
 			case <-cancelChan:
 				return
-
-			case <-probeTicker.C:
-				n.mu.RLock()
-				isConn := n.IsConnected
-				isConnecting := n.Connecting
-				n.mu.RUnlock()
-
-				if !isConnecting || isConn {
-					return
-				}
-				n.broadcastJoinRequest()
-
 			case <-timeoutTimer.C:
 				n.mu.Lock()
 				if n.Connecting && !n.IsConnected {
@@ -924,17 +950,17 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 					failedCb := n.OnJoinFailed
 					n.mu.Unlock()
 
-					n.log(fmt.Sprintf("[ERROR] Room '%s' not found (Host offline or room not created).", cleanCode))
+					n.log(fmt.Sprintf("[ERROR] Room '%s' not found on relay (Host offline or room not created).", cleanCode))
 					if failedCb != nil {
-						failedCb("This room is not currently open! Make sure your friend has opened the room by clicking [2] CREATE ROOM.")
+						failedCb("Room not found via relay! Make sure your friend has opened the room and both are connected to the relay server.")
 					}
 				} else {
 					n.mu.Unlock()
 				}
 				return
 			}
-		}
-	}()
+		}()
+	}
 }
 
 // CancelJoin cancels any pending join discovery
@@ -1472,8 +1498,8 @@ func (n *P2PNode) punchPeerUDP(publicIP string, localPort int, publicPort int, l
 	}
 	n.mu.RUnlock()
 
-	pkt := P2PPacket{
-		Type:       PacketHello,
+	pingPkt := P2PPacket{
+		Type:       PacketPing,
 		RoomCode:   roomCode,
 		SenderID:   localID,
 		Nickname:   nickname,
@@ -1482,46 +1508,33 @@ func (n *P2PNode) punchPeerUDP(publicIP string, localPort int, publicPort int, l
 		Timestamp:  time.Now().UnixMilli(),
 	}
 
-	seenPorts := make(map[int]bool)
-	var targetPorts []int
-	addPort := func(p int) {
-		if p > 0 && p < 65536 && !seenPorts[p] {
-			seenPorts[p] = true
-			targetPorts = append(targetPorts, p)
+	var targets []*net.UDPAddr
+	if publicIP != "" && publicPort > 0 {
+		if raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", publicIP, publicPort)); err == nil {
+			targets = append(targets, raddr)
 		}
-	}
-
-	if publicPort > 0 {
-		addPort(publicPort)
-	}
-	addPort(localPort)
-	for p := 50000; p <= 50015; p++ {
-		addPort(p)
-	}
-	addPort(45454)
-
-	var targetIPs []string
-	if publicIP != "" && publicIP != "0.0.0.0" {
-		targetIPs = append(targetIPs, publicIP)
 	}
 	for _, lip := range localIPs {
-		if lip != "" && lip != "0.0.0.0" && lip != publicIP {
-			targetIPs = append(targetIPs, lip)
+		if lip != "" && localPort > 0 && lip != publicIP {
+			if raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", lip, localPort)); err == nil {
+				targets = append(targets, raddr)
+			}
 		}
 	}
 
-	// Send 5 probe waves spaced by 80ms to open bidirectional NAT mapping reliably
+	if len(targets) == 0 {
+		return
+	}
+
+	// Send 2 probe waves spaced by 100ms to punch NAT mappings cleanly without flooding
 	go func() {
-		for wave := 0; wave < 5; wave++ {
-			for _, ip := range targetIPs {
-				for _, p := range targetPorts {
-					raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, p))
-					if err == nil && n.Conn != nil {
-						n.sendDirectUDPPacket(raddr, &pkt)
-					}
+		for wave := 0; wave < 2; wave++ {
+			for _, target := range targets {
+				if n.Conn != nil {
+					n.sendDirectUDPPacket(target, &pingPkt)
 				}
 			}
-			time.Sleep(80 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 }
@@ -2499,17 +2512,17 @@ func (n *P2PNode) sendPacketTo(addr *net.UDPAddr, pkt *P2PPacket) {
 		return
 	}
 
-	// 1. Forward via high-priority WebSocket channel (Ping, Pong & Control with 0ms queue delay)
-	if isRelay && wsPriorityCh != nil {
+	// 1. Send directly via UDP if destination endpoint is available
+	if addr != nil && n.Conn != nil {
+		n.Conn.WriteToUDP(data, addr)
+	}
+
+	// 2. Forward via high-priority WebSocket channel only when destination UDP address is unavailable
+	if addr == nil && isRelay && wsPriorityCh != nil {
 		select {
 		case wsPriorityCh <- data:
 		default:
 		}
-	}
-
-	// 2. Also send directly via UDP if destination endpoint is reachable (LAN / P2P hole-punched)
-	if addr != nil && n.Conn != nil {
-		n.Conn.WriteToUDP(data, addr)
 	}
 }
 
@@ -2532,24 +2545,27 @@ func (n *P2PNode) broadcastToPeers(pkt *P2PPacket) {
 		return
 	}
 
-	// 1. Forward via high-priority WebSocket Relay
-	if isRelay && wsPriorityCh != nil {
+	hasRelayPeer := false
+	for _, peer := range n.Peers {
+		if peer.ViaRelay || peer.Addr == nil {
+			hasRelayPeer = true
+		}
+		if peer.Addr != nil && n.Conn != nil {
+			n.Conn.WriteToUDP(data, peer.Addr)
+		}
+	}
+
+	// 1. Forward via high-priority WebSocket Relay only if there are relay peers or during initial handshake
+	if (hasRelayPeer || len(n.Peers) == 0) && isRelay && wsPriorityCh != nil {
 		select {
 		case wsPriorityCh <- data:
 		default:
 		}
 	}
-
-	// 2. Also send via direct UDP to known LAN peer addresses
-	for _, peer := range n.Peers {
-		if peer.Addr != nil && n.Conn != nil {
-			n.Conn.WriteToUDP(data, peer.Addr)
-		}
-	}
 	n.mu.RUnlock()
 }
 
-// broadcastVideoPacket routes screen share chunks through the paced video channel with bounded queue
+// broadcastVideoPacket routes screen share chunks through direct UDP or WebSocket relay without duplication
 func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 	n.mu.RLock()
 	aead := n.aead
@@ -2569,30 +2585,24 @@ func (n *P2PNode) broadcastVideoPacket(pkt *P2PPacket) {
 		return
 	}
 
-	// 1. Direct zero-latency delivery to all reachable P2P peers via UDP
+	hasRelayPeer := false
 	for _, peer := range n.Peers {
-		if peer.Addr != nil && n.Conn != nil {
+		if peer.ViaRelay || peer.Addr == nil {
+			hasRelayPeer = true
+		} else if peer.Addr != nil && n.Conn != nil {
+			// Direct zero-latency delivery to reachable peer
 			n.Conn.WriteToUDP(data, peer.Addr)
 		}
 	}
 
-	// 2. Guaranteed fallback delivery via WebSocket Relay for peers behind restrictive firewalls
-	if isRelay && wsVideoCh != nil {
+	// 2. Deliver via WebSocket Relay ONLY for peers who actually require relay routing.
+	// If all peers are reachable directly via UDP, do NOT push video over WebSocket
+	// to prevent double-streaming, upstream link saturation, and bufferbloat!
+	if hasRelayPeer && isRelay && wsVideoCh != nil {
 		select {
 		case wsVideoCh <- data:
 		default:
-			// If buffer has more than 384 chunks, drop oldest chunks to prevent unbounded memory growth
-			for len(wsVideoCh) > 384 {
-				select {
-				case <-wsVideoCh:
-				default:
-					break
-				}
-			}
-			select {
-			case wsVideoCh <- data:
-			default:
-			}
+			// Non-blocking drop on congestion to maintain zero latency and eliminate bufferbloat
 		}
 	}
 	n.mu.RUnlock()
@@ -4075,7 +4085,11 @@ func (n *P2PNode) sendPingToPeer(peer *PeerInfo) {
 		VideoFPS:        videoFPS,
 		Timestamp:       time.Now().UnixMilli(),
 	}
-	n.sendPacketTo(peerAddr, &pingPkt)
+	if peer.ViaRelay || peerAddr == nil {
+		n.sendPacketTo(nil, &pingPkt)
+	} else {
+		n.sendPacketTo(peerAddr, &pingPkt)
+	}
 }
 
 func (n *P2PNode) GetPeersList() []*PeerInfo {

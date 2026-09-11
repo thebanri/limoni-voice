@@ -1081,16 +1081,31 @@ func main() {
 							}
 							closeRelayModal()
 						} else if relayModalActiveField == 3 {
-							node.UpdateRelaySettings(DefaultRelayURL, "")
-							_ = ResetAppConfig()
-							relayURLInput.SetValue(DefaultRelayURL)
-							relayTokenInput.SetValue("")
-							probeRelayStatus(DefaultRelayURL, "")
-							if currentScreen == ScreenLobby {
-								lobby.RelayURL = DefaultRelayURL
-								lobby.SetToast("Reset to official default relay server!")
+							isLan := node.LanOnly || node.RelayURL == "" || strings.EqualFold(node.RelayURL, "lan") || strings.EqualFold(node.RelayURL, "none")
+							if isLan {
+								node.UpdateRelaySettings(DefaultRelayURL, "")
+								_ = ResetAppConfig()
+								relayURLInput.SetValue(DefaultRelayURL)
+								relayTokenInput.SetValue("")
+								probeRelayStatus(DefaultRelayURL, "")
+								if currentScreen == ScreenLobby {
+									lobby.RelayURL = DefaultRelayURL
+									lobby.SetToast("Restored official default relay server!")
+								} else {
+									room.SetToast("Restored official default relay server!")
+								}
 							} else {
-								room.SetToast("Reset to official default relay server!")
+								node.UpdateRelaySettings("lan", "")
+								_ = SaveAppConfig(AppConfig{RelayURL: "none", RelayToken: ""})
+								relayURLInput.SetValue("")
+								relayTokenInput.SetValue("")
+								probeRelayStatus("", "")
+								if currentScreen == ScreenLobby {
+									lobby.RelayURL = ""
+									lobby.SetToast("Switched to Local LAN Mode (Offline)")
+								} else {
+									room.SetToast("Switched to Local LAN Mode (Offline)")
+								}
 							}
 							closeRelayModal()
 						} else if relayModalActiveField == 4 {
@@ -2045,18 +2060,28 @@ func main() {
 							relaySelField, relaySelStart, relaySelEnd,
 							func(field int) { relayModalActiveField = field },
 							func(newURL, newToken string) {
+								rawVal := strings.TrimSpace(newURL)
+								isExplicitLan := strings.EqualFold(rawVal, "lan") || strings.EqualFold(rawVal, "none") || strings.EqualFold(rawVal, "off") || strings.EqualFold(rawVal, "local")
 								newURL = NormalizeRelayURL(newURL)
 								newToken = strings.TrimSpace(newToken)
-								node.UpdateRelaySettings(newURL, newToken)
-								if newURL == DefaultRelayURL && newToken == "" {
-									_ = ResetAppConfig()
+								if isExplicitLan {
+									node.UpdateRelaySettings("lan", "")
+									_ = SaveAppConfig(AppConfig{RelayURL: "none", RelayToken: ""})
+									lobby.RelayURL = ""
+									relayURLInput.SetValue("")
+									lobby.SetToast("Switched to Local LAN Mode (Offline)")
 								} else {
-									_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+									node.UpdateRelaySettings(newURL, newToken)
+									if newURL == DefaultRelayURL && newToken == "" {
+										_ = ResetAppConfig()
+									} else {
+										_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+									}
+									lobby.RelayURL = newURL
+									probeRelayStatus(newURL, newToken)
+									relayURLInput.SetValue(newURL)
+									lobby.SetToast("Relay server settings saved!")
 								}
-								lobby.RelayURL = newURL
-								probeRelayStatus(newURL, newToken)
-								relayURLInput.SetValue(newURL)
-								lobby.SetToast("Relay server settings saved!")
 								closeRelayModal()
 							},
 							func() {
@@ -2278,17 +2303,26 @@ func main() {
 							relaySelField, relaySelStart, relaySelEnd,
 							func(field int) { relayModalActiveField = field },
 							func(newURL, newToken string) {
+								rawVal := strings.TrimSpace(newURL)
+								isExplicitLan := strings.EqualFold(rawVal, "lan") || strings.EqualFold(rawVal, "none") || strings.EqualFold(rawVal, "off") || strings.EqualFold(rawVal, "local")
 								newURL = NormalizeRelayURL(newURL)
 								newToken = strings.TrimSpace(newToken)
-								node.UpdateRelaySettings(newURL, newToken)
-								if newURL == DefaultRelayURL && newToken == "" {
-									_ = ResetAppConfig()
+								if isExplicitLan {
+									node.UpdateRelaySettings("lan", "")
+									_ = SaveAppConfig(AppConfig{RelayURL: "none", RelayToken: ""})
+									relayURLInput.SetValue("")
+									room.SetToast("Switched to Local LAN Mode (Offline)")
 								} else {
-									_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+									node.UpdateRelaySettings(newURL, newToken)
+									if newURL == DefaultRelayURL && newToken == "" {
+										_ = ResetAppConfig()
+									} else {
+										_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
+									}
+									probeRelayStatus(newURL, newToken)
+									relayURLInput.SetValue(newURL)
+									room.SetToast("Relay server settings saved!")
 								}
-								probeRelayStatus(newURL, newToken)
-								relayURLInput.SetValue(newURL)
-								room.SetToast("Relay server settings saved!")
 								closeRelayModal()
 							},
 							func() {

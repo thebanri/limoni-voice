@@ -859,7 +859,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 		peerCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
 		isReconnecting := time.Since(peer.LastSeen) > 8000*time.Millisecond
 		isBeingWatched := node.IsWatchingScreen && node.WatchingPeerID == peer.ID
-		trans := "Direct"
+		trans := "P2P"
 		if peer.ViaRelay {
 			trans = "Relay"
 		} else if peer.Addr != nil && (peer.Addr.IP.IsLoopback() || peer.Addr.IP.IsPrivate()) {
@@ -1474,7 +1474,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 
 	pingStr := "PING: --"
 	if peer.PingMs > 0 {
-		trans := "Direct"
+		trans := "P2P"
 		if peer.ViaRelay {
 			trans = "Relay"
 		} else if peer.Addr != nil && (peer.Addr.IP.IsLoopback() || peer.Addr.IP.IsPrivate()) {
@@ -3056,6 +3056,8 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 	peerPing := 0
 	allRelayed := false
 	anyRelayed := false
+	hasLANPeer := false
+	hasP2PPeer := false
 	if len(peers) > 0 {
 		var totalPing int64
 		count := 0
@@ -3068,6 +3070,10 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 			if p.ViaRelay {
 				relayedCount++
 				anyRelayed = true
+			} else if p.Addr != nil && (p.Addr.IP.IsLoopback() || p.Addr.IP.IsPrivate()) {
+				hasLANPeer = true
+			} else {
+				hasP2PPeer = true
 			}
 		}
 		if count > 0 {
@@ -3252,11 +3258,13 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		// 6. Ping pill
 		pingPill := " ⚡ -- "
 		if peerPing > 0 {
-			modeTag := "LAN"
+			modeTag := "P2P"
 			if allRelayed {
 				modeTag = "Relay"
 			} else if anyRelayed {
 				modeTag = "Mesh"
+			} else if hasLANPeer && !hasP2PPeer {
+				modeTag = "LAN"
 			}
 			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 		}
@@ -3348,11 +3356,13 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		// Latency
 		pingPill := " ⚡ -- "
 		if peerPing > 0 {
-			modeTag := "LAN"
+			modeTag := "P2P"
 			if allRelayed {
 				modeTag = "Relay"
 			} else if anyRelayed {
 				modeTag = "Mesh"
+			} else if hasLANPeer && !hasP2PPeer {
+				modeTag = "LAN"
 			}
 			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 		}
@@ -3563,11 +3573,13 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 	// Latency
 	pingPill := " ⚡ -- "
 	if peerPing > 0 {
-		modeTag := "LAN"
+		modeTag := "P2P"
 		if allRelayed {
 			modeTag = "Relay"
 		} else if anyRelayed {
 			modeTag = "Mesh"
+		} else if hasLANPeer && !hasP2PPeer {
+			modeTag = "LAN"
 		}
 		pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 	}
@@ -4021,7 +4033,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 			pPing := int(targetPeer.PingMs)
 			pPill := " ⚡ -- "
 			if pPing > 0 {
-				trans := "Direct"
+				trans := "P2P"
 				if targetPeer.ViaRelay {
 					trans = "Relay"
 				} else if targetPeer.Addr != nil && (targetPeer.Addr.IP.IsLoopback() || targetPeer.Addr.IP.IsPrivate()) {

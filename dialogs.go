@@ -1112,16 +1112,20 @@ func DrawRelayModal(
 	// 7. Buttons Row
 	btnY := inner.Y + 8
 	saveBtnText := "[ Save & Connect ]"
-	resetBtnText := "[ Reset to Default ]"
+	isLan := statusStr == "LAN Mode" || strings.EqualFold(currentURL, "lan") || strings.EqualFold(currentURL, "none") || currentURL == ""
+	modeBtnText := "[ Switch to LAN Mode ]"
+	if isLan {
+		modeBtnText = "[ Switch to Relay ]"
+	}
 	cancelBtnText := "[ Cancel ]"
 
 	saveBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
 	if activeField == 2 {
 		saveBtnStyle = cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: theme.Success, Modifier: cell.ModifierBold}
 	}
-	resetBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
+	modeBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
 	if activeField == 3 {
-		resetBtnStyle = cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: theme.Warning, Modifier: cell.ModifierBold}
+		modeBtnStyle = cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: theme.Warning, Modifier: cell.ModifierBold}
 	}
 	cancelBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
 	if activeField == 4 {
@@ -1140,17 +1144,23 @@ func DrawRelayModal(
 	}
 
 	bX += uint16(len([]rune(saveBtnText))) + 2
-	if bX+uint16(len([]rune(resetBtnText))) <= maxX {
-		resetRect := cell.NewRect(bX, btnY, uint16(len([]rune(resetBtnText))), 1)
-		drawBoundedString(buf, bX, btnY, resetBtnText, resetBtnStyle, maxX)
-		frame.RegisterClickHandler(resetRect, func(_ driver.MouseEvent) {
-			if onReset != nil {
-				onReset()
+	if bX+uint16(len([]rune(modeBtnText))) <= maxX {
+		modeRect := cell.NewRect(bX, btnY, uint16(len([]rune(modeBtnText))), 1)
+		drawBoundedString(buf, bX, btnY, modeBtnText, modeBtnStyle, maxX)
+		frame.RegisterClickHandler(modeRect, func(_ driver.MouseEvent) {
+			if isLan {
+				if onReset != nil {
+					onReset()
+				}
+			} else {
+				if onSave != nil {
+					onSave("lan", "")
+				}
 			}
 		})
 	}
 
-	bX += uint16(len([]rune(resetBtnText))) + 2
+	bX += uint16(len([]rune(modeBtnText))) + 2
 	if bX+uint16(len([]rune(cancelBtnText))) <= maxX {
 		cancelRect := cell.NewRect(bX, btnY, uint16(len([]rune(cancelBtnText))), 1)
 		drawBoundedString(buf, bX, btnY, cancelBtnText, cancelBtnStyle, maxX)

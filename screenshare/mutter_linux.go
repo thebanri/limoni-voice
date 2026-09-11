@@ -163,11 +163,11 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		fps = 60
 	}
 
-	bitrateKbps := 4500
+	bitrateKbps := 3000
 	if fps >= 120 {
-		bitrateKbps = 7500
+		bitrateKbps = 4200
 	} else if fps <= 30 {
-		bitrateKbps = 2500
+		bitrateKbps = 1800
 	}
 	if opt.Bitrate != "" {
 		bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))
@@ -262,6 +262,10 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			"rc-mode=cbr-ld-hq",
 			"spatial-aq=true",
 			"temporal-aq=true",
+			"qp-min-i=18",
+			"qp-min-p=18",
+			"qp-max-i=36",
+			"qp-max-p=38",
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("gop-size=%d", gopSize),
 			"repeat-sequence-header=true",
@@ -280,6 +284,10 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			"speed-preset=ultrafast",
 			"tune=zerolatency",
 			"pass=cbr",
+			"qp-min=18",
+			"qp-max=38",
+			"vbv-buf-capacity=120",
+			"mb-tree=true",
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("key-int-max=%d", gopSize),
 			"bframes=0",
