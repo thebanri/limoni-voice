@@ -1,67 +1,103 @@
 package buffer
 
 import (
+	"bytes"
 	"strconv"
 	"unicode/utf8"
 
 	"github.com/thebanri/limoni/core/cell"
 )
 
-// Diff front (mevcut çizilen) ve back (ekranda olan) tamponları karşılaştırır.
-// Sadece değişen hücreleri ve stildeki değişimleri tespit ederek, minimum ANSI escape kodunu
-// `out` byte dilimine (slice) ekler ve güncellenmiş dilimi döner.
-// Bellek Optimizasyonu: Eğer `out` yeterli kapasiteye sahipse sıfır heap bellek tahsisatı (zero-allocation) ile çalışır.
+// AdaptiveDiffThreshold defines the dirty ratio threshold (45%) at which Diff transitions
+// from sparse differential rendering with cursor jumps (Case A) to continuous full stream redraw (Case B).
+const AdaptiveDiffThreshold = 0.45
+
+// Diff compares the front (currently drawn) and back (currently displayed) buffers.
+// It implements an adaptive rendering strategy:
+// - Case A (dirtyRatio < 0.45): Sparse differential rendering with minimal cursor jumps (CUP).
+// - Case B (dirtyRatio >= 0.45): Continuous full stream redraw with synchronized update mode (?2026).
+// Performance: Operates with zero heap allocations (0 B/op) when out has sufficient capacity.
 func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, error) {
-	// Sıfır-Döngü Hızlı Yol (Zero-Loop Fast-Path): Eğer tamponda hiç değişiklik yapılmadıysa doğrudan dön
+	// Zero-Loop Fast-Path: Return immediately if buffer was not dirtied and dimensions match
 	if !front.IsDirty && front.Area.Width == back.Area.Width && front.Area.Height == back.Area.Height {
 		return out, nil
 	}
 
-	// Hızlı Yol (Fast-Path): Tamponlar tamamen aynıysa hiçbir işlem yapma
-	if front.Area.Width == back.Area.Width && front.Area.Height == back.Area.Height {
-		identical := true
-		for i := range front.Content {
-			if front.Content[i] != back.Content[i] {
-				identical = false
-				break
-			}
-		}
-		if identical {
-			front.IsDirty = false
-			return out, nil
-		}
-	}
-
-	// Boyutlar uyuşmuyorsa, ekranı temizle ve back tamponu yeniden boyutlandır
+	// If dimensions mismatch, resize back buffer and execute full stream redraw
 	if front.Area.Width != back.Area.Width || front.Area.Height != back.Area.Height {
 		back.Resize(front.Area)
-		out = append(out, "\x1b[2J"...) // Ekranı temizle
+		return DiffFullStream(front, back, out, trueColor, colors256)
 	}
 
+	width := front.Area.Width
+	height := front.Area.Height
+	totalCells := int(width) * int(height)
+	if totalCells == 0 {
+		return out, nil
+	}
+
+	// Count modified cells
+	dirtyCount := 0
+	for i := 0; i < totalCells; i++ {
+		if front.Content[i] != back.Content[i] {
+			dirtyCount++
+		}
+	}
+
+	// Fast-Path: completely identical
+	if dirtyCount == 0 {
+		front.IsDirty = false
+		return out, nil
+	}
+
+	dirtyRatio := float64(dirtyCount) / float64(totalCells)
+	if dirtyRatio >= AdaptiveDiffThreshold {
+		return DiffFullStream(front, back, out, trueColor, colors256)
+	}
+
+	return DiffSparse(front, back, out, trueColor, colors256)
+}
+
+// DiffSparse executes Case A: sparse differential rendering using cursor jumps (CUP)
+// for only modified spans within lines. Used when dirtyRatio < 0.45.
+func DiffSparse(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, error) {
 	width := front.Area.Width
 	height := front.Area.Height
 
 	var currentStyle cell.Style
 	currentStyle.Reset()
 
-	cursorX := uint16(9999) // Geçersiz başlangıç konumu (imleci ilk çizimde zorla konumlandırmak için)
+	cursorX := uint16(9999)
 	cursorY := uint16(9999)
 
 	for y := uint16(0); y < height; y++ {
 		first := int(-1)
 		last := int(-1)
-		rowOffset := int(y)*int(width)
+		rowOffset := int(y) * int(width)
 		for x := 0; x < int(width); x++ {
 			idx := rowOffset + x
 			if front.Content[idx] != back.Content[idx] {
-				if first == -1 {
-					first = x
+				start := x
+				end := x
+				if x > 0 && (front.Content[idx].Content == cell.RuneContinuation || back.Content[idx].Content == cell.RuneContinuation) {
+					start = x - 1
+					back.Content[rowOffset+x-1] = cell.Cell{}
 				}
-				last = x
+				wFront := cell.RuneWidth(front.Content[idx].Content)
+				wBack := cell.RuneWidth(back.Content[idx].Content)
+				if (wFront == 2 || wBack == 2) && x+1 < int(width) {
+					end = x + 1
+				}
+				if first == -1 || start < first {
+					first = start
+				}
+				if end > last {
+					last = end
+				}
 			}
 		}
 		if first == -1 {
-			continue // Bu satırda hiçbir değişiklik yok!
+			continue // No changes on this line
 		}
 
 		for x := uint16(first); x <= uint16(last); x++ {
@@ -69,27 +105,17 @@ func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, e
 			frontCell := &front.Content[idx]
 			backCell := &back.Content[idx]
 
-			// Hücre içeriği ve stili tamamen aynıysa atla
 			if frontCell.Content == backCell.Content && frontCell.Style == backCell.Style {
 				continue
 			}
 
-			// Eğer bu hücre bir geniş karakterin devamı (continuation) ise terminale yazma,
-			// ancak durum eşitlemesi için backCell'i güncelle ve cursor'ı ilerlet.
 			if frontCell.Content == cell.RuneContinuation {
 				*backCell = *frontCell
-				cursorX++
-				if cursorX >= width {
-					cursorX = 9999
-					cursorY = 9999
-				}
+				cursorX = 9999
+				cursorY = 9999
 				continue
 			}
 
-			// Eğer bu hücre bir native resim hücresi ise:
-			// Önceki karede bu hücrede bir diyalog/metin karakteri varsa,
-			// \x1b[0m ile stili sıfırlayıp ECMA-48 ECH (\x1b[<count>X) ile eski karakterleri
-			// tek hamlede sil. Böylece resmin üzerinde hiçbir hayalet çizgi kalmaz.
 			if frontCell.Content == cell.RuneImage {
 				spanEnd := x
 				needsErase := false
@@ -99,7 +125,8 @@ func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, e
 						break
 					}
 					spanEnd = checkX
-					if back.Content[cIdx].Content != cell.RuneImage {
+					prevContent := back.Content[cIdx].Content
+					if prevContent != cell.RuneImage {
 						needsErase = true
 					}
 				}
@@ -130,56 +157,41 @@ func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, e
 				continue
 			}
 
-			// İmleç doğru konumda değilse konumlandır
 			if cursorX != x || cursorY != y {
-				if cursorY == y && x > cursorX && (x-cursorX) < 4 {
-					for skipX := cursorX; skipX < x; skipX++ {
-						skipIdx := int(y)*int(width) + int(skipX)
-						skipCell := &front.Content[skipIdx]
-						if skipCell.Style != currentStyle {
-							out, currentStyle = appendStyle(out, currentStyle, skipCell.Style, trueColor, colors256, front.StyleCache)
-						}
-						if skipCell.Content == ' ' || skipCell.Content == 0 {
-							out = append(out, ' ')
-						} else {
-							out = utf8.AppendRune(out, skipCell.Content)
-						}
-						back.Content[skipIdx] = *skipCell
-					}
-					cursorX = x
-				} else {
-					out = appendCursor(out, x, y)
-					cursorX = x
-					cursorY = y
-				}
+				out = appendCursor(out, x, y)
+				cursorX = x
+				cursorY = y
 			}
 
-			// Stil güncellenmeli mi?
 			if frontCell.Style != currentStyle {
 				out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, front.StyleCache)
 			}
 
-			// Karakteri yaz
-			if frontCell.Content == ' ' || frontCell.Content == 0 {
+			w := 1
+			if frontCell.Content == ' ' || frontCell.Content == 0 || frontCell.Content < 32 || frontCell.Content == 0x7F {
 				out = append(out, ' ')
 			} else {
 				out = utf8.AppendRune(out, frontCell.Content)
+				w = cell.RuneWidth(frontCell.Content)
+				if w <= 0 {
+					w = 1
+				}
 			}
 
-			// İmleç pozisyonunu güncelle (terminal karakter yazdıktan sonra sağa kayar)
-			cursorX++
+			cursorX += uint16(w)
 			if cursorX >= width {
-				// Satır sonuna ulaşıldığında otomatik wrap riskini önlemek için imleç takibini geçersiz kıl
 				cursorX = 9999
 				cursorY = 9999
 			}
 
-			// Back hücresini güncelle ki bir sonraki karede fark olmasın
 			*backCell = *frontCell
+
+			if w == 2 && x+1 < width {
+				back.Content[idx+1] = front.Content[idx+1]
+			}
 		}
 	}
 
-	// Kare sonunda terminal stilini varsayılana sıfırla (terminal kirlenmesini önlemek için)
 	var defaultStyle cell.Style
 	defaultStyle.Reset()
 	if currentStyle != defaultStyle {
@@ -190,13 +202,123 @@ func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, e
 	return out, nil
 }
 
-// appendCursor imleç konumlandırma ANSI escape kodunu ekler. (\x1b[row;colH)
-func appendCursor(out []byte, x, y uint16) []byte {
+// DiffFullStream executes Case B: continuous stream redraw for high-churn frames (dirtyRatio >= 0.45).
+// It bypasses cursor jump calculations entirely, wraps the output in synchronized update mode (?2026),
+// moves cursor to home (\x1b[H), sequentially overwrites line-by-line using \r\n,
+// maintains lazy SGR color emission, and synchronizes buffers via copy(back.Content, front.Content).
+func DiffFullStream(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, error) {
+	if front.Area.Width != back.Area.Width || front.Area.Height != back.Area.Height {
+		back.Resize(front.Area)
+	}
+
+	width := front.Area.Width
+	height := front.Area.Height
+
+	// Check if synchronized update was already opened by caller in batch buffer
+	syncWrapped := false
+	if !bytes.HasPrefix(out, []byte("\x1b[?2026h")) {
+		out = append(out, "\x1b[?2026h"...)
+		syncWrapped = true
+	}
+
+	// Move cursor to home (1, 1) without clearing screen to prevent flicker
+	out = append(out, "\x1b[H"...)
+
+	var currentStyle cell.Style
+	currentStyle.Reset()
+
+	for y := uint16(0); y < height; y++ {
+		if y > 0 {
+			out = append(out, "\r\n"...)
+		}
+		rowOffset := int(y) * int(width)
+		for x := uint16(0); x < width; x++ {
+			idx := rowOffset + int(x)
+			frontCell := &front.Content[idx]
+
+			// Skip continuation cells (second column of wide character)
+			if frontCell.Content == cell.RuneContinuation {
+				continue
+			}
+
+			// Handle native image cells
+			if frontCell.Content == cell.RuneImage {
+				spanEnd := x
+				needsErase := false
+				for checkX := x; checkX < width; checkX++ {
+					cIdx := rowOffset + int(checkX)
+					if front.Content[cIdx].Content != cell.RuneImage {
+						break
+					}
+					spanEnd = checkX
+					if back.Content[cIdx].Content != cell.RuneImage {
+						needsErase = true
+					}
+				}
+
+				count := int(spanEnd - x + 1)
+				if needsErase {
+					if currentStyle != (cell.Style{}) {
+						out = append(out, "\x1b[0m"...)
+						currentStyle.Reset()
+					}
+					out = append(out, "\x1b["...)
+					out = strconv.AppendInt(out, int64(count), 10)
+					out = append(out, 'X')
+				}
+
+				out = append(out, "\x1b["...)
+				out = strconv.AppendInt(out, int64(count), 10)
+				out = append(out, 'C')
+				x = spanEnd
+				continue
+			}
+
+			// Lazy SGR style emission: only emit escape sequences when style changes
+			if frontCell.Style != currentStyle {
+				out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, front.StyleCache)
+			}
+
+			// Emit character rune
+			if frontCell.Content == ' ' || frontCell.Content == 0 || frontCell.Content < 32 || frontCell.Content == 0x7F {
+				out = append(out, ' ')
+			} else {
+				out = utf8.AppendRune(out, frontCell.Content)
+			}
+		}
+	}
+
+	// Reset style at frame end to prevent terminal style bleeding
+	var defaultStyle cell.Style
+	defaultStyle.Reset()
+	if currentStyle != defaultStyle {
+		out, _ = appendStyle(out, currentStyle, defaultStyle, trueColor, colors256, front.StyleCache)
+	}
+
+	// Close synchronized update if this function opened it
+	if syncWrapped {
+		out = append(out, "\x1b[?2026l"...)
+	}
+
+	// Synchronize buffers
+	copy(back.Content, front.Content)
+	front.IsDirty = false
+
+	return out, nil
+}
+
+// AppendCursor appends cursor positioning escape sequence (\x1b[row;colH) to out.
+func AppendCursor(out []byte, x, y uint16) []byte {
 	out = append(out, "\x1b["...)
 	out = appendUint16(out, y+1)
 	out = append(out, ';')
 	out = appendUint16(out, x+1)
 	return append(out, 'H')
+}
+
+// appendCursor is an internal alias for AppendCursor.
+func appendCursor(out []byte, x, y uint16) []byte {
+	return AppendCursor(out, x, y)
 }
 
 func getStyleBytes(target cell.Style, trueColor, colors256 bool, cache map[cell.Style][]byte) []byte {
@@ -217,6 +339,9 @@ func getStyleBytes(target cell.Style, trueColor, colors256 bool, cache map[cell.
 	cur.Reset()
 	out, _ = appendStyleRaw(out, cur, target, trueColor, colors256)
 
+	if len(cache) > 2048 {
+		clear(cache)
+	}
 	cache[target] = out
 	return out
 }
@@ -241,21 +366,19 @@ func appendStyle(out []byte, cur, target cell.Style, trueColor, colors256 bool, 
 	return appendStyleRaw(out, cur, target, trueColor, colors256)
 }
 
-// appendStyleRaw stildeki değişiklikleri analiz eder ve sadece değişen kısımlar için ANSI kodlarını ekler.
+// appendStyleRaw analyzes style changes and emits ANSI codes for modified properties only.
 func appendStyleRaw(out []byte, cur, target cell.Style, trueColor, colors256 bool) ([]byte, cell.Style) {
 	if cur == target {
 		return out, cur
 	}
 
-	// 1. Modifikatörlerden biri kaldırılmış mı?
-	// Eğer hedef stilde, mevcut stilde olan bir özellik eksikse (örn. Bold'dan normal yazıya geçiş),
-	// tek tek modifikatör silme kodu olmadığından tam reset (\x1b[0m) gerekir.
+	// 1. Modifiers removed
 	if (cur.Modifier & ^target.Modifier) != 0 {
 		out = append(out, "\x1b[0m"...)
-		cur.Reset() // Mevcut stil sıfırlandı
+		cur.Reset()
 	}
 
-	// 2. Ön Plan (Foreground) Rengi Değişimi
+	// 2. Foreground color change
 	if cur.Fg != target.Fg {
 		switch target.Fg.Type() {
 		case cell.ColorDefault:
@@ -277,7 +400,7 @@ func appendStyleRaw(out []byte, cur, target cell.Style, trueColor, colors256 boo
 		cur.Fg = target.Fg
 	}
 
-	// 3. Arka Plan (Background) Rengi Değişimi
+	// 3. Background color change
 	if cur.Bg != target.Bg {
 		switch target.Bg.Type() {
 		case cell.ColorDefault:
@@ -299,7 +422,7 @@ func appendStyleRaw(out []byte, cur, target cell.Style, trueColor, colors256 boo
 		cur.Bg = target.Bg
 	}
 
-	// 4. Yeni Eklenen Modifikatörler
+	// 4. Added modifiers
 	added := target.Modifier & ^cur.Modifier
 	if added != 0 {
 		out = append(out, "\x1b["...)

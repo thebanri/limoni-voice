@@ -1,4 +1,4 @@
-package backend
+package driver
 
 import (
 	"unicode/utf8"
@@ -53,8 +53,9 @@ func ParseEvent(buf []byte) (Event, int) {
 
 	// 2. Escape (\x1b) karakteri ile başlayan dizi kontrolü
 	if len(buf) == 1 {
-		// Tamponda sadece ESC tuşu var (Sonrasının gelip gelmediği Event Loop zaman aşımı ile kontrol edilir)
-		return Event{Type: EventKey, Key: KeyEvent{Type: KeyEsc}}, 1
+		// Tamponda tek başına ESC var. CSI veya Alt dizisinin devam edip etmediğini
+		// anlamak için event loop zaman aşımını (escTimeoutDuration) beklemelidir.
+		return Event{}, 0
 	}
 
 	switch buf[1] {
@@ -78,6 +79,8 @@ func ParseEvent(buf []byte) (Event, int) {
 			return Event{}, 3
 		}
 		return ev, 3
+	case '_', ']', 'P', '^': // APC (\x1b_), OSC (\x1b]), DCS (\x1bP), PM (\x1b^)
+		return parseStringSequence(buf)
 	default:
 		// ESC + Karakter kombinasyonu (Alt + Tuş)
 		r, size := utf8.DecodeRune(buf[1:])
@@ -340,13 +343,34 @@ func parseSGRMouse(paramsStr string, cmd byte, consumed int) (Event, int) {
 
 	// Modifikatör bitlerini temizleyerek butonu ve sürükleme bilgisini ayır
 	btnRaw := btnCode & ^(4 | 8 | 16)
-	ev.Mouse.Drag = (btnRaw & 32) != 0
+	isMotion := (btnRaw & 32) != 0
 	btnBase := btnRaw & ^32
 
 	if cmd == 'm' {
 		// Tuş bırakma olayı
 		ev.Mouse.Button = MouseRelease
+		ev.Mouse.Drag = false
+	} else if isMotion {
+		if btnBase == 3 {
+			// Butonsuz hareket (pure hover / pointer motion)
+			ev.Mouse.Button = MouseNone
+			ev.Mouse.Drag = false
+		} else {
+			// Butona basılıyken hareket (gerçek sürükleme / Drag)
+			ev.Mouse.Drag = true
+			switch btnBase {
+			case 0:
+				ev.Mouse.Button = MouseLeft
+			case 1:
+				ev.Mouse.Button = MouseMiddle
+			case 2:
+				ev.Mouse.Button = MouseRight
+			default:
+				ev.Mouse.Button = MouseNone
+			}
+		}
 	} else {
+		ev.Mouse.Drag = false
 		switch btnBase {
 		case 0:
 			ev.Mouse.Button = MouseLeft
@@ -364,4 +388,39 @@ func parseSGRMouse(paramsStr string, cmd byte, consumed int) (Event, int) {
 	}
 
 	return ev, consumed
+}
+
+// parseStringSequence handles string escape sequences: APC (\x1b_), OSC (\x1b]), DCS (\x1bP), and PM (\x1b^).
+// These sequences are terminated by String Terminator (ST: \x1b\) or BEL (\x07).
+// Unhandled internal terminal responses (e.g. Kitty graphics ACK, OSC queries) are cleanly consumed
+// as EventNone, preventing raw response bytes from leaking into keyboard event handlers.
+func parseStringSequence(buf []byte) (Event, int) {
+	if len(buf) < 2 {
+		return Event{}, 0
+	}
+
+	for i := 2; i < len(buf); i++ {
+		// BEL (\x07) terminator (common in OSC)
+		if buf[i] == '\x07' {
+			return Event{Type: EventNone}, i + 1
+		}
+		// ST (\x1b\) terminator
+		if buf[i] == '\x1b' {
+			if i+1 < len(buf) {
+				if buf[i+1] == '\\' {
+					return Event{Type: EventNone}, i + 2
+				}
+			} else {
+				// ESC at the buffer boundary; wait for next byte to check for ST
+				return Event{}, 0
+			}
+		}
+	}
+
+	// Terminator not yet present in buffer
+	if len(buf) > 4096 {
+		// Avoid indefinite stall if an oversized/malformed sequence arrives
+		return Event{Type: EventNone}, 2
+	}
+	return Event{}, 0
 }

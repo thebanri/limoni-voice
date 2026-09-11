@@ -1,6 +1,6 @@
-//go:build darwin
+//go:build freebsd || openbsd || netbsd || dragonfly
 
-package backend
+package driver
 
 import (
 	"golang.org/x/sys/unix"
@@ -12,38 +12,25 @@ type TermiosState struct {
 }
 
 // MakeRaw terminali Raw Mode'a (ham mod) geçirir ve eski ayarları geri yüklemek üzere döner.
-// macOS (Darwin) üzerinde TIOCGETA / TIOCSETA ioctl çağrılarını CGO'suz kullanır.
+// BSD sistemlerinde TIOCGETA / TIOCSETA ioctl çağrılarını CGO'suz kullanır.
 func MakeRaw(fd int) (*TermiosState, error) {
-	// Mevcut terminal ayarlarını al
 	termios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
 	if err != nil {
 		return nil, err
 	}
 
-	// Eski ayarları yedekle
 	oldState := &TermiosState{termios: *termios}
-
-	// Ham mod ayarlarını uygula
 	raw := *termios
 
-	// Giriş bayraklarını temizle (Input flags)
 	raw.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
-
-	// Çıkış bayraklarını temizle (Output flags)
 	raw.Oflag &^= unix.OPOST
-
-	// Kontrol bayraklarını ayarla (Control flags)
 	raw.Cflag &^= unix.CSIZE | unix.PARENB
 	raw.Cflag |= unix.CS8
-
-	// Yerel bayrakları temizle (Local flags)
 	raw.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
 
-	// Okuma parametrelerini ayarla (Control Characters)
 	raw.Cc[unix.VMIN] = 1
 	raw.Cc[unix.VTIME] = 0
 
-	// Yeni ayarları terminale uygula (TIOCSETA - hemen uygula)
 	err = unix.IoctlSetTermios(fd, unix.TIOCSETA, &raw)
 	if err != nil {
 		return nil, err

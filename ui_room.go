@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
@@ -604,7 +604,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 			Modifier: cell.ModifierBold,
 		})
 		badgeRect := cell.NewRect(curX, inner.Y, codeLen, 1)
-		frame.RegisterClickHandler(badgeRect, func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(badgeRect, func(_ driver.MouseEvent) {
 			CopyToClipboard(node.RoomCode)
 			r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 		})
@@ -666,7 +666,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 			Modifier: cell.ModifierBold,
 		})
 		pRect := cell.NewRect(curX, inner.Y, portLen, 1)
-		frame.RegisterClickHandler(pRect, func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(pRect, func(_ driver.MouseEvent) {
 			r.SetToast(fmt.Sprintf("Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.currentEpoch))
 		})
 		curX += portLen + 2
@@ -688,7 +688,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 				Modifier: cell.ModifierBold,
 			})
 			lRect := cell.NewRect(curX, inner.Y, lockLen, 1)
-			frame.RegisterClickHandler(lRect, func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(lRect, func(_ driver.MouseEvent) {
 				if node.IsHost {
 					node.UnlockRoom()
 					r.SetToast("Room unlocked")
@@ -862,7 +862,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 
 		if peer.IsSharingScreen {
 			targetPeer := peer
-			frame.RegisterClickHandler(peerCard, func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(peerCard, func(_ driver.MouseEvent) {
 				port := targetPeer.VideoPort
 				if port <= 0 {
 					port = 50100
@@ -1031,7 +1031,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
-		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
 			_ = node.StopWatchingScreen()
 			r.SetToast("Screen viewer closed")
 		})
@@ -1058,7 +1058,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
 				targetPeer := p
-				frame.RegisterClickHandler(cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(swBtnText))), 1), func(_ backend.MouseEvent) {
+				frame.RegisterClickHandler(cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(swBtnText))), 1), func(_ driver.MouseEvent) {
 					port := targetPeer.VideoPort
 					if port <= 0 {
 						port = 50100
@@ -1093,7 +1093,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
-		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
 			_ = node.StopScreenShare()
 			r.SetToast("Screen share stopped")
 		})
@@ -1113,7 +1113,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
 				targetPeer := p
-				frame.RegisterClickHandler(cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(swBtnText))), 1), func(_ backend.MouseEvent) {
+				frame.RegisterClickHandler(cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(swBtnText))), 1), func(_ driver.MouseEvent) {
 					port := targetPeer.VideoPort
 					if port <= 0 {
 						port = 50100
@@ -1149,7 +1149,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
-		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
 			port := p.VideoPort
 			if port <= 0 {
 				port = 50100
@@ -1186,7 +1186,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			buf.SetString(inner.X+3, btnRowY, btnText, btnStyle)
 
 			targetPeer := p
-			frame.RegisterClickHandler(cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(btnText))), 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
 				port := targetPeer.VideoPort
 				if port <= 0 {
 					port = 50100
@@ -1354,7 +1354,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		}
 		buf.SetString(inner.X+2, bannerY+1, bAction, bActionStyle)
 
-		frame.RegisterClickHandler(cell.NewRect(inner.X+1, bannerY, bannerW, 2), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+1, bannerY, bannerW, 2), func(_ driver.MouseEvent) {
 			_ = node.StopScreenShare()
 			r.SetToast("Screen share stopped")
 		})
@@ -1478,7 +1478,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			}
 		}
 		buf.SetString(volX, inner.Y, volStr, volStyle)
-		frame.RegisterClickHandler(cell.NewRect(volX, inner.Y, volLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(volX, inner.Y, volLen, 1), func(_ driver.MouseEvent) {
 			if audio != nil {
 				curV := int(math.Round(audio.GetPeerVolume(peer.ID) * 100))
 				var nextV float64
@@ -1567,7 +1567,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		}
 
 		// Click on preview banner to watch / stop watching
-		frame.RegisterClickHandler(cell.NewRect(inner.X+1, bannerY, bannerW, 2), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+1, bannerY, bannerW, 2), func(_ driver.MouseEvent) {
 			if node.IsWatchingScreen && node.WatchingPeerID == peer.ID {
 				go func() {
 					_ = node.StopWatchingScreen()
@@ -1628,7 +1628,7 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 	txt2 := fmt.Sprintf("Room Code: %s", roomCode)
 	txt3 := "Press [C] to copy the code"
 
-	frame.RegisterClickHandler(area, func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(area, func(_ driver.MouseEvent) {
 		CopyToClipboard(roomCode)
 		r.SetToast(fmt.Sprintf("Room Code Copied: %s", roomCode))
 	})
@@ -1700,7 +1700,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	muteX := ctrlInner.X + 1
 	muteLen := uint16(len([]rune(muteLabel)))
 	buf.SetString(muteX, row1Y, muteLabel, muteStyle)
-	frame.RegisterClickHandler(cell.NewRect(muteX, row1Y, muteLen, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(muteX, row1Y, muteLen, 1), func(_ driver.MouseEvent) {
 		isMuted := audio.ToggleMute()
 		node.SendMuteState(isMuted)
 		if isMuted {
@@ -1725,7 +1725,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	deafenLen := uint16(len([]rune(deafenLabel)))
 	if deafenX+deafenLen <= ctrlInner.X+ctrlInner.Width {
 		buf.SetString(deafenX, row1Y, deafenLabel, deafenStyle)
-		frame.RegisterClickHandler(cell.NewRect(deafenX, row1Y, deafenLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(deafenX, row1Y, deafenLen, 1), func(_ driver.MouseEvent) {
 			isDeaf := audio.ToggleDeafen()
 			node.SendDeafenState(isDeaf)
 			node.SendMuteState(audio.Muted)
@@ -1760,7 +1760,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	modeLen := uint16(len([]rune(modeLabel)))
 	if modeX+modeLen <= ctrlInner.X+ctrlInner.Width {
 		buf.SetString(modeX, row1Y, modeLabel, modeStyle)
-		frame.RegisterClickHandler(cell.NewRect(modeX, row1Y, modeLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(modeX, row1Y, modeLen, 1), func(_ driver.MouseEvent) {
 			m := audio.CycleInputMode()
 			if m == InputModePushToTalk {
 				r.SetToast(fmt.Sprintf("Mode: Push-to-Talk (Hold %s to talk)", audio.GetPTTKeyName()))
@@ -1785,7 +1785,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	noiseLen := uint16(len([]rune(noiseLabel)))
 	if noiseX+noiseLen <= ctrlInner.X+ctrlInner.Width {
 		buf.SetString(noiseX, row1Y, noiseLabel, noiseStyle)
-		frame.RegisterClickHandler(cell.NewRect(noiseX, row1Y, noiseLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(noiseX, row1Y, noiseLen, 1), func(_ driver.MouseEvent) {
 			audio.CycleSuppressionMode()
 			r.SetToast(fmt.Sprintf("Noise Filter: %s", audio.SuppressionModeString()))
 		})
@@ -1806,7 +1806,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 	screenLen := uint16(len([]rune(screenLabel)))
 	if screenX+screenLen <= ctrlInner.X+ctrlInner.Width {
 		buf.SetString(screenX, row1Y, screenLabel, screenStyle)
-		frame.RegisterClickHandler(cell.NewRect(screenX, row1Y, screenLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(screenX, row1Y, screenLen, 1), func(_ driver.MouseEvent) {
 			if node.IsSharingScreen {
 				_ = node.StopScreenShare()
 				r.SetToast("Screen share stopped")
@@ -1857,7 +1857,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		watchX := ctrlInner.X + 1
 		watchLen := uint16(len([]rune(watchLabel)))
 		buf.SetString(watchX, row2Y, watchLabel, watchStyle)
-		frame.RegisterClickHandler(cell.NewRect(watchX, row2Y, watchLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(watchX, row2Y, watchLen, 1), func(_ driver.MouseEvent) {
 			if node.IsWatchingScreen {
 				go func() {
 					_ = node.StopWatchingScreen()
@@ -1896,7 +1896,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		testLen := uint16(len([]rune(testLabel)))
 		if testX+testLen <= ctrlInner.X+ctrlInner.Width {
 			buf.SetString(testX, row2Y, testLabel, testStyle)
-			frame.RegisterClickHandler(cell.NewRect(testX, row2Y, testLen, 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(testX, row2Y, testLen, 1), func(_ driver.MouseEvent) {
 				if r.OnOpenTestModal != nil {
 					r.OnOpenTestModal()
 				}
@@ -1909,7 +1909,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		gainLen := uint16(len([]rune(gainText)))
 		if gainX+gainLen <= ctrlInner.X+ctrlInner.Width {
 			buf.SetString(gainX, row2Y, gainText, cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg})
-			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, gainLen, 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, gainLen, 1), func(_ driver.MouseEvent) {
 				gain := audio.AdjustGain(0.1)
 				if gain > 3.0 {
 					audio.AdjustGain(-2.5) // loop back from 300% to 50%
@@ -1924,7 +1924,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		copyLen := uint16(len([]rune(copyText)))
 		if copyX+copyLen <= ctrlInner.X+ctrlInner.Width {
 			buf.SetString(copyX, row2Y, copyText, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg})
-			frame.RegisterClickHandler(cell.NewRect(copyX, row2Y, copyLen, 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(copyX, row2Y, copyLen, 1), func(_ driver.MouseEvent) {
 				CopyToClipboard(node.RoomCode)
 				r.SetToast(fmt.Sprintf("Room Code Copied: %s", node.RoomCode))
 			})
@@ -1939,7 +1939,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 				leaveX = ctrlInner.X + ctrlInner.Width - leaveLen - 1
 			}
 			buf.SetString(leaveX, row2Y, leaveText, cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-			frame.RegisterClickHandler(cell.NewRect(leaveX, row2Y, leaveLen, 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(leaveX, row2Y, leaveLen, 1), func(_ driver.MouseEvent) {
 				if r.OnLeave != nil {
 					r.OnLeave()
 				}
@@ -2931,7 +2931,7 @@ func drawHUDPill(buf *buffer.Buffer, frame *terminal.Frame, x, y, maxX uint16, l
 	}
 	buf.SetString(x, y, label, style)
 	if onClick != nil && frame != nil {
-		frame.RegisterClickHandler(cell.NewRect(x, y, pillLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(x, y, pillLen, 1), func(_ driver.MouseEvent) {
 			onClick()
 		})
 	}

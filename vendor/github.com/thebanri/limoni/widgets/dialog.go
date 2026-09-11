@@ -6,12 +6,16 @@ import (
 
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
+	"github.com/thebanri/limoni/graphics"
 )
 
 // DialogButton represents a button in the dialog.
 type DialogButton struct {
-	Text    string
-	Handler func()
+	Text         string
+	Handler      func()
+	Style        cell.Style
+	FocusedStyle cell.Style
 }
 
 // Dialog is a premium, modern glassmorphism dialog widget with glowing gradient borders and blended shadows.
@@ -28,6 +32,8 @@ type Dialog struct {
 	ButtonFocusedStyle cell.Style
 	BorderSymbols      BorderSymbols
 	Shadow             bool
+	FocusedButton      int
+	OnButtonHover      func(index int)
 }
 
 // Draw renders the premium glassmorphism dialog inside ctx.Area.
@@ -56,14 +62,25 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 	baseStyle := cell.Style{Fg: fgCol, Bg: bgCol}
 
+	// Opaque backdrop for native image protocols (Kitty, Sixel, iTerm2):
+	if ctx.RegisterImage != nil {
+		proto := graphics.DetectProtocol()
+		if proto != graphics.ProtocolHalfBlock {
+			backdropArea := ctx.Area
+			if di.Shadow {
+				backdropArea.Width += 2
+				backdropArea.Height += 1
+			}
+			solidImg := getSolidImage(bgCol)
+			ctx.RegisterImage(backdropArea, solidImg, -2, false)
+		}
+	}
+
 	for dy := uint16(0); dy < boxH; dy++ {
 		by := y + dy
 		for dx := uint16(0); dx < boxW; dx++ {
 			bx := x + dx
-			if c := buf.Get(bx, by); c != nil {
-				c.Content = ' '
-				c.Style = baseStyle
-			}
+			buf.SetCellDirect(bx, by, cell.Cell{Content: ' ', Style: baseStyle})
 		}
 	}
 
@@ -104,17 +121,18 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			factor = float64(dx) / float64(boxW-1)
 		}
 		gColor := getGradientColor(factor)
-		if c := buf.Get(col, y); c != nil {
-			if dx == 0 {
-				c.Content = sym.TopLeft
-			} else if dx == boxW-1 {
-				c.Content = sym.TopRight
-			} else {
-				c.Content = sym.Horizontal
-			}
-			c.Style.Fg = gColor
-			c.Style.Bg = bgCol
+		var content rune
+		if dx == 0 {
+			content = sym.TopLeft
+		} else if dx == boxW-1 {
+			content = sym.TopRight
+		} else {
+			content = sym.Horizontal
 		}
+		buf.SetCellDirect(col, y, cell.Cell{
+			Content: content,
+			Style:   cell.Style{Fg: gColor, Bg: bgCol},
+		})
 	}
 
 	// Bottom border (if boxH >= 2)
@@ -126,17 +144,18 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				factor = float64(dx) / float64(boxW-1)
 			}
 			gColor := getGradientColor(factor)
-			if c := buf.Get(col, y+boxH-1); c != nil {
-				if dx == 0 {
-					c.Content = sym.BottomLeft
-				} else if dx == boxW-1 {
-					c.Content = sym.BottomRight
-				} else {
-					c.Content = sym.Horizontal
-				}
-				c.Style.Fg = gColor
-				c.Style.Bg = bgCol
+			var content rune
+			if dx == 0 {
+				content = sym.BottomLeft
+			} else if dx == boxW-1 {
+				content = sym.BottomRight
+			} else {
+				content = sym.Horizontal
 			}
+			buf.SetCellDirect(col, y+boxH-1, cell.Cell{
+				Content: content,
+				Style:   cell.Style{Fg: gColor, Bg: bgCol},
+			})
 		}
 	}
 
@@ -146,17 +165,10 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			row := y + dy
 			factor := float64(dy) / float64(boxH-1)
 			gColor := getGradientColor(factor)
-			if c := buf.Get(x, row); c != nil {
-				c.Content = sym.Vertical
-				c.Style.Fg = gColor
-				c.Style.Bg = bgCol
-			}
+			st := cell.Style{Fg: gColor, Bg: bgCol}
+			buf.SetCellDirect(x, row, cell.Cell{Content: sym.Vertical, Style: st})
 			if boxW >= 2 {
-				if c := buf.Get(x+boxW-1, row); c != nil {
-					c.Content = sym.Vertical
-					c.Style.Fg = gColor
-					c.Style.Bg = bgCol
-				}
+				buf.SetCellDirect(x+boxW-1, row, cell.Cell{Content: sym.Vertical, Style: st})
 			}
 		}
 	}
@@ -198,11 +210,10 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			col := x + dx
 			factor := float64(dx) / float64(boxW)
 			gColor := getGradientColor(factor)
-			if c := buf.Get(col, sepY); c != nil {
-				c.Content = '─'
-				c.Style.Fg = blendWithColor(gColor, bgCol, 0.5)
-				c.Style.Bg = bgCol
-			}
+			buf.SetCellDirect(col, sepY, cell.Cell{
+				Content: '─',
+				Style:   cell.Style{Fg: blendWithColor(gColor, bgCol, 0.5), Bg: bgCol},
+			})
 		}
 	}
 
@@ -220,22 +231,35 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 
 		type btnLayout struct {
-			text    string
-			width   int
-			btn     DialogButton
-			btnID   string
-			style   cell.Style
+			text  string
+			width int
+			btn   DialogButton
+			btnID string
+			style cell.Style
 		}
 
 		btnList := make([]btnLayout, len(di.Buttons))
 		totalBtnsW := 0
+
+		hasDialogFocus := false
+		for j := range di.Buttons {
+			if ctx.FocusedID == fmt.Sprintf("%s_btn_%d", di.ID, j) {
+				hasDialogFocus = true
+				break
+			}
+		}
 
 		for i, btn := range di.Buttons {
 			btnID := fmt.Sprintf("%s_btn_%d", di.ID, i)
 			if ctx.RegisterFocus != nil {
 				ctx.RegisterFocus(btnID)
 			}
-			isFocused := (ctx.FocusedID == btnID)
+			isFocused := false
+			if hasDialogFocus {
+				isFocused = (ctx.FocusedID == btnID)
+			} else if di.FocusedButton >= 0 && di.FocusedButton < len(di.Buttons) {
+				isFocused = (di.FocusedButton == i)
+			}
 			btnText := fmt.Sprintf(" [ %s ] ", btn.Text)
 			btnW := displayWidth(btnText)
 
@@ -248,6 +272,9 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			}
 			if di.ButtonStyle.Bg.Type() != cell.ColorDefault {
 				bStyle.Bg = di.ButtonStyle.Bg
+			}
+			if btn.Style.Fg.Type() != cell.ColorDefault || btn.Style.Bg.Type() != cell.ColorDefault {
+				bStyle = btn.Style
 			}
 			if isFocused {
 				factor := 0.5
@@ -262,6 +289,9 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				}
 				if di.ButtonFocusedStyle.Bg.Type() != cell.ColorDefault {
 					bStyle.Bg = di.ButtonFocusedStyle.Bg
+				}
+				if btn.FocusedStyle.Fg.Type() != cell.ColorDefault || btn.FocusedStyle.Bg.Type() != cell.ColorDefault {
+					bStyle = btn.FocusedStyle
 				}
 			}
 
@@ -283,7 +313,7 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			curBtnX = int(x) + 1 + (innerW-totalBtnsW)/2
 		}
 
-		for _, item := range btnList {
+		for i, item := range btnList {
 			if curBtnX >= int(x+boxW-1) {
 				break
 			}
@@ -298,19 +328,39 @@ func (di Dialog) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			drawnW := cell.StringWidth(textToDraw)
 			buf.SetString(uint16(curBtnX), btnY, textToDraw, item.style)
 
-			// Register click handler strictly within dialog inner bounds
-			if ctx.RegisterClick != nil && drawnW > 0 {
+			// Register hover and click handlers strictly within dialog inner bounds
+			if drawnW > 0 {
 				btnArea := cell.NewRect(uint16(curBtnX), btnY, uint16(drawnW), 1)
 				handler := item.btn.Handler
 				btnID := item.btnID
-				ctx.RegisterClick(btnArea, func() {
-					if ctx.SetFocus != nil {
-						ctx.SetFocus(btnID)
-					}
-					if handler != nil {
-						handler()
-					}
-				})
+				btnIndex := i
+
+				// Mouse hover callback
+				if ctx.RegisterMouse != nil {
+					ctx.RegisterMouse(btnArea, func(ev driver.MouseEvent) {
+						if ctx.SetFocus != nil {
+							ctx.SetFocus(btnID)
+						}
+						if di.OnButtonHover != nil {
+							di.OnButtonHover(btnIndex)
+						}
+					})
+				}
+
+				// Click callback
+				if ctx.RegisterClick != nil {
+					ctx.RegisterClick(btnArea, func() {
+						if ctx.SetFocus != nil {
+							ctx.SetFocus(btnID)
+						}
+						if di.OnButtonHover != nil {
+							di.OnButtonHover(btnIndex)
+						}
+						if handler != nil {
+							handler()
+						}
+					})
+				}
 			}
 
 			curBtnX += item.width + spacing
@@ -457,4 +507,3 @@ func splitMessage(msg string, maxW int) []string {
 	}
 	return lines
 }
-

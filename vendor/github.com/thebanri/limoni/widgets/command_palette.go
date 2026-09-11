@@ -4,9 +4,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
+	"github.com/thebanri/limoni/graphics"
 )
 
 // CommandItem, Komut Paleti'nde gösterilecek bir komutu temsil eder.
@@ -74,23 +75,23 @@ func (cps *CommandPaletteState) Toggle() {
 
 // HandleKey, Command Palette açıkken gelen tuş olayını işler.
 // true döner ise olay tüketilmiştir, dış event loop'a yayılmamalıdır.
-func (cps *CommandPaletteState) HandleKey(ev backend.KeyEvent) bool {
+func (cps *CommandPaletteState) HandleKey(ev driver.KeyEvent) bool {
 	if !cps.IsOpen {
 		return false
 	}
 
 	// Ctrl+P, açık paleti de aynı kısayolla kapatır.
-	if ev.Type == backend.KeyRune && ev.Ch == 'p' && ev.Ctrl {
+	if ev.Type == driver.KeyRune && ev.Ch == 'p' && ev.Ctrl {
 		cps.Close()
 		return true
 	}
 
 	switch ev.Type {
-	case backend.KeyEsc:
+	case driver.KeyEsc:
 		cps.Close()
 		return true
 
-	case backend.KeyEnter:
+	case driver.KeyEnter:
 		if len(cps.Filtered) > 0 && cps.Selected >= 0 && cps.Selected < len(cps.Filtered) {
 			handler := cps.Filtered[cps.Selected].Handler
 			cps.Close()
@@ -103,7 +104,7 @@ func (cps *CommandPaletteState) HandleKey(ev backend.KeyEvent) bool {
 		}
 		return true
 
-	case backend.KeyArrowUp:
+	case driver.KeyArrowUp:
 		if cps.Selected > 0 {
 			cps.Selected--
 			// Scroll up if needed
@@ -113,7 +114,7 @@ func (cps *CommandPaletteState) HandleKey(ev backend.KeyEvent) bool {
 		}
 		return true
 
-	case backend.KeyArrowDown:
+	case driver.KeyArrowDown:
 		if cps.Selected < len(cps.Filtered)-1 {
 			cps.Selected++
 			// Scroll down if needed
@@ -281,6 +282,31 @@ func (cp CommandPalette) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		bgStyle.Bg = cell.NewColorRGB(30, 30, 40)
 		bgStyle.Fg = cell.NewColorRGB(220, 220, 230)
 	}
+
+	// Arka plandaki yerel grafiklerin (Kitty/Sixel/iTerm2) sızmasını engellemek için
+	// palet ve gölge alanına z = -2 seviyesinde solid arka plan resmi kaydet:
+	if ctx.RegisterImage != nil {
+		proto := graphics.DetectProtocol()
+		if proto != graphics.ProtocolHalfBlock {
+			backdropW := uint16(paletW + 2)
+			backdropH := uint16(paletH + 1)
+			if uint16(startX)+backdropW > area.X+area.Width {
+				backdropW = area.X + area.Width - uint16(startX)
+			}
+			if uint16(startY)+backdropH > area.Y+area.Height {
+				backdropH = area.Y + area.Height - uint16(startY)
+			}
+			shadowBackdrop := cell.NewRect(
+				uint16(startX),
+				uint16(startY),
+				backdropW,
+				backdropH,
+			)
+			solidImg := getSolidImage(bgStyle.Bg)
+			ctx.RegisterImage(shadowBackdrop, solidImg, -2, false)
+		}
+	}
+
 	for dy := 0; dy < paletH; dy++ {
 		for dx := 0; dx < paletW; dx++ {
 			if c := buf.Get(uint16(startX+dx), uint16(startY+dy)); c != nil {
@@ -516,6 +542,55 @@ func (cp CommandPalette) Draw(ctx cell.Context, buf *buffer.Buffer) {
 					}
 				}
 			}
+		}
+
+		// Fare tıklama ve üzerine gelme (hover) olaylarını kaydet
+		rowArea := cell.NewRect(uint16(startX+1), uint16(y), uint16(paletW-2), 1)
+		itemIdx := idx
+		itemHandler := item.Handler
+		if ctx.RegisterClick != nil {
+			ctx.RegisterClick(rowArea, func() {
+				if cp.State != nil {
+					cp.State.Selected = itemIdx
+					cp.State.Close()
+				}
+				if itemHandler != nil {
+					itemHandler()
+				}
+			})
+		}
+		if ctx.RegisterMouse != nil {
+			ctx.RegisterMouse(rowArea, func(ev driver.MouseEvent) {
+				if cp.State == nil {
+					return
+				}
+				switch ev.Button {
+				case driver.MouseLeft:
+					if cp.State != nil {
+						cp.State.Selected = itemIdx
+						cp.State.Close()
+					}
+					if itemHandler != nil {
+						itemHandler()
+					}
+				case driver.MouseNone:
+					cp.State.Selected = itemIdx
+				case driver.MouseScrollUp:
+					if cp.State.Selected > 0 {
+						cp.State.Selected--
+						if cp.State.Selected < cp.State.ScrollOffset {
+							cp.State.ScrollOffset = cp.State.Selected
+						}
+					}
+				case driver.MouseScrollDown:
+					if cp.State.Selected < len(cp.State.Filtered)-1 {
+						cp.State.Selected++
+						if cp.State.Selected >= cp.State.ScrollOffset+visibleCount {
+							cp.State.ScrollOffset = cp.State.Selected - visibleCount + 1
+						}
+					}
+				}
+			})
 		}
 	}
 

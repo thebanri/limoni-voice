@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/graphics"
@@ -24,6 +24,7 @@ type LobbyView struct {
 	AutoRotate       bool
 	AutoRotateSpeed  float64
 	StartTime        time.Time
+	RenderMode       widgets.Ascii3DMode
 
 	// Mouse Drag State
 	DragActive bool
@@ -163,29 +164,47 @@ func GenerateMicrophoneModel() graphics.Model3D {
 		angle := float64(i) * math.Pi / 2.0
 		cosA := math.Cos(angle)
 		sinA := math.Sin(angle)
+		perpX := -sinA * 0.03
+		perpZ := cosA * 0.03
 
-		// Outer cord attachment point
-		pOuter := graphics.Vertex3D{X: 1.35 * cosA, Y: 0.05, Z: 1.35 * sinA}
-		pInner := graphics.Vertex3D{X: 0.65 * cosA, Y: 0.05, Z: 0.65 * sinA}
+		// Outer cord attachment points (with physical ribbon thickness)
+		o1 := graphics.Vertex3D{X: 1.35*cosA + perpX, Y: 0.05, Z: 1.35*sinA + perpZ}
+		o2 := graphics.Vertex3D{X: 1.35*cosA - perpX, Y: 0.05, Z: 1.35*sinA - perpZ}
+		// Inner cord attachment points
+		i1 := graphics.Vertex3D{X: 0.65*cosA + perpX, Y: 0.05, Z: 0.65*sinA + perpZ}
+		i2 := graphics.Vertex3D{X: 0.65*cosA - perpX, Y: 0.05, Z: 0.65*sinA - perpZ}
 
-		idxOuter := len(model.Vertices)
-		model.Vertices = append(model.Vertices, pOuter)
-		idxInner := len(model.Vertices)
-		model.Vertices = append(model.Vertices, pInner)
+		idxO1 := len(model.Vertices)
+		model.Vertices = append(model.Vertices, o1)
+		idxO2 := len(model.Vertices)
+		model.Vertices = append(model.Vertices, o2)
+		idxI2 := len(model.Vertices)
+		model.Vertices = append(model.Vertices, i2)
+		idxI1 := len(model.Vertices)
+		model.Vertices = append(model.Vertices, i1)
 
-		// Face forming the cord line
-		model.Faces = append(model.Faces, []int{idxOuter, idxInner, idxInner})
+		// Valid 4-vertex quad face forming the cord ribbon
+		model.Faces = append(model.Faces, []int{idxO1, idxO2, idxI2, idxI1})
 		model.FaceColors = append(model.FaceColors, blackCord)
 	}
 
 	// 6. YOKE STEM TO SHOCKMOUNT CONNECTOR
 	// Visual support bar from the stand stem up to the shockmount bottom
-	connectorIdx1 := len(model.Vertices)
-	model.Vertices = append(model.Vertices, graphics.Vertex3D{X: 0.0, Y: -0.4, Z: 0.0})
-	connectorIdx2 := len(model.Vertices)
-	model.Vertices = append(model.Vertices, graphics.Vertex3D{X: 0.0, Y: -0.05, Z: -1.35})
+	c1 := graphics.Vertex3D{X: -0.04, Y: -0.4, Z: 0.0}
+	c2 := graphics.Vertex3D{X: 0.04, Y: -0.4, Z: 0.0}
+	c3 := graphics.Vertex3D{X: 0.04, Y: -0.05, Z: -1.35}
+	c4 := graphics.Vertex3D{X: -0.04, Y: -0.05, Z: -1.35}
 
-	model.Faces = append(model.Faces, []int{connectorIdx1, connectorIdx2, connectorIdx1})
+	idxC1 := len(model.Vertices)
+	model.Vertices = append(model.Vertices, c1)
+	idxC2 := len(model.Vertices)
+	model.Vertices = append(model.Vertices, c2)
+	idxC3 := len(model.Vertices)
+	model.Vertices = append(model.Vertices, c3)
+	idxC4 := len(model.Vertices)
+	model.Vertices = append(model.Vertices, c4)
+
+	model.Faces = append(model.Faces, []int{idxC1, idxC2, idxC3, idxC4})
 	model.FaceColors = append(model.FaceColors, darkMetal)
 
 	model.Normalize(2.0)
@@ -237,11 +256,44 @@ func NewLobbyView() *LobbyView {
 		AutoRotate:      true,
 		AutoRotateSpeed: 1.8,
 		StartTime:       time.Now(),
+		RenderMode:      widgets.ModeBlock,
 		CurrentCode:     code,
 		NickState:       nickState,
 		CodeState:       codeState,
 		PinState:        pinState,
 		ActiveInput:     2,
+	}
+}
+
+func (l *LobbyView) Cycle3DMode() {
+	switch l.RenderMode {
+	case widgets.ModeBlock:
+		l.RenderMode = widgets.ModeBraille
+		l.SetToast("3D Mode: Braille Matrix (8x)")
+	case widgets.ModeBraille:
+		l.RenderMode = widgets.ModeDithered
+		l.SetToast("3D Mode: Retro Dithered")
+	case widgets.ModeDithered:
+		l.RenderMode = widgets.ModeASCII
+		l.SetToast("3D Mode: ASCII Art Ramp")
+	default:
+		l.RenderMode = widgets.ModeBlock
+		l.SetToast("3D Mode: Half-Block TrueColor (2x)")
+	}
+}
+
+func (l *LobbyView) RenderModeName() string {
+	switch l.RenderMode {
+	case widgets.ModeBlock:
+		return "Half-Block (2x TrueColor)"
+	case widgets.ModeBraille:
+		return "Braille Matrix (8x)"
+	case widgets.ModeDithered:
+		return "Retro Dithered"
+	case widgets.ModeASCII:
+		return "ASCII Art Ramp"
+	default:
+		return "Half-Block"
 	}
 }
 
@@ -282,8 +334,9 @@ func (l *LobbyView) Render(frame *terminal.Frame, area cell.Rect) {
 
 func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 	theme := CurrentTheme()
+	title := fmt.Sprintf(" 3D STUDIO MICROPHONE [%s - (M)] ", l.RenderModeName())
 	block := widgets.Block{
-		Title:         " 3D STUDIO MICROPHONE (OBJ) ",
+		Title:         title,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
@@ -299,13 +352,18 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 
+	// Register click handler on 3D view area to cycle rendering modes
+	frame.RegisterClickHandler(area, func(_ driver.MouseEvent) {
+		l.Cycle3DMode()
+	})
+
 	if innerArea.Width < 4 || innerArea.Height < 4 {
 		return
 	}
 
 	asciiWidget := widgets.Ascii3D{
 		Model:                l.MicModel,
-		Mode:                 widgets.ModeBraille,
+		Mode:                 l.RenderMode,
 		Scale:                l.Scale,
 		XOffset:              0.0,
 		YOffset:              0.0,
@@ -313,13 +371,16 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 		FOV:                  60.0,
 		RotX:                 l.RotX,
 		RotY:                 l.RotY,
-		LightDirection:       graphics.Vector3D{X: 1.0, Y: 1.0, Z: 1.0},
-		EnvironmentIntensity: 0.2,
-		Contrast:             1.3,
-		EdgeContrast:         2.5,
-		Exposure:             1.1,
-		Roughness:            0.2,
-		Ascii:                false,
+		RotZ:                 l.RotZ,
+		CellAspect:           0.50,
+		Time:                 time.Since(l.StartTime).Seconds(),
+		LightDirection:       graphics.Vector3D{X: 1.2, Y: 1.5, Z: 1.8},
+		EnvironmentIntensity: 0.35,
+		Contrast:             1.25,
+		EdgeContrast:         2.2,
+		Exposure:             1.15,
+		Roughness:            0.15,
+		Ascii:                l.RenderMode == widgets.ModeASCII,
 		Colored:              true,
 		Invert:               false,
 		Color:                cell.NewColorRGB(220, 225, 235),
@@ -398,7 +459,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		nickBgStyle = cell.Style{Bg: theme.InputBg}
 	}
 
-	frame.RegisterClickHandler(nickArea, func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(nickArea, func(_ driver.MouseEvent) {
 		l.ActiveInput = 0
 	})
 
@@ -459,7 +520,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	// Register card container click handler FIRST so child widgets take priority
-	frame.RegisterClickHandler(hostArea, func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(hostArea, func(_ driver.MouseEvent) {
 		if l.ActiveInput != 3 {
 			l.ActiveInput = 2
 		}
@@ -491,7 +552,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	keyBoxStr := fmt.Sprintf("  [ %s ]  ", l.CurrentCode)
 	buf.SetString(hostInner.X+2, hostInner.Y+1, keyBoxStr, keyStyle)
 
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(len([]rune(keyBoxStr))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(len([]rune(keyBoxStr))), 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
 			l.OnCopyCode(l.CurrentCode)
@@ -510,7 +571,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 	buf.SetString(hostInner.X, hostInner.Y+3, pinCheckStr, pinCheckStyle)
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, uint16(len([]rune(pinCheckStr))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, uint16(len([]rune(pinCheckStr))), 1), func(_ driver.MouseEvent) {
 		l.IsPinProtected = !l.IsPinProtected
 		if l.IsPinProtected {
 			if l.PinState.Value() == "" {
@@ -535,7 +596,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Placeholder: "1234",
 		}
 		frame.RenderWidget(pinInput, pinInputRect)
-		frame.RegisterClickHandler(pinInputRect, func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(pinInputRect, func(_ driver.MouseEvent) {
 			l.ActiveInput = 3
 		})
 	}
@@ -543,19 +604,19 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	hostBtns := "[Enter] Open This Room   •   [F2] Copy Code   •   [F3] New Code"
 	buf.SetString(hostInner.X, hostInner.Y+4, hostBtns, hostBtnStyle)
 
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+4, 19, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+4, 19, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnStartHost != nil {
 			l.OnStartHost()
 		}
 	})
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+22, hostInner.Y+4, 17, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X+22, hostInner.Y+4, 17, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
 			l.OnCopyCode(l.CurrentCode)
 		}
 	})
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+42, hostInner.Y+4, 14, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(hostInner.X+42, hostInner.Y+4, 14, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnNewCode != nil {
 			l.OnNewCode()
@@ -599,7 +660,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	// Register card container click handler FIRST so input and buttons take priority
-	frame.RegisterClickHandler(joinArea, func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(joinArea, func(_ driver.MouseEvent) {
 		l.ActiveInput = 1
 	})
 
@@ -649,7 +710,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
 
-	frame.RegisterClickHandler(cell.NewRect(joinInner.X, joinInner.Y+3, joinInner.Width, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(joinInner.X, joinInner.Y+3, joinInner.Width, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 1
 		if l.IsConnecting {
 			if l.OnCancelJoin != nil {
@@ -667,7 +728,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	})
 
-	frame.RegisterClickHandler(joinInputRect, func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(joinInputRect, func(_ driver.MouseEvent) {
 		l.ActiveInput = 1
 	})
 
@@ -714,7 +775,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 
 		buf.SetString(botInner.X+1, botInner.Y, relayBtn, relayBtnStyle)
-		frame.RegisterClickHandler(cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ driver.MouseEvent) {
 			if l.OnOpenRelayModal != nil {
 				l.OnOpenRelayModal()
 			}
@@ -729,7 +790,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		testBtnX := botInner.X + 1 + uint16(len([]rune(relayBtn))) + 2
 		if testBtnX+uint16(len([]rune(testBtn))) <= botInner.X+botInner.Width {
 			buf.SetString(testBtnX, botInner.Y, testBtn, testBtnStyle)
-			frame.RegisterClickHandler(cell.NewRect(testBtnX, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(testBtnX, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ driver.MouseEvent) {
 				if l.OnOpenTestModal != nil {
 					l.OnOpenTestModal()
 				}
@@ -749,8 +810,8 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		helpLines := []string{
 			"• [R] Custom relay server & security settings (Click or press R)",
 			"• [T] or [F4] Microphone & sound test panel",
-			"• [Tab] or [Shift+Tab] Switch input field",
-			"• [F2] / [C] Copy key • [F3] / [G] New key • [Esc] Exit",
+			"• [M] 3D render mode (Block/Braille/Dither/ASCII) • [Space] Rotate toggle",
+			"• [Tab] Switch field • [F2]/[C] Copy • [F3]/[G] New key • [Esc] Exit",
 		}
 		for i, h := range helpLines {
 			lineY := botInner.Y + rowOffset + uint16(i)

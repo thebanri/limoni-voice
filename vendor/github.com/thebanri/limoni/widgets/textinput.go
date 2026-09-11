@@ -4,9 +4,9 @@ import (
 	"strings"
 
 	"github.com/thebanri/limoni/core/accessibility"
-	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/layout"
 )
 
@@ -36,47 +36,47 @@ func (state *TextInputState) SetValue(s string) {
 }
 
 // HandleKey, basılan tuşu metin kutusuna uygular. Değer veya imleç değiştiyse true döner.
-func (state *TextInputState) HandleKey(key backend.KeyEvent) bool {
+func (state *TextInputState) HandleKey(key driver.KeyEvent) bool {
 	switch key.Type {
-	case backend.KeyRune:
+	case driver.KeyRune:
 		state.insert(key.Ch)
 		return true
 
-	case backend.KeyEnter:
+	case driver.KeyEnter:
 		if key.Shift || key.Alt || key.Ctrl {
 			state.insert('\n')
 			return true
 		}
 
-	case backend.KeySpace:
+	case driver.KeySpace:
 		state.insert(' ')
 		return true
 
-	case backend.KeyBackspace:
+	case driver.KeyBackspace:
 		return state.backspace()
 
-	case backend.KeyDelete:
+	case driver.KeyDelete:
 		return state.delete()
 
-	case backend.KeyArrowLeft:
+	case driver.KeyArrowLeft:
 		if state.Cursor > 0 {
 			state.Cursor--
 			return true
 		}
 
-	case backend.KeyArrowRight:
+	case driver.KeyArrowRight:
 		if state.Cursor < len(state.Text) {
 			state.Cursor++
 			return true
 		}
 
-	case backend.KeyHome:
+	case driver.KeyHome:
 		if state.Cursor != 0 {
 			state.Cursor = 0
 			return true
 		}
 
-	case backend.KeyEnd:
+	case driver.KeyEnd:
 		if state.Cursor != len(state.Text) {
 			state.Cursor = len(state.Text)
 			return true
@@ -127,6 +127,46 @@ type TextInput struct {
 	SelectionEnd     int
 	SelectionStyle   cell.Style
 	Focused          bool
+}
+
+// NewTextInput creates a new TextInput widget with the specified ID.
+func NewTextInput(id string) *TextInput {
+	return &TextInput{
+		ID:             id,
+		State:          NewTextInputState(),
+		SelectionStart: -1,
+		SelectionEnd:   -1,
+	}
+}
+
+// WithState sets the TextInputState.
+func (ti *TextInput) WithState(state *TextInputState) *TextInput {
+	ti.State = state
+	return ti
+}
+
+// WithPlaceholder sets the placeholder text.
+func (ti *TextInput) WithPlaceholder(ph string) *TextInput {
+	ti.Placeholder = ph
+	return ti
+}
+
+// WithStyle sets the default box style.
+func (ti *TextInput) WithStyle(style cell.Style) *TextInput {
+	ti.Style = style
+	return ti
+}
+
+// WithPlaceholderStyle sets the style for the placeholder text.
+func (ti *TextInput) WithPlaceholderStyle(style cell.Style) *TextInput {
+	ti.PlaceholderStyle = style
+	return ti
+}
+
+// WithFocusedStyle sets the style when the input is focused.
+func (ti *TextInput) WithFocusedStyle(style cell.Style) *TextInput {
+	ti.FocusedStyle = style
+	return ti
 }
 
 // Draw, metin kutusunu çizer, tıklandığında odak almasını sağlar ve aktif odaklıysa software cursor gösterir.

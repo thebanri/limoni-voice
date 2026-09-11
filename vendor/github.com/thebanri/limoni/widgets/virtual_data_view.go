@@ -2,9 +2,9 @@ package widgets
 
 import (
 	"context"
-	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"strings"
 )
 
@@ -55,15 +55,15 @@ func (v VirtualDataView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 	if status, _ := v.State.Status(); status == VirtualLoading {
-		buf.SetString(ctx.Area.X, ctx.Area.Y, fallback(v.LoadingText, "Loading..."), ctx.Style.Merge(v.Style))
+		buf.SetStringWithin(ctx.Area.X, ctx.Area.Y, fallback(v.LoadingText, "Loading..."), ctx.Style.Merge(v.Style), ctx.Area.Width)
 		return
 	}
 	if err := v.State.Refresh(context.Background(), v.Source, first, visible, v.Prefetch); err != nil {
-		buf.SetString(ctx.Area.X, ctx.Area.Y, fallback(v.ErrorText, "Error: ")+err.Error(), ctx.Style.Merge(v.Style))
+		buf.SetStringWithin(ctx.Area.X, ctx.Area.Y, fallback(v.ErrorText, "Error: ")+err.Error(), ctx.Style.Merge(v.Style), ctx.Area.Width)
 		return
 	}
 	if v.State.Count() == 0 {
-		buf.SetString(ctx.Area.X, ctx.Area.Y, fallback(v.EmptyText, "No data"), ctx.Style.Merge(v.Style))
+		buf.SetStringWithin(ctx.Area.X, ctx.Area.Y, fallback(v.EmptyText, "No data"), ctx.Style.Merge(v.Style), ctx.Area.Width)
 		return
 	}
 	style := ctx.Style.Merge(v.Style)
@@ -71,12 +71,12 @@ func (v VirtualDataView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 	// Register single mouse handler for viewport scrolling and click routing
 	if ctx.RegisterMouse != nil {
-		ctx.RegisterMouse(ctx.Area, func(ev backend.MouseEvent) {
-			if ev.Button == backend.MouseScrollUp && v.Offset != nil && *v.Offset > 0 {
+		ctx.RegisterMouse(ctx.Area, func(ev driver.MouseEvent) {
+			if ev.Button == driver.MouseScrollUp && v.Offset != nil && *v.Offset > 0 {
 				(*v.Offset)--
 				return
 			}
-			if ev.Button == backend.MouseScrollDown && v.Offset != nil {
+			if ev.Button == driver.MouseScrollDown && v.Offset != nil {
 				max := v.State.Count() - int(ctx.Area.Height)
 				if max < 0 {
 					max = 0
@@ -86,7 +86,7 @@ func (v VirtualDataView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				}
 				return
 			}
-			if ev.Button == backend.MouseLeft {
+			if ev.Button == driver.MouseLeft {
 				relY := int(ev.Y - ctx.Area.Y)
 				if relY >= 0 && relY < visible {
 					targetIdx := first + relY
@@ -123,7 +123,7 @@ func (v VirtualDataView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			height = uint16(visible - visualRow)
 		}
 		for lineRow := uint16(0); lineRow < height; lineRow++ {
-			buf.SetString(ctx.Area.X, ctx.Area.Y+uint16(visualRow)+lineRow, line, rowStyle)
+			buf.SetStringWithin(ctx.Area.X, ctx.Area.Y+uint16(visualRow)+lineRow, line, rowStyle, ctx.Area.Width)
 		}
 		if perRowClick {
 			id := item.ID

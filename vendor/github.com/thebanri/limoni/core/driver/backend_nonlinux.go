@@ -1,6 +1,6 @@
 //go:build !unix && !windows && !js
 
-package backend
+package driver
 
 import (
 	"io"

@@ -10,6 +10,8 @@ import (
 	"image/draw"
 	"image/png"
 	"os"
+	"strings"
+	"sync"
 )
 
 // CropImage returns a pixel-exact crop of img. The returned image uses a
@@ -38,14 +40,9 @@ const (
 	ProtocolHalfBlock
 )
 
-// transferredKittyImages, Kitty protokolüyle terminal belleğine zaten aktarılmış olan
-// resim ID'lerini saklar. Bu sayede aynı resmi her karede tekrar göndermek yerine
-// sadece konumlandırma komutu gönderilir (performans optimizasyonu).
-var transferredKittyImages = make(map[uint32]bool)
-
 // DetectProtocol, terminal ortam değişkenlerini inceleyerek en uygun resim protokolünü otomatik seçer.
 func DetectProtocol() Protocol {
-	switch os.Getenv("LIMONI_GRAPHICS") {
+	switch strings.ToLower(os.Getenv("LIMONI_GRAPHICS")) {
 	case "kitty":
 		return ProtocolKitty
 	case "sixel":
@@ -55,27 +52,39 @@ func DetectProtocol() Protocol {
 	case "halfblock":
 		return ProtocolHalfBlock
 	}
-	termProg := os.Getenv("TERM_PROGRAM")
+
+	termProg := strings.ToLower(os.Getenv("TERM_PROGRAM"))
 	switch termProg {
-	case "Ghostty", "kitty", "WezTerm":
+	case "ghostty", "kitty", "wezterm", "rio":
 		return ProtocolKitty
-	case "iTerm.app":
+	case "iterm.app", "iterm":
 		return ProtocolIterm2
-	case "Alacritty":
+	case "foot", "mlterm":
+		return ProtocolSixel
+	case "alacritty":
 		return ProtocolHalfBlock
 	}
 
-	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("WEZTERM_PANE") != "" || os.Getenv("GHOSTTY_BIN_DIR") != "" {
+	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("KITTY_PID") != "" || os.Getenv("KITTY_INSTALLATION_DIR") != "" {
 		return ProtocolKitty
+	}
+	if os.Getenv("WEZTERM_PANE") != "" {
+		return ProtocolKitty
+	}
+	if os.Getenv("GHOSTTY_BIN_DIR") != "" || os.Getenv("GHOSTTY_RESOURCES_DIR") != "" {
+		return ProtocolKitty
+	}
+
+	term := strings.ToLower(os.Getenv("TERM"))
+	if term == "xterm-kitty" || term == "xterm-ghostty" || term == "wezterm" {
+		return ProtocolKitty
+	}
+	if strings.HasPrefix(term, "foot") || term == "mlterm" || strings.Contains(term, "sixel") {
+		return ProtocolSixel
 	}
 
 	if os.Getenv("ALACRITTY_WINDOW_ID") != "" {
 		return ProtocolHalfBlock
-	}
-
-	term := os.Getenv("TERM")
-	if term == "xterm-kitty" {
-		return ProtocolKitty
 	}
 
 	// Bilinmeyen terminallerde escape sequence basıp ekranı bozmak yerine
@@ -90,23 +99,33 @@ func GetImageID(img image.Image) uint32 {
 		return 0
 	}
 	h := fnv.New32a()
+	if rgba, ok := img.(*image.RGBA); ok {
+		h.Write(rgba.Pix)
+		return h.Sum32()
+	}
+	if nrgba, ok := img.(*image.NRGBA); ok {
+		h.Write(nrgba.Pix)
+		return h.Sum32()
+	}
 	bounds := img.Bounds()
-	// Performans için hızlıca tüm pikselleri hash'le
+	var pixel [8]byte
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			r, g, b, a := img.At(x, y).RGBA()
-			h.Write([]byte{
-				byte(r), byte(r >> 8),
-				byte(g), byte(g >> 8),
-				byte(b), byte(b >> 8),
-				byte(a), byte(a >> 8),
-			})
+			pixel[0] = byte(r)
+			pixel[1] = byte(r >> 8)
+			pixel[2] = byte(g)
+			pixel[3] = byte(g >> 8)
+			pixel[4] = byte(b)
+			pixel[5] = byte(b >> 8)
+			pixel[6] = byte(a)
+			pixel[7] = byte(a >> 8)
+			h.Write(pixel[:])
 		}
 	}
 	return h.Sum32()
 }
 
-// ResizeImage scales an image to w x h using area-averaging (box filtering) for downscaling
 // ResizeImage scales an image to w x h using area-averaging (box filtering) for downscaling
 // and bilinear interpolation for upscaling, producing crisp, anti-aliased images with zero external dependencies.
 func ResizeImage(img image.Image, w, h int) image.Image {
@@ -196,7 +215,12 @@ func ResizeImage(img image.Image, w, h int) image.Image {
 
 	// Upscaling: Bilinear interpolation
 	for y := 0; y < h; y++ {
-		srcY := float64(y) * float64(srcH-1) / float64(h)
+		var srcY float64
+		if h > 1 && srcH > 1 {
+			srcY = float64(y) * float64(srcH-1) / float64(h-1)
+		} else if srcH > 1 {
+			srcY = float64(srcH-1) / 2.0
+		}
 		y0 := int(srcY)
 		y1 := y0 + 1
 		if y1 >= srcH {
@@ -205,7 +229,12 @@ func ResizeImage(img image.Image, w, h int) image.Image {
 		fy := srcY - float64(y0)
 
 		for x := 0; x < w; x++ {
-			srcX := float64(x) * float64(srcW-1) / float64(w)
+			var srcX float64
+			if w > 1 && srcW > 1 {
+				srcX = float64(x) * float64(srcW-1) / float64(w-1)
+			} else if srcW > 1 {
+				srcX = float64(srcW-1) / 2.0
+			}
 			x0 := int(srcX)
 			x1 := x0 + 1
 			if x1 >= srcW {
@@ -345,7 +374,7 @@ func EncodeKitty(img image.Image, cols, rows uint16, cellW, cellH uint16, imageI
 	pngBytes := pngBuf.Bytes()
 	b64Data := base64.StdEncoding.EncodeToString(pngBytes)
 
-	controlKeys := fmt.Sprintf("f=100,a=T,t=d,i=%d,s=%d,v=%d,c=%d,r=%d,z=%d", imageID, targetW, targetH, cols, rows, zIndex)
+	controlKeys := fmt.Sprintf("q=2,f=100,a=T,t=d,i=%d,s=%d,v=%d,c=%d,r=%d,z=%d", imageID, targetW, targetH, cols, rows, zIndex)
 	return chunkKittyPayload(controlKeys, b64Data)
 }
 
@@ -378,6 +407,14 @@ func EncodeSixel(img image.Image, cols, rows uint16, cellW, cellH uint16, transp
 
 	resized := ResizeImageContain(img, targetW, targetH, transparent)
 	pal := buildPalette(resized, 256)
+	if len(pal) == 0 {
+		pal = color.Palette{color.RGBA{0, 0, 0, 255}}
+	}
+
+	colorToIndex := make(map[color.Color]int, len(pal))
+	for idx, col := range pal {
+		colorToIndex[col] = idx
+	}
 
 	var buf bytes.Buffer
 	// Sixel Giriş ANSI kodu
@@ -395,35 +432,50 @@ func EncodeSixel(img image.Image, cols, rows uint16, cellW, cellH uint16, transp
 	width := resized.Bounds().Dx()
 	height := resized.Bounds().Dy()
 
+	bandIndices := make([][6]int16, width)
+	colorsInBand := make([]bool, len(pal))
+
 	// Sixel 6 piksellik dikey bantlar halinde kodlama yapar
 	for bandY := 0; bandY < height; bandY += 6 {
-		for colorIdx, targetColor := range pal {
-			// Renk bu bantta var mı kontrol et (gereksiz I/O'yu engeller)
-			hasColor := false
-			for x := 0; x < width; x++ {
-				for dy := 0; dy < 6; dy++ {
-					y := bandY + dy
-					if y < height {
-						c := pal.Convert(resized.At(x, y))
-						if c == targetColor {
-							hasColor = true
-							break
+		for i := range colorsInBand {
+			colorsInBand[i] = false
+		}
+
+		// Quantize only the current 6-line band once: O(6 * width)
+		for x := 0; x < width; x++ {
+			for dy := 0; dy < 6; dy++ {
+				y := bandY + dy
+				if y < height {
+					pix := resized.At(x, y)
+					_, _, _, a := pix.RGBA()
+					if transparent && a < 32768 {
+						bandIndices[x][dy] = -1 // Transparent pixel
+					} else {
+						var colIdx int
+						c := pal.Convert(pix)
+						if idx, ok := colorToIndex[c]; ok {
+							colIdx = idx
+						} else {
+							colIdx = 0
 						}
+						bandIndices[x][dy] = int16(colIdx)
+						colorsInBand[colIdx] = true
 					}
-				}
-				if hasColor {
-					break
+				} else {
+					bandIndices[x][dy] = -1
 				}
 			}
+		}
 
-			if !hasColor {
+		for colorIdx := range pal {
+			if !colorsInBand[colorIdx] {
 				continue
 			}
 
 			// Aktif rengi seç
 			buf.WriteString(fmt.Sprintf("#%d", colorIdx))
 
-			// Tekrar sıkıştırmasıyla (Repeat Compression) Sixel karakterlerini yaz
+			targetIdx := int16(colorIdx)
 			repeatCount := 0
 			var lastChar byte = 0
 
@@ -443,12 +495,8 @@ func EncodeSixel(img image.Image, cols, rows uint16, cellW, cellH uint16, transp
 			for x := 0; x < width; x++ {
 				var mask byte = 0
 				for dy := 0; dy < 6; dy++ {
-					y := bandY + dy
-					if y < height {
-						c := pal.Convert(resized.At(x, y))
-						if c == targetColor {
-							mask |= 1 << dy
-						}
+					if bandIndices[x][dy] == targetIdx {
+						mask |= 1 << dy
 					}
 				}
 
@@ -490,7 +538,10 @@ type ImageCacheKey struct {
 	Transparent bool
 }
 
-var escapeSequenceCache = make(map[ImageCacheKey]string)
+var (
+	escapeSequenceCache = make(map[ImageCacheKey]string)
+	escapeCacheMu       sync.RWMutex
+)
 
 // GetCachedEscapeSequence, önbellekten veya yeni nesil olarak resmin escape sequence çıktısını döner.
 func GetCachedEscapeSequence(img image.Image, cols, rows uint16, cellW, cellH uint16, proto Protocol, zIndex int, transparent bool) string {
@@ -505,9 +556,12 @@ func GetCachedEscapeSequence(img image.Image, cols, rows uint16, cellW, cellH ui
 		Transparent: transparent,
 	}
 
+	escapeCacheMu.RLock()
 	if seq, ok := escapeSequenceCache[key]; ok {
+		escapeCacheMu.RUnlock()
 		return seq
 	}
+	escapeCacheMu.RUnlock()
 
 	var seq string
 	switch proto {
@@ -520,6 +574,11 @@ func GetCachedEscapeSequence(img image.Image, cols, rows uint16, cellW, cellH ui
 		seq = EncodeSixel(img, cols, rows, cellW, cellH, transparent)
 	}
 
+	escapeCacheMu.Lock()
+	if len(escapeSequenceCache) > 256 {
+		clear(escapeSequenceCache)
+	}
 	escapeSequenceCache[key] = seq
+	escapeCacheMu.Unlock()
 	return seq
 }

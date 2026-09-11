@@ -26,7 +26,7 @@ const (
 	// ModeASCII renders using rich ASCII character typography ramps (CanvasUI style).
 	ModeASCII Ascii3DMode = iota
 
-	// ModeBlock renders using 2x vertical sub-cell Half-Block resolution (▀/▄ with dual TrueColor).
+	// ModeBlock renders using 2x vertical sub-cell Half-Block resolution (▄ with dual TrueColor).
 	ModeBlock
 
 	// ModeDithered renders using retro Bayer 4x4 ordered dithering shading.
@@ -47,7 +47,7 @@ type Ascii3D struct {
 
 	// Rendering Mode:
 	// - ModeASCII: Typography character ramps (default)
-	// - ModeBlock: 2x vertical sub-cell Half-Block (▀/▄)
+	// - ModeBlock: 2x vertical sub-cell Half-Block (▄)
 	// - ModeDithered: Retro Bayer 4x4 ordered dithering
 	// - ModeBraille: 8x sub-pixel Unicode Braille dot matrix
 	Mode Ascii3DMode
@@ -74,11 +74,11 @@ type Ascii3D struct {
 	CellAspect     float64 // Terminal character height/width aspect ratio (default: 0.50)
 
 	// Shading & Optics
-	Contrast             float64 // Tone curve contrast exponent (default: 1.2)
-	EdgeContrast         float64 // Silhouette / edge boost factor (default: 3.0)
-	Exposure             float64 // Overall lighting exposure multiplier (default: 1.0)
-	EnvironmentIntensity float64 // Ambient/environment lighting level (default: 1.0)
-	Roughness            float64 // Surface roughness: lower = sharper specular highlight (default: 0.15)
+	Contrast             float64           // Tone curve contrast exponent (default: 1.2)
+	EdgeContrast         float64           // Silhouette / edge boost factor (default: 3.0)
+	Exposure             float64           // Overall lighting exposure multiplier (default: 1.0)
+	EnvironmentIntensity float64           // Ambient/environment lighting level (default: 1.0)
+	Roughness            float64           // Surface roughness: lower = sharper specular highlight (default: 0.15)
 	LightDirection       graphics.Vector3D // Primary directional light source
 
 	// Rendering Mode & Palette
@@ -200,6 +200,12 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 	keyLightDir = keyLightDir.Normalize()
 	fillLightDir := graphics.Vector3D{X: 0.55, Y: 0.25, Z: 0.50}.Normalize()
+	viewDir := graphics.Vector3D{X: 0, Y: 0, Z: 1}
+	halfDir := graphics.Vector3D{
+		X: keyLightDir.X + viewDir.X,
+		Y: keyLightDir.Y + viewDir.Y,
+		Z: keyLightDir.Z + viewDir.Z,
+	}.Normalize()
 
 	// Animation calculations
 	time := a.Time
@@ -261,7 +267,7 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 
 		projX := math.Abs((viewX * baseFocal) / viewZ)
-		projY := math.Abs((viewY * baseFocal) / viewZ) * (cellAspect * float64(yMultiplier) / float64(xMultiplier))
+		projY := math.Abs((viewY*baseFocal)/viewZ) * (cellAspect * float64(yMultiplier) / float64(xMultiplier))
 
 		if projX > maxExtentX {
 			maxExtentX = projX
@@ -342,6 +348,11 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		triCount := len(face) - 2
 		for t := 0; t < triCount; t++ {
 			idx0, idx1, idx2 := face[0], face[t+1], face[t+2]
+			if idx0 < 0 || idx0 >= len(projected) ||
+				idx1 < 0 || idx1 >= len(projected) ||
+				idx2 < 0 || idx2 >= len(projected) {
+				continue
+			}
 			p0, p1, p2 := projected[idx0], projected[idx1], projected[idx2]
 
 			if !p0.visible || !p1.visible || !p2.visible {
@@ -350,14 +361,22 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 			v0, v1, v2 := rotatedVerts[idx0], rotatedVerts[idx1], rotatedVerts[idx2]
 			normal := graphics.CalculateNormal(v0, v1, v2)
-
-			// 3D View-space backface culling (normal.Z > 0 for front-facing surfaces)
 			if normal.Z <= 0.0 {
 				continue
 			}
 
 			denom := (p1.y-p2.y)*(p0.x-p2.x) + (p2.x-p1.x)*(p0.y-p2.y)
 			if math.Abs(denom) < 1e-6 {
+				continue
+			}
+
+			// Triangle bounding box in sub-cell space
+			minX := int(math.Max(0, math.Floor(math.Min(p0.x, math.Min(p1.x, p2.x)))))
+			maxX := int(math.Min(float64(subW-1), math.Ceil(math.Max(p0.x, math.Max(p1.x, p2.x)))))
+			minY := int(math.Max(0, math.Floor(math.Min(p0.y, math.Min(p1.y, p2.y)))))
+			maxY := int(math.Min(float64(subH-1), math.Ceil(math.Max(p0.y, math.Max(p1.y, p2.y)))))
+
+			if minX > maxX || minY > maxY {
 				continue
 			}
 
@@ -373,14 +392,7 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				diffFill = 0
 			}
 
-			// Specular (Blinn-Phong)
-			viewDir := graphics.Vector3D{X: 0, Y: 0, Z: 1}
-			halfDir := graphics.Vector3D{
-				X: keyLightDir.X + viewDir.X,
-				Y: keyLightDir.Y + viewDir.Y,
-				Z: keyLightDir.Z + viewDir.Z,
-			}.Normalize()
-
+			// Specular (Blinn-Phong) using precomputed halfDir
 			specDot := normal.Dot(halfDir)
 			if specDot < 0 {
 				specDot = 0
@@ -389,12 +401,6 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 			ambient := 0.35 * envIntensity
 			diffuseTotal := (diffKey*0.70 + diffFill*0.30) * envIntensity
-
-			// Triangle bounding box in sub-cell space
-			minX := int(math.Max(0, math.Floor(math.Min(p0.x, math.Min(p1.x, p2.x)))))
-			maxX := int(math.Min(float64(subW-1), math.Ceil(math.Max(p0.x, math.Max(p1.x, p2.x)))))
-			minY := int(math.Max(0, math.Floor(math.Min(p0.y, math.Min(p1.y, p2.y)))))
-			maxY := int(math.Min(float64(subH-1), math.Ceil(math.Max(p0.y, math.Max(p1.y, p2.y)))))
 
 			invDenom := 1.0 / denom
 
@@ -464,8 +470,13 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		return fg, mapped
 	}
 
-	// 1. Half-Block Mode (ModeBlock)
+	// 1. Half-Block Mode (ModeBlock) - Standardized on '▄' (U+2584) to eliminate Apple Terminal baseline gap
 	if effectiveMode == ModeBlock {
+		fallbackBg := ctx.Style.Bg
+		if fallbackBg.Type() == cell.ColorDefault {
+			fallbackBg = cell.NewColorRGB(0, 0, 0)
+		}
+
 		for y := 0; y < h; y++ {
 			screenY := area.Y + uint16(y)
 			topY := y * 2
@@ -485,30 +496,32 @@ func (a Ascii3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 					continue
 				}
 
+				cellBg := fallbackBg
+				if existing := buf.Get(screenX, screenY); existing != nil && existing.Style.Bg.Type() != cell.ColorDefault {
+					cellBg = existing.Style.Bg
+				}
+
 				var topCol, botCol cell.Color
 				if hasTop {
 					topCol, _ = calcPixelColor(topIdx)
-				}
-				if hasBot {
-					botCol, _ = calcPixelColor(botIdx)
+				} else {
+					topCol = cellBg
 				}
 
-				if hasTop && hasBot {
-					buf.SetCell(screenX, screenY, cell.Cell{
-						Content: '▀',
-						Style:   cell.Style{Fg: topCol, Bg: botCol},
-					})
-				} else if hasTop {
-					buf.SetCell(screenX, screenY, cell.Cell{
-						Content: '▀',
-						Style:   cell.Style{Fg: topCol},
-					})
+				if hasBot {
+					botCol, _ = calcPixelColor(botIdx)
 				} else {
-					buf.SetCell(screenX, screenY, cell.Cell{
-						Content: '▄',
-						Style:   cell.Style{Fg: botCol},
-					})
+					botCol = cellBg
 				}
+
+				// Standardized dual-pixel half-block:
+				// - Glyph: '▄' (U+2584)
+				// - Lower pixel: Cell.Fg
+				// - Upper pixel: Cell.Bg
+				buf.SetCell(screenX, screenY, cell.Cell{
+					Content: '▄',
+					Style:   cell.Style{Fg: botCol, Bg: topCol},
+				})
 			}
 		}
 		return

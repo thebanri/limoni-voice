@@ -68,23 +68,23 @@ const (
 	ModifierUndercurl       Modifier = 1 << 9
 )
 
-// Style terminal hücresinin stilini ve rengini tanımlar.
-// Bellek Hizalaması: 4 (Fg) + 4 (Bg) + 2 (Modifier) = 10 byte.
-// Go derleyicisi bunu 12 byte sınırına hizalar.
+// Style defines the color and visual styling of a terminal cell.
+// Memory Alignment: 4 (Fg) + 4 (Bg) + 2 (Modifier) = 10 bytes,
+// padded to 12 bytes by the Go compiler.
 type Style struct {
-	Fg       Color    // 4 byte
-	Bg       Color    // 4 byte
-	Modifier Modifier // 2 byte
+	Fg       Color    // 4 bytes
+	Bg       Color    // 4 bytes
+	Modifier Modifier // 2 bytes
 }
 
-// Reset stili varsayılan ayarlara getirir.
+// Reset restores the style to its default values.
 func (s *Style) Reset() {
 	s.Fg = NewColorDefault()
 	s.Bg = NewColorDefault()
 	s.Modifier = ModifierReset
 }
 
-// AddModifier stile yeni bir özellik ekler (akıcı API/fluet API için değer döndürür).
+// AddModifier adds a new modifier flag and returns the updated Style.
 func (s Style) AddModifier(m Modifier) Style {
 	s.Modifier |= m
 	return s
@@ -93,6 +93,59 @@ func (s Style) AddModifier(m Modifier) Style {
 // RemoveModifier removes a modifier from the style.
 func (s Style) RemoveModifier(m Modifier) Style {
 	s.Modifier &= ^m
+	return s
+}
+
+// NewStyle returns an empty default Style.
+func NewStyle() Style {
+	return Style{}
+}
+
+// WithFg sets the foreground color.
+func (s Style) WithFg(c Color) Style {
+	s.Fg = c
+	return s
+}
+
+// WithBg sets the background color.
+func (s Style) WithBg(c Color) Style {
+	s.Bg = c
+	return s
+}
+
+// Bold adds the bold modifier.
+func (s Style) Bold() Style {
+	s.Modifier |= ModifierBold
+	return s
+}
+
+// Dim adds the dim modifier.
+func (s Style) Dim() Style {
+	s.Modifier |= ModifierDim
+	return s
+}
+
+// Italic adds the italic modifier.
+func (s Style) Italic() Style {
+	s.Modifier |= ModifierItalic
+	return s
+}
+
+// Underline adds the underline modifier.
+func (s Style) Underline() Style {
+	s.Modifier |= ModifierUnderline
+	return s
+}
+
+// Blink adds the blink modifier.
+func (s Style) Blink() Style {
+	s.Modifier |= ModifierBlink
+	return s
+}
+
+// Reverse adds the reverse (inverted colors) modifier.
+func (s Style) Reverse() Style {
+	s.Modifier |= ModifierReverse
 	return s
 }
 
@@ -115,33 +168,110 @@ func (c *Cell) Reset() {
 	c.Style.Reset()
 }
 
+// Rune returns the rune content of the cell.
+func (c Cell) Rune() rune {
+	return c.Content
+}
+
+// SetRune sets the rune content of the cell.
+func (c *Cell) SetRune(r rune) {
+	c.Content = r
+}
+
 // RuneContinuation marks the second column of a double-width character.
 const RuneContinuation rune = 0xFFFE
 
 // RuneImage marks cells covered by native Sixel/Kitty image graphics.
 const RuneImage rune = 0xFFFF
 
+// RuneInvalid marks cells dirty/uninitialized during full redraw invalidations.
+const RuneInvalid rune = 0x10FFFF
+
 // RuneWidth calculates the terminal display column width of a rune.
 func RuneWidth(r rune) int {
-	// Zero-width / combining characters
-	if (r >= 0xFE00 && r <= 0xFE0F) || // Variation Selectors
-		(r >= 0x1F00 && r <= 0x1F1F) || // Combining diacritical marks
-		(r >= 0x0300 && r <= 0x036F) || // Combining Diacritical Marks
-		r == 0x200D || // Zero Width Joiner
-		r == 0x200B || // Zero Width Space
-		r == 0x200C || // Zero Width Non-Joiner
-		r == 0x00AD { // Soft Hyphen
+	// 1. Control characters and unprintable C0/C1
+	if r < 32 || (r >= 0x7F && r <= 0x9F) {
 		return 0
 	}
-	if r >= 0x1F000 && r <= 0x1FFFF {
+
+	// 2. Zero-width / combining characters
+	if (r >= 0xFE00 && r <= 0xFE0F) || // Variation Selectors
+		(r >= 0x0300 && r <= 0x036F) || // Combining Diacritical Marks
+		(r >= 0x1AB0 && r <= 0x1AFF) || // Combining Diacritical Marks Extended
+		(r >= 0x1DC0 && r <= 0x1DFF) || // Combining Diacritical Marks Supplement
+		(r >= 0x20D0 && r <= 0x20FF) || // Combining Diacritical Marks for Symbols
+		(r >= 0xFE20 && r <= 0xFE2F) || // Combining Half Marks
+		(r >= 0x200B && r <= 0x200F) || // Zero Width Space, ZWNJ, ZWJ, LRM, RLM
+		r == 0x00AD || // Soft Hyphen
+		(r >= 0xE0100 && r <= 0xE01EF) || // Variation Selectors Supplement
+		(r >= 0xE0020 && r <= 0xE007F) { // Tags
+		return 0
+	}
+
+	// 3. Wide character ranges:
+	// - Emojis and Plane 1 symbols: 0x1F000..0x1FFFF
+	// - Plane 2 CJK Unified Ideographs Extension B-F: 0x20000..0x2FFFF
+	// - Plane 3 CJK Unified Ideographs Extension G: 0x30000..0x3FFFF
+	if r >= 0x1F000 && r <= 0x3FFFF {
 		return 2
 	}
-	// Common emojis and CJK character ranges
-	if (r >= 0x2E80 && r <= 0x9FFF) ||
+
+	// - CJK Radicals, Kangxi, Hiragana, Katakana, Bopomofo, CJK Unified Ideographs (0x2E80..0xA4CF)
+	// - Hangul Syllables (0xAC00..0xD7A3)
+	// - Hangul Jamo (0x1100..0x115F)
+	// - CJK Compatibility (0xF900..0xFAFF)
+	// - Vertical Forms & CJK Compatibility Forms (0xFE10..0xFE19, 0xFE30..0xFE6F)
+	// - Fullwidth ASCII & Punctuation (0xFF01..0xFF60, 0xFFE0..0xFFE6)
+	if (r >= 0x1100 && r <= 0x115F) ||
+		(r >= 0x2329 && r <= 0x232A) ||
+		(r >= 0x2E80 && r <= 0xA4CF) ||
+		(r >= 0xAC00 && r <= 0xD7A3) ||
 		(r >= 0xF900 && r <= 0xFAFF) ||
-		(r >= 0xFF00 && r <= 0xFFEF) {
+		(r >= 0xFE10 && r <= 0xFE19) ||
+		(r >= 0xFE30 && r <= 0xFE6F) ||
+		(r >= 0xFF01 && r <= 0xFF60) ||
+		(r >= 0xFFE0 && r <= 0xFFE6) {
 		return 2
 	}
+
+	// - BMP Wide Emojis, Symbols and Dingbats (Strict Unicode East Asian Width 'W' / 'F')
+	if (r >= 0x231A && r <= 0x231B) || // ⌚..⌛
+		(r >= 0x23E9 && r <= 0x23EC) || // ⏩..⏬
+		(r == 0x23F0 || r == 0x23F3) || // ⏰, ⏳
+		(r >= 0x25FD && r <= 0x25FE) || // ◽..◾
+		(r >= 0x2614 && r <= 0x2615) || // ☔..☕
+		(r >= 0x2630 && r <= 0x2637) || // ☰..☷
+		(r >= 0x2648 && r <= 0x2653) || // ♈..♓
+		r == 0x267F || // ♿
+		(r >= 0x268A && r <= 0x268F) || // ⚊..⚏
+		r == 0x2693 || // ⚓
+		r == 0x26A1 || // ⚡
+		(r >= 0x26AA && r <= 0x26AB) || // ⚪..⚫
+		(r >= 0x26BD && r <= 0x26BE) || // ⚽..⚾
+		(r >= 0x26C4 && r <= 0x26C5) || // ⛄..⛅
+		r == 0x26CE || // ⛎
+		r == 0x26D4 || // ⛔
+		r == 0x26EA || // ⛪
+		(r >= 0x26F2 && r <= 0x26F3) || // ⛲..⛳
+		r == 0x26F5 || // ⛵
+		r == 0x26FA || // ⛺
+		r == 0x26FD || // ⛽
+		r == 0x2705 || // ✅
+		(r >= 0x270A && r <= 0x270B) || // ✊..✋
+		r == 0x2728 || // ✨
+		r == 0x274C || // ❌
+		r == 0x274E || // ❎
+		(r >= 0x2753 && r <= 0x2755) || // ❓..❕
+		r == 0x2757 || // ❗
+		(r >= 0x2795 && r <= 0x2797) || // ➕..➗
+		r == 0x27B0 || // ➰
+		r == 0x27BF || // ➿
+		(r >= 0x2B1B && r <= 0x2B1C) || // ⬛..⬜
+		(r == 0x2B50 || r == 0x2B55) || // ⭐, ⭕
+		(r >= 0x3297 && r <= 0x3299) { // ㊗, ㊙
+		return 2
+	}
+
 	return 1
 }
 

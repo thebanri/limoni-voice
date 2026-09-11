@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
@@ -86,9 +86,9 @@ func TestAudioEngine(t *testing.T) {
 
 func TestTextInputTypingNoConflict(t *testing.T) {
 	state := widgets.NewTextInputState()
-	state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: 'c'})
-	state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: 'g'})
-	state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: 'j'})
+	state.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: 'c'})
+	state.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: 'g'})
+	state.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: 'j'})
 
 	if state.Value() != "cgj" {
 		t.Fatalf("Expected text 'cgj', got %q", state.Value())
@@ -2221,41 +2221,41 @@ func TestChatMultilineInput(t *testing.T) {
 
 	// Type initial text "Hello"
 	for _, ch := range "Hello" {
-		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+		state.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: ch})
 	}
 	if state.Value() != "Hello" {
 		t.Fatalf("Expected 'Hello', got %q", state.Value())
 	}
 
 	// 1. Shift+Enter should insert newline '\n'
-	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter, Shift: true})
+	state.HandleKey(driver.KeyEvent{Type: driver.KeyEnter, Shift: true})
 	for _, ch := range "World" {
-		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+		state.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: ch})
 	}
 	if state.Value() != "Hello\nWorld" {
 		t.Fatalf("Expected 'Hello\\nWorld', got %q", state.Value())
 	}
 
 	// 2. Alt+Enter should insert newline '\n'
-	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter, Alt: true})
+	state.HandleKey(driver.KeyEvent{Type: driver.KeyEnter, Alt: true})
 	for _, ch := range "123" {
-		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+		state.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: ch})
 	}
 	if state.Value() != "Hello\nWorld\n123" {
 		t.Fatalf("Expected 'Hello\\nWorld\\n123', got %q", state.Value())
 	}
 
 	// 3. Ctrl+Enter should insert newline '\n'
-	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter, Ctrl: true})
+	state.HandleKey(driver.KeyEvent{Type: driver.KeyEnter, Ctrl: true})
 	for _, ch := range "End" {
-		state.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: ch})
+		state.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: ch})
 	}
 	if state.Value() != "Hello\nWorld\n123\nEnd" {
 		t.Fatalf("Expected 'Hello\\nWorld\\n123\\nEnd', got %q", state.Value())
 	}
 
 	// 4. Plain Enter should NOT insert '\n' in TextInputState
-	state.HandleKey(backend.KeyEvent{Type: backend.KeyEnter})
+	state.HandleKey(driver.KeyEvent{Type: driver.KeyEnter})
 	if state.Value() != "Hello\nWorld\n123\nEnd" {
 		t.Fatalf("Plain enter modified text input state unexpectedly: %q", state.Value())
 	}
@@ -2264,36 +2264,36 @@ func TestChatMultilineInput(t *testing.T) {
 func TestTerminalParserMultilineEnter(t *testing.T) {
 	// 1. CSI u Shift+Enter: \x1b[13;2u
 	csiShiftEnter := []byte("\x1b[13;2u")
-	ev, _ := backend.ParseEvent(csiShiftEnter)
-	if ev.Key.Type != backend.KeyEnter || !ev.Key.Shift {
+	ev, _ := driver.ParseEvent(csiShiftEnter)
+	if ev.Key.Type != driver.KeyEnter || !ev.Key.Shift {
 		t.Fatalf("Expected Shift+Enter event from CSI u, got: %+v", ev)
 	}
 
 	// 2. CSI u Ctrl+Enter: \x1b[13;5u
 	csiCtrlEnter := []byte("\x1b[13;5u")
-	ev, _ = backend.ParseEvent(csiCtrlEnter)
-	if ev.Key.Type != backend.KeyEnter || !ev.Key.Ctrl {
+	ev, _ = driver.ParseEvent(csiCtrlEnter)
+	if ev.Key.Type != driver.KeyEnter || !ev.Key.Ctrl {
 		t.Fatalf("Expected Ctrl+Enter event from CSI u, got: %+v", ev)
 	}
 
 	// 3. modifyOtherKeys Shift+Enter: \x1b[27;2;13~
 	mokShiftEnter := []byte("\x1b[27;2;13~")
-	ev, _ = backend.ParseEvent(mokShiftEnter)
-	if ev.Key.Type != backend.KeyEnter || !ev.Key.Shift {
+	ev, _ = driver.ParseEvent(mokShiftEnter)
+	if ev.Key.Type != driver.KeyEnter || !ev.Key.Shift {
 		t.Fatalf("Expected Shift+Enter event from modifyOtherKeys, got: %+v", ev)
 	}
 
 	// 4. Alt+Enter: \x1b\r
 	altEnter := []byte("\x1b\r")
-	ev, _ = backend.ParseEvent(altEnter)
-	if ev.Key.Type != backend.KeyEnter || !ev.Key.Alt {
+	ev, _ = driver.ParseEvent(altEnter)
+	if ev.Key.Type != driver.KeyEnter || !ev.Key.Alt {
 		t.Fatalf("Expected Alt+Enter event from \\x1b\\r, got: %+v", ev)
 	}
 
 	// 5. Ctrl+J (ASCII 10): \n
 	ctrlJ := []byte("\n")
-	ev, _ = backend.ParseEvent(ctrlJ)
-	if ev.Key.Type != backend.KeyEnter || !ev.Key.Ctrl {
+	ev, _ = driver.ParseEvent(ctrlJ)
+	if ev.Key.Type != driver.KeyEnter || !ev.Key.Ctrl {
 		t.Fatalf("Expected Ctrl+Enter event from \\n (Ctrl+J), got: %+v", ev)
 	}
 }
@@ -2470,7 +2470,7 @@ func TestMultilinePasteAndBackslashContinuation(t *testing.T) {
 		if r == '\r' {
 			continue
 		}
-		room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
+		room.ChatInputState.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: r})
 	}
 
 	expectedInput := "reg add \"HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\TimeZoneInformation\" /v\n  RealTimeIsUniversal /t REG_DWORD /d 1 /f"

@@ -17,7 +17,7 @@ import (
 	"unicode"
 
 	"github.com/thebanri/limoni/animation"
-	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
@@ -106,7 +106,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	b := backend.NewBackend(os.Stdin, os.Stdout)
+	b := driver.NewBackend(os.Stdin, os.Stdout)
 	if err := b.Setup(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing terminal backend: %v\n", err)
 		os.Exit(1)
@@ -769,7 +769,7 @@ func main() {
 			}
 		case ev := <-b.Events():
 			switch ev.Type {
-			case backend.EventPaste:
+			case driver.EventPaste:
 				// Discard any residual bracketed paste sequences sent during terminal startup
 				if time.Since(appStartTime) < 1200*time.Millisecond {
 					continue
@@ -822,11 +822,11 @@ func main() {
 						if r == '\r' {
 							continue
 						}
-						room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
+						room.ChatInputState.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: r})
 					}
 				}
 
-			case backend.EventKey:
+			case driver.EventKey:
 				e := ev.Key
 
 				if showRelayModal {
@@ -890,15 +890,15 @@ func main() {
 					}
 
 					// 2. Shift+Insert Paste
-					if e.Type == backend.KeyInsert && (e.Shift || e.Ctrl) {
+					if e.Type == driver.KeyInsert && (e.Shift || e.Ctrl) {
 						relayPasteAction(relayModalActiveField)
 						continue
 					}
 
 					switch e.Type {
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						closeRelayModal()
-					case backend.KeyTab:
+					case driver.KeyTab:
 						relaySelStart = -1
 						relaySelEnd = -1
 						relaySelField = -1
@@ -907,21 +907,21 @@ func main() {
 						} else {
 							relayModalActiveField = (relayModalActiveField + 1) % 5
 						}
-					case backend.KeyArrowUp:
+					case driver.KeyArrowUp:
 						relaySelStart = -1
 						relaySelEnd = -1
 						relaySelField = -1
 						if relayModalActiveField > 0 {
 							relayModalActiveField--
 						}
-					case backend.KeyArrowDown:
+					case driver.KeyArrowDown:
 						relaySelStart = -1
 						relaySelEnd = -1
 						relaySelField = -1
 						if relayModalActiveField < 4 {
 							relayModalActiveField++
 						}
-					case backend.KeyArrowLeft:
+					case driver.KeyArrowLeft:
 						if relayModalActiveField > 2 {
 							relayModalActiveField--
 						} else {
@@ -950,7 +950,7 @@ func main() {
 								}
 							}
 						}
-					case backend.KeyArrowRight:
+					case driver.KeyArrowRight:
 						if relayModalActiveField >= 2 && relayModalActiveField < 4 {
 							relayModalActiveField++
 						} else {
@@ -979,7 +979,7 @@ func main() {
 								}
 							}
 						}
-					case backend.KeyHome, backend.KeyEnd:
+					case driver.KeyHome, driver.KeyEnd:
 						var target *widgets.TextInputState
 						if relayModalActiveField == 0 {
 							target = relayURLInput
@@ -1002,7 +1002,7 @@ func main() {
 								target.HandleKey(e)
 							}
 						}
-					case backend.KeySpace:
+					case driver.KeySpace:
 						var target *widgets.TextInputState
 						if relayModalActiveField == 0 {
 							target = relayURLInput
@@ -1018,7 +1018,7 @@ func main() {
 							}
 							target.HandleKey(e)
 						}
-					case backend.KeyBackspace, backend.KeyDelete:
+					case driver.KeyBackspace, driver.KeyDelete:
 						var target *widgets.TextInputState
 						if relayModalActiveField == 0 {
 							target = relayURLInput
@@ -1035,7 +1035,7 @@ func main() {
 								target.HandleKey(e)
 							}
 						}
-					case backend.KeyEnter:
+					case driver.KeyEnter:
 						if relayModalActiveField == 2 || relayModalActiveField == 0 || relayModalActiveField == 1 {
 							newURL := strings.TrimSpace(relayURLInput.Value())
 							newToken := strings.TrimSpace(relayTokenInput.Value())
@@ -1120,14 +1120,14 @@ func main() {
 							if r == '\r' {
 								continue
 							}
-							room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: r})
+							room.ChatInputState.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: r})
 						}
 						continue
 					}
 				}
 
 				// Dedicated Global Debug Modal Key (F12)
-				if e.Type == backend.KeyF12 {
+				if e.Type == driver.KeyF12 {
 					if showDebugModal {
 						closeDebugModal()
 					} else {
@@ -1138,9 +1138,9 @@ func main() {
 
 				if showDebugModal {
 					switch e.Type {
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						closeDebugModal()
-					case backend.KeyRune:
+					case driver.KeyRune:
 						if e.Ch == 'c' || e.Ch == 'C' {
 							allLogs := GetAllDebugLogsText()
 							CopyToClipboard(allLogs)
@@ -1152,25 +1152,25 @@ func main() {
 						} else if e.Ch == 'x' || e.Ch == 'X' {
 							ClearDebugLogs()
 						}
-					case backend.KeyDelete:
+					case driver.KeyDelete:
 						ClearDebugLogs()
-					case backend.KeyArrowUp:
+					case driver.KeyArrowUp:
 						debugScrollOffset++
-					case backend.KeyArrowDown:
+					case driver.KeyArrowDown:
 						if debugScrollOffset > 0 {
 							debugScrollOffset--
 						}
-					case backend.KeyPageUp:
+					case driver.KeyPageUp:
 						debugScrollOffset += 10
-					case backend.KeyPageDown:
+					case driver.KeyPageDown:
 						if debugScrollOffset >= 10 {
 							debugScrollOffset -= 10
 						} else {
 							debugScrollOffset = 0
 						}
-					case backend.KeyHome:
+					case driver.KeyHome:
 						debugScrollOffset = len(GetDebugLogs())
-					case backend.KeyEnd:
+					case driver.KeyEnd:
 						debugScrollOffset = 0
 					}
 					continue
@@ -1179,11 +1179,11 @@ func main() {
 				// --- 1. Handle Active Modals First ---
 				if currentFileOffer != nil {
 					switch e.Type {
-					case backend.KeyEnter:
+					case driver.KeyEnter:
 						acceptCurrentOffer(false)
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						declineCurrentOffer()
-					case backend.KeyRune:
+					case driver.KeyRune:
 						if e.Ch == 'y' || e.Ch == 'Y' {
 							acceptCurrentOffer(false)
 						} else if e.Ch == 'n' || e.Ch == 'N' {
@@ -1200,25 +1200,25 @@ func main() {
 				if showExitModal {
 					focused := t.FocusManager().Focused()
 					switch e.Type {
-					case backend.KeyTab:
+					case driver.KeyTab:
 						if e.Shift {
 							t.FocusManager().Prev()
 						} else {
 							t.FocusManager().Next()
 						}
-					case backend.KeyArrowLeft:
+					case driver.KeyArrowLeft:
 						t.FocusManager().Prev()
-					case backend.KeyArrowRight:
+					case driver.KeyArrowRight:
 						t.FocusManager().Next()
-					case backend.KeyEnter, backend.KeySpace:
+					case driver.KeyEnter, driver.KeySpace:
 						if focused == "exit_app_dialog_btn_0" {
 							cleanExit()
 						} else {
 							closeExitModal()
 						}
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						closeExitModal()
-					case backend.KeyRune:
+					case driver.KeyRune:
 						if e.Ch == 'e' || e.Ch == 'E' || e.Ch == 'y' || e.Ch == 'Y' {
 							cleanExit()
 						} else if e.Ch == 'h' || e.Ch == 'H' || e.Ch == 'n' || e.Ch == 'N' {
@@ -1231,25 +1231,25 @@ func main() {
 				if showLeaveModal {
 					focused := t.FocusManager().Focused()
 					switch e.Type {
-					case backend.KeyTab:
+					case driver.KeyTab:
 						if e.Shift {
 							t.FocusManager().Prev()
 						} else {
 							t.FocusManager().Next()
 						}
-					case backend.KeyArrowLeft:
+					case driver.KeyArrowLeft:
 						t.FocusManager().Prev()
-					case backend.KeyArrowRight:
+					case driver.KeyArrowRight:
 						t.FocusManager().Next()
-					case backend.KeyEnter, backend.KeySpace:
+					case driver.KeyEnter, driver.KeySpace:
 						if focused == "leave_room_dialog_btn_0" {
 							leaveRoom()
 						} else {
 							closeLeaveModal()
 						}
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						closeLeaveModal()
-					case backend.KeyRune:
+					case driver.KeyRune:
 						if e.Ch == 'e' || e.Ch == 'E' || e.Ch == 'y' || e.Ch == 'Y' {
 							leaveRoom()
 						} else if e.Ch == 'h' || e.Ch == 'H' || e.Ch == 'n' || e.Ch == 'N' {
@@ -1262,17 +1262,17 @@ func main() {
 				if showTestModal {
 					if audio.PTTListeningKey {
 						switch e.Type {
-						case backend.KeyEsc:
+						case driver.KeyEsc:
 							audio.mu.Lock()
 							audio.PTTListeningKey = false
 							audio.mu.Unlock()
-						case backend.KeySpace:
+						case driver.KeySpace:
 							audio.SetPTTKey(' ', "Space")
-						case backend.KeyEnter:
+						case driver.KeyEnter:
 							audio.SetPTTKey('\n', "Enter")
-						case backend.KeyTab:
+						case driver.KeyTab:
 							audio.SetPTTKey('\t', "Tab")
-						case backend.KeyRune:
+						case driver.KeyRune:
 							ch := unicode.ToLower(e.Ch)
 							audio.SetPTTKey(ch, strings.ToUpper(string(e.Ch)))
 						}
@@ -1280,19 +1280,19 @@ func main() {
 					}
 
 					switch e.Type {
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						closeTestModal()
-					case backend.KeySpace:
+					case driver.KeySpace:
 						if audio.InputMode == InputModePushToTalk && audio.PTTKey == ' ' {
 							audio.PulsePTT(350 * time.Millisecond)
 						} else if audio.InputMode == InputModeVoiceActivity {
 							audio.ToggleLoopback()
 						}
-					case backend.KeyArrowLeft:
+					case driver.KeyArrowLeft:
 						audio.CycleInputDevice(-1)
-					case backend.KeyArrowRight:
+					case driver.KeyArrowRight:
 						audio.CycleInputDevice(1)
-					case backend.KeyRune:
+					case driver.KeyRune:
 						if audio.InputMode == InputModePushToTalk && unicode.ToLower(e.Ch) == unicode.ToLower(audio.PTTKey) {
 							audio.PulsePTT(350 * time.Millisecond)
 							continue
@@ -1346,17 +1346,17 @@ func main() {
 
 				if showScreenShareModal {
 					switch e.Type {
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						closeScreenShareModal()
-					case backend.KeyArrowUp:
+					case driver.KeyArrowUp:
 						if selectedScreenShareIdx > 0 {
 							selectedScreenShareIdx--
 						}
-					case backend.KeyArrowDown:
+					case driver.KeyArrowDown:
 						if selectedScreenShareIdx < len(screenShareTargets)-1 {
 							selectedScreenShareIdx++
 						}
-					case backend.KeyEnter, backend.KeySpace:
+					case driver.KeyEnter, driver.KeySpace:
 						if selectedScreenShareIdx >= 0 && selectedScreenShareIdx < len(screenShareTargets) {
 							startSelectedScreenShare(screenShareTargets[selectedScreenShareIdx])
 						} else {
@@ -1367,25 +1367,25 @@ func main() {
 				}
 
 				// Dedicated Global Test Modal Key (F4)
-				if e.Type == backend.KeyF4 {
+				if e.Type == driver.KeyF4 {
 					openTestModal()
 					continue
 				}
 
 				// Dedicated Global Relay Settings Modal Key (F5)
-				if e.Type == backend.KeyF5 {
+				if e.Type == driver.KeyF5 {
 					openRelayModal()
 					continue
 				}
 
 				// --- 2. Screen: Lobby Key Handling ---
 				if currentScreen == ScreenLobby {
-					if e.Type == backend.KeyF2 {
+					if e.Type == driver.KeyF2 {
 						CopyToClipboard(lobby.CurrentCode)
 						lobby.SetToast(fmt.Sprintf("Room key copied: %s", lobby.CurrentCode))
 						continue
 					}
-					if e.Type == backend.KeyF3 {
+					if e.Type == driver.KeyF3 {
 						lobby.CurrentCode = GenerateRoomCode()
 						lobby.SetToast(fmt.Sprintf("New room key generated: %s", lobby.CurrentCode))
 						continue
@@ -1410,13 +1410,13 @@ func main() {
 					}
 
 					// Cancel connecting on Esc
-					if lobby.IsConnecting && e.Type == backend.KeyEsc {
+					if lobby.IsConnecting && e.Type == driver.KeyEsc {
 						cancelJoin()
 						continue
 					}
 
 					// Tab Navigation
-					if e.Type == backend.KeyTab {
+					if e.Type == driver.KeyTab {
 						numInputs := 3
 						if lobby.IsPinProtected {
 							numInputs = 4
@@ -1430,7 +1430,7 @@ func main() {
 					}
 
 					// Enter key
-					if e.Type == backend.KeyEnter {
+					if e.Type == driver.KeyEnter {
 						joinCode := NormalizeCode(lobby.CodeState.Value())
 						if lobby.ActiveInput == 1 && joinCode != "" {
 							joinRoom(joinCode)
@@ -1443,14 +1443,14 @@ func main() {
 					// Input Routing based on ActiveInput Focus (Supports Left, Right, Home, End, Backspace, Delete)
 					switch lobby.ActiveInput {
 					case 0: // Nickname Input Focused
-						if e.Type == backend.KeyEsc {
+						if e.Type == driver.KeyEsc {
 							lobby.ActiveInput = 2
 						} else {
 							lobby.NickState.HandleKey(e)
 						}
 
 					case 1: // Join Room Code Input Focused (Full cursor navigation & editing)
-						if e.Type == backend.KeyEsc {
+						if e.Type == driver.KeyEsc {
 							lobby.ActiveInput = 2
 						} else {
 							lobby.CodeState.HandleKey(e)
@@ -1458,9 +1458,9 @@ func main() {
 
 					case 2: // Host / General Section
 						switch e.Type {
-						case backend.KeyEsc:
+						case driver.KeyEsc:
 							openExitModal()
-						case backend.KeyRune:
+						case driver.KeyRune:
 							switch e.Ch {
 							case '1':
 								lobby.ActiveInput = 0
@@ -1486,6 +1486,15 @@ func main() {
 							case 'g', 'G':
 								lobby.CurrentCode = GenerateRoomCode()
 								lobby.SetToast("New room key generated!")
+							case 'm', 'M':
+								lobby.Cycle3DMode()
+							case ' ':
+								lobby.AutoRotate = !lobby.AutoRotate
+								if lobby.AutoRotate {
+									lobby.SetToast("3D Auto-Rotate: Enabled")
+								} else {
+									lobby.SetToast("3D Auto-Rotate: Paused")
+								}
 							case 't', 'T':
 								openTestModal()
 							case 'r', 'R':
@@ -1496,9 +1505,9 @@ func main() {
 						}
 
 					case 3: // Host PIN Input Focused
-						if e.Type == backend.KeyEsc {
+						if e.Type == driver.KeyEsc {
 							lobby.ActiveInput = 2
-						} else if e.Type == backend.KeyEnter {
+						} else if e.Type == driver.KeyEnter {
 							startHost()
 						} else {
 							lobby.PinState.HandleKey(e)
@@ -1509,11 +1518,11 @@ func main() {
 					// --- 3. Screen: Room Key Handling ---
 					if room.IsChatFocused {
 						switch e.Type {
-						case backend.KeyEsc:
+						case driver.KeyEsc:
 							room.SetChatFocused(false)
-						case backend.KeyEnter:
+						case driver.KeyEnter:
 							if e.Shift || e.Alt || e.Ctrl {
-								room.ChatInputState.HandleKey(backend.KeyEvent{Type: backend.KeyRune, Ch: '\n'})
+								room.ChatInputState.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: '\n'})
 							} else {
 								val := room.ChatInputState.Value()
 								if strings.HasSuffix(val, `\`) && !strings.HasSuffix(val, `\\`) {
@@ -1531,23 +1540,23 @@ func main() {
 									}
 								}
 							}
-						case backend.KeyTab:
+						case driver.KeyTab:
 							room.SetChatFocused(false)
-						case backend.KeyArrowUp:
+						case driver.KeyArrowUp:
 							if e.Alt || e.Ctrl {
 								room.ScrollChat(1)
 							} else {
 								room.HistoryUp()
 							}
-						case backend.KeyArrowDown:
+						case driver.KeyArrowDown:
 							if e.Alt || e.Ctrl {
 								room.ScrollChat(-1)
 							} else {
 								room.HistoryDown()
 							}
-						case backend.KeyPageUp:
+						case driver.KeyPageUp:
 							room.ScrollChat(5)
-						case backend.KeyPageDown:
+						case driver.KeyPageDown:
 							room.ScrollChat(-5)
 						default:
 							room.ChatInputState.HandleKey(e)
@@ -1556,19 +1565,19 @@ func main() {
 					}
 
 					switch e.Type {
-					case backend.KeyEnter:
+					case driver.KeyEnter:
 						room.SetChatFocused(true)
 
-					case backend.KeyTab:
+					case driver.KeyTab:
 						room.SetChatFocused(true)
 
-					case backend.KeyPageUp, backend.KeyArrowUp:
+					case driver.KeyPageUp, driver.KeyArrowUp:
 						room.ScrollChat(1)
 
-					case backend.KeyPageDown, backend.KeyArrowDown:
+					case driver.KeyPageDown, driver.KeyArrowDown:
 						room.ScrollChat(-1)
 
-					case backend.KeyEsc:
+					case driver.KeyEsc:
 						if node.IsWatchingScreen {
 							_ = node.StopWatchingScreen()
 							room.SetToast("Screen viewer closed")
@@ -1579,16 +1588,16 @@ func main() {
 							openLeaveModal()
 						}
 
-					case backend.KeySpace:
+					case driver.KeySpace:
 						if audio.InputMode == InputModePushToTalk && audio.PTTKey == ' ' {
 							audio.PulsePTT(350 * time.Millisecond)
 						}
 
-					case backend.KeyF2:
+					case driver.KeyF2:
 						CopyToClipboard(node.RoomCode)
 						room.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 
-					case backend.KeyRune:
+					case driver.KeyRune:
 						if e.Ch == '/' {
 							room.SetChatFocused(true)
 							continue
@@ -1704,7 +1713,7 @@ func main() {
 					}
 				}
 
-			case backend.EventMouse:
+			case driver.EventMouse:
 				if showRelayModal {
 					modalW, modalH := uint16(72), uint16(15)
 					screenArea := lastScreenArea
@@ -1723,7 +1732,7 @@ func main() {
 					urlInputRect := cell.NewRect(inner.X+1, inner.Y+3, inner.Width-2, 1)
 					tokenInputRect := cell.NewRect(inner.X+1, inner.Y+6, inner.Width-2, 1)
 
-					if ev.Mouse.Button == backend.MouseLeft {
+					if ev.Mouse.Button == driver.MouseLeft {
 						if urlInputRect.Contains(ev.Mouse.X, ev.Mouse.Y) {
 							visW := int(urlInputRect.Width)
 							startOffset := 0
@@ -1769,7 +1778,7 @@ func main() {
 								relaySelEnd = col
 							}
 						}
-					} else if ev.Mouse.Button == backend.MouseRight {
+					} else if ev.Mouse.Button == driver.MouseRight {
 						clip := strings.TrimSpace(GetClipboardText())
 						if clip != "" {
 							if urlInputRect.Contains(ev.Mouse.X, ev.Mouse.Y) {
@@ -1796,7 +1805,7 @@ func main() {
 				}
 
 				if currentScreen == ScreenRoom && !showTestModal && !showLeaveModal && !showExitModal && !showScreenShareModal && !showDebugModal {
-					if ev.Mouse.Button == backend.MouseLeft && !ev.Mouse.Drag {
+					if ev.Mouse.Button == driver.MouseLeft && !ev.Mouse.Drag {
 						room.mu.Lock()
 						wasChatFocused := room.IsChatFocused
 						lastLog := room.LastLogArea
@@ -1813,15 +1822,15 @@ func main() {
 				handled := t.RouteMouseEvent(ev.Mouse)
 				if !handled {
 					if showDebugModal {
-						if ev.Mouse.Button == backend.MouseScrollUp {
+						if ev.Mouse.Button == driver.MouseScrollUp {
 							debugScrollOffset++
-						} else if ev.Mouse.Button == backend.MouseScrollDown {
+						} else if ev.Mouse.Button == driver.MouseScrollDown {
 							if debugScrollOffset > 0 {
 								debugScrollOffset--
 							}
 						}
 					} else if currentScreen == ScreenLobby && !showTestModal && !showExitModal {
-						if ev.Mouse.Button == backend.MouseLeft {
+						if ev.Mouse.Button == driver.MouseLeft {
 							if ev.Mouse.Drag {
 								if lobby.DragActive {
 									dx := int(ev.Mouse.X) - lobby.LastDragX
@@ -1835,13 +1844,13 @@ func main() {
 							} else {
 								lobby.DragActive = false
 							}
-						} else if ev.Mouse.Button == backend.MouseNone {
+						} else if ev.Mouse.Button == driver.MouseNone {
 							lobby.DragActive = false
-						} else if ev.Mouse.Button == backend.MouseScrollUp {
+						} else if ev.Mouse.Button == driver.MouseScrollUp {
 							if lobby.Scale < 12.0 {
 								lobby.Scale += 0.3
 							}
-						} else if ev.Mouse.Button == backend.MouseScrollDown {
+						} else if ev.Mouse.Button == driver.MouseScrollDown {
 							if lobby.Scale > 1.5 {
 								lobby.Scale -= 0.3
 							}
@@ -1853,7 +1862,7 @@ func main() {
 						room.mu.Unlock()
 
 						inChatLog := lastLog.Contains(ev.Mouse.X, ev.Mouse.Y)
-						if ev.Mouse.Button == backend.MouseLeft {
+						if ev.Mouse.Button == driver.MouseLeft {
 							if ev.Mouse.Drag {
 								if inChatLog || isDragging {
 									room.HandleMouseDrag(ev.Mouse.X, ev.Mouse.Y)
@@ -1868,7 +1877,7 @@ func main() {
 									room.ClearSelection()
 								}
 							}
-						} else if ev.Mouse.Button == backend.MouseRelease || ev.Mouse.Button == backend.MouseNone {
+						} else if ev.Mouse.Button == driver.MouseRelease || ev.Mouse.Button == driver.MouseNone {
 							if isDragging {
 								copied := room.HandleMouseRelease(ev.Mouse.X, ev.Mouse.Y)
 								if copied != "" {
@@ -1880,9 +1889,9 @@ func main() {
 									room.SetToast(fmt.Sprintf("✓ Copied: %s", previewStr))
 								}
 							}
-						} else if ev.Mouse.Button == backend.MouseScrollUp {
+						} else if ev.Mouse.Button == driver.MouseScrollUp {
 							room.ScrollChat(1)
-						} else if ev.Mouse.Button == backend.MouseScrollDown {
+						} else if ev.Mouse.Button == driver.MouseScrollDown {
 							room.ScrollChat(-1)
 						}
 					}

@@ -1,6 +1,11 @@
-github.com/godbus/dbus/v5 v5.2.2 h1:q1sA04wzI+hJkM1hP6U44n9H3D4F5Lz5c5r6u7w8y+s=
-github.com/godbus/dbus/v5 v5.2.2/go.mod h1:1q6q2i3p4k5n0a2k4l4z5c6d7e8f9g0h1i2j3k4l5m=
+github.com/godbus/dbus/v5 v5.2.2 h1:TUR3TgtSVDmjiXOgAAyaZbYmIeP3DPkld3jgKGV8mXQ=
+github.com/godbus/dbus/v5 v5.2.2/go.mod h1:3AAv2+hPq5rdnr5txxxRwiGjPXamgoIHgz9FPBfOp3c=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/thebanri/limoni v0.2.4 h1:549tkZ8ltPoTVh96z7+gUZypw+IbJM3gxxolpeCvEm4=
+github.com/thebanri/limoni v0.2.4/go.mod h1:+t8Sppug58OzJZ7vJ1J6Uar4wCRmDOMXkkjOrp543Mw=
+github.com/thebanri/limoni v0.2.5-0.20260910195401-e83cbc36608e h1:vickFwOinaQN5BTYoduPG5zeER5PuKFb9oXhFzaQwno=
+github.com/thebanri/limoni v0.2.5-0.20260910195401-e83cbc36608e/go.mod h1:+t8Sppug58OzJZ7vJ1J6Uar4wCRmDOMXkkjOrp543Mw=
+golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
 golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

@@ -1,10 +1,15 @@
-package backend
+package driver
+
+// Driver represents the low-level terminal I/O, raw mode controller, and event loop.
+// Backend is retained as an alias for backward compatibility.
+type Driver = Backend
 
 // EventType represents the category of a terminal event.
 type EventType uint8
 
 const (
-	EventKey EventType = iota
+	EventNone EventType = iota
+	EventKey
 	EventMouse
 	EventResize
 	EventFocus

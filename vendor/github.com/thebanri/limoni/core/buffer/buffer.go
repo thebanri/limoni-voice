@@ -75,14 +75,64 @@ func (b *Buffer) Resize(area cell.Rect) {
 	b.Clear()
 }
 
-// Get returns a direct pointer to the cell at the specified coordinates.
+// Get returns a direct mutable pointer to the cell at the specified coordinates.
+// Calling Get marks the buffer as dirty and non-clean, ensuring subsequent diff passes
+// do not skip mutations performed through the returned pointer.
 // Returns nil if coordinates are out of bounds.
 func (b *Buffer) Get(x, y uint16) *cell.Cell {
 	if x >= b.Area.Width || y >= b.Area.Height {
 		return nil
 	}
 	b.clean = false
+	b.IsDirty = true
 	return &b.Content[y*b.Area.Width+x]
+}
+
+// CellAt returns a copy of the cell at the specified coordinates without modifying the buffer's dirty state.
+// If coordinates are out of bounds, it returns a zero Cell.
+func (b *Buffer) CellAt(x, y uint16) cell.Cell {
+	if x >= b.Area.Width || y >= b.Area.Height {
+		return cell.Cell{}
+	}
+	return b.Content[y*b.Area.Width+x]
+}
+
+// clearOrphanWideAround cleans up broken/dangling wide characters or continuation cells
+// around (x, y) when overwriting a cell.
+func (b *Buffer) clearOrphanWideAround(x, y uint16, newWidth int) {
+	idx := int(y)*int(b.Area.Width) + int(x)
+
+	// 1. If cell at (x, y) is currently a continuation cell, the character to its left
+	// was a 2-width character whose right half is being replaced. Clear that left character.
+	if b.Content[idx].Content == cell.RuneContinuation && x > 0 {
+		leftIdx := idx - 1
+		b.Content[leftIdx].Content = ' '
+		b.Content[leftIdx].Style = cell.Style{}
+		b.IsDirty = true
+		b.clean = false
+	}
+
+	// 2. If cell at (x, y) is currently a 2-width character, and we're writing a 1-width character,
+	// the continuation cell to its right is now an orphan. Clear that right cell.
+	if newWidth == 1 && cell.RuneWidth(b.Content[idx].Content) == 2 && x+1 < b.Area.Width {
+		rightIdx := idx + 1
+		b.Content[rightIdx].Content = ' '
+		b.Content[rightIdx].Style = cell.Style{}
+		b.IsDirty = true
+		b.clean = false
+	}
+
+	// 3. If we are writing a 2-width character, it will occupy (x, y) and (x+1, y).
+	// If (x+1, y) was previously a 2-width character, its right half at (x+2, y) is now an orphan. Clear it.
+	if newWidth == 2 && x+2 < b.Area.Width {
+		rightIdx := idx + 1
+		if cell.RuneWidth(b.Content[rightIdx].Content) == 2 {
+			b.Content[idx+2].Content = ' '
+			b.Content[idx+2].Style = cell.Style{}
+			b.IsDirty = true
+			b.clean = false
+		}
+	}
 }
 
 // SetCell writes a cell at the specified coordinate.
@@ -91,6 +141,16 @@ func (b *Buffer) SetCell(x, y uint16, c cell.Cell) {
 	if x >= b.Area.Width || y >= b.Area.Height {
 		return
 	}
+	w := cell.RuneWidth(c.Content)
+	if w == 0 {
+		return
+	}
+	if w == 2 && x+1 >= b.Area.Width {
+		return
+	}
+
+	b.clearOrphanWideAround(x, y, w)
+
 	idx := int(y)*int(b.Area.Width) + int(x)
 	mergedStyle := b.Content[idx].Style.Merge(c.Style)
 	mergedCell := cell.Cell{
@@ -102,6 +162,16 @@ func (b *Buffer) SetCell(x, y uint16, c cell.Cell) {
 		b.IsDirty = true
 		b.clean = false
 	}
+
+	if w == 2 && x+1 < b.Area.Width {
+		contIdx := idx + 1
+		if b.Content[contIdx].Content != cell.RuneContinuation || b.Content[contIdx].Style != mergedStyle {
+			b.Content[contIdx].Content = cell.RuneContinuation
+			b.Content[contIdx].Style = mergedStyle
+			b.IsDirty = true
+			b.clean = false
+		}
+	}
 }
 
 // SetCellDirect writes a cell at the specified coordinate without style merging (exact overwrite).
@@ -109,23 +179,50 @@ func (b *Buffer) SetCellDirect(x, y uint16, c cell.Cell) {
 	if x >= b.Area.Width || y >= b.Area.Height {
 		return
 	}
+	w := cell.RuneWidth(c.Content)
+	if w == 0 {
+		return
+	}
+	if w == 2 && x+1 >= b.Area.Width {
+		return
+	}
+
+	b.clearOrphanWideAround(x, y, w)
+
 	idx := int(y)*int(b.Area.Width) + int(x)
 	if b.Content[idx] != c {
 		b.Content[idx] = c
 		b.IsDirty = true
 		b.clean = false
 	}
+
+	if w == 2 && x+1 < b.Area.Width {
+		contIdx := idx + 1
+		if b.Content[contIdx].Content != cell.RuneContinuation || b.Content[contIdx].Style != c.Style {
+			b.Content[contIdx].Content = cell.RuneContinuation
+			b.Content[contIdx].Style = c.Style
+			b.IsDirty = true
+			b.clean = false
+		}
+	}
 }
 
-// SetString writes a string starting at the specified coordinate with the given style.
-func (b *Buffer) SetString(x, y uint16, s string, style cell.Style) {
-	if y >= b.Area.Height || x >= b.Area.Width {
-		return
+// SetStringWithin writes a string starting at the specified coordinate with the given style,
+// strictly clipping text within maxWidth columns and buffer boundaries.
+// It returns the number of columns actually written.
+func (b *Buffer) SetStringWithin(x, y uint16, s string, style cell.Style, maxWidth uint16) uint16 {
+	if y >= b.Area.Height || x >= b.Area.Width || maxWidth == 0 {
+		return 0
+	}
+
+	limitX := x + maxWidth
+	if limitX > b.Area.Width {
+		limitX = b.Area.Width
 	}
 
 	currX := x
 	input := s
-	for len(input) > 0 && currX < b.Area.Width {
+	for len(input) > 0 && currX < limitX {
 		r, size := utf8.DecodeRuneInString(input)
 		if r == utf8.RuneError {
 			break
@@ -136,9 +233,11 @@ func (b *Buffer) SetString(x, y uint16, s string, style cell.Style) {
 			input = input[size:]
 			continue // Skip zero-width combining characters
 		}
-		if currX+uint16(w) > b.Area.Width {
-			break // Prevent clipping overflow
+		if currX+uint16(w) > limitX {
+			break // Prevent clipping overflow beyond maxWidth
 		}
+
+		b.clearOrphanWideAround(currX, y, w)
 
 		idx := y*b.Area.Width + currX
 		merged := b.Content[idx].Style.Merge(style)
@@ -150,8 +249,10 @@ func (b *Buffer) SetString(x, y uint16, s string, style cell.Style) {
 		}
 
 		if w == 2 {
-			if b.Content[idx+1].Content != cell.RuneContinuation {
-				b.Content[idx+1].Content = cell.RuneContinuation
+			contIdx := idx + 1
+			if b.Content[contIdx].Content != cell.RuneContinuation || b.Content[contIdx].Style != merged {
+				b.Content[contIdx].Content = cell.RuneContinuation
+				b.Content[contIdx].Style = merged
 				b.IsDirty = true
 				b.clean = false
 			}
@@ -160,6 +261,16 @@ func (b *Buffer) SetString(x, y uint16, s string, style cell.Style) {
 		currX += uint16(w)
 		input = input[size:]
 	}
+	return currX - x
+}
+
+// SetString writes a string starting at the specified coordinate with the given style.
+// It returns the number of columns actually written.
+func (b *Buffer) SetString(x, y uint16, s string, style cell.Style) uint16 {
+	if x >= b.Area.Width {
+		return 0
+	}
+	return b.SetStringWithin(x, y, s, style, b.Area.Width-x)
 }
 
 // index maps 2D coordinates to the 1D flat slice index. Returns -1 if out of bounds.

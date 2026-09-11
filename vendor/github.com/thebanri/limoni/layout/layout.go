@@ -135,35 +135,33 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 		return nil
 	}
 
-	// Build key
+	canCache := len(fl.Constraints) <= 16 && len(fitSizes) <= 16
 	var key layoutKey
-	key.direction = fl.Direction
-	key.gap = fl.Gap
-	key.area = area
-	key.numC = len(fl.Constraints)
-	if key.numC > 16 {
-		key.numC = 16
-	}
-	for i := 0; i < key.numC; i++ {
-		key.constraints[i] = ConstraintKey{
-			Type:  fl.Constraints[i].Type,
-			Value: fl.Constraints[i].Value,
+	if canCache {
+		key.direction = fl.Direction
+		key.gap = fl.Gap
+		key.area = area
+		key.numC = len(fl.Constraints)
+		for i := 0; i < key.numC; i++ {
+			key.constraints[i] = ConstraintKey{
+				Type:  fl.Constraints[i].Type,
+				Value: fl.Constraints[i].Value,
+			}
 		}
-	}
-	key.numF = len(fitSizes)
-	if key.numF > 16 {
-		key.numF = 16
-	}
-	for i := 0; i < key.numF; i++ {
-		key.fitSizes[i] = fitSizes[i]
-	}
+		key.numF = len(fitSizes)
+		for i := 0; i < key.numF; i++ {
+			key.fitSizes[i] = fitSizes[i]
+		}
 
-	splitCache.RLock()
-	if val, ok := splitCache.m[key]; ok {
+		splitCache.RLock()
+		if val, ok := splitCache.m[key]; ok {
+			splitCache.RUnlock()
+			res := make([]cell.Rect, len(val))
+			copy(res, val)
+			return res
+		}
 		splitCache.RUnlock()
-		return val
 	}
-	splitCache.RUnlock()
 
 	// Bölme yönündeki toplam boyutu belirle (Genişlik veya Yükseklik)
 	var totalSize uint16
@@ -180,15 +178,15 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 
 	// Boşluk (gap) hesabı
 	numGaps := len(fl.Constraints) - 1
-	totalGap := uint16(0)
+	totalGap := uint32(0)
 	if numGaps > 0 {
-		totalGap = uint16(numGaps) * fl.Gap
+		totalGap = uint32(numGaps) * uint32(fl.Gap)
 	}
 
 	// Kullanılabilir net alan hesabı
 	var usableSize uint16
-	if totalSize > totalGap {
-		usableSize = totalSize - totalGap
+	if uint32(totalSize) > totalGap {
+		usableSize = totalSize - uint16(totalGap)
 	}
 
 	sizes := make([]uint16, len(fl.Constraints))
@@ -252,19 +250,35 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 
 	// 2. Aşama: Geriye kalan alanı oransal (Ratio, Fill, Min ve Max) kısıtlamalara dağıt
 	if remaining > 0 {
-		// Ağırlıklı büyüme yapacak elemanları belirle
-		var activeMask uint32
-		for i := 0; i < len(fl.Constraints) && i < 32; i++ {
+		n := len(fl.Constraints)
+		var activeStack [32]bool
+		var active []bool
+		if n <= 32 {
+			active = activeStack[:n]
+		} else {
+			active = make([]bool, n)
+		}
+		hasActive := false
+		for i := 0; i < n; i++ {
 			c := fl.Constraints[i]
 			if c.Type == ConstraintRatio || c.Type == ConstraintFill || c.Type == ConstraintMin || c.Type == ConstraintMax {
-				activeMask |= (1 << i)
+				active[i] = true
+				hasActive = true
 			}
 		}
 
-		for activeMask > 0 && remaining > 0 {
+		var addedStack [32]uint16
+		var added []uint16
+		if n <= 32 {
+			added = addedStack[:n]
+		} else {
+			added = make([]uint16, n)
+		}
+
+		for hasActive && remaining > 0 {
 			var totalWeight uint32
-			for i := 0; i < len(fl.Constraints) && i < 32; i++ {
-				if (activeMask & (1 << i)) != 0 {
+			for i := 0; i < n; i++ {
+				if active[i] {
 					c := fl.Constraints[i]
 					switch c.Type {
 					case ConstraintRatio:
@@ -279,12 +293,14 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 				break
 			}
 
-			var added [32]uint16
+			for i := range added {
+				added[i] = 0
+			}
 			var distributed uint16
 			var cappedThisIteration bool
 
-			for i := 0; i < len(fl.Constraints) && i < 32; i++ {
-				if (activeMask & (1 << i)) != 0 {
+			for i := 0; i < n; i++ {
+				if active[i] {
 					c := fl.Constraints[i]
 					weight := uint32(1)
 					if c.Type == ConstraintRatio {
@@ -297,7 +313,7 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 						currentTotal := sizes[i] + sz
 						if currentTotal > c.Value {
 							sz = c.Value - sizes[i] // Sadece limite kadar büyüt
-							activeMask &^= (1 << i) // Artık bu eleman daha fazla büyüyemez
+							active[i] = false       // Artık bu eleman daha fazla büyüyemez
 							cappedThisIteration = true
 						}
 					}
@@ -307,11 +323,11 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 				}
 			}
 
-			// Kalan yuvarlama farkını en son aktif elemana ekle (eğer bu iterasyonda hiç capped eleman yoksa)
+			// Kalan yuvarlama farkını en son aktif elemanlara ekle
 			if !cappedThisIteration && remaining > distributed {
 				diff := remaining - distributed
-				for i := 0; i < len(fl.Constraints) && i < 32 && diff > 0; i++ {
-					if (activeMask & (1 << i)) != 0 {
+				for i := 0; i < n && diff > 0; i++ {
+					if active[i] {
 						added[i]++
 						distributed++
 						diff--
@@ -320,7 +336,7 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 			}
 
 			// Boyutları güncelle
-			for i := 0; i < len(fl.Constraints) && i < 32; i++ {
+			for i := 0; i < n; i++ {
 				sizes[i] += added[i]
 			}
 			remaining -= distributed
@@ -328,6 +344,14 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 			// Eğer bu iterasyonda hiçbir eleman limite takılmadıysa, tüm kalan alan dağıtılmıştır
 			if !cappedThisIteration {
 				break
+			}
+
+			hasActive = false
+			for i := 0; i < n; i++ {
+				if active[i] {
+					hasActive = true
+					break
+				}
 			}
 		}
 	}
@@ -345,7 +369,10 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 				Width:  sz,
 				Height: area.Height,
 			}
-			currX += sz + fl.Gap
+			currX += sz
+			if i < len(sizes)-1 {
+				currX += fl.Gap
+			}
 		} else {
 			res[i] = cell.Rect{
 				X:      currX,
@@ -353,13 +380,24 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 				Width:  area.Width,
 				Height: sz,
 			}
-			currY += sz + fl.Gap
+			currY += sz
+			if i < len(sizes)-1 {
+				currY += fl.Gap
+			}
 		}
 	}
 
-	splitCache.Lock()
-	splitCache.m[key] = res
-	splitCache.Unlock()
+	if canCache {
+		splitCache.Lock()
+		if len(splitCache.m) > 1024 {
+			clear(splitCache.m)
+		}
+		// Store a copy in cache so caller mutations cannot corrupt cache
+		cached := make([]cell.Rect, len(res))
+		copy(cached, res)
+		splitCache.m[key] = cached
+		splitCache.Unlock()
+	}
 
 	return res
 }

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/layout"
 )
 
@@ -71,8 +71,8 @@ type TableState struct {
 	SelectedRows     map[int]struct{} // Çoklu satır seçimi
 	selectionDirty   bool             // Seçim değiştiğinde görünürlük ayarı gerektiğini belirtir.
 
-	rowsHandler    func(backend.MouseEvent)
-	scrollHandler  func(backend.MouseEvent)
+	rowsHandler    func(driver.MouseEvent)
+	scrollHandler  func(driver.MouseEvent)
 	lastStartY     uint16
 	lastDrawOffset int
 	lastTotalRows  int
@@ -84,12 +84,12 @@ type TableState struct {
 
 func (ts *TableState) initHandlers() {
 	if ts.rowsHandler == nil {
-		ts.rowsHandler = func(ev backend.MouseEvent) {
-			if ev.Button == backend.MouseScrollUp || ev.Button == backend.MouseScrollDown {
+		ts.rowsHandler = func(ev driver.MouseEvent) {
+			if ev.Button == driver.MouseScrollUp || ev.Button == driver.MouseScrollDown {
 				ts.handleScroll(ev, ts.lastRowCount, ts.lastViewportH)
 				return
 			}
-			if ev.Button != backend.MouseLeft || ev.Y < ts.lastStartY {
+			if ev.Button != driver.MouseLeft || ev.Y < ts.lastStartY {
 				return
 			}
 			targetIdx := ts.lastDrawOffset + int(ev.Y-ts.lastStartY)
@@ -103,21 +103,21 @@ func (ts *TableState) initHandlers() {
 		}
 	}
 	if ts.scrollHandler == nil {
-		ts.scrollHandler = func(ev backend.MouseEvent) {
+		ts.scrollHandler = func(ev driver.MouseEvent) {
 			ts.handleScroll(ev, ts.lastRowCount, ts.lastViewportH)
 		}
 	}
 }
 
-func (ts *TableState) handleScroll(ev backend.MouseEvent, rowCount, viewportHeight int) {
+func (ts *TableState) handleScroll(ev driver.MouseEvent, rowCount, viewportHeight int) {
 	switch ev.Button {
-	case backend.MouseScrollUp:
+	case driver.MouseScrollUp:
 		if ev.Shift {
 			ts.ScrollHorizontal(-2)
 		} else {
 			ts.Scroll(-3, rowCount, viewportHeight)
 		}
-	case backend.MouseScrollDown:
+	case driver.MouseScrollDown:
 		if ev.Shift {
 			ts.ScrollHorizontal(2)
 		} else {
@@ -127,10 +127,10 @@ func (ts *TableState) handleScroll(ev backend.MouseEvent, rowCount, viewportHeig
 }
 
 type tableDrawScratch struct {
-	widths    []uint16
-	owner     map[[2]int][2]int
-	cells     map[[2]int]TableCell
-	filtered  []TableRow
+	widths   []uint16
+	owner    map[[2]int][2]int
+	cells    map[[2]int]TableCell
+	filtered []TableRow
 }
 
 var tableDrawScratchPool = sync.Pool{
@@ -316,6 +316,80 @@ type Table struct {
 	Scrollbar     bool                                              // Sağ kenarda dikey kaydırma çubuğu çizer.
 }
 
+// NewTable creates a new Table with default grid enabled.
+func NewTable() *Table {
+	return &Table{
+		DrawGrid: true,
+	}
+}
+
+// WithID sets the table's focus ID.
+func (t *Table) WithID(id string) *Table {
+	t.ID = id
+	return t
+}
+
+// WithHeaders sets the table headers from string slices.
+func (t *Table) WithHeaders(headers ...string) *Table {
+	row := NewRow(headers...)
+	t.Header = &row
+	return t
+}
+
+// WithRow appends a single row to the table.
+func (t *Table) WithRow(cells ...string) *Table {
+	t.Rows = append(t.Rows, NewRow(cells...))
+	return t
+}
+
+// WithRows sets the rows of the table.
+func (t *Table) WithRows(rows ...TableRow) *Table {
+	t.Rows = rows
+	return t
+}
+
+// WithConstraints sets column width constraints.
+func (t *Table) WithConstraints(constraints ...TableConstraint) *Table {
+	t.Constraints = constraints
+	return t
+}
+
+// WithDrawGrid enables or disables grid lines.
+func (t *Table) WithDrawGrid(drawGrid bool) *Table {
+	t.DrawGrid = drawGrid
+	return t
+}
+
+// WithState sets the TableState.
+func (t *Table) WithState(state *TableState) *Table {
+	t.State = state
+	return t
+}
+
+// WithSelectedStyle sets the style for the selected row.
+func (t *Table) WithSelectedStyle(style cell.Style) *Table {
+	t.SelectedStyle = style
+	return t
+}
+
+// WithGridStyle sets the style for grid lines.
+func (t *Table) WithGridStyle(style cell.Style) *Table {
+	t.GridStyle = style
+	return t
+}
+
+// WithStickyColumns sets the number of sticky frozen columns.
+func (t *Table) WithStickyColumns(n int) *Table {
+	t.StickyColumns = n
+	return t
+}
+
+// WithScrollbar enables or disables the vertical scrollbar.
+func (t *Table) WithScrollbar(enabled bool) *Table {
+	t.Scrollbar = enabled
+	return t
+}
+
 func (t Table) columnX(area cell.Rect, widths []uint16, column int) uint16 {
 	sticky := t.StickyColumns
 	if sticky < 0 {
@@ -420,8 +494,24 @@ func getOwnerCell(owner map[[2]int][2]int, r, c int) [2]int {
 
 // Draw, tabloyu render eder, başlığı yazar, satırları kaydırma offsetine göre dizer ve ızgara çizgilerini çizer.
 func (t Table) Draw(ctx cell.Context, buf *buffer.Buffer) {
-	if len(t.Constraints) == 0 || ctx.Area.Width == 0 || ctx.Area.Height == 0 {
+	if ctx.Area.Width == 0 || ctx.Area.Height == 0 {
 		return
+	}
+	if len(t.Constraints) == 0 {
+		colCount := 0
+		if t.Header != nil && len(t.Header.Cells) > 0 {
+			colCount = len(t.Header.Cells)
+		} else if len(t.Rows) > 0 {
+			colCount = len(t.Rows[0].Cells)
+		}
+		if colCount == 0 {
+			return
+		}
+		t.Constraints = make([]TableConstraint, colCount)
+		pct := 100 / colCount
+		for i := 0; i < colCount; i++ {
+			t.Constraints[i] = TableConstraint{Type: ConstraintPercentage, Value: pct}
+		}
 	}
 	scratch := tableDrawScratchPool.Get().(*tableDrawScratch)
 	defer tableDrawScratchPool.Put(scratch)
@@ -816,7 +906,7 @@ func (t Table) registerScrollHandlers(ctx cell.Context, rowCount int) {
 }
 
 // applyScroll, fare tekerleği olaylarını dikey/yatay kaydırmaya çevirir.
-func (t Table) applyScroll(ev backend.MouseEvent, rowCount, viewportHeight int) {
+func (t Table) applyScroll(ev driver.MouseEvent, rowCount, viewportHeight int) {
 	if t.State == nil {
 		return
 	}
@@ -845,8 +935,8 @@ func (t Table) registerRowsBlockHandler(ctx cell.Context, rowsArea cell.Rect, ro
 		ctx.RegisterMouse(rowsArea, t.State.rowsHandler)
 		return
 	}
-	ctx.RegisterMouse(rowsArea, func(ev backend.MouseEvent) {
-		if ev.Button == backend.MouseLeft && t.ID != "" && ctx.SetFocus != nil {
+	ctx.RegisterMouse(rowsArea, func(ev driver.MouseEvent) {
+		if ev.Button == driver.MouseLeft && t.ID != "" && ctx.SetFocus != nil {
 			ctx.SetFocus(t.ID)
 		}
 	})
@@ -876,13 +966,13 @@ func (t Table) registerResizeHandlers(ctx cell.Context, widths []uint16, colsCou
 			handleArea := cell.NewRect(sepX, ctx.Area.Y, 1, ctx.Area.Height)
 			colIdx := i
 
-			ctx.RegisterMouse(handleArea, func(ev backend.MouseEvent) {
-				if ev.Button == backend.MouseLeft && !ev.Drag {
+			ctx.RegisterMouse(handleArea, func(ev driver.MouseEvent) {
+				if ev.Button == driver.MouseLeft && !ev.Drag {
 					startMouseX := int(ev.X)
 					startColW := int(t.State.ColumnWidths[colIdx])
 
-					ctx.CaptureMouse(func(dragEv backend.MouseEvent) {
-						if dragEv.Button == backend.MouseRelease {
+					ctx.CaptureMouse(func(dragEv driver.MouseEvent) {
+						if dragEv.Button == driver.MouseRelease {
 							return
 						}
 						dx := int(dragEv.X) - startMouseX

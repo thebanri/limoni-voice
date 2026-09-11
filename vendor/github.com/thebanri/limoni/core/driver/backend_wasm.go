@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-package backend
+package driver
 
 import (
 	"os"

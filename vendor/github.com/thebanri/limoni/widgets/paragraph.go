@@ -1,6 +1,8 @@
 package widgets
 
 import (
+	"strings"
+
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/layout"
@@ -25,6 +27,38 @@ type Paragraph struct {
 	lastWidth   uint16
 	lastWrap    bool
 	cachedLines []string
+}
+
+// NewParagraph creates a new Paragraph widget with wrapping enabled by default.
+func NewParagraph(text string) *Paragraph {
+	return &Paragraph{
+		Text: text,
+		Wrap: true,
+	}
+}
+
+// WithWrap enables or disables word-wrapping.
+func (p *Paragraph) WithWrap(wrap bool) *Paragraph {
+	p.Wrap = wrap
+	return p
+}
+
+// WithStyle sets the paragraph text style.
+func (p *Paragraph) WithStyle(style cell.Style) *Paragraph {
+	p.Style = style
+	return p
+}
+
+// WithFocusedStyle sets the style applied when focused.
+func (p *Paragraph) WithFocusedStyle(style cell.Style) *Paragraph {
+	p.FocusedStyle = style
+	return p
+}
+
+// WithID sets the widget focus and event ID.
+func (p *Paragraph) WithID(id string) *Paragraph {
+	p.ID = id
+	return p
 }
 
 // Draw, metni çözümler, gerekliyse satır genişliğine göre böler ve terminal tamponuna çizer.
@@ -62,12 +96,37 @@ func (p *Paragraph) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
+	bg := mergedStyle.Bg
+	if bg.Type() == cell.ColorDefault && ctx.Style.Bg.Type() != cell.ColorDefault {
+		bg = ctx.Style.Bg
+	}
+
 	// Sınır yüksekliğini aşmayacak şekilde satır satır çiz
 	for i, line := range p.cachedLines {
 		if uint16(i) >= area.Height {
 			break
 		}
-		buf.SetString(area.X, area.Y+uint16(i), line, mergedStyle)
+		currY := area.Y + uint16(i)
+		written := buf.SetStringWithin(area.X, currY, line, mergedStyle, area.Width)
+		if bg.Type() != cell.ColorDefault {
+			for x := area.X + written; x < area.X+area.Width; x++ {
+				if c := buf.Get(x, currY); c != nil {
+					c.Content = ' '
+					c.Style.Bg = bg
+				}
+			}
+		}
+	}
+	if bg.Type() != cell.ColorDefault {
+		for i := len(p.cachedLines); uint16(i) < area.Height; i++ {
+			currY := area.Y + uint16(i)
+			for x := area.X; x < area.X+area.Width; x++ {
+				if c := buf.Get(x, currY); c != nil {
+					c.Content = ' '
+					c.Style.Bg = bg
+				}
+			}
+		}
 	}
 }
 
@@ -143,9 +202,27 @@ func wrapText(text string, width uint16) []string {
 		var currentLine string
 
 		for _, word := range words {
+			wordW := cell.StringWidth(word)
+			// Kelimenin kendisi tek başına satır genişliğini aşıyorsa, kelimeyi harf harf böl
+			if wordW > int(width) {
+				chunks := breakWord(word, int(width))
+				for _, chunk := range chunks {
+					chunkW := cell.StringWidth(chunk)
+					if len(currentLine) == 0 {
+						currentLine = chunk
+					} else if cell.StringWidth(currentLine)+1+chunkW <= int(width) {
+						currentLine += " " + chunk
+					} else {
+						wrappedLines = append(wrappedLines, currentLine)
+						currentLine = chunk
+					}
+				}
+				continue
+			}
+
 			if len(currentLine) == 0 {
 				currentLine = word
-			} else if cell.StringWidth(currentLine)+1+cell.StringWidth(word) <= int(width) {
+			} else if cell.StringWidth(currentLine)+1+wordW <= int(width) {
 				currentLine += " " + word
 			} else {
 				wrappedLines = append(wrappedLines, currentLine)
@@ -160,18 +237,50 @@ func wrapText(text string, width uint16) []string {
 	return wrappedLines
 }
 
-// splitLines, metni yeni satır (\n) karakterine göre ham satırlara ayırır.
+func breakWord(word string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	var chunks []string
+	var current strings.Builder
+	currentW := 0
+
+	for _, r := range word {
+		rw := cell.RuneWidth(r)
+		if currentW+rw > width && current.Len() > 0 {
+			chunks = append(chunks, current.String())
+			current.Reset()
+			currentW = 0
+		}
+		current.WriteRune(r)
+		currentW += rw
+	}
+	if current.Len() > 0 {
+		chunks = append(chunks, current.String())
+	}
+	return chunks
+}
+
+// splitLines, metni yeni satır (\n) karakterine göre ham satırlara ayırır (Windows \r\n dahil temizlenir).
 func splitLines(text string) []string {
 	var lines []string
 	start := 0
 	for i := 0; i < len(text); i++ {
 		if text[i] == '\n' {
-			lines = append(lines, text[start:i])
+			line := text[start:i]
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			lines = append(lines, line)
 			start = i + 1
 		}
 	}
 	if start <= len(text) {
-		lines = append(lines, text[start:])
+		line := text[start:]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }

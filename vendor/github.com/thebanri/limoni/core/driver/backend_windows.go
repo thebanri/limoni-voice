@@ -1,10 +1,11 @@
 //go:build windows
 
-package backend
+package driver
 
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -20,6 +21,9 @@ type Backend struct {
 	done       chan struct{}
 	width      uint16
 	height     uint16
+	startOnce  sync.Once
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // NewBackend yeni bir Windows Backend örneği oluşturur.
@@ -67,7 +71,7 @@ func (b *Backend) SetSize(w, h uint16) {
 // Setup terminali Raw / VT100 moduna geçirir ve ekran hazırlık kodlarını gönderir.
 func (b *Backend) Setup() error {
 	if b.portableIO != nil {
-		setupCmds := "\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>4;2m"
+		setupCmds := "\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?7l"
 		_, err := b.portableIO.Write([]byte(setupCmds))
 		return err
 	}
@@ -78,7 +82,7 @@ func (b *Backend) Setup() error {
 	}
 	b.state = state
 
-	setupCmds := "\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>4;2m"
+	setupCmds := "\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?7l"
 	if _, err := b.out.WriteString(setupCmds); err != nil {
 		b.Close()
 		return fmt.Errorf("ekran hazirlik kodlari gonderilemedi: %w", err)
@@ -89,25 +93,28 @@ func (b *Backend) Setup() error {
 
 // Close terminali eski ayarlarına döndürür ve alternatif ekrandan çıkar.
 func (b *Backend) Close() error {
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.closeOnce.Do(func() {
+		select {
+		case <-b.done:
+		default:
+			close(b.done)
+		}
 
-	restoreCmds := "\x1b[>4;0m\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l"
-	if b.portableIO != nil {
-		_, _ = b.portableIO.Write([]byte(restoreCmds))
-		return nil
-	}
-	if b.out != nil {
-		_, _ = b.out.WriteString(restoreCmds)
-	}
+		restoreCmds := "\x1b[0m\x1b[?7h\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l"
+		if b.portableIO != nil {
+			_, b.closeErr = b.portableIO.Write([]byte(restoreCmds))
+			return
+		}
+		if b.out != nil {
+			_, _ = b.out.WriteString(restoreCmds)
+		}
 
-	if b.state != nil {
-		return RestoreConsole(b.state)
-	}
-	return nil
+		if b.state != nil {
+			b.closeErr = RestoreConsole(b.state)
+			b.state = nil
+		}
+	})
+	return b.closeErr
 }
 
 // Events olay akışını dinleyen kanal alıcısını döner.
@@ -117,6 +124,12 @@ func (b *Backend) Events() <-chan Event {
 
 // StartEventLoop Windows konsolunda girdi ve olay döngüsünü başlatır.
 func (b *Backend) StartEventLoop() {
+	b.startOnce.Do(func() {
+		b.startEventLoop()
+	})
+}
+
+func (b *Backend) startEventLoop() {
 	inputChan := make(chan []byte, 32)
 	go func() {
 		buf := make([]byte, 512)

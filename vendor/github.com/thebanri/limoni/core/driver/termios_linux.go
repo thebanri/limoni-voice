@@ -1,6 +1,6 @@
 //go:build linux
 
-package backend
+package driver
 
 import (
 	"golang.org/x/sys/unix"

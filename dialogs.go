@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thebanri/limoni/core/backend"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
@@ -236,7 +236,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	boxX := inner.X + 17
 	buf.SetString(boxX, micDevY, prevBtn, micBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(boxX, micDevY, uint16(len([]rune(prevBtn))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(boxX, micDevY, uint16(len([]rune(prevBtn))), 1), func(_ driver.MouseEvent) {
 		audio.CycleInputDevice(-1)
 	})
 
@@ -261,13 +261,13 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		buf.SetCell(x, micDevY, cell.Cell{Content: ' ', Style: nameStyle})
 	}
 	buf.SetString(micNameX, micDevY, micDisplay, nameStyle)
-	frame.RegisterClickHandler(cell.NewRect(micNameX, micDevY, boxWidth, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(micNameX, micDevY, boxWidth, 1), func(_ driver.MouseEvent) {
 		audio.CycleInputDevice(1)
 	})
 
 	nextMicX := micNameX + boxWidth + 1
 	buf.SetString(nextMicX, micDevY, nextBtn, micBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(nextMicX, micDevY, uint16(len([]rune(nextBtn))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(nextMicX, micDevY, uint16(len([]rune(nextBtn))), 1), func(_ driver.MouseEvent) {
 		audio.CycleInputDevice(1)
 	})
 
@@ -294,7 +294,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	outDisplay := fmt.Sprintf("(%d/%d) %s", outCurIdx, outTotal, curOutName)
 
 	buf.SetString(boxX, outDevY, prevBtn, outBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(boxX, outDevY, uint16(len([]rune(prevBtn))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(boxX, outDevY, uint16(len([]rune(prevBtn))), 1), func(_ driver.MouseEvent) {
 		audio.CycleOutputDevice(-1)
 	})
 
@@ -311,13 +311,13 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		buf.SetCell(x, outDevY, cell.Cell{Content: ' ', Style: nameStyle})
 	}
 	buf.SetString(outNameX, outDevY, outDisplay, nameStyle)
-	frame.RegisterClickHandler(cell.NewRect(outNameX, outDevY, boxWidth, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(outNameX, outDevY, boxWidth, 1), func(_ driver.MouseEvent) {
 		audio.CycleOutputDevice(1)
 	})
 
 	nextOutX := outNameX + boxWidth + 1
 	buf.SetString(nextOutX, outDevY, nextBtn, outBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(nextOutX, outDevY, uint16(len([]rune(nextBtn))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(nextOutX, outDevY, uint16(len([]rune(nextBtn))), 1), func(_ driver.MouseEvent) {
 		audio.CycleOutputDevice(1)
 	})
 
@@ -463,20 +463,20 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	optOffX := inner.X + 20
 	buf.SetString(optOffX, noiseY, optOff, styleOff)
-	frame.RegisterClickHandler(cell.NewRect(optOffX, noiseY, uint16(len([]rune(optOff))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(optOffX, noiseY, uint16(len([]rune(optOff))), 1), func(_ driver.MouseEvent) {
 		audio.SetSuppressionMode(0)
 	})
 
 	optStdX := optOffX + uint16(len([]rune(optOff))) + 1
 	buf.SetString(optStdX, noiseY, optStd, styleStd)
-	frame.RegisterClickHandler(cell.NewRect(optStdX, noiseY, uint16(len([]rune(optStd))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(optStdX, noiseY, uint16(len([]rune(optStd))), 1), func(_ driver.MouseEvent) {
 		audio.SetSuppressionMode(1)
 	})
 
 	optHiX := optStdX + uint16(len([]rune(optStd))) + 1
 	if optHiX+uint16(len([]rune(optHi))) <= inner.X+inner.Width {
 		buf.SetString(optHiX, noiseY, optHi, styleHi)
-		frame.RegisterClickHandler(cell.NewRect(optHiX, noiseY, uint16(len([]rune(optHi))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(optHiX, noiseY, uint16(len([]rune(optHi))), 1), func(_ driver.MouseEvent) {
 			audio.SetSuppressionMode(2)
 		})
 	}
@@ -508,13 +508,13 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	modeVaX := inner.X + 18
 	buf.SetString(modeVaX, inputModeY, modeVa, styleVa)
-	frame.RegisterClickHandler(cell.NewRect(modeVaX, inputModeY, uint16(len([]rune(modeVa))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(modeVaX, inputModeY, uint16(len([]rune(modeVa))), 1), func(_ driver.MouseEvent) {
 		audio.SetInputMode(InputModeVoiceActivity)
 	})
 
 	modePttX := modeVaX + uint16(len([]rune(modeVa))) + 1
 	buf.SetString(modePttX, inputModeY, modePtt, stylePtt)
-	frame.RegisterClickHandler(cell.NewRect(modePttX, inputModeY, uint16(len([]rune(modePtt))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(modePttX, inputModeY, uint16(len([]rune(modePtt))), 1), func(_ driver.MouseEvent) {
 		audio.SetInputMode(InputModePushToTalk)
 	})
 
@@ -536,7 +536,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		keyX := modePttX + uint16(len([]rune(modePtt))) + 1
 		if keyX+uint16(len([]rune(keyLabel))) <= inner.X+inner.Width {
 			buf.SetString(keyX, inputModeY, keyLabel, keyStyle)
-			frame.RegisterClickHandler(cell.NewRect(keyX, inputModeY, uint16(len([]rune(keyLabel))), 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(keyX, inputModeY, uint16(len([]rune(keyLabel))), 1), func(_ driver.MouseEvent) {
 				audio.mu.Lock()
 				audio.PTTListeningKey = !audio.PTTListeningKey
 				audio.mu.Unlock()
@@ -608,7 +608,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		}
 	}
 	buf.SetString(inner.X+1, loopbackY, loopBox, loopStyle)
-	frame.RegisterClickHandler(cell.NewRect(inner.X+1, loopbackY, uint16(len([]rune(loopBox))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, loopbackY, uint16(len([]rune(loopBox))), 1), func(_ driver.MouseEvent) {
 		audio.ToggleLoopback()
 	})
 
@@ -632,7 +632,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	themePrevX := inner.X + 13
 	buf.SetString(themePrevX, themeY, prevBtn, themeBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(themePrevX, themeY, uint16(len([]rune(prevBtn))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(themePrevX, themeY, uint16(len([]rune(prevBtn))), 1), func(_ driver.MouseEvent) {
 		CycleTheme()
 	})
 
@@ -641,13 +641,13 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		buf.SetCell(x, themeY, cell.Cell{Content: ' ', Style: nameStyle})
 	}
 	buf.SetString(themeNameX, themeY, themeDisplay, nameStyle)
-	frame.RegisterClickHandler(cell.NewRect(themeNameX, themeY, themeBoxW, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(themeNameX, themeY, themeBoxW, 1), func(_ driver.MouseEvent) {
 		CycleTheme()
 	})
 
 	themeNextX := themeNameX + themeBoxW + 1
 	buf.SetString(themeNextX, themeY, nextBtn, themeBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(themeNextX, themeY, uint16(len([]rune(nextBtn))), 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(themeNextX, themeY, uint16(len([]rune(nextBtn))), 1), func(_ driver.MouseEvent) {
 		CycleTheme()
 	})
 
@@ -665,7 +665,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			}
 		}
 		buf.SetString(hudOptX, themeY, hudLabel, hudStyle)
-		frame.RegisterClickHandler(cell.NewRect(hudOptX, themeY, uint16(len([]rune(hudLabel))), 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(hudOptX, themeY, uint16(len([]rune(hudLabel))), 1), func(_ driver.MouseEvent) {
 			ToggleCompactHUD()
 		})
 	}
@@ -687,7 +687,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		}
 	}
 	buf.SetString(inner.X+1, btnY, " "+muteBtn+" ", muteBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(inner.X+1, btnY, uint16(len([]rune(muteBtn)))+2, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, btnY, uint16(len([]rune(muteBtn)))+2, 1), func(_ driver.MouseEvent) {
 		isMuted := audio.ToggleMute()
 		if node != nil {
 			node.SendMuteState(isMuted)
@@ -710,7 +710,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	deafX := inner.X + uint16(len([]rune(muteBtn))) + 4
 	buf.SetString(deafX, btnY, " "+deafBtn+" ", deafBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(deafX, btnY, uint16(len([]rune(deafBtn)))+2, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(deafX, btnY, uint16(len([]rune(deafBtn)))+2, 1), func(_ driver.MouseEvent) {
 		isDeaf := audio.ToggleDeafen()
 		if node != nil {
 			node.SendDeafenState(isDeaf)
@@ -726,7 +726,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	closeX := inner.X + inner.Width - uint16(len([]rune(closeBtn))) - 2
 	buf.SetString(closeX, btnY, " "+closeBtn+" ", closeBtnStyle)
-	frame.RegisterClickHandler(cell.NewRect(closeX, btnY, uint16(len([]rune(closeBtn)))+2, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(closeX, btnY, uint16(len([]rune(closeBtn)))+2, 1), func(_ driver.MouseEvent) {
 		if onClose != nil {
 			onClose()
 		}
@@ -985,17 +985,43 @@ func DrawRelayModal(
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
-		SelectionStart:   urlSelS,
-		SelectionEnd:     urlSelE,
-		SelectionStyle:   cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: cell.NewColorRGB(255, 255, 255), Modifier: cell.ModifierBold},
-		Focused:          activeField == 0,
 	}
 	if activeField == 0 {
 		urlInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
 	frame.RenderWidget(urlInput, urlInputRect)
 
-	frame.RegisterClickHandler(urlInputRect, func(_ backend.MouseEvent) {
+	// Render text selection highlight if active
+	if urlSelS >= 0 && urlSelE >= 0 && urlSelS < urlSelE {
+		col := 0
+		for i := 0; i < len(urlState.Text); i++ {
+			rw := cell.RuneWidth(urlState.Text[i])
+			if i >= urlSelS && i < urlSelE {
+				for w := 0; w < rw; w++ {
+					selX := urlInputRect.X + uint16(col+w)
+					if selX < urlInputRect.X+urlInputRect.Width {
+						if c := buf.Get(selX, urlInputRect.Y); c != nil {
+							c.Style = cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: cell.NewColorRGB(255, 255, 255), Modifier: cell.ModifierBold}
+						}
+					}
+				}
+			}
+			col += rw
+		}
+	} else if activeField == 0 {
+		cursorCol := 0
+		for i := 0; i < urlState.Cursor && i < len(urlState.Text); i++ {
+			cursorCol += cell.RuneWidth(urlState.Text[i])
+		}
+		cursorX := urlInputRect.X + uint16(cursorCol)
+		if cursorX < urlInputRect.X+urlInputRect.Width {
+			if c := buf.Get(cursorX, urlInputRect.Y); c != nil {
+				c.Style.Modifier |= cell.ModifierReverse
+			}
+		}
+	}
+
+	frame.RegisterClickHandler(urlInputRect, func(_ driver.MouseEvent) {
 		if onSelectField != nil {
 			onSelectField(0)
 		}
@@ -1025,17 +1051,42 @@ func DrawRelayModal(
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
-		SelectionStart:   tokenSelS,
-		SelectionEnd:     tokenSelE,
-		SelectionStyle:   cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: cell.NewColorRGB(255, 255, 255), Modifier: cell.ModifierBold},
-		Focused:          activeField == 1,
 	}
 	if activeField == 1 {
 		tokenInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
 	frame.RenderWidget(tokenInput, tokenInputRect)
 
-	frame.RegisterClickHandler(tokenInputRect, func(_ backend.MouseEvent) {
+	if tokenSelS >= 0 && tokenSelE >= 0 && tokenSelS < tokenSelE {
+		col := 0
+		for i := 0; i < len(tokenState.Text); i++ {
+			rw := cell.RuneWidth(tokenState.Text[i])
+			if i >= tokenSelS && i < tokenSelE {
+				for w := 0; w < rw; w++ {
+					selX := tokenInputRect.X + uint16(col+w)
+					if selX < tokenInputRect.X+tokenInputRect.Width {
+						if c := buf.Get(selX, tokenInputRect.Y); c != nil {
+							c.Style = cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: cell.NewColorRGB(255, 255, 255), Modifier: cell.ModifierBold}
+						}
+					}
+				}
+			}
+			col += rw
+		}
+	} else if activeField == 1 {
+		cursorCol := 0
+		for i := 0; i < tokenState.Cursor && i < len(tokenState.Text); i++ {
+			cursorCol += cell.RuneWidth(tokenState.Text[i])
+		}
+		cursorX := tokenInputRect.X + uint16(cursorCol)
+		if cursorX < tokenInputRect.X+tokenInputRect.Width {
+			if c := buf.Get(cursorX, tokenInputRect.Y); c != nil {
+				c.Style.Modifier |= cell.ModifierReverse
+			}
+		}
+	}
+
+	frame.RegisterClickHandler(tokenInputRect, func(_ driver.MouseEvent) {
 		if onSelectField != nil {
 			onSelectField(1)
 		}
@@ -1064,7 +1115,7 @@ func DrawRelayModal(
 	if bX+uint16(len([]rune(saveBtnText))) <= maxX {
 		saveRect := cell.NewRect(bX, btnY, uint16(len([]rune(saveBtnText))), 1)
 		drawBoundedString(buf, bX, btnY, saveBtnText, saveBtnStyle, maxX)
-		frame.RegisterClickHandler(saveRect, func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(saveRect, func(_ driver.MouseEvent) {
 			if onSave != nil {
 				onSave(urlState.Value(), tokenState.Value())
 			}
@@ -1075,7 +1126,7 @@ func DrawRelayModal(
 	if bX+uint16(len([]rune(resetBtnText))) <= maxX {
 		resetRect := cell.NewRect(bX, btnY, uint16(len([]rune(resetBtnText))), 1)
 		drawBoundedString(buf, bX, btnY, resetBtnText, resetBtnStyle, maxX)
-		frame.RegisterClickHandler(resetRect, func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(resetRect, func(_ driver.MouseEvent) {
 			if onReset != nil {
 				onReset()
 			}
@@ -1086,7 +1137,7 @@ func DrawRelayModal(
 	if bX+uint16(len([]rune(cancelBtnText))) <= maxX {
 		cancelRect := cell.NewRect(bX, btnY, uint16(len([]rune(cancelBtnText))), 1)
 		drawBoundedString(buf, bX, btnY, cancelBtnText, cancelBtnStyle, maxX)
-		frame.RegisterClickHandler(cancelRect, func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cancelRect, func(_ driver.MouseEvent) {
 			if onCancel != nil {
 				onCancel()
 			}
@@ -1229,7 +1280,7 @@ func DrawScreenShareModal(frame *terminal.Frame, screenArea cell.Rect, progress 
 		buf.SetString(inner.X+1, rowY, itemText, itemStyle)
 
 		targetItem := t
-		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, listWidth, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, listWidth, 1), func(_ driver.MouseEvent) {
 			onSelect(targetItem)
 		})
 	}
@@ -1365,7 +1416,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		Bg:       theme.Danger,
 		Modifier: cell.ModifierBold,
 	})
-	frame.RegisterClickHandler(cell.NewRect(inner.X+1, inner.Y, closeLen, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, inner.Y, closeLen, 1), func(_ driver.MouseEvent) {
 		if onClose != nil {
 			onClose()
 		}
@@ -1380,7 +1431,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		Bg:       theme.Secondary,
 		Modifier: cell.ModifierBold,
 	})
-	frame.RegisterClickHandler(cell.NewRect(copyX, inner.Y, copyLen, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(copyX, inner.Y, copyLen, 1), func(_ driver.MouseEvent) {
 		if onCopy != nil {
 			onCopy()
 		}
@@ -1395,7 +1446,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		Bg:       theme.Warning,
 		Modifier: cell.ModifierBold,
 	})
-	frame.RegisterClickHandler(cell.NewRect(clearX, inner.Y, clearLen, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(clearX, inner.Y, clearLen, 1), func(_ driver.MouseEvent) {
 		if onClear != nil {
 			onClear()
 		}
@@ -1677,7 +1728,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 		Bg:       theme.Success,
 		Modifier: cell.ModifierBold,
 	})
-	frame.RegisterClickHandler(cell.NewRect(acceptX, btnRow, acceptLen, 1), func(_ backend.MouseEvent) {
+	frame.RegisterClickHandler(cell.NewRect(acceptX, btnRow, acceptLen, 1), func(_ driver.MouseEvent) {
 		if onAccept != nil {
 			onAccept()
 		}
@@ -1693,7 +1744,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 			Bg:       theme.Danger,
 			Modifier: cell.ModifierBold,
 		})
-		frame.RegisterClickHandler(cell.NewRect(declineX, btnRow, declineLen, 1), func(_ backend.MouseEvent) {
+		frame.RegisterClickHandler(cell.NewRect(declineX, btnRow, declineLen, 1), func(_ driver.MouseEvent) {
 			if onDecline != nil {
 				onDecline()
 			}
@@ -1711,7 +1762,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 				Bg:       theme.Accent,
 				Modifier: cell.ModifierBold,
 			})
-			frame.RegisterClickHandler(cell.NewRect(editorX, btnRow, editorLen, 1), func(_ backend.MouseEvent) {
+			frame.RegisterClickHandler(cell.NewRect(editorX, btnRow, editorLen, 1), func(_ driver.MouseEvent) {
 				if onOpenEditor != nil {
 					onOpenEditor()
 				}

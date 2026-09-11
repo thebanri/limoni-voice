@@ -13,6 +13,7 @@ type CapabilityProfile struct {
 	Colors256      bool
 	MouseSupport   bool
 	BracketedPaste bool
+	SyncOutput     bool
 	GraphicsProto  graphics.Protocol
 }
 
@@ -21,9 +22,15 @@ func DetectCapabilities() CapabilityProfile {
 	profile := CapabilityProfile{
 		TrueColor:      false,
 		Colors256:      false,
-		MouseSupport:   true,  // Most modern terminals support mouse reporting
-		BracketedPaste: true,  // Most modern terminals support bracketed paste
+		MouseSupport:   true, // Most modern terminals support mouse reporting
+		BracketedPaste: true, // Most modern terminals support bracketed paste
+		SyncOutput:     true, // Synchronized Output (?2026) enables atomic tear-free frames (safely ignored if unsupported)
 		GraphicsProto:  graphics.DetectProtocol(),
+	}
+
+	term := os.Getenv("TERM")
+	if term == "dumb" || os.Getenv("LIMONI_NO_SYNC") == "1" {
+		profile.SyncOutput = false
 	}
 
 	// 1. Detect TrueColor support
@@ -33,7 +40,6 @@ func DetectCapabilities() CapabilityProfile {
 		profile.Colors256 = true
 	}
 
-	term := os.Getenv("TERM")
 	if strings.Contains(term, "direct") {
 		profile.TrueColor = true
 		profile.Colors256 = true
@@ -41,7 +47,7 @@ func DetectCapabilities() CapabilityProfile {
 		profile.Colors256 = true
 	}
 
-	// Some known modern terminals support TrueColor by default even if env is missing
+	// Some known modern terminals support TrueColor
 	termProg := os.Getenv("TERM_PROGRAM")
 	if termProg == "kitty" || termProg == "WezTerm" || termProg == "Ghostty" || termProg == "iTerm.app" || termProg == "Apple_Terminal" {
 		profile.TrueColor = true

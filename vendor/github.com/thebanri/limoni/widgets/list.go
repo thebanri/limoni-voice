@@ -3,9 +3,9 @@ package widgets
 import (
 	"unicode/utf8"
 
-	"github.com/thebanri/limoni/core/backend"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/layout"
 )
 
@@ -28,6 +28,20 @@ func NewListState() *ListState {
 // Select, belirtilen indeksi seçili hale getirir.
 func (s *ListState) Select(index int) {
 	s.Selected = index
+}
+
+// Next moves the selection to the next item.
+func (s *ListState) Next() {
+	s.Selected++
+}
+
+// Previous moves the selection to the previous item.
+func (s *ListState) Previous() {
+	if s.Selected > 0 {
+		s.Selected--
+	} else {
+		s.Selected = 0
+	}
 }
 
 // ScrollTo, seçili olan öğenin (Selected) listenin görünür yüksekliği (height) içerisinde
@@ -98,6 +112,67 @@ type List struct {
 	State *ListState
 }
 
+// NewList creates a new List widget with the given items.
+func NewList(items ...string) *List {
+	return &List{
+		Items: items,
+	}
+}
+
+// WithID sets the widget focus and event ID.
+func (l *List) WithID(id string) *List {
+	l.ID = id
+	return l
+}
+
+// WithItems sets the items of the list.
+func (l *List) WithItems(items ...string) *List {
+	l.Items = items
+	return l
+}
+
+// WithProvider sets a virtual data provider.
+func (l *List) WithProvider(p ListProvider) *List {
+	l.Provider = p
+	return l
+}
+
+// WithState sets the ListState pointer.
+func (l *List) WithState(state *ListState) *List {
+	l.State = state
+	return l
+}
+
+// WithHighlightSymbol sets the prefix symbol for the selected item.
+func (l *List) WithHighlightSymbol(sym string) *List {
+	l.HighlightSymbol = sym
+	return l
+}
+
+// WithScrollbar enables or disables the scrollbar.
+func (l *List) WithScrollbar(enable bool) *List {
+	l.Scrollbar = enable
+	return l
+}
+
+// WithStyle sets the default list style.
+func (l *List) WithStyle(style cell.Style) *List {
+	l.Style = style
+	return l
+}
+
+// WithSelectedStyle sets the selected item style.
+func (l *List) WithSelectedStyle(style cell.Style) *List {
+	l.SelectedStyle = style
+	return l
+}
+
+// WithFocusedStyle sets the focused list style.
+func (l *List) WithFocusedStyle(style cell.Style) *List {
+	l.FocusedStyle = style
+	return l
+}
+
 // Draw, listeyi belirtilen alana çizer. Görünür öğeleri hesaplar, seçili öğeyi vurgular
 // ve listedeki her öğe için otomatik fare tıklama bölgeleri (RegisterClick) kaydeder.
 func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
@@ -115,6 +190,9 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 
 	listStyle := ctx.Style.Merge(l.Style)
+	if listStyle.Bg.Type() == cell.ColorDefault && ctx.ThemeStyle != nil {
+		listStyle = listStyle.Merge(ctx.ThemeStyle("surface"))
+	}
 	if ctx.IsFocused(l.ID) {
 		listStyle = listStyle.Merge(l.FocusedStyle)
 	}
@@ -132,13 +210,13 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if ctx.RegisterMouse != nil && l.State != nil {
 		st := l.State
 		viewHeight := int(ctx.Area.Height)
-		ctx.RegisterMouse(ctx.Area, func(ev backend.MouseEvent) {
-			if ev.Button == backend.MouseScrollUp {
+		ctx.RegisterMouse(ctx.Area, func(ev driver.MouseEvent) {
+			if ev.Button == driver.MouseScrollUp {
 				st.Offset--
 				if st.Offset < 0 {
 					st.Offset = 0
 				}
-			} else if ev.Button == backend.MouseScrollDown {
+			} else if ev.Button == driver.MouseScrollDown {
 				st.Offset++
 				maxOffset := totalItems - viewHeight
 				if maxOffset < 0 {
@@ -212,19 +290,35 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 		// Satırın arka planını temizle ve doldur
 		for x := area.X; x < area.X+area.Width; x++ {
-			if c := buf.Get(x, currY); c != nil {
-				c.Content = ' '
-				c.Style = c.Style.Merge(itemStyle)
+			c := buf.Get(x, currY)
+			if c == nil {
+				continue
 			}
+			rowStyle := itemStyle
+			if rowStyle.Bg.Type() == cell.ColorDefault {
+				if ctx.Style.Bg.Type() != cell.ColorDefault {
+					rowStyle.Bg = ctx.Style.Bg
+				} else if c.Style.Bg.Type() != cell.ColorDefault {
+					rowStyle.Bg = c.Style.Bg
+				}
+			}
+			c.Content = ' '
+			c.Style = rowStyle
 		}
 
 		// Metni çiz (allocation-free string rendering)
 		textX := area.X
+		rightLimit := area.X + area.Width
 		if isSel && l.HighlightSymbol != "" {
-			buf.SetString(textX, currY, l.HighlightSymbol, itemStyle)
-			textX += uint16(utf8.RuneCountInString(l.HighlightSymbol))
+			symWidth := uint16(cell.StringWidth(l.HighlightSymbol))
+			if textX < rightLimit {
+				buf.SetStringWithin(textX, currY, l.HighlightSymbol, itemStyle, rightLimit-textX)
+				textX += symWidth
+			}
 		}
-		buf.SetString(textX, currY, itemText, itemStyle)
+		if textX < rightLimit {
+			buf.SetStringWithin(textX, currY, itemText, itemStyle, rightLimit-textX)
+		}
 
 		// Otomatik fare yönlendirme köprüsünü bağla
 		if ctx.RegisterClick != nil && l.State != nil {
@@ -245,6 +339,31 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 					setFocus(id)
 				}
 			})
+		}
+	}
+
+	// Kalan boş satırları arka plan rengiyle doldur
+	for y := totalItems - offset; y < int(area.Height); y++ {
+		if y < 0 {
+			continue
+		}
+		currY := area.Y + uint16(y)
+		for x := area.X; x < area.X+area.Width; x++ {
+			c := buf.Get(x, currY)
+			if c != nil {
+				bg := listStyle.Bg
+				if bg.Type() == cell.ColorDefault {
+					if ctx.Style.Bg.Type() != cell.ColorDefault {
+						bg = ctx.Style.Bg
+					} else if c.Style.Bg.Type() != cell.ColorDefault {
+						bg = c.Style.Bg
+					}
+				}
+				if bg.Type() != cell.ColorDefault {
+					c.Content = ' '
+					c.Style.Bg = bg
+				}
+			}
 		}
 	}
 }

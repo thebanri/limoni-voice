@@ -37,9 +37,12 @@ type Image struct {
 	FocusedStyle cell.Style
 
 	// Cache fields
-	lastImg     image.Image
-	lastArea    cell.Rect
-	cachedCells []cell.Cell
+	lastImg       image.Image
+	lastArea      cell.Rect
+	cachedCells   []cell.Cell
+	lastSrcImg    image.Image
+	lastCircle    bool
+	lastMaskedImg image.Image
 }
 
 // Draw, çizim alanındaki hücrelerin içeriğini boşluk karakteriyle temizler
@@ -63,7 +66,17 @@ func (im *Image) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 	img := im.Img
 	if im.CircleMask {
-		img = graphics.ApplyCircleMask(img)
+		if im.Img == im.lastSrcImg && im.lastCircle && im.lastMaskedImg != nil {
+			img = im.lastMaskedImg
+		} else {
+			img = graphics.ApplyCircleMask(im.Img)
+			im.lastSrcImg = im.Img
+			im.lastCircle = true
+			im.lastMaskedImg = img
+		}
+	} else {
+		im.lastCircle = false
+		im.lastMaskedImg = nil
 	}
 	if im.OpacitySet && im.Opacity < 1.0 {
 		img = graphics.ApplyOpacity(img, im.Opacity)
@@ -125,6 +138,9 @@ func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.I
 	if bgCol.Type() == cell.ColorDefault {
 		bgCol = ctx.Style.Bg
 	}
+	if bgCol.Type() == cell.ColorDefault && ctx.ThemeStyle != nil {
+		bgCol = ctx.ThemeStyle("surface").Bg
+	}
 
 	if im.lastImg == img && im.lastArea == ctx.Area && len(im.cachedCells) == int(ctx.Area.Width)*int(ctx.Area.Height) {
 		idx := 0
@@ -150,38 +166,67 @@ func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.I
 	idx := 0
 	for cy := uint16(0); cy < ctx.Area.Height; cy++ {
 		for cx := uint16(0); cx < ctx.Area.Width; cx++ {
+			cellX := ctx.Area.X + cx
+			cellY := ctx.Area.Y + cy
+
+			// Fallback to existing cell background if bgCol is still default
+			effCellBg := bgCol
+			if effCellBg.Type() == cell.ColorDefault {
+				if cur := buf.Get(cellX, cellY); cur != nil && cur.Style.Bg.Type() != cell.ColorDefault {
+					effCellBg = cur.Style.Bg
+				}
+			}
+
 			// Üst piksel (Background rengi olacak)
 			topCol := resized.At(int(cx), int(2*cy))
 			_, _, _, ta := topCol.RGBA()
-			bgColor := blendColor(topCol, bgCol)
 
 			// Alt piksel (Foreground rengi olacak)
 			botCol := resized.At(int(cx), int(2*cy+1))
 			_, _, _, ba := botCol.RGBA()
-			fgColor := blendColor(botCol, bgCol)
+
+			const alphaMin = 4000 // ~6% alpha threshold to filter transparent compression noise
+			topOpaque := ta >= alphaMin
+			botOpaque := ba >= alphaMin
+
+			bgColor := effCellBg
+			if topOpaque {
+				bgColor = blendColor(topCol, effCellBg)
+			}
+			fgColor := effCellBg
+			if botOpaque {
+				fgColor = blendColor(botCol, effCellBg)
+			}
 
 			// Hücreyi güncelle
-			cellX := ctx.Area.X + cx
-			cellY := ctx.Area.Y + cy
 			if c := buf.Get(cellX, cellY); c != nil {
 				c.Style.Modifier = cell.ModifierReset
 
-				if ta == 0 && ba == 0 {
+				if !topOpaque && !botOpaque {
 					// Her iki piksel de şeffaf -> Boşluk karakteri
 					c.Content = ' '
-					c.Style.Bg = bgCol
-				} else if ta > 0 && ba == 0 {
-					// Üst dolu, alt şeffaf -> Üst yarım blok (▀)
-					c.Content = '▀'
-					c.Style.Fg = bgColor
-					c.Style.Bg = bgCol
-				} else if ta == 0 && ba > 0 {
-					// Üst şeffaf, alt dolu -> Alt yarım blok (▄)
+					c.Style.Fg = cell.NewColorDefault()
+					c.Style.Bg = effCellBg
+				} else if topOpaque && !botOpaque {
+					// Üst dolu, alt şeffaf -> Alt yarım blok (▄) ile Bg üst piksel, Fg arka plan
+					effBg := effCellBg
+					if effBg.Type() == cell.ColorDefault {
+						effBg = cell.NewColorRGB(0, 0, 0)
+					}
+					c.Content = '▄'
+					c.Style.Fg = effBg
+					c.Style.Bg = bgColor
+				} else if !topOpaque && botOpaque {
+					// Üst şeffaf, alt dolu -> Alt yarım blok (▄) ile Fg alt piksel, Bg arka plan
+					effBg := effCellBg
+					if effBg.Type() == cell.ColorDefault {
+						effBg = cell.NewColorRGB(0, 0, 0)
+					}
 					c.Content = '▄'
 					c.Style.Fg = fgColor
-					c.Style.Bg = bgCol
+					c.Style.Bg = effBg
 				} else {
-					// İkisi de dolu -> Alt yarım blok (▄)
+					// İkisi de dolu -> Alt yarım blok (▄) ile Fg alt piksel, Bg üst piksel
 					c.Content = '▄'
 					c.Style.Fg = fgColor
 					c.Style.Bg = bgColor
@@ -203,10 +248,10 @@ func (im *Image) SizeHint(maxArea cell.Rect) (width, height uint16) {
 // konteyner arka plan rengiyle alfa-harmanlama (alpha blending) formülüyle birleştirir.
 func blendColor(fgColor color.Color, bg cell.Color) cell.Color {
 	r, g, b, a := fgColor.RGBA()
-	if a == 0 {
+	if a < 4000 {
 		return bg
 	}
-	if a == 65535 {
+	if a >= 65000 || bg.Type() == cell.ColorDefault {
 		return cell.NewColorRGB(uint8(r>>8), uint8(g>>8), uint8(b>>8))
 	}
 
