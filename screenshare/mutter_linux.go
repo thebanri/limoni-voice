@@ -17,21 +17,32 @@ import (
 )
 
 var (
-	nvencCheckOnce sync.Once
-	hasNvenc       bool
+	encoderCheckOnce sync.Once
+	selectedEncoder  string // "nvh264enc", "vaapih264enc", or "x264enc"
 )
 
-func isNvencSupported() bool {
+func getBestLinuxEncoder() string {
 	if testing.Testing() {
-		return false
+		return "x264enc"
 	}
-	nvencCheckOnce.Do(func() {
-		cmd := exec.Command("gst-inspect-1.0", "nvh264enc")
-		if err := cmd.Run(); err == nil {
-			hasNvenc = true
+	encoderCheckOnce.Do(func() {
+		// 1. Try NVIDIA NVENC (NVIDIA GeForce/RTX)
+		if exec.Command("gst-launch-1.0", "-q", "videotestsrc", "num-buffers=1", "!", "nvh264enc", "!", "fakesink").Run() == nil {
+			selectedEncoder = "nvh264enc"
+			logMsg("[SCREENSHARE] Hardware encoder detected: NVIDIA NVENC (nvh264enc)")
+			return
 		}
+		// 2. Try VAAPI (Hardware acceleration for Intel & AMD Radeon)
+		if exec.Command("gst-launch-1.0", "-q", "videotestsrc", "num-buffers=1", "!", "vaapih264enc", "!", "fakesink").Run() == nil {
+			selectedEncoder = "vaapih264enc"
+			logMsg("[SCREENSHARE] Hardware encoder detected: Intel/AMD VAAPI (vaapih264enc)")
+			return
+		}
+		// 3. Fallback: Universal high-performance multi-threaded CPU software encoding
+		selectedEncoder = "x264enc"
+		logMsg("[SCREENSHARE] Software encoder active: CPU multi-core (x264enc)")
 	})
-	return hasNvenc
+	return selectedEncoder
 }
 
 // RequestMutterScreenCast creates a direct, popup-less screencast session with GNOME Mutter compositor.
@@ -214,9 +225,9 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	if hasFD {
 		args = append(args, "fd=3")
 	}
-	useNvenc := isNvencSupported()
+	encoder := getBestLinuxEncoder()
 	rawFormat := "I420"
-	if useNvenc {
+	if encoder == "nvh264enc" || encoder == "vaapih264enc" {
 		rawFormat = "NV12"
 	}
 
@@ -233,7 +244,8 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=%s", outWidth, outHeight, fps, rawFormat),
 	)
 
-	if useNvenc {
+	switch encoder {
+	case "nvh264enc":
 		args = append(args,
 			"!", "nvh264enc",
 			"preset=low-latency",
@@ -244,9 +256,17 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			fmt.Sprintf("gop-size=%d", fps),
 			"repeat-sequence-header=true",
 		)
-	} else {
+	case "vaapih264enc":
+		args = append(args,
+			"!", "vaapih264enc",
+			"rate-control=cbr",
+			fmt.Sprintf("bitrate=%d", bitrateKbps),
+			fmt.Sprintf("keyframe-period=%d", fps),
+		)
+	default: // "x264enc" - Multi-threaded CPU software encoding for non-GPU / CPU users
 		args = append(args,
 			"!", "x264enc",
+			"threads=0", // Use all CPU cores automatically
 			"speed-preset=ultrafast",
 			"tune=zerolatency",
 			"pass=cbr",
@@ -255,14 +275,15 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			fmt.Sprintf("key-int-max=%d", fps),
 			"bframes=0",
 			"byte-stream=true",
-			"sliced-threads=true",
+			"sliced-threads=true", // Slice each frame into concurrent core jobs for lowest latency
 			fmt.Sprintf("option-string=intra-refresh=1:keyint=%d:min-keyint=%d:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", fps, fps),
 			"insert-vui=true",
 		)
 	}
 
 	args = append(args,
-		"!", "video/x-h264,profile=baseline,stream-format=byte-stream",
+		"!", "h264parse",
+		"!", "video/x-h264,stream-format=byte-stream",
 		"!", "mpegtsmux",
 		"alignment=7",
 		"pat-interval=10",
