@@ -1888,8 +1888,13 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			}
 			if runtime.GOOS == "windows" {
 				args = append(args, "--d3d11-sync-interval=0", "--swapchain-depth=1")
-			} else if isWayland() {
-				args = append(args, "--gpu-context=wayland")
+			} else {
+				// On Linux, always specify --vo=gpu explicitly so mpv doesn't fall through to x11
+				// which triggers 'Assertion !vo->x11 failed' on Wayland/NVIDIA systems.
+				args = append(args, "--vo=gpu")
+				if isWayland() {
+					args = append(args, "--gpu-context=wayland")
+				}
 			}
 			if len(opt.CustomMpvFlags) > 0 {
 				args = append(args, opt.CustomMpvFlags...)
@@ -1920,10 +1925,9 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"-loglevel", "warning",
 			"-flags", "low_delay",
 			"-fflags", "nobuffer+flush_packets",
-			"-framedrop",
 			"-threads", fmt.Sprintf("%d", threads),
-			"-probesize", "32768",
-			"-analyzeduration", "0",
+			"-probesize", "65536",
+			"-analyzeduration", "100000",
 			"-f", "mpegts",
 			"-alwaysontop",
 			"-window_title", windowTitle,

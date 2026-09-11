@@ -130,8 +130,8 @@ type P2PPacket struct {
 	PIN             string        `json:"pin,omitempty"`
 	IsLocked        bool          `json:"is_locked,omitempty"`
 	FileMeta        *FileMetadata `json:"file_meta,omitempty"`
-	Peers           []PeerSummary `json:"peers,omitempty"` // for Welcome message
-	Padding         []byte        `json:"padding,omitempty"`   // Anti-DPI randomized padding
+	Peers           []PeerSummary `json:"peers,omitempty"`   // for Welcome message
+	Padding         []byte        `json:"padding,omitempty"` // Anti-DPI randomized padding
 }
 
 type PeerSummary struct {
@@ -253,24 +253,24 @@ type P2PNode struct {
 	WatchingPeerID       string
 	WatchingPeerNick     string
 	ScreenSharePort      int
-	screenSession      *screenshare.Session
-	receiverSession    *screenshare.Session
-	videoCaptureConn   *net.UDPConn
-	videoTCPListener   net.Listener
-	videoTCPConn       net.Conn
-	videoPlayerCh      chan []byte
-	videoPlayerCancel  chan struct{}
-	videoPreBuf        [][]byte
-	videoReorder       VideoReorderBuffer
-	audioDedup         AudioDeduplicator
-	chatDedup          ChatDeduplicator
-	ctrlDedup          ControlDeduplicator
-	silenceHangover    int
-	audioPreRoll       []audioPreRollFrame
-	lastVideoChunkTime time.Time
-	OnScreenShare      func(peerID string, isSharing bool, videoPort int)
-	OnChatMessage      func(senderID string, nickname string, text string, ts time.Time)
-	OnDebugLog         func(msg string)
+	screenSession        *screenshare.Session
+	receiverSession      *screenshare.Session
+	videoCaptureConn     *net.UDPConn
+	videoTCPListener     net.Listener
+	videoTCPConn         net.Conn
+	videoPlayerCh        chan []byte
+	videoPlayerCancel    chan struct{}
+	videoPreBuf          [][]byte
+	videoReorder         VideoReorderBuffer
+	audioDedup           AudioDeduplicator
+	chatDedup            ChatDeduplicator
+	ctrlDedup            ControlDeduplicator
+	silenceHangover      int
+	audioPreRoll         []audioPreRollFrame
+	lastVideoChunkTime   time.Time
+	OnScreenShare        func(peerID string, isSharing bool, videoPort int)
+	OnChatMessage        func(senderID string, nickname string, text string, ts time.Time)
+	OnDebugLog           func(msg string)
 
 	// Room Security (Lock & PIN Protection)
 	IsLocked     bool
@@ -533,6 +533,7 @@ func (b *VideoReorderBuffer) Reset() {
 	b.firstPkt = true
 }
 
+// network.go içindeki Push fonksiyonu:
 func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 	if len(payload) == 0 {
 		return nil
@@ -550,13 +551,10 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 		b.expectedSeq = seq
 		b.pending[seq] = payload
 	} else {
-		// Detect wrap-around or old stale packet
 		diff := int32(seq - b.expectedSeq)
 		if diff < 0 && diff > -3000 {
-			// Stale packet that already passed its sequence window, discard!
 			return nil
 		}
-		// If packet sequence jumped forward by more than 1000 (possible new stream), re-sync
 		if diff > 1000 || diff < -3000 {
 			b.expectedSeq = seq
 			b.pending = make(map[uint32][]byte)
@@ -564,7 +562,6 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 		b.pending[seq] = payload
 	}
 
-	// Drain all contiguous sequential packets from pending
 	var ready [][]byte
 	for {
 		chunk, ok := b.pending[b.expectedSeq]
@@ -579,8 +576,8 @@ func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
 		}
 	}
 
-	// If pending buffer grows too large (> 32 packets ~40KB jitter window), force advance to avoid stalling
-	if len(b.pending) > 32 {
+	// 120 FPS'te kilitlenmeyi önlemek için eşik 32'den 8'e düşürüldü:
+	if len(b.pending) > 8 {
 		var minSeq uint32
 		var found bool
 		for s := range b.pending {
@@ -1151,7 +1148,10 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 		}
 
 		wsPriorityCh := make(chan []byte, 128)
-		wsVideoCh := make(chan []byte, 1024)
+		// CRITICAL: Keep video channel small to prevent TCP bufferbloat!
+		// 1024 packets @ 120 FPS = ~1.35 MB = ~4.5 seconds of queue delay.
+		// 48 packets = ~63 KB = ~210ms max, keeping ping RTT stable below 150ms.
+		wsVideoCh := make(chan []byte, 48)
 		n.mu.Lock()
 		n.wsPriorityCh = wsPriorityCh
 		n.wsVideoCh = wsVideoCh
@@ -1207,8 +1207,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action, roomCode string, c
 
 		if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
 			_ = tcpConn.SetNoDelay(true)
-			_ = tcpConn.SetWriteBuffer(256 * 1024)
-			_ = tcpConn.SetReadBuffer(256 * 1024)
+			_ = tcpConn.SetWriteBuffer(32 * 1024)
+			_ = tcpConn.SetReadBuffer(32 * 1024)
 		}
 
 		if firstConnect {
@@ -3967,7 +3967,10 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	}
 	n.videoReorder.Reset()
 	n.videoPreBuf = nil
-	playerCh := make(chan []byte, 1024)
+	// CRITICAL: Small player channel prevents TCP loopback bufferbloat!
+	// 1024 packets = 1.35 MB queued to mpv → player always plays stale frames.
+	// 48 packets = 63 KB → drains in ~2ms on loopback; live & instant.
+	playerCh := make(chan []byte, 48)
 	cancelCh := make(chan struct{})
 	n.videoPlayerCh = playerCh
 	n.videoPlayerCancel = cancelCh
@@ -3996,8 +3999,8 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.debugLog(fmt.Sprintf("[VIEWER] [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
-			_ = tcp.SetWriteBuffer(256 * 1024)
-			_ = tcp.SetReadBuffer(256 * 1024)
+			_ = tcp.SetWriteBuffer(64 * 1024)
+			_ = tcp.SetReadBuffer(64 * 1024)
 		}
 		n.mu.Lock()
 		if n.IsWatchingScreen {

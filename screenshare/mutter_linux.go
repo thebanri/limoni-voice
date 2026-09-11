@@ -46,7 +46,6 @@ func getBestLinuxEncoder() string {
 }
 
 // RequestMutterScreenCast creates a direct, popup-less screencast session with GNOME Mutter compositor.
-// Returns the PipeWire Node ID and a cleanup function to stop the screencast session.
 func RequestMutterScreenCast(ctx context.Context, connector string) (uint32, func(), error) {
 	if testing.Testing() {
 		return 100, func() {}, nil
@@ -88,7 +87,7 @@ func RequestMutterScreenCast(ctx context.Context, connector string) (uint32, fun
 		_ = conn.Close()
 	}
 
-	// 2. RecordMonitor (connector can be "" for primary monitor, or specific display like "eDP-1")
+	// 2. RecordMonitor
 	var streamPath dbus.ObjectPath
 	streamProps := map[string]dbus.Variant{
 		"cursor-mode": dbus.MakeVariant(uint32(2)), // 2 = Embedded cursor
@@ -184,12 +183,12 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		}
 	}
 
+	// 120 FPS'de GOP aralığını 240 kareye (~2 sn) çıkararak burst dalgalanmalarını engelliyoruz
 	gopSize := fps
-	if gopSize < 30 {
+	if fps >= 120 {
+		gopSize = fps * 2
+	} else if gopSize < 30 {
 		gopSize = 30
-	}
-	if gopSize > 120 {
-		gopSize = 120
 	}
 
 	usePipe := (targetURL == "-")
@@ -203,7 +202,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		parts := strings.Split(cleanURL, ":")
 		if len(parts) == 2 {
 			host = parts[0]
-			port = parts[1]
+			port = parts
 		}
 	}
 
@@ -215,7 +214,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			if w, err := strconv.Atoi(parts[0]); err == nil && w > 0 {
 				outWidth = w
 			}
-			if h, err := strconv.Atoi(parts[1]); err == nil && h > 0 {
+			if h, err := strconv.Atoi(parts); err == nil && h > 0 {
 				outHeight = h
 			}
 		}
@@ -245,7 +244,8 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"provide-clock=false",
 		"keepalive-time=100",
 		"always-copy=true",
-		"!", "queue", "max-size-buffers=3", "max-size-bytes=0", "max-size-time=0", "leaky=downstream",
+		// max-size-buffers=4: Gecikme birikmesini önlemek için kuyruk sınırlandırıldı
+		"!", "queue", "max-size-buffers=4", "max-size-bytes=0", "max-size-time=0",
 		"!", "videoconvert",
 		"!", "videoscale",
 		"!", "videorate", "skip-to-first=true", "drop-only=true", "max-duplication-time=0",
@@ -269,6 +269,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("gop-size=%d", gopSize),
 			"repeat-sequence-header=true",
+			"intra-refresh=true", // Periyodik intra-refresh: Trafik patlamalarını ve paket kaybını önler
 		)
 	case "vaapih264enc":
 		args = append(args,
@@ -277,19 +278,20 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("keyframe-period=%d", gopSize),
 		)
-	default: // "x264enc" - Multi-threaded CPU software encoding for non-GPU / CPU users
+	default: // "x264enc"
 		args = append(args,
 			"!", "x264enc",
-			"threads=0", // Use all CPU cores automatically
+			"threads=0",
 			"speed-preset=ultrafast",
 			"tune=zerolatency",
 			"pass=cbr",
 			"qp-min=18",
 			"qp-max=38",
-			"vbv-buf-capacity=300",
+			"vbv-buf-capacity=50",
 			"rc-lookahead=0",
 			"sync-lookahead=0",
 			"mb-tree=false",
+			"intra-refresh=true",
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
 			fmt.Sprintf("key-int-max=%d", gopSize),
 			"bframes=0",
@@ -299,12 +301,13 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	}
 
 	args = append(args,
-		"!", "h264parse", "config-interval=-1",
+		"!", "h264parse", "config-interval=1",
 		"!", "video/x-h264,stream-format=byte-stream",
 		"!", "mpegtsmux",
 		"alignment=7",
-		"pat-interval=10",
-		"pcr-interval=10",
+		"pat-interval=9000",
+		"pmt-interval=9000",
+		"pcr-interval=1800",
 	)
 
 	if usePipe {
