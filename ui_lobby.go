@@ -561,22 +561,34 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		})
 	}
 
-	hostBtns := "[Enter] Open This Room   •   [F2] Copy Code   •   [F3] New Code"
+	openLabel := "[Enter] Open This Room"
+	copyLabel := "[F2] Copy Code"
+	newLabel := "[F3] New Code"
+	sep := "   •   "
+	hostBtns := openLabel + sep + copyLabel + sep + newLabel
 	buf.SetString(hostInner.X, hostInner.Y+4, hostBtns, hostBtnStyle)
 
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+4, 19, 1), func(_ driver.MouseEvent) {
+	openX := hostInner.X
+	openW := uint16(len([]rune(openLabel)))
+	frame.RegisterClickHandler(cell.NewRect(openX, hostInner.Y+4, openW, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnStartHost != nil {
 			l.OnStartHost()
 		}
 	})
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+22, hostInner.Y+4, 17, 1), func(_ driver.MouseEvent) {
+
+	copyX := openX + openW + uint16(len([]rune(sep)))
+	copyW := uint16(len([]rune(copyLabel)))
+	frame.RegisterClickHandler(cell.NewRect(copyX, hostInner.Y+4, copyW, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
 			l.OnCopyCode(l.CurrentCode)
 		}
 	})
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+42, hostInner.Y+4, 14, 1), func(_ driver.MouseEvent) {
+
+	newX := copyX + copyW + uint16(len([]rune(sep)))
+	newW := uint16(len([]rune(newLabel)))
+	frame.RegisterClickHandler(cell.NewRect(newX, hostInner.Y+4, newW, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnNewCode != nil {
 			l.OnNewCode()

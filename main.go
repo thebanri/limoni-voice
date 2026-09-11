@@ -692,6 +692,11 @@ func main() {
 		lobby.IsPinProtected = false
 		lobby.PinState.SetValue("")
 		lobby.ActiveInput = 2
+		currentFileOffer = nil
+		pendingFileOffers = nil
+		closeScreenShareModal()
+		closeDebugModal()
+		closeTestModal()
 		currentScreen = ScreenLobby
 		closeLeaveModal()
 	}
@@ -1425,6 +1430,9 @@ func main() {
 						numInputs := 3
 						if lobby.IsPinProtected {
 							numInputs = 4
+						}
+						if lobby.ActiveInput >= numInputs {
+							lobby.ActiveInput = 0
 						}
 						if e.Shift {
 							lobby.ActiveInput = (lobby.ActiveInput + numInputs - 1) % numInputs

@@ -1073,11 +1073,12 @@ func (n *P2PNode) connectRelay(action string, roomCode string) {
 		n.mu.Unlock()
 		return
 	}
-	// Close existing WS connection if any
+	// Close existing WS connection and supervisor if any
+	if n.wsCancel != nil {
+		close(n.wsCancel)
+		n.wsCancel = nil
+	}
 	if n.wsConn != nil {
-		if n.wsCancel != nil {
-			close(n.wsCancel)
-		}
 		n.wsConn.Close()
 		n.wsConn = nil
 		n.isRelayConnected = false
@@ -1712,6 +1713,7 @@ func (n *P2PNode) handleRelayControl(msg RelayControlMessage) {
 			n.Connecting = false
 			n.aead = nil
 			n.RoomCode = ""
+			n.RoomPIN = ""
 			failedCb := n.OnJoinFailed
 			reason := "Room is locked by host"
 			if msg.Message == "PIN_REQUIRED" || strings.Contains(strings.ToUpper(msg.Message), "PIN") {
@@ -3147,6 +3149,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			n.Connecting = false
 			n.aead = nil
 			n.RoomCode = ""
+			n.RoomPIN = ""
 			failedCb := n.OnJoinFailed
 			n.log(fmt.Sprintf("[SECURITY] %s", reason))
 			if failedCb != nil {
