@@ -304,4 +304,19 @@ func TestPingPongDeduplicationAndSmoothing(t *testing.T) {
 	}
 }
 
+func TestClipboardTestingModeMocking(t *testing.T) {
+	SetMockClipboard("")
+	testStr := "secure_token_12345"
+	ok := CopyToClipboard(testStr)
+	if !ok {
+		t.Fatalf("Expected CopyToClipboard to succeed in test mode")
+	}
+
+	got := GetClipboardText()
+	if got != testStr {
+		t.Fatalf("Expected GetClipboardText to return %q, got %q", testStr, got)
+	}
+}
+
+
 

@@ -9,7 +9,21 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
+	"testing"
 )
+
+var (
+	clipboardMu   sync.RWMutex
+	mockClipboard string
+)
+
+// SetMockClipboard sets the in-memory clipboard text used in automated tests.
+func SetMockClipboard(text string) {
+	clipboardMu.Lock()
+	defer clipboardMu.Unlock()
+	mockClipboard = text
+}
 
 var reANSI = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[NOPXYZ_]|\x1b`)
 
@@ -33,6 +47,14 @@ func CopyToClipboard(text string) bool {
 	text = SanitizeClipboardText(text)
 	if text == "" {
 		return false
+	}
+
+	// Never touch the host machine's physical clipboard when running automated tests!
+	if testing.Testing() {
+		clipboardMu.Lock()
+		mockClipboard = text
+		clipboardMu.Unlock()
+		return true
 	}
 
 	// 1. Try OSC 52 ANSI escape sequence (works seamlessly in modern terminals)
@@ -133,6 +155,12 @@ func CopyToClipboard(text string) bool {
 
 // GetClipboardText reads text from system clipboard using system utilities.
 func GetClipboardText() string {
+	if testing.Testing() {
+		clipboardMu.RLock()
+		defer clipboardMu.RUnlock()
+		return mockClipboard
+	}
+
 	var raw string
 
 	// 1. Try Windows PowerShell Get-Clipboard
