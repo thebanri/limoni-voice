@@ -711,6 +711,71 @@ func TestVideoReorderBuffer(t *testing.T) {
 	}
 }
 
+func TestVideoPlayerAsyncDecoupling(t *testing.T) {
+	node := &P2PNode{
+		LocalID: "nodeA",
+		Peers:   make(map[string]*PeerInfo),
+	}
+	node.videoReorder.Reset()
+
+	playerCh := make(chan []byte, 10)
+	cancelCh := make(chan struct{})
+	node.videoPlayerCh = playerCh
+	node.videoPlayerCancel = cancelCh
+	node.IsWatchingScreen = true
+
+	serverConn, clientConn := net.Pipe()
+	preBuf := [][]byte{[]byte("header-sps-pps")}
+
+	pumpDone := make(chan struct{})
+	go func() {
+		node.videoPlayerWritePump(serverConn, playerCh, preBuf, cancelCh)
+		close(pumpDone)
+	}()
+
+	// Read preBuf
+	buf := make([]byte, 64)
+	n, err := clientConn.Read(buf)
+	if err != nil || string(buf[:n]) != "header-sps-pps" {
+		t.Fatalf("Failed to read prebuf header: %v, got %s", err, string(buf[:n]))
+	}
+
+	// Forward video chunk: must be fast and non-blocking
+	start := time.Now()
+	node.forwardVideoChunk("peer1", []byte("video-slice-1"), 1, "peer1")
+	dur := time.Since(start)
+	if dur > 50*time.Millisecond {
+		t.Fatalf("forwardVideoChunk took too long (%v), must never block network loop", dur)
+	}
+
+	n, err = clientConn.Read(buf)
+	if err != nil || string(buf[:n]) != "video-slice-1" {
+		t.Fatalf("Failed to read video chunk: %v, got %s", err, string(buf[:n]))
+	}
+
+	// Fill player channel to capacity
+	for i := 0; i < 10; i++ {
+		playerCh <- []byte("fill")
+	}
+
+	// forwardVideoChunk when queue is full: must drop non-blocking, never hang
+	start = time.Now()
+	node.forwardVideoChunk("peer1", []byte("video-slice-overflow"), 2, "peer1")
+	dur = time.Since(start)
+	if dur > 10*time.Millisecond {
+		t.Fatalf("forwardVideoChunk blocked on saturated queue (%v)", dur)
+	}
+
+	// Cancel pump
+	close(cancelCh)
+	select {
+	case <-pumpDone:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("videoPlayerWritePump failed to exit after cancel")
+	}
+	_ = clientConn.Close()
+}
+
 func TestPushToTalkMode(t *testing.T) {
 	engine := NewAudioEngine()
 	if engine.InputMode != InputModeVoiceActivity {

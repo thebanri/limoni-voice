@@ -1252,14 +1252,36 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, onCancel
 			gsrTarget = targetID
 		}
 
+		bitrateKbps := 1800
+		if fps >= 120 {
+			bitrateKbps = 2500
+		} else if fps <= 30 {
+			bitrateKbps = 1200
+		}
+		if opt.Bitrate != "" {
+			clean := strings.TrimSpace(strings.ToLower(opt.Bitrate))
+			if strings.HasSuffix(clean, "m") {
+				val, _ := strconv.ParseFloat(strings.TrimSuffix(clean, "m"), 64)
+				if val > 0 {
+					bitrateKbps = int(val * 1000)
+				}
+			} else if strings.HasSuffix(clean, "k") {
+				val, _ := strconv.Atoi(strings.TrimSuffix(clean, "k"))
+				if val > 0 {
+					bitrateKbps = val
+				}
+			}
+		}
+
 		args := []string{
 			"-w", gsrTarget,
 			"-s", opt.Resolution,
 			"-f", fmt.Sprintf("%d", fps),
 			"-k", "h264",
-			"-q", "high",
+			"-bm", "cbr",
+			"-q", fmt.Sprintf("%d", bitrateKbps),
 			"-tune", "performance",
-			"-keyint", "15",
+			"-keyint", "2",
 			"-restore-portal-session", "no",
 			"-c", "mpegts",
 			"-o", targetURL,
@@ -1828,9 +1850,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--profile=low-latency",
 			"--untimed",
 			"--vd-lavc-threads=0",
-			"--cache=no",
-			"--demuxer-readahead-secs=0",
-			"--stream-buffer-size=4k",
+			"--cache=yes",
+			"--cache-pause=no",
+			"--demuxer-readahead-secs=0.05",
+			"--demuxer-max-bytes=4M",
+			"--demuxer-max-back-bytes=0",
 			"--framedrop=vo",
 			"--hwdec=auto",
 			"--vd-lavc-show-all=no",
@@ -1849,6 +1873,11 @@ func StartReceiving(ctx context.Context, port int, opts ...ReceiverOptions) (*Se
 			"--demuxer-lavf-probesize=32768",
 			"--title=" + windowTitle,
 			"--autofit=65%x65%",
+		}
+		if runtime.GOOS == "windows" {
+			args = append(args, "--d3d11-sync-interval=0", "--swapchain-depth=1")
+		} else {
+			args = append(args, "--opengl-waitvsync=no", "--wayland-internal-vsync=no")
 		}
 		if len(opt.CustomMpvFlags) > 0 {
 			args = append(args, opt.CustomMpvFlags...)

@@ -255,6 +255,8 @@ type P2PNode struct {
 	videoCaptureConn   *net.UDPConn
 	videoTCPListener   net.Listener
 	videoTCPConn       net.Conn
+	videoPlayerCh      chan []byte
+	videoPlayerCancel  chan struct{}
 	videoPreBuf        [][]byte
 	videoReorder       VideoReorderBuffer
 	audioDedup         AudioDeduplicator
@@ -3628,7 +3630,6 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 	}
 
 	n.lastVideoChunkTime = time.Now()
-	tcpConn := n.videoTCPConn
 	n.mu.Unlock()
 
 	readyChunks := n.videoReorder.Push(seq, payload)
@@ -3649,23 +3650,91 @@ func (n *P2PNode) forwardVideoChunk(senderID string, payload []byte, seq uint32,
 			}
 		}
 	}
-	tcpConn = n.videoTCPConn
 	watching = n.IsWatchingScreen
+	playerCh := n.videoPlayerCh
 	n.mu.Unlock()
 
-	if watching && tcpConn != nil {
+	// Non-blocking asynchronous dispatch to dedicated player pump.
+	// Network receive loops (relay WebSocket & UDP) NEVER block on player TCP writes!
+	if watching && playerCh != nil {
 		for _, chunk := range readyChunks {
 			if len(chunk) > 0 {
-				if _, err := tcpConn.Write(chunk); err != nil {
-					n.mu.Lock()
-					if n.videoTCPConn == tcpConn {
-						n.videoTCPConn = nil
-						_ = tcpConn.Close()
-						n.debugLog(fmt.Sprintf("⚠️ [WATCH] Player TCP disconnected: %v", err))
-					}
-					n.mu.Unlock()
-					return
+				select {
+				case playerCh <- chunk:
+				default:
+					// Dedicated pump channel full (player choked) - drop chunk non-blocking to protect voice and ping
 				}
+			}
+		}
+	}
+}
+
+// videoPlayerWritePump runs in a dedicated goroutine and flushes video chunks to the player (mpv/ffplay)
+// over local loopback TCP using batched writes, completely decoupled from the network receive thread.
+func (n *P2PNode) videoPlayerWritePump(conn net.Conn, playerCh chan []byte, preBuf [][]byte, cancelCh chan struct{}) {
+	pumpDone := make(chan struct{})
+	defer func() {
+		close(pumpDone)
+		_ = conn.Close()
+	}()
+
+	if cancelCh != nil {
+		go func() {
+			select {
+			case <-cancelCh:
+				_ = conn.Close()
+			case <-pumpDone:
+			}
+		}()
+	}
+
+	// 1. Immediately send pre-buffered header chunks (SPS/PPS) so decoder syncs instantly
+	for _, chunk := range preBuf {
+		if len(chunk) > 0 {
+			_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+			if _, err := conn.Write(chunk); err != nil {
+				return
+			}
+		}
+	}
+
+	// 2. Stream incoming chunks using vectorized batch writes
+	var batch net.Buffers
+	for {
+		select {
+		case <-cancelCh:
+			return
+		case chunk, ok := <-playerCh:
+			if !ok {
+				return
+			}
+			if len(chunk) == 0 {
+				continue
+			}
+			batch = append(batch[:0], chunk)
+
+			// Drain any immediately available chunks to write in a single vectorized syscall
+		drainLoop:
+			for len(batch) < 32 {
+				select {
+				case nextChunk, ok := <-playerCh:
+					if !ok {
+						_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+						_, _ = batch.WriteTo(conn)
+						return
+					}
+					if len(nextChunk) > 0 {
+						batch = append(batch, nextChunk)
+					}
+				default:
+					break drainLoop
+				}
+			}
+
+			_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+			if _, err := batch.WriteTo(conn); err != nil {
+				n.debugLog(fmt.Sprintf("⚠️ [WATCH] Player TCP write error: %v", err))
+				return
 			}
 		}
 	}
@@ -3859,10 +3928,20 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		prevSession := n.receiverSession
 		prevLn := n.videoTCPListener
 		prevConn := n.videoTCPConn
+		prevCancel := n.videoPlayerCancel
 		n.receiverSession = nil
 		n.videoTCPListener = nil
 		n.videoTCPConn = nil
+		n.videoPlayerCh = nil
+		n.videoPlayerCancel = nil
 		n.mu.Unlock()
+		if prevCancel != nil {
+			select {
+			case <-prevCancel:
+			default:
+				close(prevCancel)
+			}
+		}
 		if prevConn != nil {
 			_ = prevConn.Close()
 		}
@@ -3892,6 +3971,10 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	}
 	n.videoReorder.Reset()
 	n.videoPreBuf = nil
+	playerCh := make(chan []byte, 1024)
+	cancelCh := make(chan struct{})
+	n.videoPlayerCh = playerCh
+	n.videoPlayerCancel = cancelCh
 	n.mu.Unlock()
 
 	// 1. Open a local TCP listener on a dynamic free port (127.0.0.1:0)
@@ -3917,22 +4000,24 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.debugLog(fmt.Sprintf("[VIEWER] [WATCH] Player connected to internal TCP port %d", assignedTCPPort))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetNoDelay(true)
-			_ = tcp.SetWriteBuffer(64 * 1024)
-			_ = tcp.SetReadBuffer(64 * 1024)
+			_ = tcp.SetWriteBuffer(512 * 1024)
+			_ = tcp.SetReadBuffer(512 * 1024)
 		}
 		n.mu.Lock()
 		if n.IsWatchingScreen {
 			n.videoTCPConn = conn
-			// Immediately flush pre-buffered chunks so player receives sync frames instantly
-			for _, chunk := range n.videoPreBuf {
-				if len(chunk) > 0 {
-					_, _ = conn.Write(chunk)
-				}
-			}
+			activePlayerCh := n.videoPlayerCh
+			activeCancelCh := n.videoPlayerCancel
+			preBuf := make([][]byte, len(n.videoPreBuf))
+			copy(preBuf, n.videoPreBuf)
+			n.mu.Unlock()
+
+			// Launch dedicated async player pump
+			go n.videoPlayerWritePump(conn, activePlayerCh, preBuf, activeCancelCh)
 		} else {
+			n.mu.Unlock()
 			_ = conn.Close()
 		}
-		n.mu.Unlock()
 	}()
 
 	// 3. Start MPV connecting to tcp://127.0.0.1:assignedTCPPort
@@ -3943,7 +4028,17 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		n.WatchingPeerID = ""
 		n.WatchingPeerNick = ""
 		n.videoTCPListener = nil
+		cancelToClose := n.videoPlayerCancel
+		n.videoPlayerCh = nil
+		n.videoPlayerCancel = nil
 		n.mu.Unlock()
+		if cancelToClose != nil {
+			select {
+			case <-cancelToClose:
+			default:
+				close(cancelToClose)
+			}
+		}
 		_ = tcpLn.Close()
 		return err
 	}
@@ -3969,6 +4064,16 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 			n.WatchingPeerID = ""
 			n.WatchingPeerNick = ""
 			n.receiverSession = nil
+			cancelCh := n.videoPlayerCancel
+			n.videoPlayerCh = nil
+			n.videoPlayerCancel = nil
+			if cancelCh != nil {
+				select {
+				case <-cancelCh:
+				default:
+					close(cancelCh)
+				}
+			}
 			if n.videoTCPConn != nil {
 				_ = n.videoTCPConn.Close()
 				n.videoTCPConn = nil
@@ -3990,9 +4095,12 @@ func (n *P2PNode) StopWatchingScreen() error {
 	session := n.receiverSession
 	conn := n.videoTCPConn
 	ln := n.videoTCPListener
+	cancelCh := n.videoPlayerCancel
 	n.receiverSession = nil
 	n.videoTCPConn = nil
 	n.videoTCPListener = nil
+	n.videoPlayerCh = nil
+	n.videoPlayerCancel = nil
 	n.IsWatchingScreen = false
 	n.WatchingPeerID = ""
 	n.WatchingPeerNick = ""
@@ -4001,6 +4109,13 @@ func (n *P2PNode) StopWatchingScreen() error {
 	n.videoReorder.Reset()
 	n.mu.Unlock()
 
+	if cancelCh != nil {
+		select {
+		case <-cancelCh:
+		default:
+			close(cancelCh)
+		}
+	}
 	if conn != nil {
 		_ = conn.Close()
 	}
