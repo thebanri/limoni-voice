@@ -26,6 +26,7 @@ type ControlMessage struct {
 	Nickname   string     `json:"nickname,omitempty"`
 	Message    string     `json:"message,omitempty"`
 	Port       int        `json:"port,omitempty"`        // Client's local UDP port
+	LocalIP    string     `json:"local_ip,omitempty"`    // Client's internal LAN IP
 	PublicIP   string     `json:"public_ip,omitempty"`    // Sender's observed public IP
 	PublicPort int        `json:"public_port,omitempty"`  // Sender's observed port
 	YourIP     string     `json:"your_ip,omitempty"`      // Client's own detected public IP
@@ -38,6 +39,7 @@ type ControlMessage struct {
 type PeerInfo struct {
 	SenderID   string `json:"sender_id"`
 	Nickname   string `json:"nickname"`
+	LocalIP    string `json:"local_ip,omitempty"`
 	PublicIP   string `json:"public_ip,omitempty"`
 	LocalPort  int    `json:"local_port,omitempty"`
 	PublicPort int    `json:"public_port,omitempty"`
@@ -48,6 +50,7 @@ type Client struct {
 	senderID          string
 	nickname          string
 	localPort         int
+	localIP           string
 	publicIP          string
 	publicPort        int
 	room              *Room
@@ -105,9 +108,15 @@ func NewRelayServer(authTokens ...string) *RelayServer {
 }
 
 func extractClientIP(r *http.Request) string {
+	if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
+		return strings.TrimSpace(cf)
+	}
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return strings.TrimSpace(xrip)
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
 			return strings.TrimSpace(parts[0])
 		}
 	}
@@ -256,17 +265,28 @@ func (s *RelayServer) handleControlMessage(client *Client, data []byte) {
 		}
 	case "port_update":
 		client.localPort = msg.Port
-		log.Printf("[🛡️] Client %s (%s) rotated port to %d", client.nickname, client.senderID, msg.Port)
+		if msg.PublicPort > 0 {
+			client.publicPort = msg.PublicPort
+		}
+		if msg.PublicIP != "" {
+			client.publicIP = msg.PublicIP
+		}
+		if msg.LocalIP != "" {
+			client.localIP = msg.LocalIP
+		}
+		log.Printf("[🛡️] Client %s (%s) rotated endpoint: local=%s:%d, public=%s:%d", client.nickname, client.senderID, client.localIP, client.localPort, client.publicIP, client.publicPort)
 		if client.room != nil {
 			client.room.mu.RLock()
 			for _, m := range client.room.Members {
 				if m != client && !m.isDisconnected {
 					sendControlMessage(m, ControlMessage{
-						Type:     "peer_port_updated",
-						SenderID: client.senderID,
-						Nickname: client.nickname,
-						Port:     client.localPort,
-						PublicIP: client.publicIP,
+						Type:       "peer_port_updated",
+						SenderID:   client.senderID,
+						Nickname:   client.nickname,
+						Port:       client.localPort,
+						LocalIP:    client.localIP,
+						PublicPort: client.publicPort,
+						PublicIP:   client.publicIP,
 					})
 				}
 			}
@@ -308,8 +328,14 @@ func (s *RelayServer) handleHostRoom(client *Client, msg ControlMessage) {
 	client.senderID = msg.SenderID
 	client.nickname = msg.Nickname
 	client.localPort = msg.Port
+	if msg.LocalIP != "" {
+		client.localIP = msg.LocalIP
+	}
 	if msg.PublicPort > 0 {
 		client.publicPort = msg.PublicPort
+	}
+	if msg.PublicIP != "" {
+		client.publicIP = msg.PublicIP
 	}
 
 	s.mu.Lock()
@@ -404,8 +430,14 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 	client.senderID = msg.SenderID
 	client.nickname = msg.Nickname
 	client.localPort = msg.Port
+	if msg.LocalIP != "" {
+		client.localIP = msg.LocalIP
+	}
 	if msg.PublicPort > 0 {
 		client.publicPort = msg.PublicPort
+	}
+	if msg.PublicIP != "" {
+		client.publicIP = msg.PublicIP
 	}
 
 	s.mu.RLock()
@@ -470,7 +502,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		return
 	}
 
-	// Build peer list for welcome message (including public IP and port for P2P UDP hole punching)
+	// Build peer list for welcome message (including public IP, local IP and port for P2P UDP hole punching)
 	peers := make([]PeerInfo, 0, len(room.Members))
 	existingMembers := make([]*Client, 0, len(room.Members))
 	for _, m := range room.Members {
@@ -478,6 +510,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 			peers = append(peers, PeerInfo{
 				SenderID:   m.senderID,
 				Nickname:   m.nickname,
+				LocalIP:    m.localIP,
 				PublicIP:   m.publicIP,
 				LocalPort:  m.localPort,
 				PublicPort: m.publicPort,
@@ -499,11 +532,13 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 
 	// Find host nickname & info
 	hostNick := ""
+	hostLocalIP := ""
 	hostIP := ""
 	hostPort := 0
 	hostPubPort := 0
 	if host, ok := room.Members[hostID]; ok {
 		hostNick = host.nickname
+		hostLocalIP = host.localIP
 		hostIP = host.publicIP
 		hostPort = host.localPort
 		hostPubPort = host.publicPort
@@ -519,6 +554,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		RoomCode:   msg.RoomCode,
 		SenderID:   hostID,
 		Nickname:   hostNick,
+		LocalIP:    hostLocalIP,
 		PublicIP:   hostIP,
 		Port:       hostPort,
 		PublicPort: hostPubPort,
@@ -532,6 +568,7 @@ func (s *RelayServer) handleJoinRoom(client *Client, msg ControlMessage) {
 		Type:       "peer_joined",
 		SenderID:   msg.SenderID,
 		Nickname:   msg.Nickname,
+		LocalIP:    client.localIP,
 		PublicIP:   client.publicIP,
 		Port:       client.localPort,
 		PublicPort: client.publicPort,

@@ -163,11 +163,11 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		fps = 60
 	}
 
-	bitrateKbps := 3500
+	bitrateKbps := 4500
 	if fps >= 120 {
-		bitrateKbps = 5500
+		bitrateKbps = 7500
 	} else if fps <= 30 {
-		bitrateKbps = 2000
+		bitrateKbps = 2500
 	}
 	if opt.Bitrate != "" {
 		bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))
@@ -182,6 +182,14 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		} else if val, err := strconv.Atoi(bStr); err == nil && val > 0 {
 			bitrateKbps = val
 		}
+	}
+
+	gopSize := fps / 2
+	if gopSize < 15 {
+		gopSize = 15
+	}
+	if gopSize > 60 {
+		gopSize = 60
 	}
 
 	usePipe := (targetURL == "-")
@@ -251,9 +259,11 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			"preset=low-latency",
 			"tune=ultra-low-latency",
 			"zerolatency=true",
-			"rc-mode=cbr",
+			"rc-mode=cbr-ld-hq",
+			"spatial-aq=true",
+			"temporal-aq=true",
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
-			fmt.Sprintf("gop-size=%d", fps),
+			fmt.Sprintf("gop-size=%d", gopSize),
 			"repeat-sequence-header=true",
 		)
 	case "vaapih264enc":
@@ -261,7 +271,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			"!", "vaapih264enc",
 			"rate-control=cbr",
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
-			fmt.Sprintf("keyframe-period=%d", fps),
+			fmt.Sprintf("keyframe-period=%d", gopSize),
 		)
 	default: // "x264enc" - Multi-threaded CPU software encoding for non-GPU / CPU users
 		args = append(args,
@@ -271,12 +281,10 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 			"tune=zerolatency",
 			"pass=cbr",
 			fmt.Sprintf("bitrate=%d", bitrateKbps),
-			"intra-refresh=true",
-			fmt.Sprintf("key-int-max=%d", fps),
+			fmt.Sprintf("key-int-max=%d", gopSize),
 			"bframes=0",
 			"byte-stream=true",
 			"sliced-threads=true", // Slice each frame into concurrent core jobs for lowest latency
-			fmt.Sprintf("option-string=intra-refresh=1:keyint=%d:min-keyint=%d:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", fps, fps),
 			"insert-vui=true",
 		)
 	}
