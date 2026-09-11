@@ -141,14 +141,14 @@ func main() {
 			node.LanOnly = true
 			node.RelayURL = ""
 		} else {
-			node.RelayURL = *flagRelay
+			node.RelayURL = NormalizeRelayURL(*flagRelay)
 		}
 	} else if cfg.RelayURL != "" {
 		if strings.EqualFold(cfg.RelayURL, "none") || strings.EqualFold(cfg.RelayURL, "off") {
 			node.LanOnly = true
 			node.RelayURL = ""
 		} else {
-			node.RelayURL = cfg.RelayURL
+			node.RelayURL = NormalizeRelayURL(cfg.RelayURL)
 		}
 	}
 
@@ -1051,11 +1051,12 @@ func main() {
 						}
 					case driver.KeyEnter:
 						if relayModalActiveField == 2 || relayModalActiveField == 0 || relayModalActiveField == 1 {
-							newURL := strings.TrimSpace(relayURLInput.Value())
+							newURL := NormalizeRelayURL(relayURLInput.Value())
 							newToken := strings.TrimSpace(relayTokenInput.Value())
 							node.UpdateRelaySettings(newURL, newToken)
 							_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
 							probeRelayStatus(newURL, newToken)
+							relayURLInput.SetValue(newURL)
 							if currentScreen == ScreenLobby {
 								lobby.RelayURL = newURL
 								lobby.SetToast("Relay server settings saved!")
@@ -2026,12 +2027,13 @@ func main() {
 							relaySelField, relaySelStart, relaySelEnd,
 							func(field int) { relayModalActiveField = field },
 							func(newURL, newToken string) {
-								newURL = strings.TrimSpace(newURL)
+								newURL = NormalizeRelayURL(newURL)
 								newToken = strings.TrimSpace(newToken)
 								node.UpdateRelaySettings(newURL, newToken)
 								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
 								lobby.RelayURL = newURL
 								probeRelayStatus(newURL, newToken)
+								relayURLInput.SetValue(newURL)
 								lobby.SetToast("Relay server settings saved!")
 								closeRelayModal()
 							},
@@ -2252,11 +2254,12 @@ func main() {
 							relaySelField, relaySelStart, relaySelEnd,
 							func(field int) { relayModalActiveField = field },
 							func(newURL, newToken string) {
-								newURL = strings.TrimSpace(newURL)
+								newURL = NormalizeRelayURL(newURL)
 								newToken = strings.TrimSpace(newToken)
 								node.UpdateRelaySettings(newURL, newToken)
 								_ = SaveAppConfig(AppConfig{RelayURL: newURL, RelayToken: newToken})
 								probeRelayStatus(newURL, newToken)
+								relayURLInput.SetValue(newURL)
 								room.SetToast("Relay server settings saved!")
 								closeRelayModal()
 							},

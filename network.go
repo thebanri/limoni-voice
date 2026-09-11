@@ -1046,12 +1046,11 @@ func (n *P2PNode) Close() {
 // reconnecting to the new relay server if a room session is currently active.
 func (n *P2PNode) UpdateRelaySettings(newURL, newToken string) {
 	n.mu.Lock()
-	n.RelayURL = strings.TrimSpace(newURL)
+	n.RelayURL = NormalizeRelayURL(newURL)
 	n.RelayToken = strings.TrimSpace(newToken)
-	if strings.EqualFold(n.RelayURL, "none") || strings.EqualFold(n.RelayURL, "off") {
+	if n.RelayURL == "" {
 		n.LanOnly = true
-		n.RelayURL = ""
-	} else if n.RelayURL != "" {
+	} else {
 		n.LanOnly = false
 	}
 	isActiveRoom := n.RoomCode != ""

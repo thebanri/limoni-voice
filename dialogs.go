@@ -966,7 +966,7 @@ func DrawRelayModal(
 	if activeField == 0 {
 		urlLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
 	}
-	urlLabelText := "Server WebSocket URL (Relay URL):"
+	urlLabelText := "Server WebSocket URL or Domain / Web Link:"
 	drawBoundedString(buf, inner.X+1, urlLabelY, urlLabelText, urlLabelStyle, maxX)
 
 	urlInputY := urlLabelY + 1
@@ -981,7 +981,7 @@ func DrawRelayModal(
 	urlInput := widgets.TextInput{
 		ID:               "relay_url_input",
 		State:            urlState,
-		Placeholder:      "e.g. wss://voice.yourdomain.com/ws or ws://192.168.1.50:27850/ws",
+		Placeholder:      "e.g. voice.domain.com, https://voice.domain.com or 192.168.1.3:27850",
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},

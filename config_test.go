@@ -464,6 +464,34 @@ func TestDrawRelayModalWithDynamicStatus(t *testing.T) {
 	}
 }
 
+func TestNormalizeRelayURL(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"https://voice.thebanri.dpdns.org", "wss://voice.thebanri.dpdns.org/ws"},
+		{"voice.thebanri.dpdns.org", "wss://voice.thebanri.dpdns.org/ws"},
+		{"https://voice.thebanri.dpdns.org/", "wss://voice.thebanri.dpdns.org/ws"},
+		{"https://voice.thebanri.dpdns.org/ws", "wss://voice.thebanri.dpdns.org/ws"},
+		{"voice.thebanri.dpdns.org/ws", "wss://voice.thebanri.dpdns.org/ws"},
+		{"http://voice.thebanri.dpdns.org", "ws://voice.thebanri.dpdns.org/ws"},
+		{"http://192.168.1.3:27850", "ws://192.168.1.3:27850/ws"},
+		{"192.168.1.3:27850", "ws://192.168.1.3:27850/ws"},
+		{"localhost:27850", "ws://localhost:27850/ws"},
+		{"127.0.0.1:27850", "ws://127.0.0.1:27850/ws"},
+		{"none", ""},
+		{"off", ""},
+		{"lan", ""},
+		{"", ""},
+		{"wss://custom.relay.com/ws", "wss://custom.relay.com/ws"},
+		{"ws://custom.relay.com/ws", "ws://custom.relay.com/ws"},
+		{"https://relay.example.com:8443/custompath?token=123", "wss://relay.example.com:8443/custompath?token=123"},
+	}
 
-
-
+	for _, tc := range tests {
+		got := NormalizeRelayURL(tc.input)
+		if got != tc.expected {
+			t.Errorf("NormalizeRelayURL(%q) = %q, expected %q", tc.input, got, tc.expected)
+		}
+	}
+}
