@@ -13,3 +13,5 @@ deb_pkg_*/
 .DS_Store
 Thumbs.db
 *.log
+limoni-voice-website
+website/
