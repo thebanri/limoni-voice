@@ -134,8 +134,16 @@ func (a *App) render(now time.Time) {
 		case a.showLeaveModal || leaveProg > 0.001:
 			DrawLeaveModal(f, f.Area(), leaveProg, a.leaveRoom, a.closeLeaveModal)
 		case a.showScreenShareModal || screenShareProg > 0.001:
-			DrawScreenShareModal(f, f.Area(), screenShareProg, a.selectedScreenShareIdx, a.selectedScreenShareFPS, a.screenShareTargets,
-				func(fps int) { a.selectedScreenShareFPS = fps },
+			DrawScreenShareModal(f, f.Area(), ScreenShareDialogState{
+				Progress:    screenShareProg,
+				SelectedIdx: a.selectedScreenShareIdx,
+				Preset:      a.screenPreset,
+				SystemAudio: a.shareSystemAudio,
+				Deps:        a.screenShareDeps,
+				Targets:     a.screenShareTargets,
+			},
+				a.selectScreenPreset,
+				a.toggleShareSystemAudio,
 				func(target screenshare.WindowInfo) { a.startSelectedScreenShare(target) },
 				a.closeScreenShareModal)
 		}

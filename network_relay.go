@@ -285,7 +285,6 @@ func (n *P2PNode) sendRelayFrame(class byte, data []byte) {
 	n.mu.RLock()
 	isRelay := n.isRelayConnected
 	ur := n.udpRelay
-	priorityCh, reliableCh, videoCh := n.wsPriorityCh, n.wsReliableCh, n.wsVideoCh
 	n.mu.RUnlock()
 	if !isRelay {
 		return
@@ -294,7 +293,7 @@ func (n *P2PNode) sendRelayFrame(class byte, data []byte) {
 	if ur != nil && class != protocol.FrameReliable && ur.isActive() && len(data) <= 1400 {
 		kind := protocol.UDPKindData
 		if class == protocol.FrameBulk {
-			kind = relayUDPKindBulk
+			kind = protocol.UDPKindBulk
 		}
 		if ur.send(kind, data) {
 			return
@@ -304,6 +303,34 @@ func (n *P2PNode) sendRelayFrame(class byte, data []byte) {
 	frame := make([]byte, 1+len(data))
 	frame[0] = class
 	copy(frame[1:], data)
+	n.queueRelayFrame(class, frame)
+}
+
+// sendRelayTo sends a sealed packet through the relay to a single member (screen share).
+// Callers check relayTargeted first; older relays would broadcast the frame to the room.
+func (n *P2PNode) sendRelayTo(class byte, member string, data []byte) {
+	n.mu.RLock()
+	isRelay := n.isRelayConnected
+	ur := n.udpRelay
+	n.mu.RUnlock()
+	if !isRelay || len(member) == 0 || len(member) > 255 {
+		return
+	}
+	if ur != nil && class != protocol.FrameReliable && ur.isActive() {
+		payload := protocol.AppendTarget([]byte{class}, member, data)
+		if len(payload) <= 1400 && ur.send(protocol.UDPKindTo, payload) {
+			return
+		}
+	}
+	frame := protocol.AppendTarget([]byte{class | protocol.FrameTargetFlag}, member, data)
+	n.queueRelayFrame(class, frame)
+}
+
+// queueRelayFrame schedules a WebSocket binary frame on the queue for its class.
+func (n *P2PNode) queueRelayFrame(class byte, frame []byte) {
+	n.mu.RLock()
+	priorityCh, reliableCh, videoCh := n.wsPriorityCh, n.wsReliableCh, n.wsVideoCh
+	n.mu.RUnlock()
 	switch class {
 	case protocol.FrameBulk:
 		if videoCh == nil {
@@ -342,9 +369,6 @@ func (n *P2PNode) sendRelayFrame(class byte, data []byte) {
 		}
 	}
 }
-
-// relayUDPKindBulk mirrors relay.UDPKindBulk (video datagrams).
-const relayUDPKindBulk byte = 0x03
 
 func (n *P2PNode) relayWritePump(conn *websocket.Conn, priorityCh, reliableCh, videoCh chan []byte, cancel chan struct{}) {
 	ticker := time.NewTicker(20 * time.Second)
@@ -453,8 +477,7 @@ func (n *P2PNode) handleRelayPacket(sealed []byte) {
 	if err := openPacket(sealed, &pkt, keyring); err != nil {
 		return
 	}
-	if pkt.Type == PacketScreenShareData {
-		n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
+	if n.handleScreenPacket(&pkt) {
 		return
 	}
 	n.handlePacket(&pkt, nil)
@@ -548,6 +571,7 @@ func (n *P2PNode) handleRelaySignal(msg protocol.Signal) {
 		n.hostToken = msg.HostToken
 		n.memberToken = msg.MemberToken
 		n.relayProto = msg.Proto
+		n.relayTargeted = msg.HasFeature(protocol.FeatureTargeted)
 		n.startUDPRelayLocked(msg)
 		for _, p := range msg.Peers {
 			if p.SenderID != n.LocalID {
@@ -565,6 +589,7 @@ func (n *P2PNode) handleRelaySignal(msg protocol.Signal) {
 	case protocol.SigWelcome:
 		n.memberToken = msg.MemberToken
 		n.relayProto = msg.Proto
+		n.relayTargeted = msg.HasFeature(protocol.FeatureTargeted)
 		n.startUDPRelayLocked(msg)
 
 		if n.Connecting && !n.IsConnected {

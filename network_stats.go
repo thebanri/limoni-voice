@@ -34,6 +34,7 @@ type NetDiagnostics struct {
 	UDPRelay     string
 	GroupEpoch   uint32
 	EncoderLoss  int
+	Screen       ScreenStats
 	Peers        []PeerDiagnostics
 }
 
@@ -99,6 +100,7 @@ func (n *P2PNode) Diagnostics() NetDiagnostics {
 	}
 	audio := n.audio
 	n.mu.RUnlock()
+	d.Screen = n.ScreenStats()
 
 	if audio != nil {
 		for i := range d.Peers {
@@ -145,6 +147,17 @@ func (d NetDiagnostics) Lines() []string {
 	}
 	lines = append(lines, fmt.Sprintf("Relay: %s (%s) RTT %s  UDP relay: %s", d.RelayStatus, orDash(d.RelayURL), rtt, d.UDPRelay))
 	lines = append(lines, fmt.Sprintf("E2EE group key epoch %d  Opus FEC loss hint %d%%", d.GroupEpoch, d.EncoderLoss))
+	if sc := d.Screen; sc.Sharing {
+		audio := ""
+		if sc.Audio {
+			audio = " + system audio"
+		}
+		lines = append(lines, fmt.Sprintf("Screen share: %s at %d kbps%s, %d viewer(s), uplink queue %dms, %d retransmits",
+			sc.Preset, sc.Kbps, audio, sc.Watchers, sc.QueueDelay.Milliseconds(), sc.Retransmits))
+	}
+	if sc := d.Screen; sc.Watching {
+		lines = append(lines, fmt.Sprintf("Watching screen: residual loss %.2f%%, gap wait %dms", sc.LossPct, sc.MaxWait.Milliseconds()))
+	}
 	if len(d.Peers) == 0 {
 		lines = append(lines, "No peers connected")
 	}

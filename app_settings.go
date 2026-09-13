@@ -4,12 +4,22 @@ import (
 	"fmt"
 
 	"github.com/thebanri/limoni-voice/internal/ptt"
+	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 // applySettings restores persisted preferences into the audio engine and lobby.
 func (a *App) applySettings(cfg AppConfig) {
 	if cfg.Nickname != "" {
 		a.lobby.NickState.SetValue(cfg.Nickname)
+	}
+	if sc := cfg.Screen; sc != nil {
+		a.screenPreset = sc.Preset
+		if a.screenPreset < 0 || a.screenPreset >= len(screenshare.Presets) {
+			a.screenPreset = screenshare.DefaultPreset
+		}
+		a.shareSystemAudio = sc.SystemAudio
+		a.node.ScreenPreset = a.screenPreset
+		a.node.ShareSystemAudio = a.shareSystemAudio
 	}
 	s := cfg.Audio
 	if s == nil {

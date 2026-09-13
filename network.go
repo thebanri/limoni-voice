@@ -113,28 +113,23 @@ type P2PNode struct {
 	voiceEnc     *voice.Encoder
 	voiceEncOnce sync.Once
 
-	// Screen Sharing State & Subprocesses
+	// Screen Sharing State (see network_screen.go)
 	IsSharingScreen      bool
 	ActiveScreenShareFPS int
 	IsWatchingScreen     bool
 	WatchingPeerID       string
 	WatchingPeerNick     string
 	ScreenSharePort      int
-	screenSession        *screenshare.Session
-	receiverSession      *screenshare.Session
-	videoCaptureConn     *net.UDPConn
-	videoTCPListener     net.Listener
-	videoTCPConn         net.Conn
-	videoPlayerCh        chan []byte
-	videoPlayerCancel    chan struct{}
-	videoPreBuf          [][]byte
-	videoReorder         VideoReorderBuffer
+	ScreenPreset         int  // index into screenshare.Presets
+	ShareSystemAudio     bool // include system audio when sharing
+	screenTx             *screenTx
+	screenRx             *screenRx
+	relayTargeted        bool // relay forwards frames to single members
 	audioDedup           AudioDeduplicator
 	chatDedup            ChatDeduplicator
 	ctrlDedup            ControlDeduplicator
 	silenceHangover      int
 	audioPreRoll         []audioPreRollFrame
-	lastVideoChunkTime   time.Time
 	OnScreenShare        func(peerID string, isSharing bool, videoPort int)
 	OnChatMessage        func(senderID string, nickname string, text string, ts time.Time)
 	OnDebugLog           func(msg string)
@@ -1155,8 +1150,7 @@ func (n *P2PNode) handleDatagram(data []byte, raddr *net.UDPAddr, via *net.UDPCo
 		n.notePunchSocket(pkt.SenderID, via)
 	}
 
-	if pkt.Type == PacketScreenShareData {
-		n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
+	if n.handleScreenPacket(&pkt) {
 		return
 	}
 	n.handlePacket(&pkt, raddr)
@@ -1598,6 +1592,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 
 	case PacketScreenShareStart:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
+			wasSharing := peer.IsSharingScreen
 			peer.IsSharingScreen = true
 			peer.VideoPort = pkt.VideoPort
 			fps := pkt.VideoFPS
@@ -1605,7 +1600,16 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				fps = 60
 			}
 			peer.VideoFPS = fps
-			n.log(fmt.Sprintf("[SCREEN] %s started screen sharing (%d FPS, Port: %d)", peer.Nickname, peer.VideoFPS, pkt.VideoPort))
+			peer.VideoKbps = int(pkt.VideoKbps)
+			peer.ScreenAudio = pkt.HasAudio
+			if wasSharing {
+				break // bitrate / audio update of an ongoing share
+			}
+			audio := ""
+			if pkt.HasAudio {
+				audio = " with system audio"
+			}
+			n.log(fmt.Sprintf("[SCREEN] %s started screen sharing (%d FPS%s)", peer.Nickname, peer.VideoFPS, audio))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, true, pkt.VideoPort)
 			}
@@ -1616,6 +1620,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			peer.IsSharingScreen = false
 			peer.VideoPort = 0
 			peer.VideoFPS = 0
+			peer.VideoKbps = 0
+			peer.ScreenAudio = false
 			n.log(fmt.Sprintf("[SCREEN] %s stopped screen sharing.", peer.Nickname))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, false, 0)
@@ -1627,9 +1633,6 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				_ = n.StopWatchingScreen()
 			}()
 		}
-
-	case PacketScreenShareData:
-		go n.forwardVideoChunk(pkt.SenderID, pkt.Payload, pkt.Seq, pkt.Nickname)
 
 	case PacketChatMessage:
 		payload := pkt.Payload

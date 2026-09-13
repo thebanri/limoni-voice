@@ -46,7 +46,9 @@ type App struct {
 
 	screenShareTargets     []screenshare.WindowInfo
 	selectedScreenShareIdx int
-	selectedScreenShareFPS int
+	screenPreset           int
+	shareSystemAudio       bool
+	screenShareDeps        screenshare.DependencyStatus
 
 	relayDialogAnim       *animation.Float
 	exitDialogAnim        *animation.Float
@@ -75,26 +77,26 @@ type App struct {
 // NewApp builds the application and wires network / audio callbacks.
 func NewApp(b *driver.Backend, t *terminal.Terminal, node *P2PNode, audio *AudioEngine, cfg AppConfig) *App {
 	app := &App{
-		backend:                b,
-		term:                   t,
-		node:                   node,
-		audio:                  audio,
-		lobby:                  NewLobbyView(),
-		room:                   NewRoomView(),
-		currentScreen:          ScreenLobby,
-		appStartTime:           time.Now(),
-		lastTime:               time.Now(),
-		selectedScreenShareFPS: 60,
-		relayDialogAnim:        animation.NewFloat(0.0),
-		exitDialogAnim:         animation.NewFloat(0.0),
-		leaveDialogAnim:        animation.NewFloat(0.0),
-		screenShareDialogAnim:  animation.NewFloat(0.0),
-		fileOfferDialogAnim:    animation.NewFloat(0.0),
-		relayURLInput:          widgets.NewTextInputState(),
-		relayTokenInput:        widgets.NewTextInputState(),
-		relaySelStart:          -1,
-		relaySelEnd:            -1,
-		relaySelField:          -1,
+		backend:               b,
+		term:                  t,
+		node:                  node,
+		audio:                 audio,
+		lobby:                 NewLobbyView(),
+		room:                  NewRoomView(),
+		currentScreen:         ScreenLobby,
+		appStartTime:          time.Now(),
+		lastTime:              time.Now(),
+		screenPreset:          screenshare.DefaultPreset,
+		relayDialogAnim:       animation.NewFloat(0.0),
+		exitDialogAnim:        animation.NewFloat(0.0),
+		leaveDialogAnim:       animation.NewFloat(0.0),
+		screenShareDialogAnim: animation.NewFloat(0.0),
+		fileOfferDialogAnim:   animation.NewFloat(0.0),
+		relayURLInput:         widgets.NewTextInputState(),
+		relayTokenInput:       widgets.NewTextInputState(),
+		relaySelStart:         -1,
+		relaySelEnd:           -1,
+		relaySelField:         -1,
 	}
 	app.applySettings(cfg)
 	app.wireNodeCallbacks()

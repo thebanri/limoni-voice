@@ -47,10 +47,6 @@ func TestSessionInvalidInputs(t *testing.T) {
 		t.Fatal("expected error on invalid port")
 	}
 
-	_, err = StartReceiving(ctx, 0)
-	if err == nil {
-		t.Fatal("expected error on invalid receiver port")
-	}
 }
 
 func TestSessionLifecycleWithDummyProcess(t *testing.T) {
@@ -115,7 +111,7 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 			Bitrate:    "6M",
 			WindowID:   "desktop",
 		}
-		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100", nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
 				t.Skipf("Skipping on CI without screen capture tools: %v", err)
@@ -141,7 +137,7 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 			Bitrate:    "6M",
 			WindowID:   "monitor:DP-1:1920:1080:1920:0",
 		}
-		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100", nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
 				t.Skipf("Skipping on CI without screen capture tools: %v", err)
@@ -179,7 +175,7 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 			Bitrate:    "6M",
 			WindowID:   "app:1416:zen",
 		}
-		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100")
+		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100", nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
 				t.Skipf("Skipping on CI without screen capture tools: %v", err)
@@ -397,3 +393,78 @@ func TestBuildWindowsBroadcastArgs(t *testing.T) {
 	})
 }
 
+func TestPresetsAndBitrateString(t *testing.T) {
+	p := PresetByIndex(DefaultPreset)
+	if p.Width != 1280 || p.FPS != 30 || p.Kbps != 2500 {
+		t.Fatalf("unexpected default preset %+v", p)
+	}
+	o := p.Options("desktop")
+	if o.Resolution != "1280x720" || o.bitrateString("x") != "2500k" {
+		t.Fatalf("preset options %+v", o)
+	}
+	if PresetByIndex(99).Name != p.Name || p.FloorKbps() != 625 {
+		t.Fatal("preset clamping / floor")
+	}
+	if (BroadcastOptions{Bitrate: "3M"}).bitrateString("x") != "3M" {
+		t.Fatal("legacy bitrate string")
+	}
+}
+
+func TestBroadcastRestartKeepsSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sleep")
+	}
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not available")
+	}
+	var built []BroadcastOptions
+	cleaned := 0
+	src := 0
+	planBuilder = func(opt BroadcastOptions, targetURL string, ps *pipewireSource, _ func()) (*broadcastPlan, error) {
+		built = append(built, opt)
+		if ps != nil && ps.nodeID == 0 {
+			src++
+			ps.own(42, nil, func() { cleaned++ })
+		}
+		return &broadcastPlan{bin: sleepBin, args: []string{"30"}}, nil
+	}
+	defer func() { planBuilder = buildBroadcastPlan }()
+
+	s, err := StartBroadcasting(context.Background(), "127.0.0.1", 50123, PresetByIndex(3).Options("desktop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s.TargetURL(), "pkt_size=1128") {
+		t.Fatalf("target URL %s", s.TargetURL())
+	}
+	firstPID := s.gen.cmd.Process.Pid
+	lower := s.Options()
+	lower.BitrateKbps = 2000
+	if err := s.Restart(lower); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.Done():
+		t.Fatal("session ended on restart")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if s.gen.cmd.Process.Pid == firstPID || s.Options().BitrateKbps != 2000 || len(built) != 2 {
+		t.Fatalf("restart did not start a new generation (builds=%d)", len(built))
+	}
+	if src != 1 || cleaned != 0 {
+		t.Fatalf("capture source acquired %d times, cleaned %d times before stop", src, cleaned)
+	}
+	_ = s.Stop()
+	select {
+	case <-s.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not end after Stop")
+	}
+	if cleaned != 1 {
+		t.Fatalf("capture source cleaned %d times", cleaned)
+	}
+	if err := s.Restart(lower); err == nil {
+		t.Fatal("restart after stop succeeded")
+	}
+}

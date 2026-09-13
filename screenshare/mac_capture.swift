@@ -3,6 +3,7 @@ import Darwin
 import ScreenCaptureKit
 import CoreMedia
 import CoreVideo
+import CoreAudio
 
 _ = Darwin.signal(SIGPIPE, SIG_IGN)
 
@@ -40,7 +41,64 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var isRunning = false
     var frameCount = 0
 
-    func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil) async {
+    // System audio (macOS 13+): 48 kHz stereo float32, interleaved, written to fd 3.
+    let audioFD: Int32 = 3
+    var audioEnabled = false
+    let audioQueue = DispatchQueue(label: "screen.audio.queue", qos: .userInteractive)
+
+    func addAudioOutput(_ stream: SCStream, _ captureAudio: Bool) {
+        guard captureAudio else { return }
+        if #available(macOS 13.0, *) {
+            do {
+                try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
+                audioEnabled = true
+                logToFile("[AUDIO] System audio capture enabled")
+            } catch {
+                logToFile("[AUDIO] System audio unavailable: \(error)")
+            }
+        } else {
+            logToFile("[AUDIO] System audio capture requires macOS 13+")
+        }
+    }
+
+    func handleAudio(_ sampleBuffer: CMSampleBuffer) {
+        guard audioEnabled, let desc = sampleBuffer.formatDescription?.audioStreamBasicDescription else { return }
+        let channels = Int(desc.mChannelsPerFrame)
+        let isFloat = (desc.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        let nonInterleaved = (desc.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
+        guard isFloat, desc.mBitsPerChannel == 32, channels >= 1 else { return }
+        let frames = sampleBuffer.numSamples
+        guard frames > 0 else { return }
+        do {
+            try sampleBuffer.withAudioBufferList { abl, _ in
+                var out = [Float32](repeating: 0, count: frames * 2)
+                if nonInterleaved {
+                    guard abl.count >= 1, let l = abl[0].mData?.assumingMemoryBound(to: Float32.self) else { return }
+                    let r = abl.count >= 2 ? abl[1].mData?.assumingMemoryBound(to: Float32.self) : nil
+                    for i in 0..<frames {
+                        out[2 * i] = l[i]
+                        out[2 * i + 1] = r?[i] ?? l[i]
+                    }
+                } else {
+                    guard abl.count >= 1, let p = abl[0].mData?.assumingMemoryBound(to: Float32.self) else { return }
+                    for i in 0..<frames {
+                        out[2 * i] = p[i * channels]
+                        out[2 * i + 1] = channels > 1 ? p[i * channels + 1] : p[i * channels]
+                    }
+                }
+                out.withUnsafeBytes { raw in
+                    if let base = raw.baseAddress, !writeAll(fd: audioFD, buffer: base, count: raw.count) {
+                        logToFile("[AUDIO] Audio pipe closed, disabling system audio")
+                        self.audioEnabled = false
+                    }
+                }
+            }
+        } catch {
+            logToFile("[AUDIO] Could not read audio buffer: \(error)")
+        }
+    }
+
+    func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil, captureAudio: Bool = false) async {
         logToFile("[START] Initializing ScreenCaptureKit capture: \(width)x\(height) @ \(fps) FPS, targetWindowID=\(String(describing: targetWindowID))")
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -57,7 +115,10 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 filter = SCContentFilter(display: display, including: [targetWin])
             } else {
                 logToFile("[INFO] Using full display capture (Display ID: \(display.displayID), resolution: \(display.width)x\(display.height))")
-                filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+                // Exclude Limoni Voice itself (the parent process) so voice chat is not re-shared.
+                let parentPID = getppid()
+                let selfApps = content.applications.filter { $0.processID == parentPID }
+                filter = SCContentFilter(display: display, excludingApplications: selfApps, exceptingWindows: [])
             }
 
             let config = SCStreamConfiguration()
@@ -68,9 +129,16 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             config.pixelFormat = kCVPixelFormatType_32BGRA
             config.showsCursor = true
             config.queueDepth = 8
+            if #available(macOS 13.0, *), captureAudio {
+                config.capturesAudio = true
+                config.sampleRate = 48000
+                config.channelCount = 2
+                config.excludesCurrentProcessAudio = true
+            }
 
             let stream = SCStream(filter: filter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
+            addAudioOutput(stream, captureAudio)
 
             do {
                 try await stream.startCapture()
@@ -82,6 +150,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 let fallbackFilter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
                 let fallbackStream = SCStream(filter: fallbackFilter, configuration: config, delegate: self)
                 try fallbackStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
+                addAudioOutput(fallbackStream, captureAudio)
                 try await fallbackStream.startCapture()
                 self.stream = fallbackStream
                 self.isRunning = true
@@ -94,7 +163,12 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard sampleBuffer.isValid, type == .screen else { return }
+        guard sampleBuffer.isValid else { return }
+        if #available(macOS 13.0, *), type == .audio {
+            handleAudio(sampleBuffer)
+            return
+        }
+        guard type == .screen else { return }
         guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
 
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
@@ -179,10 +253,12 @@ if #available(macOS 12.3, *) {
             }
         }
 
+        let captureAudio = CommandLine.arguments.count >= 6 && CommandLine.arguments[5] == "audio"
+
         let recorder = ScreenRecorder()
         globalRecorder = recorder
         Task {
-            await recorder.start(fps: fps, width: width, height: height, targetWindowID: targetWinID)
+            await recorder.start(fps: fps, width: width, height: height, targetWindowID: targetWinID, captureAudio: captureAudio)
         }
         dispatchMain()
     }

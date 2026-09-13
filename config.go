@@ -15,10 +15,17 @@ import (
 
 // AppConfig stores user-customizable persistent configuration
 type AppConfig struct {
-	RelayURL   string         `json:"relay_url,omitempty"`
-	RelayToken string         `json:"relay_token,omitempty"`
-	Nickname   string         `json:"nickname,omitempty"`
-	Audio      *AudioSettings `json:"audio,omitempty"`
+	RelayURL   string          `json:"relay_url,omitempty"`
+	RelayToken string          `json:"relay_token,omitempty"`
+	Nickname   string          `json:"nickname,omitempty"`
+	Audio      *AudioSettings  `json:"audio,omitempty"`
+	Screen     *ScreenSettings `json:"screen,omitempty"`
+}
+
+// ScreenSettings are the persisted screen share preferences.
+type ScreenSettings struct {
+	Preset      int  `json:"preset"`
+	SystemAudio bool `json:"system_audio"`
 }
 
 // AudioSettings are the persisted microphone / playback preferences.

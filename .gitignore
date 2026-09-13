@@ -15,3 +15,6 @@ Thumbs.db
 *.log
 limoni-voice-website
 website/
+
+# Prebuilt macOS capture helper (produced by CI)
+screenshare/machelper/limoni-sck

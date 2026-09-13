@@ -96,15 +96,22 @@ func waitForPortalResponse(ctx context.Context, reqPath dbus.ObjectPath, sigChan
 }
 
 // RequestPortalScreenCast creates a Portal screencast session.
-// sourceType: 1 = Monitor only, 2 = Window only, 3 = Both
 func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionClosed ...func()) (uint32, *os.File, func(), error) {
+	nodeID, file, _, cleanup, err := requestPortalCast(ctx, sourceType, onSessionClosed...)
+	return nodeID, file, cleanup, err
+}
+
+// requestPortalCast is RequestPortalScreenCast that also returns reopen, which hands out a new
+// PipeWire remote fd for the same session (an encoder restart must not show the picker again).
+// sourceType: 1 = Monitor only, 2 = Window only, 3 = Both
+func requestPortalCast(ctx context.Context, sourceType uint32, onSessionClosed ...func()) (uint32, *os.File, func() (*os.File, error), func(), error) {
 	if testing.Testing() {
-		return 100, nil, func() {}, nil
+		return 100, nil, nil, func() {}, nil
 	}
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("failed to connect to session bus: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("failed to connect to session bus: %w", err)
 	}
 
 	sigChan := make(chan *dbus.Signal, 50)
@@ -114,7 +121,7 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 	callMatch := conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, rule)
 	if callMatch.Err != nil {
 		conn.Close()
-		return 0, nil, nil, fmt.Errorf("failed to add dbus match rule: %w", callMatch.Err)
+		return 0, nil, nil, nil, fmt.Errorf("failed to add dbus match rule: %w", callMatch.Err)
 	}
 
 	token := fmt.Sprintf("limoni_%d", rand.Intn(1000000))
@@ -131,21 +138,21 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 	callCreate := portal.Call("org.freedesktop.portal.ScreenCast.CreateSession", 0, createOpts)
 	if callCreate.Err != nil {
 		conn.Close()
-		return 0, nil, nil, fmt.Errorf("CreateSession failed: %w", callCreate.Err)
+		return 0, nil, nil, nil, fmt.Errorf("CreateSession failed: %w", callCreate.Err)
 	}
 	if err := callCreate.Store(&reqCreatePath); err != nil {
 		conn.Close()
-		return 0, nil, nil, fmt.Errorf("failed to decode CreateSession response path: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("failed to decode CreateSession response path: %w", err)
 	}
 
 	respCode, createResults, err := waitForPortalResponse(ctx, reqCreatePath, sigChan, 10*time.Second)
 	if err != nil {
 		conn.Close()
-		return 0, nil, nil, fmt.Errorf("CreateSession response failed: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("CreateSession response failed: %w", err)
 	}
 	if respCode != 0 {
 		conn.Close()
-		return 0, nil, nil, fmt.Errorf("CreateSession rejected by portal with code %d", respCode)
+		return 0, nil, nil, nil, fmt.Errorf("CreateSession rejected by portal with code %d", respCode)
 	}
 
 	var sessionHandle dbus.ObjectPath
@@ -184,21 +191,21 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 	callSelect := portal.Call("org.freedesktop.portal.ScreenCast.SelectSources", 0, sessionHandle, selectOpts)
 	if callSelect.Err != nil {
 		cleanup()
-		return 0, nil, nil, fmt.Errorf("SelectSources failed: %w", callSelect.Err)
+		return 0, nil, nil, nil, fmt.Errorf("SelectSources failed: %w", callSelect.Err)
 	}
 	if err := callSelect.Store(&reqSelectPath); err != nil {
 		cleanup()
-		return 0, nil, nil, fmt.Errorf("failed to decode SelectSources response path: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("failed to decode SelectSources response path: %w", err)
 	}
 
 	respCode, _, err = waitForPortalResponse(ctx, reqSelectPath, sigChan, 10*time.Second)
 	if err != nil {
 		cleanup()
-		return 0, nil, nil, fmt.Errorf("SelectSources response failed: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("SelectSources response failed: %w", err)
 	}
 	if respCode != 0 {
 		cleanup()
-		return 0, nil, nil, fmt.Errorf("SelectSources rejected with code %d", respCode)
+		return 0, nil, nil, nil, fmt.Errorf("SelectSources rejected with code %d", respCode)
 	}
 
 	// 3. Start (Opens window selector)
@@ -211,42 +218,50 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 	callStart := portal.Call("org.freedesktop.portal.ScreenCast.Start", 0, sessionHandle, "", startOpts)
 	if callStart.Err != nil {
 		cleanup()
-		return 0, nil, nil, fmt.Errorf("Start failed: %w", callStart.Err)
+		return 0, nil, nil, nil, fmt.Errorf("Start failed: %w", callStart.Err)
 	}
 	if err := callStart.Store(&reqStartPath); err != nil {
 		cleanup()
-		return 0, nil, nil, fmt.Errorf("failed to decode Start response path: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("failed to decode Start response path: %w", err)
 	}
 
 	logMsg("[PORTAL] Please select the window or screen you want to share...")
 	respCode, results, err := waitForPortalResponse(ctx, reqStartPath, sigChan, 120*time.Second)
 	if err != nil {
 		cleanup()
-		return 0, nil, nil, fmt.Errorf("Start response failed: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("Start response failed: %w", err)
 	}
 	if respCode != 0 {
 		cleanup()
-		return 0, nil, nil, errors.New("window selection cancelled by user")
+		return 0, nil, nil, nil, errors.New("window selection cancelled by user")
 	}
 
 	nodeID := parsePipewireNodeID(results["streams"].Value())
 	if nodeID == 0 {
 		cleanup()
-		return 0, nil, nil, errors.New("portal did not return a valid PipeWire stream Node ID")
+		return 0, nil, nil, nil, errors.New("portal did not return a valid PipeWire stream Node ID")
 	}
 
 	logMsg("[PORTAL] Window selected! PipeWire Node ID: %d", nodeID)
 
 	// 4. OpenPipeWireRemote
-	var fd dbus.UnixFD
-	callRemote := portal.Call("org.freedesktop.portal.ScreenCast.OpenPipeWireRemote", 0, sessionHandle, map[string]dbus.Variant{})
-	if callRemote.Err != nil {
-		return nodeID, nil, cleanup, nil
+	openRemote := func() (*os.File, error) {
+		var fd dbus.UnixFD
+		callRemote := portal.Call("org.freedesktop.portal.ScreenCast.OpenPipeWireRemote", 0, sessionHandle, map[string]dbus.Variant{})
+		if callRemote.Err != nil {
+			return nil, callRemote.Err
+		}
+		if err := callRemote.Store(&fd); err != nil {
+			return nil, err
+		}
+		if fd <= 0 {
+			return nil, errors.New("portal returned no PipeWire fd")
+		}
+		return os.NewFile(uintptr(fd), "pipewire"), nil
 	}
-	_ = callRemote.Store(&fd)
-	var pwFile *os.File
-	if fd > 0 {
-		pwFile = os.NewFile(uintptr(fd), "pipewire")
+	pwFile, errRemote := openRemote()
+	if errRemote != nil {
+		return nodeID, nil, nil, cleanup, nil
 	}
 
 	fullCleanup := func() {
@@ -279,5 +294,5 @@ func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionCl
 		}()
 	}
 
-	return nodeID, pwFile, fullCleanup, nil
+	return nodeID, pwFile, openRemote, fullCleanup, nil
 }

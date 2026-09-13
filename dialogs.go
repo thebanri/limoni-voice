@@ -1255,27 +1255,38 @@ func DrawRelayModal(
 	}
 }
 
-// DrawScreenShareModal renders the screen and window selection modal with selectable FPS modes, opening/closing scale animation and drop shadow
+// ScreenShareDialogState is what the screen share dialog shows and edits.
+type ScreenShareDialogState struct {
+	Progress    float64
+	SelectedIdx int
+	Preset      int // index into screenshare.Presets
+	SystemAudio bool
+	Deps        screenshare.DependencyStatus
+	Targets     []screenshare.WindowInfo
+}
+
+// DrawScreenShareModal renders the screen / window picker with quality presets, the system audio
+// toggle and missing dependency hints, with opening/closing scale animation and drop shadow.
 func DrawScreenShareModal(
 	frame *terminal.Frame,
 	screenArea cell.Rect,
-	progress float64,
-	selectedIdx int,
-	selectedFPS int,
-	targets []screenshare.WindowInfo,
-	onSelectFPS func(fps int),
+	st ScreenShareDialogState,
+	onSelectPreset func(idx int),
+	onToggleAudio func(),
 	onSelectTarget func(target screenshare.WindowInfo),
 	onCancel func(),
 ) {
-	if progress <= 0.001 {
+	if st.Progress <= 0.001 {
 		return
 	}
-
-	if selectedFPS != 30 && selectedFPS != 60 && selectedFPS != 120 {
-		selectedFPS = 60
+	presetIdx := st.Preset
+	if presetIdx < 0 || presetIdx >= len(screenshare.Presets) {
+		presetIdx = screenshare.DefaultPreset
 	}
+	targets := st.Targets
+	selectedIdx := st.SelectedIdx
 
-	modalW, modalH := uint16(68), uint16(16)
+	modalW, modalH := uint16(72), uint16(19)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -1284,31 +1295,25 @@ func DrawScreenShareModal(
 	}
 
 	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
-	animatedArea := terminal.ScaleRect(modalArea, progress)
-
+	animatedArea := terminal.ScaleRect(modalArea, st.Progress)
 	if animatedArea.Width < 8 || animatedArea.Height < 5 {
 		return
 	}
 
-	// 1. Draw Drop Shadow behind the dialog
 	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
-
 	frame.RegisterModal("screenshare_select_dialog", animatedArea, onCancel)
 
 	theme := CurrentTheme()
 	dialogBg := theme.SurfaceBg
 	buf := frame.Buffer
-
-	// 2. Clear entire dialog area with solid dark background
 	for y := animatedArea.Y; y < animatedArea.Y+animatedArea.Height; y++ {
 		for x := animatedArea.X; x < animatedArea.X+animatedArea.Width; x++ {
 			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
 		}
 	}
 
-	// 3. Draw dialog Block with rounded borders and centered title
 	block := widgets.Block{
-		Title:          " SELECT SCREEN OR WINDOW TO BROADCAST ",
+		Title:          " SHARE SCREEN OR WINDOW ",
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
@@ -1318,176 +1323,146 @@ func DrawScreenShareModal(
 	frame.RenderWidget(block, animatedArea)
 
 	inner := block.Inner(animatedArea)
-	if inner.Height < 4 || inner.Width < 6 {
+	if inner.Height < 6 || inner.Width < 6 {
 		return
 	}
-
-	// 4. Framerate Mode Selector Row
-	fpsLabel := "Framerate Mode:"
-	if inner.Width < 70 {
-		fpsLabel = "FPS:"
-	}
-	if inner.Width < 45 {
-		fpsLabel = ""
-	}
-
-	startX := inner.X + 1
-	if fpsLabel != "" {
-		buf.SetString(startX, inner.Y, fpsLabel, cell.Style{
-			Fg:       theme.TextMuted,
-			Bg:       dialogBg,
-			Modifier: cell.ModifierBold,
-		})
-		startX += uint16(len([]rune(fpsLabel))) + 1
-	}
-
-	type fpsOption struct {
-		fps     int
-		full    string
-		medium  string
-		compact string
-		tiny    string
-	}
-	fpsOptions := []fpsOption{
-		{fps: 30, full: " [1] 30 FPS (Eco) ", medium: " [1] 30 FPS ", compact: " 30 FPS ", tiny: " 30 "},
-		{fps: 60, full: " [2] 60 FPS (Balanced) ", medium: " [2] 60 FPS ", compact: " 60 FPS ", tiny: " 60 "},
-		{fps: 120, full: " [3] 120 FPS (Ultra) ", medium: " [3] 120 FPS ", compact: " 120 FPS ", tiny: " 120 "},
-	}
-
-	// Choose appropriate size tier so ALL 3 options ALWAYS fit within inner.Width
-	availW := int(inner.Width) - int(startX-inner.X) - 1
-	var pillTexts []string
-	for t := 0; t <= 3; t++ {
-		totalW := 0
-		var texts []string
-		for idx, opt := range fpsOptions {
-			txt := opt.full
-			switch t {
-			case 1:
-				txt = opt.medium
-			case 2:
-				txt = opt.compact
-			case 3:
-				txt = opt.tiny
-			}
-			texts = append(texts, txt)
-			totalW += len([]rune(txt))
-			if idx < len(fpsOptions)-1 {
-				totalW += 1 // spacing between pills
-			}
+	clip := func(text string, maxW int) string {
+		if r := []rune(text); len(r) > maxW && maxW > 0 {
+			return string(r[:maxW])
 		}
-		if totalW <= availW || t == 3 {
-			pillTexts = texts
+		return text
+	}
+	row := inner.Y
+
+	// 1. Quality preset pills
+	startX := inner.X + 1
+	label := "Quality:"
+	if inner.Width >= 45 {
+		buf.SetString(startX, row, label, cell.Style{Fg: theme.TextMuted, Bg: dialogBg, Modifier: cell.ModifierBold})
+		startX += uint16(len(label)) + 1
+	}
+	availW := int(inner.X+inner.Width) - int(startX) - 1
+	var pills []string
+	for tier := 0; tier <= 2; tier++ {
+		total := 0
+		pills = pills[:0]
+		for i, p := range screenshare.Presets {
+			res := fmt.Sprintf("%dp%d", p.Height, p.FPS)
+			txt := fmt.Sprintf(" %d %s ", i+1, p.Name)
+			switch tier {
+			case 1:
+				txt = " " + res + " "
+			case 2:
+				txt = fmt.Sprintf(" %d ", i+1)
+				if i == presetIdx {
+					txt = " " + res + " "
+				}
+			}
+			pills = append(pills, txt)
+			total += len([]rune(txt)) + 1
+		}
+		if total-1 <= availW {
 			break
 		}
 	}
-
-	curPillX := startX
-	for idx, opt := range fpsOptions {
-		pillText := pillTexts[idx]
-		pillLen := uint16(len([]rune(pillText)))
-
-		pillStyle := cell.Style{
-			Fg: theme.Text,
-			Bg: theme.InputBg,
+	x := startX
+	for i, txt := range pills {
+		w := uint16(len([]rune(txt)))
+		if x+w > inner.X+inner.Width {
+			break
 		}
-		if opt.fps == selectedFPS {
-			pillStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Accent,
-				Modifier: cell.ModifierBold,
-			}
+		style := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
+		if i == presetIdx {
+			style = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 		}
+		buf.SetString(x, row, txt, style)
+		if onSelectPreset != nil {
+			idx := i
+			frame.RegisterClickHandler(cell.NewRect(x, row, w, 1), func(_ driver.MouseEvent) { onSelectPreset(idx) })
+		}
+		x += w + 1
+	}
+	row++
 
-		buf.SetString(curPillX, inner.Y, pillText, pillStyle)
-		if onSelectFPS != nil {
-			targetFPS := opt.fps
-			frame.RegisterClickHandler(cell.NewRect(curPillX, inner.Y, pillLen, 1), func(_ driver.MouseEvent) {
-				onSelectFPS(targetFPS)
-			})
+	// 2. Preset details + system audio toggle
+	p := screenshare.Presets[presetIdx]
+	detail := fmt.Sprintf("%s · up to %.1f Mbps, lowers itself on weak connections", p.Name, float64(p.Kbps)/1000)
+	buf.SetString(inner.X+1, row, clip(detail, int(inner.Width)-2), cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+	row++
+	audioText := " [A] System audio: OFF "
+	audioStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
+	if st.SystemAudio {
+		audioText = " [A] System audio: ON "
+		audioStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Success, Modifier: cell.ModifierBold}
+	}
+	buf.SetString(inner.X+1, row, audioText, audioStyle)
+	if onToggleAudio != nil {
+		frame.RegisterClickHandler(cell.NewRect(inner.X+1, row, uint16(len([]rune(audioText))), 1), func(_ driver.MouseEvent) { onToggleAudio() })
+	}
+	hint := "shares what your computer plays (your voice chat is left out)"
+	hx := inner.X + 2 + uint16(len([]rune(audioText)))
+	if int(inner.X+inner.Width)-int(hx)-1 > 10 {
+		buf.SetString(hx, row, clip(hint, int(inner.X+inner.Width)-int(hx)-1), cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+	}
+	row++
+
+	// 3. Missing tools
+	if st.Deps.MissingRecommended != "" && !st.Deps.CanShare {
+		warn := "Missing: " + st.Deps.MissingRecommended
+		buf.SetString(inner.X+1, row, clip(warn, int(inner.Width)-2), cell.Style{Fg: theme.Danger, Bg: dialogBg, Modifier: cell.ModifierBold})
+		row++
+		if st.Deps.InstallHint != "" {
+			buf.SetString(inner.X+1, row, clip("Install: "+st.Deps.InstallHint, int(inner.Width)-2), cell.Style{Fg: theme.Warning, Bg: dialogBg})
+			row++
 		}
-		curPillX += pillLen + 1
 	}
 
-	// 5. Header title for targets
-	headerY := inner.Y + 1
-	headerText := fmt.Sprintf("Select target to broadcast (%d available):", len(targets))
-	if maxH := int(inner.Width - 2); len([]rune(headerText)) > maxH {
-		headerText = string([]rune(headerText)[:maxH])
-	}
-	buf.SetString(inner.X+1, headerY, headerText, cell.Style{
-		Fg:       theme.Accent,
-		Bg:       dialogBg,
-		Modifier: cell.ModifierBold,
-	})
+	// 4. Targets
+	headerText := fmt.Sprintf("Select what to share (%d available):", len(targets))
+	buf.SetString(inner.X+1, row, clip(headerText, int(inner.Width)-2), cell.Style{Fg: theme.Accent, Bg: dialogBg, Modifier: cell.ModifierBold})
+	row++
 
-	// 6. List targets with scrolling window around selectedIdx
-	listY := inner.Y + 2
-	maxDisplay := int(inner.Height - 3)
+	listY := row
+	maxDisplay := int(inner.Y+inner.Height-1) - int(listY)
 	if maxDisplay < 1 {
 		maxDisplay = 1
 	}
-
 	startIdx := 0
 	if selectedIdx >= maxDisplay {
 		startIdx = selectedIdx - maxDisplay + 1
 	}
-	endIdx := startIdx + maxDisplay
-	if endIdx > len(targets) {
-		endIdx = len(targets)
-	}
-
+	endIdx := min(startIdx+maxDisplay, len(targets))
 	hasScrollbar := len(targets) > maxDisplay && inner.Width > 8
 	listWidth := inner.Width - 2
 	if hasScrollbar {
-		listWidth = inner.Width - 4 // Leave margin for scrollbar
+		listWidth = inner.Width - 4
 	}
-
 	for i := startIdx; i < endIdx; i++ {
 		t := targets[i]
 		rowY := listY + uint16(i-startIdx)
-		isSel := (i == selectedIdx)
-
-		itemStyle := cell.Style{
-			Fg: theme.Text,
-			Bg: theme.InputBg,
-		}
+		itemStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
 		prefix := "  "
-		if isSel {
-			itemStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Accent,
-				Modifier: cell.ModifierBold,
-			}
+		if i == selectedIdx {
+			itemStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 			prefix = "▶ "
 		}
-
 		itemText := prefix + t.Title
-		maxChars := int(listWidth)
-		runes := []rune(itemText)
-		if len(runes) > maxChars {
-			if maxChars > 3 {
-				itemText = string(runes[:maxChars-3]) + "..."
+		if runes := []rune(itemText); len(runes) > int(listWidth) {
+			if listWidth > 3 {
+				itemText = string(runes[:listWidth-3]) + "..."
 			} else {
-				itemText = string(runes[:maxChars])
+				itemText = string(runes[:listWidth])
 			}
 		}
-
-		// Clear full row
 		for x := inner.X + 1; x < inner.X+1+listWidth; x++ {
 			buf.SetCell(x, rowY, cell.Cell{Content: ' ', Style: itemStyle})
 		}
 		buf.SetString(inner.X+1, rowY, itemText, itemStyle)
-
-		targetItem := t
 		if onSelectTarget != nil {
-			frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, listWidth, 1), func(_ driver.MouseEvent) {
-				onSelectTarget(targetItem)
-			})
+			targetItem := t
+			frame.RegisterClickHandler(cell.NewRect(inner.X+1, rowY, listWidth, 1), func(_ driver.MouseEvent) { onSelectTarget(targetItem) })
 		}
 	}
-
-	// 7. Draw Vertical Scrollbar on the right border margin
 	if hasScrollbar {
 		scrollX := inner.X + inner.Width - 2
 		trackHeight := maxDisplay
@@ -1500,38 +1475,21 @@ func DrawScreenShareModal(
 		if maxScroll > 0 {
 			thumbY = int(math.Round(float64(startIdx) / float64(maxScroll) * float64(trackHeight-thumbHeight)))
 		}
-
 		for r := 0; r < trackHeight; r++ {
-			curY := listY + uint16(r)
+			ch, fg := '░', theme.Border
 			if r >= thumbY && r < thumbY+thumbHeight {
-				// Scrollbar Thumb
-				buf.SetCell(scrollX, curY, cell.Cell{
-					Content: '█',
-					Style:   cell.Style{Fg: theme.BorderFocused, Bg: dialogBg},
-				})
-			} else {
-				// Scrollbar Track
-				buf.SetCell(scrollX, curY, cell.Cell{
-					Content: '░',
-					Style:   cell.Style{Fg: theme.Border, Bg: dialogBg},
-				})
+				ch, fg = '█', theme.BorderFocused
 			}
+			buf.SetCell(scrollX, listY+uint16(r), cell.Cell{Content: ch, Style: cell.Style{Fg: fg, Bg: dialogBg}})
 		}
 	}
 
-	// 8. Bottom Navigation Guide
-	bottomY := inner.Y + inner.Height - 1
-	guideText := "[1/2/3/F] FPS   [↑/↓] Target   [ENTER/CLICK] Share   [ESC] Cancel"
+	// 5. Guide
+	guideText := "[1-5/Q] Quality   [A] Audio   [↑/↓] Target   [ENTER] Share   [ESC] Cancel"
 	if len(targets) > maxDisplay {
 		guideText = fmt.Sprintf("[%d/%d]  %s", selectedIdx+1, len(targets), guideText)
 	}
-	if maxG := int(inner.Width - 2); len([]rune(guideText)) > maxG {
-		guideText = string([]rune(guideText)[:maxG])
-	}
-	buf.SetString(inner.X+1, bottomY, guideText, cell.Style{
-		Fg: theme.TextMuted,
-		Bg: dialogBg,
-	})
+	buf.SetString(inner.X+1, inner.Y+inner.Height-1, clip(guideText, int(inner.Width)-2), cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
 }
 
 var (

@@ -226,6 +226,13 @@ type AudioEngine struct {
 	denoiser *rnnoise.State
 	rnnBuf   []float32
 
+	// Screen share audio (audio_screen.go)
+	ScreenAudioVolume float64
+	screen            *screenAudio
+	sysMu             sync.Mutex
+	sysAEC            *dsp.LoopbackCanceller
+	sysOut            []int16
+
 	// Click / clap suppression and voice smoothing (capture goroutine only)
 	transient       *dsp.TransientSuppressor
 	transientActive bool // the current frame contained a suppressed click / clap
@@ -398,6 +405,7 @@ func NewAudioEngine() *AudioEngine {
 		SuppressionMode:   SuppressionStandard,
 		EchoCancellation:  true,
 		VoiceSmoothing:    true,
+		ScreenAudioVolume: 1.0,
 		Gain:              1.0,
 		OutputVolume:      1.0,
 		GainSliderState:   widgets.NewSliderState(100),
@@ -1380,6 +1388,7 @@ func (a *AudioEngine) renderFrame(out []int16) {
 		for _, pv := range a.peerVoices {
 			pv.jitter.Pull(a.mixScratch)
 		}
+		a.mixScreenAudioLocked(accum, false)
 	default:
 		for id, pv := range a.peerVoices {
 			if pv.jitter.Pull(a.mixScratch) == voice.FrameNone {
@@ -1408,6 +1417,9 @@ func (a *AudioEngine) renderFrame(out []int16) {
 				addPCM(chunk)
 			}
 		}
+		if a.mixScreenAudioLocked(accum, true) {
+			active = true
+		}
 		if len(a.sfxQueue) > 0 {
 			addPCM(a.sfxQueue[0])
 			a.sfxQueue = a.sfxQueue[1:]
@@ -1435,6 +1447,7 @@ func (a *AudioEngine) renderFrame(out []int16) {
 	}
 	aecEnabled := a.EchoCancellation && !a.InTestMode
 	a.mu.Unlock()
+	a.feedLoopbackReference(out)
 
 	if aecEnabled {
 		a.aecMu.Lock()

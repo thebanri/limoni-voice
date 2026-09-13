@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
@@ -15,13 +16,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thebanri/limoni/core/driver"
+	"github.com/thebanri/limoni-voice/internal/protocol"
+	"github.com/thebanri/limoni-voice/internal/video"
+	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
-	"github.com/thebanri/limoni-voice/internal/protocol"
-	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 func TestRoomCode(t *testing.T) {
@@ -374,9 +376,9 @@ func TestVerticalMeterAndDialogs(t *testing.T) {
 	_ = closed
 	DrawLeaveModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
 	DrawExitModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
-	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, 0, 60, []screenshare.WindowInfo{
+	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), ScreenShareDialogState{Progress: 1.0, Preset: 1, Targets: []screenshare.WindowInfo{
 		{ID: "desktop", Title: "[Desktop] Entire Screen (Primary View)"},
-	}, func(_ int) {}, func(_ screenshare.WindowInfo) {}, func() {})
+	}}, func(int) {}, func() {}, func(_ screenshare.WindowInfo) {}, func() {})
 }
 
 func TestNoiseSuppressionAndTestMode(t *testing.T) {
@@ -678,101 +680,28 @@ func TestFricativeConsonantOnsetPassthrough(t *testing.T) {
 	}
 }
 
-func TestVideoReorderBuffer(t *testing.T) {
-	buf := VideoReorderBuffer{}
-	buf.Reset()
-
-	// Push in-order packet 1 -> returns [chunk1]
-	c1 := []byte("chunk1")
-	out := buf.Push(1, c1)
-	if len(out) != 1 || string(out[0]) != "chunk1" {
-		t.Fatalf("Expected chunk1, got %v", out)
-	}
-
-	// Push out-of-order packet 3 -> buffers, returns nil
-	c3 := []byte("chunk3")
-	out = buf.Push(3, c3)
-	if len(out) != 0 {
-		t.Fatalf("Expected nil when packet 2 is missing, got %v", out)
-	}
-
-	// Push missing packet 2 -> returns [chunk2, chunk3] in exact sequence order!
-	c2 := []byte("chunk2")
-	out = buf.Push(2, c2)
-	if len(out) != 2 || string(out[0]) != "chunk2" || string(out[1]) != "chunk3" {
-		t.Fatalf("Expected [chunk2, chunk3], got %v", out)
-	}
-
-	// Push duplicate packet 2 -> dropped, returns nil
-	out = buf.Push(2, c2)
-	if len(out) != 0 {
-		t.Fatalf("Expected duplicate packet 2 to be dropped, got %v", out)
-	}
-
-	// Test Reset
-	buf.Reset()
-	out = buf.Push(10, []byte("chunk10"))
-	if len(out) != 1 || string(out[0]) != "chunk10" {
-		t.Fatalf("Expected chunk10 after reset, got %v", out)
-	}
-}
-
-func TestVideoPlayerAsyncDecoupling(t *testing.T) {
-	node := &P2PNode{
-		LocalID: "nodeA",
-		Peers:   make(map[string]*PeerInfo),
-	}
-	node.videoReorder.Reset()
-
-	playerCh := make(chan []byte, 10)
-	cancelCh := make(chan struct{})
-	node.videoPlayerCh = playerCh
-	node.videoPlayerCancel = cancelCh
-	node.IsWatchingScreen = true
-
-	serverConn, clientConn := net.Pipe()
-	pumpDone := make(chan struct{})
-	go func() {
-		node.videoPlayerWritePump(serverConn, playerCh, cancelCh)
-		close(pumpDone)
-	}()
-
-	buf := make([]byte, 64)
-
-	// Forward video chunk: must be fast and non-blocking
+func TestScreenRxDispatchNeverBlocks(t *testing.T) {
+	rx := &screenRx{reorder: video.NewReorder(0), playerCh: make(chan []byte, 10), stop: make(chan struct{})}
 	start := time.Now()
-	node.forwardVideoChunk("peer1", []byte("video-slice-1"), 1, "peer1")
-	dur := time.Since(start)
-	if dur > 50*time.Millisecond {
-		t.Fatalf("forwardVideoChunk took too long (%v), must never block network loop", dur)
+	for i := uint32(1); i <= 200; i++ {
+		rx.onData(i, []byte("video-slice"))
+	}
+	if dur := time.Since(start); dur > 50*time.Millisecond {
+		t.Fatalf("onData blocked on a full player queue (%v)", dur)
+	}
+	if len(rx.playerCh) == 0 {
+		t.Fatal("no chunks queued for the player")
 	}
 
-	n, err := clientConn.Read(buf)
-	if err != nil || string(buf[:n]) != "video-slice-1" {
-		t.Fatalf("Failed to read video chunk: %v, got %s", err, string(buf[:n]))
+	// The pump writes everything queued in one flush.
+	var sink bytes.Buffer
+	w := bufio.NewWriter(&sink)
+	queue := make(chan []byte, 4)
+	queue <- []byte("b")
+	queue <- []byte("c")
+	if !writeChunks(w, []byte("a"), queue) || sink.String() != "abc" {
+		t.Fatalf("batched write got %q", sink.String())
 	}
-
-	// Fill player channel to capacity
-	for i := 0; i < 10; i++ {
-		playerCh <- []byte("fill")
-	}
-
-	// forwardVideoChunk when queue is full: must drop non-blocking, never hang
-	start = time.Now()
-	node.forwardVideoChunk("peer1", []byte("video-slice-overflow"), 2, "peer1")
-	dur = time.Since(start)
-	if dur > 10*time.Millisecond {
-		t.Fatalf("forwardVideoChunk blocked on saturated queue (%v)", dur)
-	}
-
-	// Cancel pump
-	close(cancelCh)
-	select {
-	case <-pumpDone:
-	case <-time.After(1 * time.Second):
-		t.Fatalf("videoPlayerWritePump failed to exit after cancel")
-	}
-	_ = clientConn.Close()
 }
 
 func TestPushToTalkMode(t *testing.T) {
@@ -3244,36 +3173,31 @@ func TestScreenShareFPSModes(t *testing.T) {
 	}
 }
 
-func TestScreenShareModalResponsiveFPSPills(t *testing.T) {
-	testWidths := []uint16{40, 50, 60, 80}
-	for _, w := range testWidths {
+func TestScreenShareModalResponsivePresets(t *testing.T) {
+	for _, w := range []uint16{40, 50, 60, 80} {
 		buf := buffer.NewBuffer(cell.NewRect(0, 0, w, 24))
 		frame := terminal.NewFrame(buf, terminal.NewFocusManager())
-		fpsSelected := 0
-		DrawScreenShareModal(frame, cell.NewRect(0, 0, w, 24), 1.0, 0, 120, []screenshare.WindowInfo{
-			{ID: "desktop", Title: "Desktop 1"},
-		}, func(fps int) {
-			fpsSelected = fps
-		}, func(_ screenshare.WindowInfo) {}, func() {})
+		DrawScreenShareModal(frame, cell.NewRect(0, 0, w, 24), ScreenShareDialogState{
+			Progress: 1.0, Preset: 4, SystemAudio: true,
+			Deps:    screenshare.DependencyStatus{MissingRecommended: "ffmpeg (to share)", InstallHint: "sudo pacman -S ffmpeg"},
+			Targets: []screenshare.WindowInfo{{ID: "desktop", Title: "Desktop 1"}},
+		}, func(int) {}, func() {}, func(_ screenshare.WindowInfo) {}, func() {})
 
-		// Check that "120" is present in buffer text
-		found120 := false
+		var screen strings.Builder
 		for y := uint16(0); y < 24; y++ {
-			line := ""
 			for x := uint16(0); x < w; x++ {
 				if c := buf.Get(x, y); c != nil {
-					line += string(c.Content)
+					screen.WriteRune(c.Content)
 				}
 			}
-			if strings.Contains(line, "120") {
-				found120 = true
-				break
+			screen.WriteByte('\n')
+		}
+		text := screen.String()
+		for _, want := range []string{"1080p120", "System audio: ON", "Missing:"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("width %d: %q missing from the dialog:\n%s", w, want, text)
 			}
 		}
-		if !found120 {
-			t.Fatalf("Width %d: Expected 120 FPS option to be rendered on screen, but was missing", w)
-		}
-		_ = fpsSelected
 	}
 }
 
@@ -3331,7 +3255,7 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 		RoomCode: "TEST-120",
 		SenderID: "streamer",
 		Seq:      100,
-		Payload:  make([]byte, 1316),
+		Payload:  make([]byte, 1128),
 	}
 	encVid, err := sealPacket(&vidPkt, aead)
 	if err != nil {
@@ -3362,7 +3286,7 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 	if err := openPacket(encVid, &decVid, aead); err != nil {
 		t.Fatalf("failed to decrypt LVV1 packet: %v", err)
 	}
-	if decVid.Type != PacketScreenShareData || len(decVid.Payload) != 1316 {
+	if decVid.Type != PacketScreenShareData || len(decVid.Payload) != 1128 {
 		t.Fatalf("corrupted decrypted video packet: %+v", decVid)
 	}
 
@@ -3374,69 +3298,47 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 		t.Fatalf("corrupted decrypted ping packet: %+v", decPing)
 	}
 
-	// 4. VideoReorderBuffer must not stall for 160 packets (must advance at 32 packets)
-	reorder := VideoReorderBuffer{}
-	reorder.Reset()
+	// 4. The reorder buffer releases a gap after its wait time instead of stalling.
+	reorder := video.NewReorder(50 * time.Millisecond)
+	now := time.Now()
 	for i := uint32(1); i <= 30; i++ {
-		chunks := reorder.Push(i, []byte(fmt.Sprintf("frame-%d", i)))
-		if len(chunks) != 1 {
+		if chunks := reorder.Push(i, []byte(fmt.Sprintf("frame-%d", i)), now); len(chunks) != 1 {
 			t.Fatalf("expected 1 chunk, got %d", len(chunks))
 		}
 	}
-
-	// Drop packet 31. Push 32..80. When pending > 32, it must force-advance without hanging!
-	var flushedAfterDrop int
-	for i := uint32(32); i <= 80; i++ {
-		chunks := reorder.Push(i, []byte(fmt.Sprintf("frame-%d", i)))
-		flushedAfterDrop += len(chunks)
+	for i := uint32(32); i <= 80; i++ { // 31 lost
+		reorder.Push(i, []byte(fmt.Sprintf("frame-%d", i)), now)
 	}
-	if flushedAfterDrop == 0 {
-		t.Fatalf("Reorder buffer failed to advance past dropped packet!")
+	if flushed := reorder.Tick(now.Add(60 * time.Millisecond)); len(flushed) != 49 {
+		t.Fatalf("Reorder buffer failed to advance past dropped packet: %d", len(flushed))
 	}
 }
 
 func TestVideo120FPSKeyframeBurstAndJitter(t *testing.T) {
-	// 1. Verify that a 80-chunk 1080p 120 FPS keyframe burst passes cleanly without dropping
-	node := &P2PNode{
-		LocalID:          "viewerNode",
-		Peers:            make(map[string]*PeerInfo),
-		IsWatchingScreen: true,
-	}
-	node.videoReorder.Reset()
-
-	playerCh := make(chan []byte, 192)
-	node.videoPlayerCh = playerCh
-
-	// Send 80 chunks of an I-frame in rapid succession
+	// 1. An 80-chunk keyframe burst passes to the player without loss.
+	rx := &screenRx{reorder: video.NewReorder(0), playerCh: make(chan []byte, 192), stop: make(chan struct{})}
 	for i := uint32(1); i <= 80; i++ {
-		chunk := []byte(fmt.Sprintf("iframe-slice-%d", i))
-		node.forwardVideoChunk("streamer", chunk, i, "streamer")
+		rx.onData(i, []byte(fmt.Sprintf("iframe-slice-%d", i)))
+	}
+	if len(rx.playerCh) != 80 {
+		t.Fatalf("Expected all 80 keyframe chunks in playerCh without loss, got %d", len(rx.playerCh))
 	}
 
-	if len(playerCh) != 80 {
-		t.Fatalf("Expected all 80 keyframe chunks in playerCh without loss, got %d", len(playerCh))
-	}
-
-	// 2. Verify jitter tolerance: Stream starts with packet 1.
-	// Packet 2 is missing/delayed while packets 3..28 arrive (26 packets of jitter).
-	// With threshold = 36, packet 2 arriving late must recover all chunks 2..28 without discarding packet 2!
-	reorder := VideoReorderBuffer{}
-	reorder.Reset()
-
-	p1 := reorder.Push(1, []byte("data-1"))
-	if len(p1) != 1 || string(p1[0]) != "data-1" {
+	// 2. Jitter tolerance: packet 2 arrives after 3..28 within the wait time, nothing is lost.
+	reorder := video.NewReorder(100 * time.Millisecond)
+	now := time.Now()
+	if p1 := reorder.Push(1, []byte("data-1"), now); len(p1) != 1 {
 		t.Fatalf("Expected packet 1, got %v", p1)
 	}
-
 	for i := uint32(3); i <= 28; i++ {
-		chunks := reorder.Push(i, []byte(fmt.Sprintf("data-%d", i)))
-		if len(chunks) != 0 {
+		if chunks := reorder.Push(i, []byte(fmt.Sprintf("data-%d", i)), now); len(chunks) != 0 {
 			t.Fatalf("Expected 0 chunks while packet 2 is delayed, got %d for seq %d", len(chunks), i)
 		}
 	}
-
-	// Late packet 2 arrives!
-	out := reorder.Push(2, []byte("data-2"))
+	if early := reorder.Tick(now.Add(40 * time.Millisecond)); len(early) != 0 {
+		t.Fatal("gap released before its wait time")
+	}
+	out := reorder.Push(2, []byte("data-2"), now.Add(50*time.Millisecond))
 	if len(out) != 27 {
 		t.Fatalf("Expected all 27 chunks (2..28) recovered in exact order, got %d", len(out))
 	}

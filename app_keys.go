@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/driver"
 )
 
@@ -481,16 +482,6 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 }
 
 func (a *App) handleScreenShareModalKey(e driver.KeyEvent) {
-	cycleFPS := func() {
-		switch a.selectedScreenShareFPS {
-		case 30:
-			a.selectedScreenShareFPS = 60
-		case 60:
-			a.selectedScreenShareFPS = 120
-		default:
-			a.selectedScreenShareFPS = 30
-		}
-	}
 	switch e.Type {
 	case driver.KeyEsc:
 		a.closeScreenShareModal()
@@ -503,29 +494,17 @@ func (a *App) handleScreenShareModalKey(e driver.KeyEvent) {
 			a.selectedScreenShareIdx++
 		}
 	case driver.KeyArrowLeft:
-		if a.selectedScreenShareFPS == 120 {
-			a.selectedScreenShareFPS = 60
-		} else if a.selectedScreenShareFPS == 60 {
-			a.selectedScreenShareFPS = 30
-		}
-	case driver.KeyArrowRight:
-		if a.selectedScreenShareFPS == 30 {
-			a.selectedScreenShareFPS = 60
-		} else if a.selectedScreenShareFPS == 60 {
-			a.selectedScreenShareFPS = 120
-		}
-	case driver.KeyTab:
-		cycleFPS()
+		a.selectScreenPreset(a.screenPreset - 1)
+	case driver.KeyArrowRight, driver.KeyTab:
+		a.selectScreenPreset((a.screenPreset + 1) % len(screenshare.Presets))
 	case driver.KeyRune:
-		switch e.Ch {
-		case '1':
-			a.selectedScreenShareFPS = 30
-		case '2':
-			a.selectedScreenShareFPS = 60
-		case '3':
-			a.selectedScreenShareFPS = 120
-		case 'f', 'F':
-			cycleFPS()
+		switch {
+		case e.Ch >= '1' && e.Ch <= '9':
+			a.selectScreenPreset(int(e.Ch - '1'))
+		case e.Ch == 'q' || e.Ch == 'Q' || e.Ch == 'f' || e.Ch == 'F':
+			a.selectScreenPreset((a.screenPreset + 1) % len(screenshare.Presets))
+		case e.Ch == 'a' || e.Ch == 'A':
+			a.toggleShareSystemAudio()
 		}
 	case driver.KeyEnter, driver.KeySpace:
 		if a.selectedScreenShareIdx >= 0 && a.selectedScreenShareIdx < len(a.screenShareTargets) {

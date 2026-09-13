@@ -195,3 +195,51 @@ func TestCaptureChainRejectsClaps(t *testing.T) {
 		t.Fatalf("claps opened the voice gate in %d frames", speaking)
 	}
 }
+
+func TestLoopbackExclusionRemovesOwnPlayback(t *testing.T) {
+	a := NewAudioEngine()
+	a.EnableLoopbackExclusion(true)
+	defer a.EnableLoopbackExclusion(false)
+
+	const delay = 1920 // 40 ms between our playback and the monitor capture
+	r := rand.New(rand.NewSource(3))
+	var history []int16
+	var voiceIn, voiceOut float64
+	frames := 250 // 5 s
+	for f := 0; f < frames; f++ {
+		// "Other participants' voice" we play (noise-like speech band signal).
+		play := make([]int16, AudioFrameSamples)
+		for i := range play {
+			env := 0.5 + 0.5*math.Sin(2*math.Pi*3*float64(f*AudioFrameSamples+i)/AudioSampleRate)
+			play[i] = int16(6000 * env * (r.Float64()*2 - 1))
+		}
+		a.feedLoopbackReference(play)
+		history = append(history, play...)
+
+		captured := make([]int16, AudioFrameSamples)
+		music := make([]float64, AudioFrameSamples)
+		start := len(history) - AudioFrameSamples - delay
+		for i := range captured {
+			var echo float64
+			if start+i >= 0 {
+				echo = 0.8 * float64(history[start+i])
+			}
+			music[i] = 0 // the dsp tests cover concurrent system audio
+			captured[i] = int16(echo + music[i])
+		}
+		out := a.CancelOwnPlayback(captured)
+		if f >= frames-50 { // measure after convergence
+			for i := range out {
+				residual := float64(out[i]) - music[i]
+				voiceOut += residual * residual
+				echo := float64(captured[i]) - music[i]
+				voiceIn += echo * echo
+			}
+		}
+	}
+	erle := 10 * math.Log10(voiceIn/voiceOut)
+	t.Logf("own playback suppressed by %.1f dB", erle)
+	if erle < 30 {
+		t.Fatalf("own playback only reduced %.1f dB", erle)
+	}
+}

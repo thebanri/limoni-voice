@@ -1099,8 +1099,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		if localFPS <= 0 {
 			localFPS = 60
 		}
+		stats := node.ScreenStats()
 		msg1 := fmt.Sprintf("YOUR SCREEN IS LIVE (%d FPS)", localFPS)
-		msg2 := "All room participants can watch your screen with ultra-low latency."
+		msg2 := "Nobody is watching yet: no video is uploaded until someone opens your stream."
+		if stats.Watchers > 0 {
+			msg2 = fmt.Sprintf("%d viewer(s) · %s · %.1f Mbps (adapts to their connection)", stats.Watchers, stats.Preset, float64(stats.Kbps)/1000)
+		}
+		if stats.Audio {
+			msg1 += " + SYSTEM AUDIO"
+		}
 		btnText := "   [V] STOP BROADCAST (Click)   "
 
 		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})

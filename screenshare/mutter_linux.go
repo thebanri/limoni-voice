@@ -174,8 +174,8 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	} else if fps <= 30 {
 		bitrateKbps = 3000
 	}
-	if opt.Bitrate != "" {
-		bStr := strings.TrimSpace(strings.ToUpper(opt.Bitrate))
+	if br := opt.bitrateString(""); br != "" {
+		bStr := strings.TrimSpace(strings.ToUpper(br))
 		if strings.HasSuffix(bStr, "M") {
 			if val, err := strconv.ParseFloat(strings.TrimSuffix(bStr, "M"), 64); err == nil && val > 0 {
 				bitrateKbps = int(val * 1000)
@@ -315,7 +315,7 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 		"!", "h264parse", "config-interval=1",
 		"!", "video/x-h264,stream-format=byte-stream",
 		"!", "mpegtsmux",
-		"alignment=7",
+		"alignment=6", // 6 × 188 = 1128 byte datagrams
 		"pat-interval=9000",
 		"pmt-interval=9000",
 		"pcr-interval=1800",

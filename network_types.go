@@ -45,6 +45,10 @@ const (
 	PacketScreenShareStart = protocol.PacketScreenShareStart
 	PacketScreenShareStop  = protocol.PacketScreenShareStop
 	PacketScreenShareData  = protocol.PacketScreenShareData
+	PacketScreenWatch      = protocol.PacketScreenWatch
+	PacketScreenUnwatch    = protocol.PacketScreenUnwatch
+	PacketScreenNack       = protocol.PacketScreenNack
+	PacketScreenAudio      = protocol.PacketScreenAudio
 	PacketChatMessage      = protocol.PacketChatMessage
 	PacketPortHop          = protocol.PacketPortHop
 	PacketRoomLocked       = protocol.PacketRoomLocked
@@ -92,6 +96,8 @@ type PeerInfo struct {
 	IsSharingScreen bool
 	VideoPort       int
 	VideoFPS        int
+	VideoKbps       int       // sharer's current video bitrate
+	ScreenAudio     bool      // screen share includes system audio
 	ViaRelay        bool      // True if routing through the relay, false if direct P2P/LAN
 	LastDirectSeen  time.Time // Last time a direct UDP packet arrived from this peer
 
@@ -351,95 +357,4 @@ func getLocalPrivateIP() string {
 		}
 	}
 	return ""
-}
-
-// VideoReorderBuffer ensures video packets are delivered to the player in strictly sequential order.
-// It discards stale/duplicate packets and buffers out-of-order packets (up to 48 items / ~40ms burst window)
-// so MPEG-TS / H.264 streams never suffer from macroblocking, packet loss or green screen tear during fast scrolling.
-type VideoReorderBuffer struct {
-	mu          sync.Mutex
-	expectedSeq uint32
-	pending     map[uint32][]byte
-	firstPkt    bool
-}
-
-func (b *VideoReorderBuffer) Reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.expectedSeq = 0
-	b.pending = make(map[uint32][]byte)
-	b.firstPkt = true
-}
-
-func (b *VideoReorderBuffer) Push(seq uint32, payload []byte) [][]byte {
-	if len(payload) == 0 {
-		return nil
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.pending == nil {
-		b.pending = make(map[uint32][]byte)
-	}
-
-	if b.firstPkt || seq == 0 {
-		b.firstPkt = false
-		b.expectedSeq = seq
-		b.pending[seq] = payload
-	} else {
-		diff := int32(seq - b.expectedSeq)
-		if diff < 0 && diff > -3000 {
-			return nil
-		}
-		if diff > 1000 || diff < -3000 {
-			b.expectedSeq = seq
-			b.pending = make(map[uint32][]byte)
-		}
-		b.pending[seq] = payload
-	}
-
-	var ready [][]byte
-	for {
-		chunk, ok := b.pending[b.expectedSeq]
-		if !ok {
-			break
-		}
-		delete(b.pending, b.expectedSeq)
-		ready = append(ready, chunk)
-		b.expectedSeq++
-		if b.expectedSeq == 0 {
-			b.expectedSeq = 1
-		}
-	}
-
-	// With 120 FPS streams, skip a lost packet once 36 packets (~140 ms) are buffered
-	// to avoid freezing on internet jitter.
-	if len(b.pending) > 36 {
-		var minSeq uint32
-		var found bool
-		for s := range b.pending {
-			if !found || (int32(s-minSeq) < 0) {
-				minSeq = s
-				found = true
-			}
-		}
-		if found {
-			b.expectedSeq = minSeq
-			for {
-				chunk, ok := b.pending[b.expectedSeq]
-				if !ok {
-					break
-				}
-				delete(b.pending, b.expectedSeq)
-				ready = append(ready, chunk)
-				b.expectedSeq++
-				if b.expectedSeq == 0 {
-					b.expectedSeq = 1
-				}
-			}
-		}
-	}
-
-	return ready
 }

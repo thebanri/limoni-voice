@@ -74,20 +74,36 @@ func (a *App) closeScreenShareModal() {
 }
 
 func (a *App) startSelectedScreenShare(target screenshare.WindowInfo) {
-	fps := a.selectedScreenShareFPS
-	if fps != 30 && fps != 60 && fps != 120 {
-		fps = 60
-	}
+	presetIdx := a.screenPreset
+	preset := screenshare.PresetByIndex(presetIdx)
+	withAudio := a.shareSystemAudio
 	a.closeScreenShareModal()
-	a.room.SetToast(fmt.Sprintf("🎬 Starting %s stream (%d FPS)...", target.Title, fps))
+	a.saveScreenSettings()
+	a.room.SetToast(fmt.Sprintf("🎬 Starting %s (%s)...", target.Title, preset.Name))
 	go func() {
-		opts := screenshare.GetPresetOptions(fps, target.ID)
-		if err := a.node.StartScreenShare("", 50100, opts); err != nil {
+		cfg := ScreenShareConfig{TargetID: target.ID, Preset: presetIdx, SystemAudio: withAudio}
+		if err := a.node.StartScreenShareWith(cfg); err != nil {
 			a.room.SetToast(fmt.Sprintf("Error: %v", err))
 		} else {
-			a.room.SetToast(fmt.Sprintf("%s sharing started (%d FPS)", target.Title, fps))
+			a.room.SetToast(fmt.Sprintf("%s sharing started (%s)", target.Title, preset.Name))
 		}
 	}()
+}
+
+func (a *App) selectScreenPreset(idx int) {
+	if idx < 0 || idx >= len(screenshare.Presets) {
+		return
+	}
+	a.screenPreset = idx
+}
+
+func (a *App) toggleShareSystemAudio() {
+	a.shareSystemAudio = !a.shareSystemAudio
+}
+
+func (a *App) saveScreenSettings() {
+	preset, audio := a.screenPreset, a.shareSystemAudio
+	_ = UpdateAppConfig(func(c *AppConfig) { c.Screen = &ScreenSettings{Preset: preset, SystemAudio: audio} })
 }
 
 func (a *App) openScreenShareModal() {
@@ -103,6 +119,7 @@ func (a *App) openScreenShareModal() {
 		a.screenShareTargets = []screenshare.WindowInfo{{ID: "desktop", Title: "[Desktop] Entire Screen (Primary View)"}}
 	}
 	a.selectedScreenShareIdx = 0
+	a.screenShareDeps = screenshare.CheckDependencies()
 	a.showScreenShareModal = true
 	a.screenShareDialogAnim.AnimateTo(1.0, 200*time.Millisecond, animation.EaseOutCubic)
 }

@@ -12,3 +12,7 @@ import (
 func RequestPortalScreenCast(ctx context.Context, sourceType uint32, onSessionClosed ...func()) (uint32, *os.File, func(), error) {
 	return 0, nil, nil, errors.New("portal is only supported on Linux")
 }
+
+func requestPortalCast(ctx context.Context, sourceType uint32, onSessionClosed ...func()) (uint32, *os.File, func() (*os.File, error), func(), error) {
+	return 0, nil, nil, nil, errors.New("portal is only supported on Linux")
+}
