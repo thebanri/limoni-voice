@@ -38,6 +38,12 @@ const (
 	PacketFileAck    // Transfer delivery completion or cancellation
 	PacketRekey      // Host distributes a fresh room group key (Payload = sealed key, Epoch = new epoch)
 	PacketRekeyAck   // Member confirms installation of the group key for Epoch
+
+	// Screen share v2 (watcher-driven delivery). Older peers ignore unknown packet types.
+	PacketScreenWatch   // Viewer → sharer (TargetID): start / keep watching; LossPct = video loss since last report
+	PacketScreenUnwatch // Viewer → sharer (TargetID): stop watching
+	PacketScreenNack    // Viewer → sharer (TargetID): Payload = missing video sequence numbers (see AppendSeqList)
+	PacketScreenAudio   // Sharer → watchers: Opus system audio frame (Seq, Timestamp, Payload)
 )
 
 // FileMetadata describes a chunked file / code snippet transfer.
@@ -88,6 +94,9 @@ type Packet struct {
 	Epoch           uint32        `json:"epoch,omitempty"`
 	LossPct         uint8         `json:"loss_pct,omitempty"` // receiver report: audio loss % observed from the ping target
 	JitterMs        uint16        `json:"jitter_ms,omitempty"`
+	TargetID        string        `json:"target_id,omitempty"` // addressed member for point-to-point control packets
+	VideoKbps       uint32        `json:"video_kbps,omitempty"`
+	HasAudio        bool          `json:"has_audio,omitempty"` // screen share carries system audio
 }
 
 // Fixed header layout (20 bytes):
@@ -101,6 +110,7 @@ const (
 	flagSpeaking
 	flagSharing
 	flagLocked
+	flagHasAudio
 )
 
 // TLV tags for optional fields. Unknown tags are skipped so newer peers stay compatible.
@@ -118,6 +128,8 @@ const (
 	tagEpoch
 	tagLossPct
 	tagJitterMs
+	tagTargetID
+	tagVideoKbps
 )
 
 const (
@@ -168,6 +180,9 @@ func (p *Packet) AppendBinary(dst []byte) []byte {
 	if p.IsLocked {
 		flags |= flagLocked
 	}
+	if p.HasAudio {
+		flags |= flagHasAudio
+	}
 	binary.BigEndian.PutUint16(hdr[2:4], flags)
 	binary.BigEndian.PutUint32(hdr[4:8], p.Seq)
 	binary.BigEndian.PutUint64(hdr[8:16], uint64(p.Timestamp))
@@ -193,6 +208,8 @@ func (p *Packet) AppendBinary(dst []byte) []byte {
 	dst = appendUint(dst, tagEpoch, uint64(p.Epoch))
 	dst = appendUint(dst, tagLossPct, uint64(p.LossPct))
 	dst = appendUint(dst, tagJitterMs, uint64(p.JitterMs))
+	dst = appendString(dst, tagTargetID, p.TargetID)
+	dst = appendUint(dst, tagVideoKbps, uint64(p.VideoKbps))
 	return dst
 }
 
@@ -224,6 +241,7 @@ func (p *Packet) UnmarshalBinary(data []byte) error {
 	p.Speaking = flags&flagSpeaking != 0
 	p.IsSharingScreen = flags&flagSharing != 0
 	p.IsLocked = flags&flagLocked != 0
+	p.HasAudio = flags&flagHasAudio != 0
 	p.Seq = binary.BigEndian.Uint32(data[4:8])
 	p.Timestamp = int64(binary.BigEndian.Uint64(data[8:16]))
 	rms := math.Float32frombits(binary.BigEndian.Uint32(data[16:20]))
@@ -268,6 +286,10 @@ func (p *Packet) UnmarshalBinary(data []byte) error {
 			p.LossPct = uint8(clampUvarint(val, 100))
 		case tagJitterMs:
 			p.JitterMs = uint16(clampUvarint(val, math.MaxUint16))
+		case tagTargetID:
+			p.TargetID = string(val)
+		case tagVideoKbps:
+			p.VideoKbps = uint32(clampUvarint(val, math.MaxUint32))
 		}
 		return nil
 	})
@@ -436,4 +458,50 @@ func decodePeers(data []byte) ([]PeerSummary, error) {
 		peers = append(peers, ps)
 	}
 	return peers, nil
+}
+
+// MaxSeqList bounds the number of sequence numbers in one NACK.
+const MaxSeqList = 128
+
+// AppendSeqList encodes ascending sequence numbers as a count followed by uvarint deltas.
+func AppendSeqList(dst []byte, seqs []uint32) []byte {
+	if len(seqs) > MaxSeqList {
+		seqs = seqs[:MaxSeqList]
+	}
+	dst = binary.AppendUvarint(dst, uint64(len(seqs)))
+	var prev uint32
+	for i, s := range seqs {
+		if i == 0 {
+			dst = binary.AppendUvarint(dst, uint64(s))
+		} else {
+			dst = binary.AppendUvarint(dst, uint64(s-prev))
+		}
+		prev = s
+	}
+	return dst
+}
+
+// ParseSeqList decodes a list written by AppendSeqList.
+func ParseSeqList(data []byte) ([]uint32, error) {
+	n, k := binary.Uvarint(data)
+	if k <= 0 || n > MaxSeqList {
+		return nil, ErrMalformed
+	}
+	data = data[k:]
+	out := make([]uint32, 0, n)
+	var prev uint32
+	for i := uint64(0); i < n; i++ {
+		v, k := binary.Uvarint(data)
+		if k <= 0 || v > math.MaxUint32 {
+			return nil, ErrMalformed
+		}
+		data = data[k:]
+		if i == 0 {
+			prev = uint32(v)
+		} else {
+			prev += uint32(v)
+		}
+		out = append(out, prev)
+	}
+	return out, nil
 }

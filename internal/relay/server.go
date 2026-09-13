@@ -258,6 +258,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			if len(data) < 2 {
 				continue
 			}
+			if data[0]&protocol.FrameTargetFlag != 0 {
+				if target, packet, ok := protocol.SplitTarget(data[1:]); ok {
+					s.forwardTo(c, data[0]&^protocol.FrameTargetFlag, target, packet, false)
+				}
+				continue
+			}
 			s.forward(c, data[0], data[1:], false)
 		}
 	}
@@ -491,6 +497,7 @@ func (s *Server) roomCreatedLocked(rm *room, c *client, m *member) protocol.Sign
 		HostToken:   rm.hostToken,
 		MemberToken: m.token,
 		IsLocked:    rm.locked,
+		Features:    relayFeatures,
 	}
 	for _, id := range rm.order {
 		if id == c.id {
@@ -701,6 +708,7 @@ func (s *Server) welcomeLocked(rm *room, c *client, m *member) protocol.Signal {
 		MemberToken: m.token,
 		IsLocked:    rm.locked,
 		PinRequired: rm.pinRequired,
+		Features:    relayFeatures,
 	}
 	if host != nil {
 		sig.Nickname = host.nickname
@@ -940,6 +948,52 @@ func (s *Server) refreshSnapshotLocked(rm *room) {
 }
 
 // forward relays an encrypted frame from sender to every other connected member.
+// relayFeatures lists optional capabilities advertised to clients.
+var relayFeatures = []string{protocol.FeatureTargeted}
+
+// forwardTo delivers a frame to one member of the sender's room (screen share video, NACKs).
+func (s *Server) forwardTo(sender *client, class byte, target string, payload []byte, viaUDP bool) {
+	if len(payload) == 0 || target == sender.id {
+		return
+	}
+	s.mu.Lock()
+	rm := s.rooms[sender.roomCode]
+	var dst *client
+	if rm != nil {
+		if m := rm.members[target]; m != nil && rm.members[sender.id] != nil {
+			dst = m.client
+		}
+	}
+	s.mu.Unlock()
+	if dst == nil {
+		return
+	}
+	s.deliver(dst, class, payload)
+	s.metrics.targetedForwarded.Add(1)
+	if viaUDP {
+		s.metrics.udpForwarded.Add(1)
+	} else {
+		s.metrics.wsForwarded.Add(1)
+	}
+}
+
+// deliver sends one frame to a member, over UDP when it has a live binding.
+func (s *Server) deliver(m *client, class byte, payload []byte) {
+	if udp := s.udpConn.Load(); udp != nil && class != protocol.FrameReliable && len(payload) <= maxUDPPayload {
+		if addr := m.udpPeer(); addr != nil {
+			out := make([]byte, 1+len(payload))
+			out[0] = protocol.UDPKindData
+			copy(out[1:], payload)
+			if _, err := udp.WriteToUDP(out, addr); err == nil {
+				s.metrics.udpPacketsOut.Add(1)
+				s.metrics.udpBytesOut.Add(uint64(len(out)))
+				return
+			}
+		}
+	}
+	m.enqueueFrame(class, payload)
+}
+
 func (s *Server) forward(sender *client, class byte, payload []byte, viaUDP bool) {
 	if len(payload) == 0 {
 		return
@@ -954,24 +1008,11 @@ func (s *Server) forward(sender *client, class byte, payload []byte, viaUDP bool
 	if snap == nil {
 		return
 	}
-	udp := s.udpConn.Load()
 	for _, m := range *snap {
 		if m == sender {
 			continue
 		}
-		if udp != nil && class != protocol.FrameReliable && len(payload) <= maxUDPPayload {
-			if addr := m.udpPeer(); addr != nil {
-				out := make([]byte, 1+len(payload))
-				out[0] = protocol.UDPKindData
-				copy(out[1:], payload)
-				if _, err := udp.WriteToUDP(out, addr); err == nil {
-					s.metrics.udpPacketsOut.Add(1)
-					s.metrics.udpBytesOut.Add(uint64(len(out)))
-					continue
-				}
-			}
-		}
-		m.enqueueFrame(class, payload)
+		s.deliver(m, class, payload)
 	}
 	if viaUDP {
 		s.metrics.udpForwarded.Add(1)

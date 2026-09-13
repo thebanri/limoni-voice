@@ -77,6 +77,23 @@ type Signal struct {
 	UDPToken string `json:"udp_token,omitempty"` // hex encoded 8-byte token
 	UDPAddr  string `json:"udp_addr,omitempty"`  // explicit host:port, when the relay advertises one
 	UDPPort  int    `json:"udp_port,omitempty"`  // UDP port on the WebSocket host otherwise
+
+	// Features advertised by the relay (room_created / welcome), e.g. FeatureTargeted.
+	Features []string `json:"features,omitempty"`
+}
+
+// FeatureTargeted: the relay forwards targeted frames (FrameTargetFlag / UDPKindTo) to a
+// single member instead of the whole room.
+const FeatureTargeted = "targeted"
+
+// HasFeature reports whether the signal advertises feature f.
+func (s Signal) HasFeature(f string) bool {
+	for _, v := range s.Features {
+		if v == f {
+			return true
+		}
+	}
+	return false
 }
 
 // UDP relay datagram framing.
@@ -89,6 +106,8 @@ const (
 	UDPKindKeepalive byte = 0x00 // client keepalive / reachability probe
 	UDPKindData      byte = 0x01 // encrypted P2P packet to forward to the room
 	UDPKindProbeAck  byte = 0x02 // relay acknowledges a keepalive
+	UDPKindBulk      byte = 0x03 // screen share video to the room
+	UDPKindTo        byte = 0x04 // payload = AppendTarget(member, class, packet); forwarded to one member
 )
 
 // WebSocket binary frame class prefix (client <-> relay). The relay uses it for
@@ -97,4 +116,24 @@ const (
 	FrameRealtime byte = 0x01 // audio, ping/pong, control
 	FrameBulk     byte = 0x02 // screen share video
 	FrameReliable byte = 0x03 // file transfers, rekey (never sent over UDP)
+
+	// FrameTargetFlag marks a client → relay frame addressed to one member:
+	// [class|FrameTargetFlag][len][member id][packet]. The member receives [class][packet].
+	FrameTargetFlag byte = 0x80
 )
+
+// AppendTarget prefixes packet with a member id (used by targeted relay frames).
+func AppendTarget(dst []byte, member string, packet []byte) []byte {
+	dst = append(dst, byte(len(member)))
+	dst = append(dst, member...)
+	return append(dst, packet...)
+}
+
+// SplitTarget parses a buffer written by AppendTarget.
+func SplitTarget(b []byte) (member string, packet []byte, ok bool) {
+	if len(b) < 1 || int(b[0]) == 0 || len(b) < 1+int(b[0])+1 {
+		return "", nil, false
+	}
+	n := int(b[0])
+	return string(b[1 : 1+n]), b[1+n:], true
+}

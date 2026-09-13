@@ -16,7 +16,7 @@ const (
 )
 
 // UDPKindBulk marks client datagrams carrying screen share video (WebSocket fallback scheduling).
-const UDPKindBulk byte = 0x03
+const UDPKindBulk = protocol.UDPKindBulk
 
 // ServeUDP runs the datagram relay on conn until it is closed.
 func (s *Server) ServeUDP(conn *net.UDPConn) error {
@@ -61,6 +61,13 @@ func (s *Server) ServeUDP(conn *net.UDPConn) error {
 			s.forward(c, protocol.FrameRealtime, payload, true)
 		case UDPKindBulk:
 			s.forward(c, protocol.FrameBulk, payload, true)
+		case protocol.UDPKindTo:
+			// [class][len][member][packet]
+			if len(payload) > 1 {
+				if target, packet, ok := protocol.SplitTarget(payload[1:]); ok {
+					s.forwardTo(c, payload[0]&^protocol.FrameTargetFlag, target, packet, true)
+				}
+			}
 		}
 	}
 }

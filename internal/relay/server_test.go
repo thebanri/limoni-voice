@@ -413,3 +413,52 @@ func TestMetricsEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetedFramesReachOnlyTheTarget(t *testing.T) {
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, url := newTestServer(t, Config{UDPPort: udp.LocalAddr().(*net.UDPAddr).Port})
+	go s.ServeUDP(udp)
+	t.Cleanup(func() { udp.Close() })
+
+	h, created := host(t, url, "5151", "host_1")
+	if !created.HasFeature(protocol.FeatureTargeted) {
+		t.Fatalf("relay does not advertise targeted frames: %+v", created.Features)
+	}
+	a, welcome := admitJoiner(t, url, h, "5151", "host_1", "viewer_a")
+	if !welcome.HasFeature(protocol.FeatureTargeted) {
+		t.Fatal("welcome lacks features")
+	}
+	b, _ := admitJoiner(t, url, h, "5151", "host_1", "viewer_b")
+	a.expect(protocol.SigPeerJoined)
+
+	// WebSocket: targeted to viewer_b only.
+	h.sendFrame(protocol.FrameBulk|protocol.FrameTargetFlag, protocol.AppendTarget(nil, "viewer_b", []byte("video-b")))
+	if f := b.expectFrame(); f[0] != protocol.FrameBulk || string(f[1:]) != "video-b" {
+		t.Fatalf("targeted WS frame wrong: %q", f)
+	}
+	a.expectNoFrame(150 * time.Millisecond)
+
+	// Unknown member and self-targeting are dropped.
+	h.sendFrame(protocol.FrameBulk|protocol.FrameTargetFlag, protocol.AppendTarget(nil, "nobody", []byte("x")))
+	h.sendFrame(protocol.FrameBulk|protocol.FrameTargetFlag, protocol.AppendTarget(nil, "host_1", []byte("x")))
+	a.expectNoFrame(100 * time.Millisecond)
+	b.expectNoFrame(100 * time.Millisecond)
+
+	// UDP: [token][UDPKindTo][class][len][member][packet] → viewer_a over WebSocket (no UDP binding).
+	token, _ := hex.DecodeString(created.UDPToken)
+	conn, err := net.DialUDP("udp", nil, udp.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	msg := append(append([]byte{}, token...), protocol.UDPKindTo, protocol.FrameBulk)
+	msg = protocol.AppendTarget(msg, "viewer_a", []byte("video-a"))
+	conn.Write(msg)
+	if f := a.expectFrame(); f[0] != protocol.FrameBulk || string(f[1:]) != "video-a" {
+		t.Fatalf("targeted UDP frame wrong: %q", f)
+	}
+	b.expectNoFrame(150 * time.Millisecond)
+}

@@ -91,3 +91,32 @@ func FuzzPacketUnmarshal(f *testing.F) {
 		}
 	})
 }
+
+func TestScreenPacketsAndSeqList(t *testing.T) {
+	p := Packet{Type: PacketScreenNack, SenderID: "v", TargetID: "sharer", VideoKbps: 2500, HasAudio: true}
+	p.Payload = AppendSeqList(nil, []uint32{4294967290, 4294967291, 4294967295, 7, 100})
+	b, err := p.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q Packet
+	if err := q.UnmarshalBinary(b); err != nil {
+		t.Fatal(err)
+	}
+	if q.TargetID != "sharer" || q.VideoKbps != 2500 || !q.HasAudio || q.Type != PacketScreenNack {
+		t.Fatalf("fields lost: %+v", q)
+	}
+	seqs, err := ParseSeqList(q.Payload)
+	if err != nil || len(seqs) != 5 || seqs[0] != 4294967290 || seqs[3] != 7 || seqs[4] != 100 {
+		t.Fatalf("seq list round trip: %v %v", seqs, err)
+	}
+	if _, err := ParseSeqList([]byte{200, 1}); err == nil {
+		t.Fatal("oversized list accepted")
+	}
+	if m, pkt, ok := SplitTarget(AppendTarget(nil, "peer_1", []byte{1, 2})); !ok || m != "peer_1" || len(pkt) != 2 {
+		t.Fatal("target framing round trip")
+	}
+	if _, _, ok := SplitTarget([]byte{5, 'a'}); ok {
+		t.Fatal("truncated target accepted")
+	}
+}

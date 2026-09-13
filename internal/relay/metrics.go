@@ -8,26 +8,27 @@ import (
 
 // Metrics are exported in Prometheus text format on /metrics.
 type Metrics struct {
-	connections     atomic.Int64
-	roomsCreated    atomic.Uint64
-	joinRequests    atomic.Uint64
-	admitted        atomic.Uint64
-	rejected        atomic.Uint64
-	pakeForwarded   atomic.Uint64
-	hostMigrations  atomic.Uint64
-	hijackBlocked   atomic.Uint64
-	authFailures    atomic.Uint64
-	rateLimited     atomic.Uint64
-	wsBytesIn       atomic.Uint64
-	wsBytesOut      atomic.Uint64
-	wsForwarded     atomic.Uint64
-	udpForwarded    atomic.Uint64
-	udpPacketsIn    atomic.Uint64
-	udpPacketsOut   atomic.Uint64
-	udpBytesIn      atomic.Uint64
-	udpBytesOut     atomic.Uint64
-	udpUnknownToken atomic.Uint64
-	framesDropped   atomic.Uint64
+	connections       atomic.Int64
+	roomsCreated      atomic.Uint64
+	joinRequests      atomic.Uint64
+	admitted          atomic.Uint64
+	rejected          atomic.Uint64
+	pakeForwarded     atomic.Uint64
+	hostMigrations    atomic.Uint64
+	hijackBlocked     atomic.Uint64
+	authFailures      atomic.Uint64
+	rateLimited       atomic.Uint64
+	wsBytesIn         atomic.Uint64
+	wsBytesOut        atomic.Uint64
+	wsForwarded       atomic.Uint64
+	udpForwarded      atomic.Uint64
+	udpPacketsIn      atomic.Uint64
+	udpPacketsOut     atomic.Uint64
+	udpBytesIn        atomic.Uint64
+	udpBytesOut       atomic.Uint64
+	udpUnknownToken   atomic.Uint64
+	framesDropped     atomic.Uint64
+	targetedForwarded atomic.Uint64
 }
 
 func newMetrics() *Metrics { return &Metrics{} }
@@ -76,5 +77,6 @@ func (m *Metrics) serveHTTP(s *Server) http.HandlerFunc {
 		counter("limoni_relay_udp_bytes_out_total", "UDP bytes sent.", m.udpBytesOut.Load())
 		counter("limoni_relay_udp_unknown_token_total", "UDP datagrams with an unknown token.", m.udpUnknownToken.Load())
 		counter("limoni_relay_frames_dropped_total", "Frames dropped because a receiver queue was full.", m.framesDropped.Load())
+		counter("limoni_relay_targeted_forwarded_total", "Frames forwarded to a single member (screen share).", m.targetedForwarded.Load())
 	}
 }
