@@ -624,6 +624,19 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.ToggleLoopback()
 	})
 
+	smoothBox := "[ ] Smoothing [S]"
+	smoothStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+	if audio.VoiceSmoothing {
+		smoothBox = "[X] Smoothing [S]"
+		smoothStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+	}
+	if smoothX := inner.X + inner.Width - uint16(len([]rune(smoothBox))) - 1; smoothX > inner.X+uint16(len([]rune(loopBox)))+2 {
+		buf.SetString(smoothX, loopbackY, smoothBox, smoothStyle)
+		frame.RegisterClickHandler(cell.NewRect(smoothX, loopbackY, uint16(len([]rune(smoothBox))), 1), func(_ driver.MouseEvent) {
+			audio.ToggleVoiceSmoothing()
+		})
+	}
+
 	// 11. Echo cancellation & system-wide push-to-talk
 	aecY := inner.Y + 20
 	aecBox := "[ ] Echo Cancellation [E]"

@@ -23,6 +23,9 @@ func (a *App) applySettings(cfg AppConfig) {
 		audio.InputMode = InputModePushToTalk
 	}
 	audio.GlobalPTT = s.GlobalPTT
+	if s.VoiceSmoothing != nil {
+		audio.VoiceSmoothing = *s.VoiceSmoothing
+	}
 	if s.Gain > 0 {
 		audio.Gain = min(s.Gain, 3.0)
 	}
@@ -49,6 +52,7 @@ func (a *App) applySettings(cfg AppConfig) {
 func (a *App) saveAudioSettings() {
 	audio := a.audio
 	audio.mu.RLock()
+	smoothing := audio.VoiceSmoothing
 	s := &AudioSettings{
 		SuppressionMode:  audio.SuppressionMode,
 		EchoCancellation: audio.EchoCancellation,
@@ -58,6 +62,7 @@ func (a *App) saveAudioSettings() {
 		Gain:             audio.Gain,
 		OutputVolume:     audio.OutputVolume,
 		VADSensitivity:   audio.VADSensitivity,
+		VoiceSmoothing:   &smoothing,
 	}
 	audio.mu.RUnlock()
 	_ = UpdateAppConfig(func(c *AppConfig) { c.Audio = s })

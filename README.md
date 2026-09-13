@@ -40,7 +40,8 @@
 - **Opus 48 kHz**: 32 kbps CBR with in-band FEC, packet-loss aware FEC tuning
 - **Adaptive Jitter Buffer**: RFC 3550 jitter estimation, packet-loss concealment and FEC recovery
 - **Echo Cancellation (AEC)**: Pure-Go Speex MDF port — use speakers without headphones
-- **AI Noise Suppression**: Pure-Go RNNoise port (OFF / Standard / High / AI)
+- **Noise & Click Suppression**: Multi-band filter or pure-Go RNNoise (OFF / Standard / High / AI) plus a look-ahead transient suppressor for keyboard clicks and claps
+- **Voice Smoothing**: De-harsh EQ, soft compressor and limiter for even, non-fatiguing loudness
 - **VAD**: Real-time speaking detection with pre-roll lookback buffer and onset protection
 - **Global Push-to-Talk**: Works while the terminal is unfocused (X11, XDG portal on Wayland, Win32, macOS)
 - **Native Audio I/O**: PulseAudio/PipeWire protocol, CoreAudio, winmm — no external tools needed
@@ -419,6 +420,7 @@ export LIMONI_LAN_ONLY=1
 | `T` | 🧪 Microphone Test Dialog |
 | `P` | 🎚️ Toggle Voice Activity / Push-to-Talk |
 | `E` | 🔁 Toggle echo cancellation |
+| `S` | 🪶 Toggle voice smoothing (soft highs, even loudness, peak limiter) |
 | `F12` | 🩺 Debug & network diagnostics |
 | `/net`, `/stats` | 📶 Print per-peer path, RTT, loss & jitter to chat |
 | `Esc` | Leave Room |

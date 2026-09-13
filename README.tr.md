@@ -40,7 +40,8 @@
 - **Opus 48 kHz**: 32 kbps CBR, bant içi FEC ve paket kaybına göre ayarlanan kodlama
 - **Uyarlanabilir Jitter Tamponu**: RFC 3550 jitter tahmini, kayıp gizleme (PLC) ve FEC kurtarma
 - **Yankı Giderme (AEC)**: Saf Go Speex MDF portu — kulaklıksız hoparlörle konuşabilirsiniz
-- **Yapay Zekâ Gürültü Bastırma**: Saf Go RNNoise portu (KAPALI / AÇIK / YÜKSEK / AI)
+- **Gürültü & Tıkırtı Bastırma**: Çok bantlı filtre veya saf Go RNNoise (KAPALI / AÇIK / YÜKSEK / AI) ve klavye tıkırtısı / alkış için ileriye bakan ani ses bastırıcı
+- **Ses Yumuşatma**: Sertliği alan EQ, yumuşak kompresör ve sınırlayıcı ile dengeli, yormayan ses seviyesi
 - **VAD**: Pre-roll tamponu ve kelime başı korumasıyla anlık konuşma algılama
 - **Global Bas-Konuş**: Terminal odakta değilken de çalışır (X11, Wayland'de XDG portal, Win32, macOS)
 - **Yerel Ses G/Ç**: PulseAudio/PipeWire protokolü, CoreAudio, winmm — harici araç gerekmez
@@ -420,6 +421,7 @@ export LIMONI_LAN_ONLY=1
 | `T` | 🧪 Ses test modalı |
 | `P` | 🎚️ Ses algılama / Bas-konuş modunu değiştir |
 | `E` | 🔁 Yankı gidermeyi aç / kapat |
+| `S` | 🪶 Ses yumuşatmayı aç / kapat (yumuşak tizler, dengeli ses, tepe sınırlayıcı) |
 | `F12` | 🩺 Debug & ağ tanılama paneli |
 | `/net`, `/stats` | 📶 Peer başına yol, RTT, kayıp ve jitter bilgisini sohbete yaz |
 | `Esc` | Odadan ayrıl |

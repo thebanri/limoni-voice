@@ -113,8 +113,9 @@ func (b *pulseBackend) OpenCapture(deviceID string, cb CaptureFunc) (Stream, err
 		pulse.RecordLatency(0.02),
 		pulse.RecordMediaName("Limoni Voice microphone"),
 		pulse.RecordRawOption(func(r *proto.CreateRecordStream) {
+			// No "filter.want=echo-cancel": a system echo-cancel filter usually brings its own AGC,
+			// which pumps keyboard and room noise up between words and fights our own AEC.
 			r.Properties["media.role"] = proto.PropListString("phone")
-			r.Properties["filter.want"] = proto.PropListString("echo-cancel")
 		}),
 	}
 	if !isDefault(deviceID) {

@@ -31,6 +31,7 @@ type AudioSettings struct {
 	Gain             float64 `json:"gain"`
 	OutputVolume     float64 `json:"output_volume"`
 	VADSensitivity   int     `json:"vad_sensitivity"`
+	VoiceSmoothing   *bool   `json:"voice_smoothing,omitempty"` // nil = default (on)
 }
 
 // UpdateAppConfig loads the settings file, applies mutate and saves it, preserving fields the

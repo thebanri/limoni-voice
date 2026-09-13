@@ -126,6 +126,29 @@ const (
 // peerVoice is the receive chain of one remote speaker.
 type peerVoice struct {
 	jitter *voice.JitterBuffer
+	level  float64 // slow loudness leveler gain
+}
+
+// Receive-side leveling: quiet speakers are lifted and loud ones tamed towards a comfortable
+// target, slowly and only while they speak so background noise is never pumped up.
+const (
+	levelTargetRMS = 0.07 // about −23 dBFS
+	levelMinGain   = 0.6
+	levelMaxGain   = 1.4
+	levelSpeechRMS = 0.012 // frames quieter than this do not move the leveler
+	levelRate      = 0.02  // per 20 ms frame (~1 s time constant)
+)
+
+// nextLevel moves a leveler gain one frame towards the target for a frame of rms level.
+func nextLevel(level, rms float64) float64 {
+	if level <= 0 {
+		level = 1
+	}
+	if rms < levelSpeechRMS {
+		return level
+	}
+	desired := math.Max(levelMinGain, math.Min(levelMaxGain, levelTargetRMS/rms))
+	return level + (desired-level)*levelRate
 }
 
 type AudioEngine struct {
@@ -150,6 +173,7 @@ type AudioEngine struct {
 	// Suppression mode: 0 = OFF (Bypass), 1 = ON (Standard Clean), 2 = HIGH, 3 = AI (RNNoise)
 	SuppressionMode   int
 	EchoCancellation  bool
+	VoiceSmoothing    bool    // soften highs, even out loudness and limit peaks on the sent voice
 	Gain              float64 // Mic Gain: 0.0 to 3.0 (1.0 = 100%, up to 300%)
 	OutputVolume      float64 // Output Volume: 0.0 to 2.0 (1.0 = 100%, up to 200%)
 	GainSliderState   *widgets.SliderState
@@ -201,6 +225,13 @@ type AudioEngine struct {
 	residual []float64
 	denoiser *rnnoise.State
 	rnnBuf   []float32
+
+	// Click / clap suppression and voice smoothing (capture goroutine only)
+	transient       *dsp.TransientSuppressor
+	transientActive bool // the current frame contained a suppressed click / clap
+	transientTail   int  // frames left in which reverb of a recent transient cannot open the gate
+	smoother        *dsp.VoiceSmoother
+	fxBuf           []float64
 
 	// Live audio streams
 	captureStream  audioio.Stream
@@ -366,6 +397,7 @@ func NewAudioEngine() *AudioEngine {
 		PTTKeyName:        "Space",
 		SuppressionMode:   SuppressionStandard,
 		EchoCancellation:  true,
+		VoiceSmoothing:    true,
 		Gain:              1.0,
 		OutputVolume:      1.0,
 		GainSliderState:   widgets.NewSliderState(100),
@@ -827,6 +859,12 @@ func (a *AudioEngine) processCaptureFrame(frame []int16) {
 		a.shiftWave(0)
 	} else {
 		processed := applyGain(buf, gain)
+		a.transientActive = false
+		if suppressMode != SuppressionOff {
+			// Remove keyboard / mouse clicks and claps before voice detection so they neither
+			// open the gate nor ride along with speech.
+			processed = a.suppressTransients(processed)
+		}
 		switch suppressMode {
 		case SuppressionOff:
 			rawRMS := calculateRMS(processed)
@@ -857,6 +895,12 @@ func (a *AudioEngine) processCaptureFrame(frame []int16) {
 		if inputMode == InputModePushToTalk && isPTT {
 			speaking = true
 		}
+		if a.VoiceSmoothing {
+			chunk = a.smoothVoice(chunk)
+			if finalRMS > 0 {
+				finalRMS = calculateRMS(chunk)
+			}
+		}
 		a.LocalRMS = finalRMS
 		a.IsSpeaking = speaking
 		a.shiftWave(finalRMS)
@@ -869,6 +913,59 @@ func (a *AudioEngine) processCaptureFrame(frame []int16) {
 	if onFrame != nil {
 		onFrame(finalRMS, speaking, chunk)
 	}
+}
+
+// pcmToFx converts 16-bit PCM into the float scratch buffer used by the voice effects.
+func (a *AudioEngine) pcmToFx(pcm []byte) []float64 {
+	n := len(pcm) / 2
+	if cap(a.fxBuf) < n {
+		a.fxBuf = make([]float64, n)
+	}
+	buf := a.fxBuf[:n]
+	for i := range buf {
+		buf[i] = float64(int16(binary.LittleEndian.Uint16(pcm[2*i:])))
+	}
+	return buf
+}
+
+func fxToPCM(buf []float64) []byte {
+	out := make([]byte, len(buf)*2)
+	for i, v := range buf {
+		binary.LittleEndian.PutUint16(out[2*i:], uint16(int16(math.Max(-32768, math.Min(32767, math.Round(v))))))
+	}
+	return out
+}
+
+// suppressTransients attenuates clicks and claps (adds 13 ms of delay). Caller holds a.mu.
+func (a *AudioEngine) suppressTransients(pcm []byte) []byte {
+	if a.transient == nil {
+		a.transient = dsp.NewTransientSuppressor(AudioSampleRate)
+	}
+	buf := a.pcmToFx(pcm)
+	a.transient.Process(buf)
+	a.transientActive = a.transient.MinGain() < 0.5
+	if a.transientActive {
+		a.transientTail = 15 // 300 ms
+	}
+	return fxToPCM(buf)
+}
+
+// smoothVoice applies the de-harsh EQ, compressor and limiter. Caller holds a.mu.
+func (a *AudioEngine) smoothVoice(pcm []byte) []byte {
+	if a.smoother == nil {
+		a.smoother = dsp.NewVoiceSmoother(AudioSampleRate)
+	}
+	buf := a.pcmToFx(pcm)
+	a.smoother.Process(buf)
+	return fxToPCM(buf)
+}
+
+// ToggleVoiceSmoothing switches voice smoothing on or off.
+func (a *AudioEngine) ToggleVoiceSmoothing() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.VoiceSmoothing = !a.VoiceSmoothing
+	return a.VoiceSmoothing
 }
 
 // cancelEcho removes the speaker signal from the microphone frame (two 10 ms sub-frames).
@@ -925,7 +1022,7 @@ func (a *AudioEngine) processNeuralSuppression(pcm []byte) (bool, float64, []byt
 	if a.residualEchoRMS > 0 {
 		threshold = math.Max(threshold, a.residualEchoRMS*1.5)
 	}
-	isSpeech := vad > 0.6 && rawRMS > threshold*0.5
+	isSpeech := vad > 0.6 && rawRMS > threshold*0.5 && !a.transientActive
 	speaking := isSpeech
 	if isSpeech {
 		a.speechHangover = 15
@@ -1082,7 +1179,9 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	// Coughs and throat clearing are explosive, low-frequency guttural turbulence
 	isCoughBurst := frameRMS > a.VADThreshold*1.40 && harmonicity < 0.20 && lowEnergy > midEnergy*1.10
 	isLowDrone := (lowEnergy > (midEnergy*2.5 + 1.0)) && (midRMS < 0.003 || midRMS < a.VADThreshold*0.50)
-	isNonVocalNoise := isImpulsiveClap || isKeyboardClick || isCoughBurst || isLowDrone
+	// A frame in which the transient suppressor just removed a click never counts as speech on
+	// its own (an ongoing word is carried over it by the hangover).
+	isNonVocalNoise := isImpulsiveClap || isKeyboardClick || isCoughBurst || isLowDrone || a.transientActive
 
 	// Adaptive Noise Floor Tracking
 	if a.noiseFloor <= 0 || math.IsNaN(a.noiseFloor) {
@@ -1138,6 +1237,14 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 		isVoiced := harmonicity >= 0.18 && (snr > 1.15 || midSNR > 1.15) && midRMS > threshold*0.25
 		isUnvoicedConsonant := (snr > 1.20 || midSNR > 1.20 || highSNR > 1.20) && highRMS > threshold*0.25
 		isSpeech = frameRMS > threshold && (isVoiced || isUnvoicedConsonant) && !isNonVocalNoise
+	}
+	// Room reverb after a clap or key press sounds like a fricative. Shortly after a transient,
+	// only clearly voiced sound may open a closed gate (an ongoing word is unaffected).
+	if a.transientTail > 0 {
+		a.transientTail--
+		if a.speechHangover == 0 && harmonicity < 0.3 {
+			isSpeech = false
+		}
 	}
 
 	speaking := false
@@ -1278,17 +1385,12 @@ func (a *AudioEngine) renderFrame(out []int16) {
 			if pv.jitter.Pull(a.mixScratch) == voice.FrameNone {
 				continue
 			}
-			gain := 1.0
 			var energy float64
 			for _, s := range a.mixScratch {
 				energy += float64(s) * float64(s)
 			}
-			// Dynamic peer voice leveling / AGC: gently boost quiet peers
-			if rms := math.Sqrt(energy/AudioFrameSamples) / 32768.0; rms > 0.002 && rms < 0.14 {
-				if boost := math.Min(2.2, 0.16/math.Max(rms, 0.04)); boost > 1.05 {
-					gain = boost
-				}
-			}
+			pv.level = nextLevel(pv.level, math.Sqrt(energy/AudioFrameSamples)/32768.0)
+			gain := pv.level
 			if vol, ok := a.PeerVolumes[id]; ok {
 				gain *= vol
 			}
@@ -1385,7 +1487,7 @@ func (a *AudioEngine) PlayPeerOpus(peerID string, seq uint32, timestampMs int64,
 		if err != nil {
 			return
 		}
-		pv = &peerVoice{jitter: voice.NewJitterBuffer(dec, 20*time.Millisecond)}
+		pv = &peerVoice{jitter: voice.NewJitterBuffer(dec, 20*time.Millisecond), level: 1}
 		a.peerVoices[peerID] = pv
 	}
 	pv.jitter.Push(seq, timestampMs, frame, speaking, time.Now())
@@ -1412,11 +1514,9 @@ func (a *AudioEngine) PlayPeerPCM(peerID string, pcm []byte, rms float64, speaki
 		return
 	}
 
-	// Dynamic Peer Voice Leveling / AGC: If a peer's mic is quiet, gently boost it
-	if rms > 0.002 && rms < 0.14 {
-		if boostFactor := math.Min(2.2, 0.16/math.Max(rms, 0.04)); boostFactor > 1.05 {
-			pcm = applyGain(pcm, boostFactor)
-		}
+	// Gentle leveling towards the same target as the Opus receive path (speech frames only).
+	if rms >= levelSpeechRMS {
+		pcm = applyGain(pcm, math.Max(levelMinGain, math.Min(levelMaxGain, levelTargetRMS/rms)))
 	}
 	if vol, ok := a.PeerVolumes[peerID]; ok && vol != 1.0 {
 		pcm = applyGain(pcm, vol)

@@ -451,6 +451,12 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 			}
 		case 'l', 'L':
 			audio.ToggleLoopback()
+		case 's', 'S':
+			if audio.ToggleVoiceSmoothing() {
+				a.toast("Voice smoothing ON")
+			} else {
+				a.toast("Voice smoothing OFF")
+			}
 		case 'n', 'N':
 			audio.CycleSuppressionMode()
 		case 'm', 'M':
@@ -771,6 +777,13 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 				room.SetToast("Echo cancellation ON")
 			} else {
 				room.SetToast("Echo cancellation OFF")
+			}
+			a.saveAudioSettings()
+		case 's', 'S':
+			if audio.ToggleVoiceSmoothing() {
+				room.SetToast("Voice smoothing ON")
+			} else {
+				room.SetToast("Voice smoothing OFF")
 			}
 			a.saveAudioSettings()
 		case 'm', 'M':
