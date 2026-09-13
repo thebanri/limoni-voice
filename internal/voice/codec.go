@@ -40,6 +40,32 @@ func NewEncoder(sampleRate, frameSamples int) (*Encoder, error) {
 	return &Encoder{enc: enc, frameSamples: frameSamples, pcm: make([]int16, frameSamples), buf: make([]byte, maxOpusFrameSize), lossHint: DefaultLossHint}, nil
 }
 
+// NewMusicEncoder creates an encoder tuned for general audio (screen share system audio):
+// fullband music mode at bitrate bps.
+func NewMusicEncoder(sampleRate, frameSamples, bitrate int) (*Encoder, error) {
+	enc, err := gopus.NewEncoder(gopus.EncoderConfig{SampleRate: sampleRate, Channels: 1, Application: gopus.ApplicationAudio})
+	if err != nil {
+		return nil, err
+	}
+	_ = enc.SetBitrate(bitrate)
+	enc.SetVBR(false)
+	_ = enc.SetComplexity(8)
+	_ = enc.SetInBandFEC(1)
+	_ = enc.SetPacketLoss(DefaultLossHint)
+	return &Encoder{enc: enc, frameSamples: frameSamples, pcm: make([]int16, frameSamples), buf: make([]byte, maxOpusFrameSize), lossHint: DefaultLossHint}, nil
+}
+
+// EncodeInt16 encodes one frame of samples and returns a new packet slice.
+func (e *Encoder) EncodeInt16(frame []int16) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n, err := e.enc.EncodeInt16(frame, e.buf)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), e.buf[:n]...), nil
+}
+
 // EncodePCM16LE encodes one frame of little-endian 16-bit PCM and returns a new packet slice.
 func (e *Encoder) EncodePCM16LE(frame []byte) ([]byte, error) {
 	e.mu.Lock()
