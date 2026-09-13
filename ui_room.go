@@ -1952,13 +1952,20 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 		gainLen := uint16(len([]rune(gainText)))
 		if gainX+gainLen <= ctrlInner.X+ctrlInner.Width {
 			buf.SetString(gainX, row2Y, gainText, cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg})
-			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, gainLen, 1), func(_ driver.MouseEvent) {
+			// "[+" raises, "/-]" lowers, clicking the value itself raises (as before).
+			increase := func(_ driver.MouseEvent) {
 				gain := audio.AdjustGain(0.1)
 				if gain > 3.0 {
 					audio.AdjustGain(-2.5) // loop back from 300% to 50%
 				}
 				r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.Gain*100))
-			})
+			}
+			decrease := func(_ driver.MouseEvent) {
+				r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.AdjustGain(-0.1)*100))
+			}
+			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, 2, 1), increase)
+			frame.RegisterClickHandler(cell.NewRect(gainX+2, row2Y, 3, 1), decrease)
+			frame.RegisterClickHandler(cell.NewRect(gainX+5, row2Y, gainLen-5, 1), increase)
 		}
 
 		// Copy Code [C]

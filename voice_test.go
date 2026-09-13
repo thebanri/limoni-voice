@@ -3362,3 +3362,49 @@ func TestVideo120FPSKeyframeBurstAndJitter(t *testing.T) {
 
 
 
+
+func TestRoomControlsVolumeMinusLowersGain(t *testing.T) {
+	audio := NewAudioEngine()
+	node := NewP2PNode("vol_click_test", "Bob", audio)
+	defer node.Close()
+	node.HostRoom("445566")
+	room := NewRoomView()
+
+	const w, h = 160, 45
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, w, h))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, w, h), node, audio)
+
+	// Locate "[+/-] Vol:" on screen.
+	var px, py uint16
+	found := false
+	for y := uint16(0); y < h && !found; y++ {
+		var line []rune
+		for x := uint16(0); x < w; x++ {
+			line = append(line, buf.Get(x, y).Content)
+		}
+		if i := strings.Index(string(line), "[+/-] Vol:"); i >= 0 {
+			px, py, found = uint16(len([]rune(string(line)[:i]))), y, true
+		}
+	}
+	if !found {
+		t.Skip("controls row not rendered at this size")
+	}
+	click := func(x uint16) {
+		for i := len(frame.ClickRegions) - 1; i >= 0; i-- {
+			if cr := frame.ClickRegions[i]; cr.Area.Contains(x, py) {
+				cr.Handler(driver.MouseEvent{X: x, Y: py, Button: driver.MouseLeft})
+				return
+			}
+		}
+		t.Fatalf("no click handler at x=%d", x)
+	}
+	click(px + 3) // "-"
+	if math.Abs(audio.Gain-0.9) > 1e-9 {
+		t.Fatalf("minus: gain %.2f, want 0.90", audio.Gain)
+	}
+	click(px + 1) // "+"
+	if math.Abs(audio.Gain-1.0) > 1e-9 {
+		t.Fatalf("plus: gain %.2f, want 1.00", audio.Gain)
+	}
+}
