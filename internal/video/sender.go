@@ -68,16 +68,31 @@ func (h *History) SinceKeyframe() (first uint32, chunks [][]byte) {
 	return h.lastKey, chunks
 }
 
-// Pacer smooths bursts (keyframes, GOP cache replays) to a byte rate with a token bucket.
-// Retransmissions jump the queue. Items older than MaxDelay are dropped: at that point the
-// link is congested and the bitrate controller is expected to step down.
+// Pacer smooths bursts (keyframes) with a token bucket. The rate never goes below the
+// configured floor and follows the measured live input rate with headroom, so a keyframe is
+// spread over a few tens of milliseconds while a sustained encoder overshoot (fast scrolling,
+// games) is not held back for long.
+//
+// Three kinds of traffic are queued in order of priority:
+//   - retransmissions (Retransmit): sent first; dropped when older than RetransmitMaxAge
+//     because the viewer has given up on them by then;
+//   - live video (Live): token bucket; dropped when older than MaxDelay;
+//   - GOP cache replays for a new viewer (Replay) share the live queue so the viewer receives
+//     them before newer live chunks, but skip the token bucket (up to replayPerStep chunks per
+//     step) and are never dropped for age.
 type Pacer struct {
-	MaxDelay time.Duration
+	MaxDelay         time.Duration
+	RetransmitMaxAge time.Duration
 
 	mu      sync.Mutex
-	queue   []pacerItem
-	urgent  []pacerItem
-	rate    float64 // bytes per second
+	live    []pacerItem
+	retx    []pacerItem
+	rate    float64 // effective bytes per second
+	floor   float64 // configured minimum rate
+	inBytes float64 // live input bytes since the last rate update
+	inRate  float64 // smoothed live input byte rate
+	inAt    time.Time
+	queued  float64 // paced live bytes waiting
 	burst   float64
 	tokens  float64
 	last    time.Time
@@ -87,38 +102,71 @@ type Pacer struct {
 	send    func(data []byte, to string)
 }
 
+// Traffic kinds for Enqueue.
+type Kind int
+
+const (
+	Live Kind = iota
+	Replay
+	Retransmit
+)
+
+const (
+	replayPerStep = 4                      // ≈ 2000 chunks/s
+	maxBacklog    = 100 * time.Millisecond // live data never waits much longer than this
+)
+
 type pacerItem struct {
 	data []byte
 	to   []string
 	at   time.Time
+	free bool // replay: outside the token bucket
 }
 
-// NewPacer creates a pacer delivering through send at bytesPerSec.
+// NewPacer creates a pacer delivering through send at bytesPerSec (minimum).
 func NewPacer(bytesPerSec float64, send func(data []byte, to string)) *Pacer {
-	p := &Pacer{MaxDelay: time.Second, wake: make(chan struct{}, 1), stop: make(chan struct{}), send: send}
+	p := &Pacer{
+		MaxDelay:         time.Second,
+		RetransmitMaxAge: 150 * time.Millisecond,
+		wake:             make(chan struct{}, 1),
+		stop:             make(chan struct{}),
+		send:             send,
+	}
 	p.SetRate(bytesPerSec)
 	return p
 }
 
-// SetRate changes the pacing rate; the bucket holds 20 ms of data (at least two chunks).
+// SetRate changes the minimum pacing rate.
 func (p *Pacer) SetRate(bytesPerSec float64) {
 	p.mu.Lock()
-	p.rate = max(bytesPerSec, 16_000)
-	p.burst = max(p.rate*0.02, 2*ChunkSize+256)
+	p.floor = max(bytesPerSec, 16_000)
+	p.updateRateLocked()
 	p.mu.Unlock()
 }
 
+// updateRateLocked applies max(floor, 1.3 × live input rate); the bucket holds 30 ms of data.
+func (p *Pacer) updateRateLocked() {
+	p.rate = max(p.floor, p.inRate*1.3)
+	p.burst = max(p.rate*0.03, 4*ChunkSize)
+}
+
 // Enqueue schedules data for each recipient.
-func (p *Pacer) Enqueue(data []byte, to []string, urgent bool) {
+func (p *Pacer) Enqueue(data []byte, to []string, kind Kind) {
 	if len(to) == 0 {
 		return
 	}
 	item := pacerItem{data: data, to: to, at: time.Now()}
 	p.mu.Lock()
-	if urgent {
-		p.urgent = append(p.urgent, item)
-	} else {
-		p.queue = append(p.queue, item)
+	switch kind {
+	case Retransmit:
+		p.retx = append(p.retx, item)
+	case Replay:
+		item.free = true
+		p.live = append(p.live, item)
+	default:
+		p.live = append(p.live, item)
+		p.inBytes += float64(len(data) * len(to))
+		p.queued += float64(len(data) * len(to))
 	}
 	p.mu.Unlock()
 	select {
@@ -127,17 +175,17 @@ func (p *Pacer) Enqueue(data []byte, to []string, urgent bool) {
 	}
 }
 
-// QueueDelay returns how long the oldest queued item has waited.
+// QueueDelay returns how long the oldest live item has waited.
 func (p *Pacer) QueueDelay() time.Duration {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(p.queue) == 0 {
+	if len(p.live) == 0 {
 		return 0
 	}
-	return time.Since(p.queue[0].at)
+	return time.Since(p.live[0].at)
 }
 
-// Dropped returns and resets the number of items dropped for exceeding MaxDelay.
+// Dropped returns and resets the number of live items dropped for exceeding MaxDelay.
 func (p *Pacer) Dropped() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -184,34 +232,64 @@ func (p *Pacer) step(now time.Time) bool {
 		p.last = now
 		p.tokens = p.burst
 	}
-	p.tokens = min(p.burst, p.tokens+now.Sub(p.last).Seconds()*p.rate)
+	if p.inAt.IsZero() {
+		p.inAt = now
+	}
+	if dt := now.Sub(p.inAt); dt >= 100*time.Millisecond {
+		// ~300 ms smoothing: a keyframe burst stays paced, a sustained overshoot is followed.
+		p.inRate += (p.inBytes/dt.Seconds() - p.inRate) * 0.3
+		p.inBytes, p.inAt = 0, now
+		p.updateRateLocked()
+	}
+	// Latency bound: whatever is queued must drain within maxBacklog, whatever the rate.
+	rate := max(p.rate, p.queued/maxBacklog.Seconds())
+	p.tokens = min(max(p.burst, rate*0.03), p.tokens+now.Sub(p.last).Seconds()*rate)
 	p.last = now
-	for len(p.queue) > 0 && now.Sub(p.queue[0].at) > p.MaxDelay {
-		p.queue = p.queue[1:]
+	for len(p.live) > 0 && !p.live[0].free && now.Sub(p.live[0].at) > p.MaxDelay {
+		p.queued -= float64(len(p.live[0].data) * len(p.live[0].to))
+		p.live = p.live[1:]
 		p.dropped++
 	}
+	for len(p.retx) > 0 && now.Sub(p.retx[0].at) > p.RetransmitMaxAge {
+		p.retx = p.retx[1:]
+	}
+
 	var batch []pacerItem
-	for {
-		q := &p.urgent
-		if len(*q) == 0 {
-			q = &p.queue
-		}
-		if len(*q) == 0 {
-			break
-		}
+	take := func(q *[]pacerItem, paced bool) bool {
 		item := (*q)[0]
-		cost := float64(len(item.data) * len(item.to))
-		if cost > p.tokens && len(batch) > 0 {
-			break
+		if paced {
+			cost := float64(len(item.data) * len(item.to))
+			if cost > p.tokens && (len(batch) > 0 || p.tokens < p.burst) {
+				return false
+			}
+			p.tokens -= cost
+			if !item.free && q == &p.live {
+				p.queued -= cost
+			}
 		}
-		if cost > p.tokens && p.tokens < p.burst {
-			break
-		}
-		p.tokens -= cost
 		*q = (*q)[1:]
 		batch = append(batch, item)
+		return true
 	}
-	idle := len(p.queue) == 0 && len(p.urgent) == 0
+	for len(p.retx) > 0 && take(&p.retx, true) {
+	}
+	if len(p.retx) == 0 {
+		free := replayPerStep
+		for len(p.live) > 0 {
+			if p.live[0].free {
+				if free == 0 {
+					break
+				}
+				free--
+				take(&p.live, false)
+				continue
+			}
+			if !take(&p.live, true) {
+				break
+			}
+		}
+	}
+	idle := len(p.live) == 0 && len(p.retx) == 0
 	p.mu.Unlock()
 	for _, item := range batch {
 		for _, to := range item.to {
@@ -234,9 +312,9 @@ type Controller struct {
 const (
 	lossHigh        = 5.0 // % video loss that indicates congestion
 	lossLow         = 1.0
-	queueHigh       = 400 * time.Millisecond
-	queueLow        = 100 * time.Millisecond
-	minDownInterval = 6 * time.Second
+	queueHigh       = time.Second // the pacer follows the input, so only a stuck uplink queues this long
+	queueLow        = 150 * time.Millisecond
+	minDownInterval = 10 * time.Second
 	upAfterGood     = 30 * time.Second
 )
 

@@ -36,7 +36,21 @@ const (
 	screenHistorySize  = 4096
 	screenAudioBitrate = 64000
 	relayAllMembers    = "@relay" // pacer recipient: one room broadcast through a non-targeting relay
+
+	// Viewer latency guard: the player must never fall behind real time. 256 chunks is about
+	// 290 KB (a 1080p keyframe burst); data older than maxPlayerLag is dropped up to the next
+	// keyframe, so a slow decoder costs a short freeze instead of growing delay and smeared
+	// pictures.
+	playerQueue  = 256
+	maxPlayerLag = 250 * time.Millisecond
 )
+
+// playerChunk is an ordered chunk waiting for the player.
+type playerChunk struct {
+	data []byte
+	at   time.Time
+	key  bool
+}
 
 // Process launchers (replaced in tests with synthetic encoders / headless players).
 var (
@@ -74,6 +88,12 @@ type screenTx struct {
 	stopOnce   sync.Once
 
 	sentChunks, sentBytes, retransmits uint64
+	retxAt                             map[retxKey]time.Time
+}
+
+type retxKey struct {
+	viewer string
+	seq    uint32
 }
 
 type screenWatcher struct {
@@ -89,13 +109,16 @@ type screenRx struct {
 	peerID string
 	opt    screenshare.ReceiverOptions
 
-	mu       sync.Mutex
-	reorder  *video.Reorder
-	session  *screenshare.Session
-	playerCh chan []byte
-	lastData time.Time
-	received uint64
-	lost     uint64
+	mu        sync.Mutex
+	reorder   *video.Reorder
+	session   *screenshare.Session
+	playerCh  chan playerChunk
+	skipToKey bool         // after a catch-up, wait for a keyframe before feeding the player again
+	catchUps  uint64       // times the player fell behind and was resynchronised
+	maxLag    atomic.Int64 // longest time a chunk waited for the player (ns)
+	lastData  time.Time
+	received  uint64
+	lost      uint64
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -182,6 +205,7 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 		history:   video.NewHistory(screenHistorySize),
 		abr:       video.NewController(preset.FloorKbps(), max(opts.BitrateKbps, preset.FloorKbps())),
 		watchers:  map[string]*screenWatcher{},
+		retxAt:    map[retxKey]time.Time{},
 		withAudio: withAudio,
 		stop:      make(chan struct{}),
 	}
@@ -373,7 +397,7 @@ func (tx *screenTx) readLoop() {
 			}
 			tx.history.Put(tx.seq, sealed, keyframe)
 			if to := tx.recipientsLocked(); len(to) > 0 {
-				tx.pacer.Enqueue(sealed, to, false)
+				tx.pacer.Enqueue(sealed, to, video.Live)
 				tx.sentChunks++
 				tx.sentBytes += uint64(len(sealed) * len(to))
 			}
@@ -511,6 +535,11 @@ func (tx *screenTx) controlLoop() {
 				n.debugLog(fmt.Sprintf("[SCREEN] [SHARE] Viewer %s timed out", id))
 			}
 		}
+		for k, at := range tx.retxAt {
+			if now.Sub(at) > time.Second {
+				delete(tx.retxAt, k)
+			}
+		}
 		recipients := len(tx.recipientsLocked())
 		var worstLoss float64
 		for _, w := range tx.watchers {
@@ -597,7 +626,7 @@ func (tx *screenTx) onWatch(viewer string, lossPct float64) {
 	}
 	tx.n.log(fmt.Sprintf("[SCREEN] %s started watching your screen", tx.n.peerNick(viewer)))
 	for _, chunk := range replay {
-		tx.pacer.Enqueue(chunk, to, false)
+		tx.pacer.Enqueue(chunk, to, video.Replay)
 	}
 }
 
@@ -626,12 +655,23 @@ func (tx *screenTx) onNack(viewer string, seqs []uint32) {
 	if !watching || len(to) == 0 {
 		return
 	}
+	now := time.Now()
 	for _, s := range seqs {
-		if data := tx.history.Get(s); data != nil {
-			tx.pacer.Enqueue(data, to, true)
-			tx.mu.Lock()
+		data := tx.history.Get(s)
+		if data == nil {
+			continue
+		}
+		key := retxKey{viewer, s}
+		tx.mu.Lock()
+		// A retry for a chunk we just resent is already on its way: do not amplify NACK storms.
+		recent := now.Sub(tx.retxAt[key]) < 40*time.Millisecond
+		if !recent {
+			tx.retxAt[key] = now
 			tx.retransmits++
-			tx.mu.Unlock()
+		}
+		tx.mu.Unlock()
+		if !recent {
+			tx.pacer.Enqueue(data, to, video.Retransmit)
 		}
 	}
 }
@@ -728,7 +768,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		peerID:   peerID,
 		opt:      opt,
 		reorder:  video.NewReorder(0),
-		playerCh: make(chan []byte, 1024),
+		playerCh: make(chan playerChunk, playerQueue),
 		stop:     make(chan struct{}),
 	}
 	session, err := startPlayerSession(context.Background(), opt)
@@ -809,29 +849,49 @@ func (rx *screenRx) shutdown() {
 func (rx *screenRx) onData(seq uint32, payload []byte) {
 	now := time.Now()
 	rx.mu.Lock()
+	defer rx.mu.Unlock()
 	rx.lastData = now
-	ready := rx.reorder.Push(seq, payload, now)
-	rx.mu.Unlock()
-	rx.dispatch(ready)
+	rx.dispatchLocked(rx.reorder.Push(seq, payload, now), now)
 }
 
-func (rx *screenRx) dispatch(chunks [][]byte) {
+// dispatchLocked queues released chunks for the player in order. Caller holds rx.mu, so chunks
+// released by the network path and by gap timeouts can never interleave.
+func (rx *screenRx) dispatchLocked(chunks [][]byte, now time.Time) {
 	for _, c := range chunks {
-		select {
-		case rx.playerCh <- c:
-		default:
-			// Player cannot keep up: drop the backlog to get back to real time.
-			for i := len(rx.playerCh) / 2; i > 0; i-- {
-				select {
-				case <-rx.playerCh:
-				default:
-				}
+		key := video.IsKeyframeChunk(c)
+		if rx.skipToKey {
+			if !key {
+				continue
 			}
-			select {
-			case rx.playerCh <- c:
-			default:
+			rx.skipToKey = false
+		}
+		select {
+		case rx.playerCh <- playerChunk{data: c, at: now, key: key}:
+		default:
+			// The player stopped reading: resynchronise on the next keyframe.
+			rx.catchUpLocked(key)
+			if key {
+				rx.playerCh <- playerChunk{data: c, at: now, key: true}
 			}
 		}
+	}
+}
+
+// catchUpLocked drops everything queued for the player and waits for a keyframe (unless the
+// chunk being queued is one). Caller holds rx.mu.
+func (rx *screenRx) catchUpLocked(haveKey bool) {
+	for {
+		select {
+		case <-rx.playerCh:
+			continue
+		default:
+		}
+		break
+	}
+	rx.skipToKey = !haveKey
+	rx.catchUps++
+	if rx.catchUps == 1 || rx.catchUps%10 == 0 {
+		rx.n.debugLog(fmt.Sprintf("[VIEWER] Player fell behind real time, skipping to the next keyframe (%d times)", rx.catchUps))
 	}
 }
 
@@ -856,8 +916,8 @@ func (rx *screenRx) loop() {
 		n.mu.RUnlock()
 
 		rx.mu.Lock()
-		rx.reorder.MaxWait = min(max(rtt*5/2+40*time.Millisecond, 80*time.Millisecond), 300*time.Millisecond)
-		ready := rx.reorder.Tick(now)
+		rx.reorder.MaxWait = min(max(rtt*5/2+40*time.Millisecond, 80*time.Millisecond), 250*time.Millisecond)
+		rx.dispatchLocked(rx.reorder.Tick(now), now)
 		due := rx.reorder.NackDue(now, max(rtt*3/2, 30*time.Millisecond))
 		var lossPct float64
 		report := now.Sub(lastReport) >= watchKeepalive
@@ -874,7 +934,6 @@ func (rx *screenRx) loop() {
 		}
 		rx.mu.Unlock()
 
-		rx.dispatch(ready)
 		for len(due) > 0 {
 			k := min(len(due), protocol.MaxSeqList)
 			n.sendScreenControl(&P2PPacket{Type: PacketScreenNack, Payload: protocol.AppendSeqList(nil, due[:k])}, rx.peerID)
@@ -886,24 +945,35 @@ func (rx *screenRx) loop() {
 	}
 }
 
-// playerPump writes ordered chunks into the player's stdin, batching bursts.
+// playerPump writes ordered chunks into the player's stdin, batching bursts. Chunks that waited
+// longer than maxPlayerLag trigger a resync on the next keyframe.
 func (rx *screenRx) playerPump(session *screenshare.Session) {
 	stdin := session.Stdin()
 	if stdin == nil {
 		return
 	}
-	w := bufio.NewWriterSize(stdin, 256*1024)
+	w := bufio.NewWriterSize(stdin, 64*1024)
 	for {
-		var chunk []byte
+		var item playerChunk
 		select {
 		case <-rx.stop:
 			_ = stdin.Close()
 			return
 		case <-session.Done():
 			return
-		case chunk = <-rx.playerCh:
+		case item = <-rx.playerCh:
 		}
-		if !writeChunks(w, chunk, rx.playerCh) {
+		lag := time.Since(item.at)
+		if lag > maxPlayerLag && !item.key {
+			rx.mu.Lock()
+			rx.catchUpLocked(false)
+			rx.mu.Unlock()
+			continue
+		}
+		if int64(lag) > rx.maxLag.Load() {
+			rx.maxLag.Store(int64(lag))
+		}
+		if !writeChunks(w, item.data, rx.playerCh) {
 			rx.n.debugLog("[WARN] [WATCH] Player pipe closed")
 			return
 		}
@@ -911,14 +981,14 @@ func (rx *screenRx) playerPump(session *screenshare.Session) {
 }
 
 // writeChunks writes first and everything already queued, then flushes once.
-func writeChunks(w *bufio.Writer, first []byte, queue chan []byte) bool {
+func writeChunks(w *bufio.Writer, first []byte, queue chan playerChunk) bool {
 	if _, err := w.Write(first); err != nil {
 		return false
 	}
-	for i := 0; i < 256; i++ {
+	for i := 0; i < 64; i++ {
 		select {
 		case c := <-queue:
-			if _, err := w.Write(c); err != nil {
+			if _, err := w.Write(c.data); err != nil {
 				return false
 			}
 			continue
@@ -950,7 +1020,8 @@ func (rx *screenRx) watchPlayer(session *screenshare.Session, started time.Time)
 				if next, err := startPlayerSession(context.Background(), opt); err == nil {
 					rx.mu.Lock()
 					rx.session = next
-					rx.reorder.Reset() // restart from the next keyframe
+					rx.reorder.Reset()
+					rx.skipToKey = true // restart from the next keyframe
 					rx.mu.Unlock()
 					go rx.playerPump(next)
 					go rx.watchPlayer(next, time.Now())
@@ -1042,6 +1113,8 @@ type ScreenStats struct {
 	Watching bool
 	LossPct  float64
 	MaxWait  time.Duration
+	CatchUps uint64
+	MaxLag   time.Duration // longest wait of a chunk in front of the player
 }
 
 // ScreenStats returns a snapshot of screen share statistics.
@@ -1068,6 +1141,8 @@ func (n *P2PNode) ScreenStats() ScreenStats {
 			s.LossPct = 100 * float64(rx.lost) / float64(rx.received+rx.lost)
 		}
 		s.MaxWait = rx.reorder.MaxWait
+		s.CatchUps = rx.catchUps
+		s.MaxLag = time.Duration(rx.maxLag.Load())
 		rx.mu.Unlock()
 	}
 	return s

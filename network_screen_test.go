@@ -20,15 +20,20 @@ import (
 // 1 s GOP, bitrate from the options like the real pipelines) and the player with a headless
 // decoder writing framecrc lines and a decoder error report.
 func useSyntheticScreenPipeline(t *testing.T, ffmpeg string) (frames, report string) {
+	return useSyntheticSource(t, ffmpeg, "testsrc2=size=640x360:rate=30", 30)
+}
+
+// useSyntheticSource is useSyntheticScreenPipeline with a custom lavfi source and GOP.
+func useSyntheticSource(t *testing.T, ffmpeg, source string, gop int) (frames, report string) {
 	t.Helper()
 	startCaptureSession = func(ctx context.Context, ip string, port int, opts ...screenshare.BroadcastOptions) (*screenshare.Session, error) {
 		return screenshare.StartCustomBroadcast(ctx, ip, port, opts[0], func(opt screenshare.BroadcastOptions, url string) (string, []string) {
 			kbps := fmt.Sprintf("%dk", opt.BitrateKbps)
 			return ffmpeg, []string{
 				"-hide_banner", "-loglevel", "error", "-re",
-				"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+				"-f", "lavfi", "-i", source,
 				"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-				"-g", "30", "-bf", "0", "-b:v", kbps, "-maxrate", kbps, "-bufsize", kbps,
+				"-g", fmt.Sprint(gop), "-bf", "0", "-b:v", kbps, "-maxrate", kbps, "-bufsize", kbps,
 				"-f", "mpegts", url,
 			}
 		})
@@ -160,6 +165,7 @@ func TestScreenShareEndToEnd(t *testing.T) {
 
 	count := countFrames(frames)
 	decodeErrors := decodeErrorLines(report)
+	t.Logf("catch-ups %d, max lag %v", vstats.CatchUps, vstats.MaxLag)
 	t.Logf("sent %d video chunks, dropped %d, retransmitted %d, viewer residual loss %.2f%%, decoded %d frames in %v, decode errors %d",
 		sent.Load(), dropped.Load(), stats.Retransmits, vstats.LossPct, count, watchFor, len(decodeErrors))
 	if dropped.Load() == 0 || stats.Retransmits == 0 {
@@ -262,4 +268,95 @@ func TestScreenShareAdaptsBitrateAndCarriesSystemAudio(t *testing.T) {
 	if peak < 2000 {
 		t.Fatalf("system audio did not reach the viewer's mixer (peak %d)", peak)
 	}
+}
+
+// TestScreenShare120FPSFastScroll streams 120 FPS content that scrolls quickly (the "fast
+// website scroll" case) at the Gaming preset bitrate. A real-time decoder must stay live and
+// clean; a player too slow for the stream must be resynchronised instead of lagging further.
+func TestScreenShare120FPSFastScroll(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams real video for several seconds")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	const gaming = 4
+	source := "testsrc2=size=1280x720:rate=120,scroll=vertical=0.04"
+
+	t.Run("realtime player", func(t *testing.T) {
+		host, viewer := relayRoom(t, "7575-amber-falcon-river")
+		frames, report := useSyntheticSource(t, ffmpeg, source, 120)
+		if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: gaming}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+			viewer.mu.RLock()
+			defer viewer.mu.RUnlock()
+			p := viewer.Peers[host.LocalID]
+			return p != nil && p.IsSharingScreen
+		})
+		if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
+		startup := viewer.ScreenStats().MaxLag // includes the GOP cache replay
+		viewer.mu.RLock()
+		viewer.screenRx.maxLag.Store(0)
+		viewer.mu.RUnlock()
+		time.Sleep(3 * time.Second)
+		st, vs := host.ScreenStats(), viewer.ScreenStats()
+		t.Logf("start-up lag (GOP replay) %v", startup)
+		_ = viewer.StopWatchingScreen()
+		_ = host.StopScreenShare()
+		time.Sleep(300 * time.Millisecond)
+		count, errs := countFrames(frames), decodeErrorLines(report)
+		t.Logf("120 FPS scroll: %d frames in 5 s, player max lag %v, catch-ups %d, uplink queue %v, bitrate %d kbps, residual loss %.2f%%, retransmits %d, decode errors %d",
+			count, vs.MaxLag, vs.CatchUps, st.QueueDelay, st.Kbps, vs.LossPct, st.Retransmits, len(errs))
+		if vs.MaxLag >= maxPlayerLag || vs.CatchUps > 0 {
+			t.Fatalf("real-time player fell behind (max lag %v, catch-ups %d)", vs.MaxLag, vs.CatchUps)
+		}
+		if st.Kbps != screenshare.Presets[gaming].Kbps {
+			t.Fatalf("bitrate stepped down without loss: %d", st.Kbps)
+		}
+		if len(errs) > 1 { // the last frame is cut when the viewer stops
+			t.Fatalf("decoder errors:\n%s", strings.Join(errs, "\n"))
+		}
+		if count < 450 {
+			t.Fatalf("decoded only %d frames at 120 FPS", count)
+		}
+	})
+
+	t.Run("slow player", func(t *testing.T) {
+		host, viewer := relayRoom(t, "8686-amber-falcon-river")
+		useSyntheticSource(t, ffmpeg, source, 120)
+		// A player that can only take ~40 % of the stream.
+		startPlayerSession = func(ctx context.Context, opts ...screenshare.ReceiverOptions) (*screenshare.Session, error) {
+			return screenshare.StartProcess(ctx, "python3", []string{"-c",
+				"import sys,time\nwhile sys.stdin.buffer.read(20000):\n    time.sleep(0.05)"}, nil, true)
+		}
+		if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: gaming}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+			viewer.mu.RLock()
+			defer viewer.mu.RUnlock()
+			p := viewer.Peers[host.LocalID]
+			return p != nil && p.IsSharingScreen
+		})
+		if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(4 * time.Second)
+		vs := viewer.ScreenStats()
+		_ = viewer.StopWatchingScreen()
+		_ = host.StopScreenShare()
+		t.Logf("slow player: catch-ups %d, max lag of delivered data %v", vs.CatchUps, vs.MaxLag)
+		if vs.CatchUps == 0 {
+			t.Fatal("slow player was never resynchronised")
+		}
+		if vs.MaxLag > 2*maxPlayerLag {
+			t.Fatalf("player fed stale data (%v old)", vs.MaxLag)
+		}
+	})
 }

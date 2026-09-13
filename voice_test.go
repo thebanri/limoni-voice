@@ -681,7 +681,7 @@ func TestFricativeConsonantOnsetPassthrough(t *testing.T) {
 }
 
 func TestScreenRxDispatchNeverBlocks(t *testing.T) {
-	rx := &screenRx{reorder: video.NewReorder(0), playerCh: make(chan []byte, 10), stop: make(chan struct{})}
+	rx := &screenRx{n: NewP2PNode("rx", "rx", nil), reorder: video.NewReorder(0), playerCh: make(chan playerChunk, 10), stop: make(chan struct{})}
 	start := time.Now()
 	for i := uint32(1); i <= 200; i++ {
 		rx.onData(i, []byte("video-slice"))
@@ -689,16 +689,25 @@ func TestScreenRxDispatchNeverBlocks(t *testing.T) {
 	if dur := time.Since(start); dur > 50*time.Millisecond {
 		t.Fatalf("onData blocked on a full player queue (%v)", dur)
 	}
-	if len(rx.playerCh) == 0 {
-		t.Fatal("no chunks queued for the player")
+	// The queue overflowed: the backlog is dropped and the player resyncs on a keyframe.
+	if rx.catchUps == 0 || !rx.skipToKey || len(rx.playerCh) != 0 {
+		t.Fatalf("overflow not resynchronised: catchUps=%d skip=%v queued=%d", rx.catchUps, rx.skipToKey, len(rx.playerCh))
+	}
+	key := bytes.Repeat([]byte{0xFF}, video.TSPacketSize)
+	key[0], key[3], key[4], key[5] = 0x47, 0x30, 7, 0x40 // random access indicator
+	rx.onData(201, []byte("p-frame"))
+	rx.onData(202, key)
+	rx.onData(203, []byte("next"))
+	if len(rx.playerCh) != 2 || rx.skipToKey {
+		t.Fatalf("expected keyframe + following chunk after resync, queued %d", len(rx.playerCh))
 	}
 
 	// The pump writes everything queued in one flush.
 	var sink bytes.Buffer
 	w := bufio.NewWriter(&sink)
-	queue := make(chan []byte, 4)
-	queue <- []byte("b")
-	queue <- []byte("c")
+	queue := make(chan playerChunk, 4)
+	queue <- playerChunk{data: []byte("b")}
+	queue <- playerChunk{data: []byte("c")}
 	if !writeChunks(w, []byte("a"), queue) || sink.String() != "abc" {
 		t.Fatalf("batched write got %q", sink.String())
 	}
@@ -3316,7 +3325,7 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 
 func TestVideo120FPSKeyframeBurstAndJitter(t *testing.T) {
 	// 1. An 80-chunk keyframe burst passes to the player without loss.
-	rx := &screenRx{reorder: video.NewReorder(0), playerCh: make(chan []byte, 192), stop: make(chan struct{})}
+	rx := &screenRx{n: NewP2PNode("rx", "rx", nil), reorder: video.NewReorder(0), playerCh: make(chan playerChunk, 192), stop: make(chan struct{})}
 	for i := uint32(1); i <= 80; i++ {
 		rx.onData(i, []byte(fmt.Sprintf("iframe-slice-%d", i)))
 	}

@@ -140,7 +140,8 @@ func (r *Reorder) NackDue(now time.Time, retry time.Duration) []uint32 {
 	}
 	var due []uint32
 	for s, ms := range r.missing {
-		if ms.nacks >= maxNacks || now.Sub(ms.since) < reorderGrace {
+		// Not yet (may just be reordered), given up, or too late to arrive before the skip.
+		if ms.nacks >= maxNacks || now.Sub(ms.since) < reorderGrace || now.Sub(ms.since) > r.MaxWait*3/4 {
 			continue
 		}
 		if ms.nacks > 0 && now.Sub(ms.lastNack) < retry {

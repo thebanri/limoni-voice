@@ -3,6 +3,7 @@ package video
 import (
 	"bytes"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -177,9 +178,9 @@ func TestPacerSmoothsBursts(t *testing.T) {
 	start := time.Now()
 	chunk := make([]byte, 1000)
 	for i := 0; i < 50; i++ { // 50 kB burst at 100 kB/s ≈ 0.5 s
-		p.Enqueue(chunk, []string{"a"}, false)
+		p.Enqueue(chunk, []string{"a"}, Live)
 	}
-	p.Enqueue([]byte("nack"), []string{"a"}, true)
+	p.Enqueue([]byte("nack"), []string{"a"}, Retransmit)
 	deadline := time.After(3 * time.Second)
 	for {
 		mu.Lock()
@@ -196,8 +197,31 @@ func TestPacerSmoothsBursts(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if spread := times[50].Sub(start); spread < 350*time.Millisecond {
+	if spread := times[50].Sub(start); spread < 150*time.Millisecond {
 		t.Fatalf("burst not paced: all delivered within %v", spread)
+	}
+}
+
+func TestPacerFollowsSustainedLoad(t *testing.T) {
+	var delivered atomic.Int64
+	p := NewPacer(50_000, func(data []byte, to string) { delivered.Add(int64(len(data))) })
+	go p.Run()
+	defer p.Stop()
+	chunk := make([]byte, ChunkSize)
+	var worst time.Duration
+	// 1.5 s of input at ~4× the configured rate (fast scrolling at a high bitrate).
+	for i := 0; i < 150; i++ {
+		for k := 0; k < 18; k++ {
+			p.Enqueue(chunk, []string{"a"}, Live)
+		}
+		time.Sleep(10 * time.Millisecond)
+		if d := p.QueueDelay(); i > 30 && d > worst {
+			worst = d
+		}
+	}
+	t.Logf("worst queue delay under sustained load: %v", worst)
+	if worst > 100*time.Millisecond {
+		t.Fatalf("pacer builds latency under sustained load: %v", worst)
 	}
 }
 
@@ -208,8 +232,9 @@ func TestControllerStepsDownFastAndUpSlowly(t *testing.T) {
 		now = now.Add(2 * time.Second)
 		return c.Report(loss, q, now)
 	}
-	step(0, 0)
-	step(0, 0)
+	for i := 0; i < 4; i++ {
+		step(0, 0)
+	}
 	if _, ch := step(12, 0); ch {
 		t.Fatal("stepped down on a single bad report")
 	}
@@ -217,7 +242,7 @@ func TestControllerStepsDownFastAndUpSlowly(t *testing.T) {
 	if !ch || kbps != 2800 {
 		t.Fatalf("expected step down to 2800, got %d %v", kbps, ch)
 	}
-	if _, ch := step(0, 500*time.Millisecond); ch {
+	if _, ch := step(0, 1500*time.Millisecond); ch {
 		t.Fatal("queue delay alone changed immediately")
 	}
 	for i := 0; i < 14; i++ {
@@ -232,7 +257,7 @@ func TestControllerStepsDownFastAndUpSlowly(t *testing.T) {
 	if kbps != 3500 {
 		t.Fatalf("step up to 3500, got %d", kbps)
 	}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 60; i++ {
 		step(50, 0)
 	}
 	if c.Current != 800 {
