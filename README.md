@@ -57,7 +57,11 @@
   - **🐧 Linux (GNOME)**: ✅ **Fully Tested & Working** (Direct Mutter PipeWire zero-popup monitor capture & Portal window selector)
   - **🐧 Linux (KDE Plasma)**: ✅ **Fully Tested & Working** (XDG Desktop Portal PipeWire capture)
   - **🐧 Other Linux DEs (Hyprland, Sway, XFCE, etc.)**: ⚠️ *Untested / Experimental* (Fallback to GPU Screen Recorder / FFmpeg)
-- **MPV / FFplay**: Ultra-low-latency viewer experience
+- **Watcher-Only Delivery**: Video is uploaded only to members who actually watch (no bandwidth used otherwise)
+- **Quality Presets & Adaptive Bitrate**: 720p30 (default, 2.5 Mbps) up to 1080p120; the stream steps down automatically when viewers lose packets
+- **Loss Recovery**: NACK retransmission, time-based reorder buffer and paced sending; new viewers start instantly from the last keyframe
+- **System Audio**: Share what your computer plays (PipeWire/PulseAudio monitor, WASAPI loopback, ScreenCaptureKit) with your own voice chat removed
+- **MPV / FFplay**: Ultra-low-latency viewer experience (stream fed through a private pipe)
 
 </td>
 </tr>
@@ -378,6 +382,14 @@ export LIMONI_LAN_ONLY=1
 | `--help`, `-h` | - | - | Show help message and usage instructions |
 
 ---
+
+### 🖥️ Screen Sharing Tips
+
+- Press **`V`** in a room, pick a **quality preset** (`1`–`5`, or `Q` to cycle) and toggle **system audio** with **`A`**. Missing tools and the install command are shown in the dialog.
+- Nothing is uploaded until someone watches (`W` or click the stream). The sharer's bitrate then adapts to the viewers' connection (a short picture hiccup when it changes).
+- The debug panel (**`F12`**) shows preset, current bitrate, viewers, uplink queue and retransmissions.
+- **Relay operators:** update the relay server to get per-viewer delivery through the relay; older relays still work but forward relayed video to the whole room.
+- **macOS:** release builds embed the capture helper; self-built binaries compile it on first use (`xcode-select --install`). System audio needs macOS 13+.
 
 ## 🎮 Usage
 

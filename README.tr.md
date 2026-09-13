@@ -57,7 +57,11 @@
   - **🐧 Linux (GNOME)**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Doğrudan Mutter PipeWire tam ekran ve Portal pencere seçici)
   - **🐧 Linux (KDE Plasma)**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (XDG Desktop Portal PipeWire ekran & pencere seçimi)
   - **🐧 Diğer Linux Ortamları (Hyprland, Sway, XFCE vb.)**: ⚠️ *Deneysel / Henüz Test Edilmedi* (GPU Screen Recorder / FFmpeg fallback)
-- **MPV / FFplay** ile ultra düşük gecikmeli izleme deneyimi
+- **Sadece İzleyene Gönderim**: Görüntü yalnızca gerçekten izleyen kişilere yüklenir (izleyen yoksa bant genişliği harcanmaz)
+- **Kalite Ön Ayarları & Uyarlanabilir Bit Hızı**: 720p30'dan (varsayılan, 2,5 Mbps) 1080p120'ye; izleyiciler paket kaybederse yayın kendiliğinden düşer
+- **Kayıp Telafisi**: NACK ile yeniden gönderim, zamana bağlı sıralama tamponu ve yayılmış gönderim; yeni izleyici son anahtar kareden anında başlar
+- **Sistem Sesi**: Bilgisayarda çalan sesi paylaşın (PipeWire/PulseAudio monitör, WASAPI loopback, ScreenCaptureKit); kendi sesli sohbetiniz otomatik çıkarılır
+- **MPV / FFplay** ile ultra düşük gecikmeli izleme (akış özel bir boru ile verilir)
 
 </td>
 </tr>
@@ -379,6 +383,14 @@ export LIMONI_LAN_ONLY=1
 | `--help`, `-h` | - | - | Yardım ve kullanım parametrelerini listeler |
 
 ---
+
+### 🖥️ Ekran Paylaşımı İpuçları
+
+- Odada **`V`** tuşuna basın, **kalite ön ayarını** seçin (`1`–`5` veya `Q` ile sırayla) ve **sistem sesini** **`A`** ile açıp kapatın. Eksik araçlar ve kurulum komutu pencerede gösterilir.
+- Biri izlemeye başlayana kadar hiçbir şey yüklenmez (`W` veya yayına tıklama). Sonra bit hızı izleyicinin bağlantısına uyar (değişirken kısa bir takılma olur).
+- Debug panelinde (**`F12`**) ön ayar, anlık bit hızı, izleyici sayısı, gönderim kuyruğu ve yeniden gönderimler görünür.
+- **Relay sunucusu işletenler:** relay üzerinden kişiye özel gönderim için relay sunucusunu güncelleyin; eski relay'ler de çalışır ama relay'e düşen görüntüyü tüm odaya iletir.
+- **macOS:** sürüm paketleri yakalama yardımcısını içerir; kendiniz derlerseniz ilk kullanımda derlenir (`xcode-select --install`). Sistem sesi macOS 13+ ister.
 
 ## 🎮 Kullanım ve Kısayollar
 
