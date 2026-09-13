@@ -2,9 +2,16 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,9 +27,12 @@ import (
 var (
 	// AppVersion is dynamically injected during compilation via -ldflags="-X main.AppVersion=vX.Y.Z".
 	// Falls back to runtime build info or "dev" when built without flags.
-	AppVersion       = "dev"
-	GitHubRepo       = "thebanri/limoni-voice"
-	UpdateCheckDelay = 1200 * time.Millisecond
+	AppVersion = "dev"
+	GitHubRepo = "thebanri/limoni-voice"
+	// UpdateSigningPublicKey is an optional base64 ed25519 public key injected at build time
+	// (-ldflags="-X main.UpdateSigningPublicKey=..."). When set, checksums.txt must carry a valid signature.
+	UpdateSigningPublicKey = ""
+	UpdateCheckDelay       = 1200 * time.Millisecond
 )
 
 func init() {
@@ -201,48 +211,57 @@ func FindMatchingAsset(release *GitHubRelease, goos, goarch string) *GitHubAsset
 	return nil
 }
 
-// DownloadAndApplyUpdate downloads the release asset, extracts the binary and replaces execPath.
+// DownloadAndApplyUpdate downloads the release asset, verifies it against the release's
+// checksums.txt (and its ed25519 signature when a signing key is embedded), extracts the
+// binary and replaces execPath. Unverifiable updates are refused.
 func DownloadAndApplyUpdate(release *GitHubRelease, execPath string) error {
 	asset := FindMatchingAsset(release, runtime.GOOS, runtime.GOARCH)
 	if asset == nil {
 		return fmt.Errorf("no compatible release asset found for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	client := &http.Client{
-		Timeout: 60 * time.Second,
+	checksumAsset := findAssetByName(release, checksumsAssetName)
+	if checksumAsset == nil {
+		return errors.New("release has no checksums.txt; refusing unverifiable update")
+	}
+	checksums, err := downloadAsset(checksumAsset.BrowserDownloadURL, maxChecksumsSize)
+	if err != nil {
+		return fmt.Errorf("checksums download failed: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), "GET", asset.BrowserDownloadURL, nil)
+	if pub := strings.TrimSpace(UpdateSigningPublicKey); pub != "" {
+		sigAsset := findAssetByName(release, checksumsAssetName+".sig")
+		if sigAsset == nil {
+			return errors.New("release is not signed (checksums.txt.sig missing); refusing update")
+		}
+		sig, err := downloadAsset(sigAsset.BrowserDownloadURL, 4096)
+		if err != nil {
+			return fmt.Errorf("signature download failed: %w", err)
+		}
+		if err := VerifyChecksumsSignature(pub, checksums, sig); err != nil {
+			return err
+		}
+	}
+
+	expected, err := ExpectedChecksum(checksums, asset.Name)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "Limoni-Voice-AutoUpdater/"+AppVersion)
 
-	resp, err := client.Do(req)
+	assetData, err := downloadAsset(asset.BrowserDownloadURL, maxUpdateSize)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
+	if err := VerifyAssetChecksum(assetData, expected); err != nil {
+		return fmt.Errorf("%s: %w", asset.Name, err)
 	}
 
-	var newBinaryData []byte
+	newBinaryData := assetData
 	assetName := strings.ToLower(asset.Name)
-
-	const maxUpdateSize = 150 * 1024 * 1024 // 150 MB safety limit against memory exhaustion DoS
-
 	if strings.HasSuffix(assetName, ".tar.gz") || strings.HasSuffix(assetName, ".tgz") {
-		data, err := extractBinaryFromTarGz(io.LimitReader(resp.Body, maxUpdateSize))
+		data, err := extractBinaryFromTarGz(bytes.NewReader(assetData))
 		if err != nil {
 			return fmt.Errorf("extraction error: %w", err)
-		}
-		newBinaryData = data
-	} else {
-		data, err := io.ReadAll(io.LimitReader(resp.Body, maxUpdateSize))
-		if err != nil {
-			return fmt.Errorf("read error: %w", err)
 		}
 		newBinaryData = data
 	}
@@ -252,6 +271,102 @@ func DownloadAndApplyUpdate(release *GitHubRelease, execPath string) error {
 	}
 
 	return replaceExecutable(execPath, newBinaryData)
+}
+
+const (
+	checksumsAssetName = "checksums.txt"
+	maxChecksumsSize   = 1 << 20
+	maxUpdateSize      = 150 * 1024 * 1024 // 150 MB safety limit against memory exhaustion DoS
+)
+
+func findAssetByName(release *GitHubRelease, name string) *GitHubAsset {
+	if release == nil {
+		return nil
+	}
+	for i := range release.Assets {
+		if release.Assets[i].Name == name {
+			return &release.Assets[i]
+		}
+	}
+	return nil
+}
+
+func downloadAsset(assetURL string, limit int64) ([]byte, error) {
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+	req, err := http.NewRequestWithContext(context.Background(), "GET", assetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Limoni-Voice-AutoUpdater/"+AppVersion)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download failed with status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read error: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("download exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
+// ExpectedChecksum finds the SHA-256 hex digest for assetName in sha256sum-formatted content.
+func ExpectedChecksum(checksums []byte, assetName string) (string, error) {
+	for _, line := range strings.Split(string(checksums), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[1], "*")
+		if name != assetName {
+			continue
+		}
+		sum := strings.ToLower(fields[0])
+		if decoded, err := hex.DecodeString(sum); err != nil || len(decoded) != sha256.Size {
+			return "", fmt.Errorf("malformed checksum entry for %s", assetName)
+		}
+		return sum, nil
+	}
+	return "", fmt.Errorf("no checksum listed for %s; refusing update", assetName)
+}
+
+// VerifyAssetChecksum compares the SHA-256 digest of data with the expected hex digest.
+func VerifyAssetChecksum(data []byte, expectedHex string) error {
+	sum := sha256.Sum256(data)
+	actual := hex.EncodeToString(sum[:])
+	if subtle.ConstantTimeCompare([]byte(actual), []byte(strings.ToLower(expectedHex))) != 1 {
+		return errors.New("checksum mismatch (corrupted or tampered download)")
+	}
+	return nil
+}
+
+// VerifyChecksumsSignature verifies an ed25519 signature (raw 64 bytes or base64) over checksums.txt.
+func VerifyChecksumsSignature(publicKeyB64 string, checksums, sig []byte) error {
+	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(publicKeyB64))
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return errors.New("invalid embedded update signing key")
+	}
+	if len(sig) != ed25519.SignatureSize {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sig)))
+		if err != nil {
+			return errors.New("malformed update signature")
+		}
+		sig = decoded
+	}
+	if len(sig) != ed25519.SignatureSize || !ed25519.Verify(ed25519.PublicKey(pub), checksums, sig) {
+		return errors.New("update signature verification failed; refusing update")
+	}
+	return nil
 }
 
 func extractBinaryFromTarGz(r io.Reader) ([]byte, error) {

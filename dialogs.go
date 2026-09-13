@@ -145,8 +145,8 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 }
 
 // DrawTestModal renders the interactive Microphone & Audio Device Settings panel without any icons or emojis.
-func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onClose func()) {
-	modalW, modalH := uint16(68), uint16(26)
+func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onToggleGlobalPTT func(), onClose func()) {
+	modalW, modalH := uint16(68), uint16(28)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -190,7 +190,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			statusText = "[PTT ACTIVE (TRANSMITTING...)]"
 			statusStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 		} else {
-			statusText = "[PTT IDLE (PRESS SPACE/P TO TALK)]"
+			statusText = fmt.Sprintf("[PTT IDLE (HOLD %s TO TALK)]", strings.ToUpper(audio.PTTKeyName))
 			statusStyle = cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg}
 		}
 	} else if audio.IsSpeaking {
@@ -439,13 +439,15 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	})
 
 	optOff := " [ OFF ] "
-	optStd := " [ ON (Standard) ] "
+	optStd := " [ ON ] "
 	optHi := " [ HIGH ] "
+	optAI := " [ AI ] "
 
 	curMode := audio.SuppressionMode
 	styleOff := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
 	styleStd := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
 	styleHi := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
+	styleAI := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
 
 	activeStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
@@ -453,12 +455,15 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Modifier: cell.ModifierBold,
 	}
 
-	if curMode == 0 {
+	switch curMode {
+	case SuppressionOff:
 		styleOff = activeStyle
-	} else if curMode == 1 {
+	case SuppressionStandard:
 		styleStd = activeStyle
-	} else {
+	case SuppressionHigh:
 		styleHi = activeStyle
+	case SuppressionAI:
+		styleAI = activeStyle
 	}
 
 	optOffX := inner.X + 20
@@ -478,6 +483,13 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		buf.SetString(optHiX, noiseY, optHi, styleHi)
 		frame.RegisterClickHandler(cell.NewRect(optHiX, noiseY, uint16(len([]rune(optHi))), 1), func(_ driver.MouseEvent) {
 			audio.SetSuppressionMode(2)
+		})
+	}
+	optAIX := optHiX + uint16(len([]rune(optHi))) + 1
+	if optAIX+uint16(len([]rune(optAI))) <= inner.X+inner.Width {
+		buf.SetString(optAIX, noiseY, optAI, styleAI)
+		frame.RegisterClickHandler(cell.NewRect(optAIX, noiseY, uint16(len([]rune(optAI))), 1), func(_ driver.MouseEvent) {
+			audio.SetSuppressionMode(SuppressionAI)
 		})
 	}
 
@@ -612,8 +624,47 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.ToggleLoopback()
 	})
 
-	// 11. Theme & Mini HUD Options
-	themeY := inner.Y + 20
+	// 11. Echo cancellation & system-wide push-to-talk
+	aecY := inner.Y + 20
+	aecBox := "[ ] Echo Cancellation [E]"
+	aecStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+	if audio.EchoCancellation {
+		aecBox = "[X] Echo Cancellation [E]"
+		aecStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+	}
+	buf.SetString(inner.X+1, aecY, aecBox, aecStyle)
+	frame.RegisterClickHandler(cell.NewRect(inner.X+1, aecY, uint16(len([]rune(aecBox))), 1), func(_ driver.MouseEvent) {
+		audio.ToggleEchoCancellation()
+	})
+
+	gpttBox := "[ ] Global PTT [G]"
+	gpttStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+	if audio.GlobalPTT {
+		gpttBox = "[X] Global PTT [G]"
+		if audio.GlobalPTTStatus != "" {
+			gpttBox += ": " + audio.GlobalPTTStatus
+		}
+		gpttStyle = cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+		if strings.HasPrefix(audio.GlobalPTTStatus, "unavailable") {
+			gpttStyle.Fg = theme.Danger
+		}
+	}
+	gpttX := inner.X + uint16(len([]rune(aecBox))) + 4
+	if gpttX < inner.X+inner.Width-1 {
+		maxW := int(inner.X + inner.Width - 1 - gpttX)
+		if r := []rune(gpttBox); len(r) > maxW {
+			gpttBox = string(r[:max(0, maxW-1)]) + "…"
+		}
+		buf.SetString(gpttX, aecY, gpttBox, gpttStyle)
+		frame.RegisterClickHandler(cell.NewRect(gpttX, aecY, uint16(len([]rune(gpttBox))), 1), func(_ driver.MouseEvent) {
+			if onToggleGlobalPTT != nil {
+				onToggleGlobalPTT()
+			}
+		})
+	}
+
+	// 12. Theme & Mini HUD Options
+	themeY := inner.Y + 22
 	buf.SetString(inner.X+1, themeY, "Theme [T]:", cell.Style{
 		Fg:       theme.Accent,
 		Bg:       theme.SurfaceBg,
@@ -670,8 +721,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		})
 	}
 
-	// 12. Action Buttons (Mute, Deafen, Close)
-	btnY := inner.Y + 22
+	// 13. Action Buttons (Mute, Deafen, Close)
+	btnY := inner.Y + 24
 	muteBtn := "[M] Mute Mic"
 	muteBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
@@ -731,8 +782,15 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			onClose()
 		}
 	})
-}
 
+	if inner.Height > 25 {
+		backendLine := fmt.Sprintf("Audio I/O: capture %s · playback %s · Opus 48 kHz", orDash(audio.CaptureBackend), orDash(audio.PlaybackBackend))
+		if r := []rune(backendLine); len(r) > int(inner.Width)-2 {
+			backendLine = string(r[:inner.Width-3]) + "…"
+		}
+		buf.SetString(inner.X+1, inner.Y+25, backendLine, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
+	}
+}
 // DrawLeaveModal renders the official Limoni widgets.Dialog confirmation dialog for leaving the room with opening/closing scale animation.
 func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, onConfirm func(), onCancel func()) {
 	if progress <= 0.001 {
@@ -1499,7 +1557,7 @@ func GetAllDebugLogsText() string {
 }
 
 // DrawDebugModal renders a full-featured technical debug log viewer modal
-func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onClose func(), onClear func(), onCopy func()) {
+func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, netLines []string, onClose func(), onClear func(), onCopy func()) {
 	if area.Width < 20 || area.Height < 10 {
 		return
 	}
@@ -1602,9 +1660,29 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		})
 	}
 
-	// 3. Log lines display area
+	// 3. Pinned network diagnostics (path, RTT, loss, jitter per peer)
 	listY := inner.Y + 2
-	maxDisplay := int(inner.Height - 3)
+	if len(netLines) > 0 && inner.Height > 14 {
+		maxNet := min(len(netLines), int(inner.Height)/3)
+		for i, line := range netLines[:maxNet] {
+			if r := []rune(line); len(r) > int(inner.Width)-2 {
+				line = string(r[:inner.Width-3]) + "…"
+			}
+			style := cell.Style{Fg: theme.Secondary, Bg: dialogBg}
+			if i == 0 {
+				style.Modifier = cell.ModifierBold
+			}
+			buf.SetString(inner.X+1, listY+uint16(i), line, style)
+		}
+		listY += uint16(maxNet)
+		for dx := inner.X; dx < inner.X+inner.Width; dx++ {
+			buf.SetCell(dx, listY, cell.Cell{Content: '─', Style: cell.Style{Fg: theme.Border, Bg: dialogBg}})
+		}
+		listY++
+	}
+
+	// 4. Log lines display area
+	maxDisplay := int(inner.Y + inner.Height - 1 - listY)
 	if maxDisplay < 1 {
 		maxDisplay = 1
 	}
@@ -1690,7 +1768,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, onC
 		}
 	}
 
-	// 4. Bottom Hint
+	// 5. Bottom Hint
 	bottomY := inner.Y + inner.Height - 1
 	guide := "[ESC/F12] Close   [↑/↓ / PgUp/PgDn] Scroll   [C] Copy   [Del] Clear"
 	if scrollOffset > 0 {

@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,6 +10,8 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +20,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
+	"github.com/thebanri/limoni-voice/internal/protocol"
 	"github.com/thebanri/limoni-voice/screenshare"
 )
 
@@ -29,9 +30,10 @@ func TestRoomCode(t *testing.T) {
 		t.Fatalf("Expected non-empty room code")
 	}
 
+	// Room ID digits + three secret words (24 bits of handshake entropy)
 	parts := strings.Split(code, "-")
-	if len(parts) != 3 {
-		t.Fatalf("Expected 3 parts in Croc code, got %d: %s", len(parts), code)
+	if len(parts) != 4 {
+		t.Fatalf("Expected 4 parts in room code, got %d: %s", len(parts), code)
 	}
 
 	normalized := NormalizeCode("  " + strings.ToUpper(code) + "  ")
@@ -98,15 +100,7 @@ func TestTextInputTypingNoConflict(t *testing.T) {
 
 func TestP2PPacketCodec(t *testing.T) {
 	roomCode := "7492-neon-falcon"
-	key := deriveRoomKey(roomCode)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatalf("aes.NewCipher failed: %v", err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatalf("cipher.NewGCM failed: %v", err)
-	}
+	aead := testKeyring(roomCode)
 
 	pkt := P2PPacket{
 		Type:       PacketHello,
@@ -123,27 +117,26 @@ func TestP2PPacketCodec(t *testing.T) {
 	}
 
 	// 1. Test standard encrypt & decrypt
-	data, err := encodeAndEncryptPacket(&pkt, aead)
+	data, err := sealPacket(&pkt, aead)
 	if err != nil {
-		t.Fatalf("encodeAndEncryptPacket failed: %v", err)
+		t.Fatalf("sealPacket failed: %v", err)
+	}
+	if bytes.Contains(data, []byte("LVS1")) || bytes.Contains(data, []byte(pkt.Nickname)) {
+		t.Fatalf("sealed packet leaks a fixed magic prefix or plaintext")
 	}
 
 	var decoded P2PPacket
-	if err := decryptAndDecodePacket(data, &decoded, aead); err != nil {
-		t.Fatalf("decryptAndDecodePacket failed: %v", err)
+	if err := openPacket(data, &decoded, aead); err != nil {
+		t.Fatalf("openPacket failed: %v", err)
 	}
 
 	if decoded.RoomCode != pkt.RoomCode || decoded.Nickname != pkt.Nickname || decoded.RMS != pkt.RMS || decoded.IsDeafened != pkt.IsDeafened {
 		t.Fatalf("Decoded packet mismatch: %+v vs %+v", decoded, pkt)
 	}
 
-	// 2. Test wrong key rejection (unauthorized room code)
-	wrongKey := deriveRoomKey("other-room-code")
-	wrongBlock, _ := aes.NewCipher(wrongKey)
-	wrongAEAD, _ := cipher.NewGCM(wrongBlock)
-
+	// 2. Test wrong key rejection (unauthorized room)
 	var wrongDecoded P2PPacket
-	if err := decryptAndDecodePacket(data, &wrongDecoded, wrongAEAD); err == nil {
+	if err := openPacket(data, &wrongDecoded, testKeyring("other-room-code")); err == nil {
 		t.Fatalf("Expected decryption to FAIL with wrong key, but succeeded")
 	}
 
@@ -153,7 +146,7 @@ func TestP2PPacketCodec(t *testing.T) {
 	tamperedData[len(tamperedData)-1] ^= 0xFF // Flip bits in ciphertext / tag
 
 	var tamperedDecoded P2PPacket
-	if err := decryptAndDecodePacket(tamperedData, &tamperedDecoded, aead); err == nil {
+	if err := openPacket(tamperedData, &tamperedDecoded, aead); err == nil {
 		t.Fatalf("Expected decryption to FAIL on tampered packet, but succeeded")
 	}
 }
@@ -204,11 +197,19 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	}
 
 	// Bob requests to join Alice's open room
+	var joinMu sync.Mutex
 	joinedSuccess := false
 	var joinedHost string
+	joined := func() (bool, string) {
+		joinMu.Lock()
+		defer joinMu.Unlock()
+		return joinedSuccess, joinedHost
+	}
 	node2.RequestJoinRoom(room, 2*time.Second, func(hostNick string) {
+		joinMu.Lock()
 		joinedSuccess = true
 		joinedHost = hostNick
+		joinMu.Unlock()
 	}, func(reason string) {
 		t.Errorf("Unexpected join failure: %s", reason)
 	})
@@ -217,19 +218,23 @@ func TestP2PDiscoveryAndEncryptionBetweenTwoNodes(t *testing.T) {
 	deadline := time.Now().Add(1 * time.Second)
 	connected := false
 	for time.Now().Before(deadline) {
-		if len(node1.GetPeersList()) > 0 && len(node2.GetPeersList()) > 0 && joinedSuccess {
+		if ok, _ := joined(); len(node1.GetPeersList()) > 0 && len(node2.GetPeersList()) > 0 && ok {
 			connected = true
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	joinedSuccess, joinedHost = joined()
 	if !connected {
 		t.Fatalf("Nodes failed to discover each other! node1 peers: %d, node2 peers: %d, joinedSuccess: %v",
 			len(node1.GetPeersList()), len(node2.GetPeersList()), joinedSuccess)
 	}
 
-	if node2.IsHost {
+	node2.mu.RLock()
+	joinerIsHost := node2.IsHost
+	node2.mu.RUnlock()
+	if joinerIsHost {
 		t.Fatalf("Expected Node2 (Joiner) to NOT be host")
 	}
 	if joinedHost != "Alice" {
@@ -259,11 +264,19 @@ func TestP2PLANOnlyModeDirectDiscovery(t *testing.T) {
 	room := "9912-silent-falcon"
 	node1.HostRoom(room)
 
+	var joinMu sync.Mutex
 	joinedSuccess := false
 	var joinedHost string
+	joined := func() (bool, string) {
+		joinMu.Lock()
+		defer joinMu.Unlock()
+		return joinedSuccess, joinedHost
+	}
 	node2.RequestJoinRoom(room, 2*time.Second, func(hostNick string) {
+		joinMu.Lock()
 		joinedSuccess = true
 		joinedHost = hostNick
+		joinMu.Unlock()
 	}, func(reason string) {
 		t.Errorf("Unexpected LAN join failure: %s", reason)
 	})
@@ -271,13 +284,14 @@ func TestP2PLANOnlyModeDirectDiscovery(t *testing.T) {
 	deadline := time.Now().Add(1 * time.Second)
 	connected := false
 	for time.Now().Before(deadline) {
-		if len(node1.GetPeersList()) > 0 && len(node2.GetPeersList()) > 0 && joinedSuccess {
+		if ok, _ := joined(); len(node1.GetPeersList()) > 0 && len(node2.GetPeersList()) > 0 && ok {
 			connected = true
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	joinedSuccess, joinedHost = joined()
 	if !connected {
 		t.Fatalf("LAN nodes failed to discover each other! node1 peers: %d, node2 peers: %d, joinedSuccess: %v",
 			len(node1.GetPeersList()), len(node2.GetPeersList()), joinedSuccess)
@@ -356,7 +370,7 @@ func TestVerticalMeterAndDialogs(t *testing.T) {
 
 	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
 	closed := false
-	DrawTestModal(frame, cell.NewRect(0, 0, 80, 24), audio, nil, func() { closed = true })
+	DrawTestModal(frame, cell.NewRect(0, 0, 80, 30), audio, nil, nil, func() { closed = true })
 	_ = closed
 	DrawLeaveModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
 	DrawExitModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
@@ -383,11 +397,10 @@ func TestNoiseSuppressionAndTestMode(t *testing.T) {
 	}
 
 	// Generate synthetic vocal frame (400Hz tone at typical speaking volume)
-	speechPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
-		val := int16(3000.0 * math.Sin(2.0*math.Pi*400.0*float64(i)/float64(AudioSampleRate)))
-		binary.LittleEndian.PutUint16(speechPCM[i*2:i*2+2], uint16(val))
-	}
+	speechPCM := upsample16k(func(i int) int16 {
+		val := int16(3000.0 * math.Sin(2.0*math.Pi*400.0*float64(i)/16000.0))
+		return val
+	})
 
 	speaking, finalRMS, filtered := audio.processNoiseCancellation(speechPCM, audio.SuppressionMode)
 	if !speaking {
@@ -420,11 +433,10 @@ func TestSpeechPassesThroughAllModes(t *testing.T) {
 	audio := NewAudioEngine()
 
 	// 500 Hz tone representing human voice vowel / formant
-	speechPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
-		val := int16(4000.0 * math.Sin(2.0*math.Pi*500.0*float64(i)/float64(AudioSampleRate)))
-		binary.LittleEndian.PutUint16(speechPCM[i*2:i*2+2], uint16(val))
-	}
+	speechPCM := upsample16k(func(i int) int16 {
+		val := int16(4000.0 * math.Sin(2.0*math.Pi*500.0*float64(i)/16000.0))
+		return val
+	})
 
 	// Test Mode 0 (OFF)
 	rawRMS := calculateRMS(speechPCM)
@@ -488,20 +500,20 @@ func TestNoiseSuppressionFiltersFanNoise(t *testing.T) {
 	audio := NewAudioEngine()
 
 	// Generate synthetic PC fan / AC hum (120Hz + 240Hz low drone at moderate volume)
-	fanPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
-		s1 := 1200.0 * math.Sin(2.0*math.Pi*120.0*float64(i)/float64(AudioSampleRate))
-		s2 := 800.0 * math.Sin(2.0*math.Pi*240.0*float64(i)/float64(AudioSampleRate))
+	fanPCM := upsample16k(func(i int) int16 {
+		s1 := 1200.0 * math.Sin(2.0*math.Pi*120.0*float64(i)/16000.0)
+		s2 := 800.0 * math.Sin(2.0*math.Pi*240.0*float64(i)/16000.0)
 		val := int16(s1 + s2)
-		binary.LittleEndian.PutUint16(fanPCM[i*2:i*2+2], uint16(val))
-	}
+		return val
+	})
 
 	// Run fan noise in Mode 1:
 	audio.SetSuppressionMode(1)
 	audio.IsSpeaking = false
 
-	// Let the adaptive noise tracker adapt over multiple frames
-	for f := 0; f < 30; f++ {
+	// Let the adaptive noise tracker adapt, then allow the speech hangover (18 frames) and the
+	// ~120ms gate release to finish (the 30-frame version sat exactly on the 0.01 boundary).
+	for f := 0; f < 40; f++ {
 		audio.processNoiseCancellation(fanPCM, 1)
 	}
 
@@ -522,16 +534,15 @@ func TestHandClapSuppression(t *testing.T) {
 	audio.SetSuppressionMode(2) // Mode 2: HIGH (Sonar AI mode)
 
 	// Generate synthetic hand clap (sharp impulsive peak at sample 40, rapidly decaying, non-harmonic)
-	clapPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
+	clapPCM := upsample16k(func(i int) int16 {
 		var sample float64
 		if i >= 40 && i < 120 {
 			tVal := float64(i - 40)
-			sample = 16000.0 * math.Exp(-tVal/8.0) * math.Sin(2.0*math.Pi*1800.0*tVal/float64(AudioSampleRate))
+			sample = 16000.0 * math.Exp(-tVal/8.0) * math.Sin(2.0*math.Pi*1800.0*tVal/16000.0)
 		}
 		val := int16(sample)
-		binary.LittleEndian.PutUint16(clapPCM[i*2:i*2+2], uint16(val))
-	}
+		return val
+	})
 
 	speaking, _, _ := audio.processNoiseCancellation(clapPCM, 2)
 	if speaking {
@@ -544,16 +555,15 @@ func TestMechanicalKeyboardTypingSuppression(t *testing.T) {
 	audio.SetSuppressionMode(2)
 
 	// Generate synthetic mechanical keyboard switch click (high frequency click burst at 3500Hz)
-	keyPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
+	keyPCM := upsample16k(func(i int) int16 {
 		var sample float64
 		if i >= 30 && i < 90 {
 			tVal := float64(i - 30)
-			sample = 10000.0 * math.Exp(-tVal/6.0) * math.Sin(2.0*math.Pi*3600.0*tVal/float64(AudioSampleRate))
+			sample = 10000.0 * math.Exp(-tVal/6.0) * math.Sin(2.0*math.Pi*3600.0*tVal/16000.0)
 		}
 		val := int16(sample)
-		binary.LittleEndian.PutUint16(keyPCM[i*2:i*2+2], uint16(val))
-	}
+		return val
+	})
 
 	speaking, _, _ := audio.processNoiseCancellation(keyPCM, 2)
 	if speaking {
@@ -566,13 +576,12 @@ func TestCoughAndThroatClearingSuppression(t *testing.T) {
 	audio.SetSuppressionMode(2)
 
 	// Generate synthetic cough / non-harmonic turbulent burst (pseudo-random broadband noise burst)
-	coughPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
+	coughPCM := upsample16k(func(i int) int16 {
 		// Non-harmonic multi-frequency turbulent burst
 		s := 4000.0*math.Sin(float64(i*i)*0.13) + 3000.0*math.Cos(float64(i*i*i)*0.07)
 		val := int16(s)
-		binary.LittleEndian.PutUint16(coughPCM[i*2:i*2+2], uint16(val))
-	}
+		return val
+	})
 
 	speaking, _, _ := audio.processNoiseCancellation(coughPCM, 2)
 	if speaking {
@@ -584,16 +593,15 @@ func TestPitchHarmonicSpeechPassthrough(t *testing.T) {
 	audio := NewAudioEngine()
 
 	// Generate synthetic human speech with rich fundamental pitch + vocal harmonics (160 Hz + 320 Hz + 480 Hz)
-	speechPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
+	speechPCM := upsample16k(func(i int) int16 {
 		f0 := 160.0
-		tVal := float64(i) / float64(AudioSampleRate)
+		tVal := float64(i) / 16000.0
 		s1 := 3500.0 * math.Sin(2.0*math.Pi*f0*tVal)
 		s2 := 2500.0 * math.Sin(2.0*math.Pi*2.0*f0*tVal)
 		s3 := 1500.0 * math.Sin(2.0*math.Pi*3.0*f0*tVal)
 		val := int16(s1 + s2 + s3)
-		binary.LittleEndian.PutUint16(speechPCM[i*2:i*2+2], uint16(val))
-	}
+		return val
+	})
 
 	// Test Mode 1 (Standard) and Mode 2 (High Sonar)
 	speaking1, rms1, out1 := audio.processNoiseCancellation(speechPCM, 1)
@@ -611,13 +619,12 @@ func TestQuietSpeechAndDeepVoicePassthrough(t *testing.T) {
 	audio := NewAudioEngine()
 
 	// 1. Test quiet human speech (RMS ~ 0.005)
-	quietPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
+	quietPCM := upsample16k(func(i int) int16 {
 		f0 := 140.0
-		tVal := float64(i) / float64(AudioSampleRate)
+		tVal := float64(i) / 16000.0
 		s := 220.0*math.Sin(2.0*math.Pi*f0*tVal) + 150.0*math.Sin(2.0*math.Pi*2.0*f0*tVal)
-		binary.LittleEndian.PutUint16(quietPCM[i*2:i*2+2], uint16(int16(s)))
-	}
+		return int16(s)
+	})
 
 	speaking, rms, _ := audio.processNoiseCancellation(quietPCM, 1)
 	if !speaking || rms < 0.003 {
@@ -625,13 +632,12 @@ func TestQuietSpeechAndDeepVoicePassthrough(t *testing.T) {
 	}
 
 	// 2. Test deep male voice (95 Hz low pitch fundamental with high low-frequency energy)
-	deepPCM := make([]byte, AudioChunkSize)
-	for i := 0; i < 320; i++ {
+	deepPCM := upsample16k(func(i int) int16 {
 		f0 := 95.0
-		tVal := float64(i) / float64(AudioSampleRate)
+		tVal := float64(i) / 16000.0
 		s := 800.0*math.Sin(2.0*math.Pi*f0*tVal) + 500.0*math.Sin(2.0*math.Pi*2.0*f0*tVal) + 300.0*math.Sin(2.0*math.Pi*3.0*f0*tVal)
-		binary.LittleEndian.PutUint16(deepPCM[i*2:i*2+2], uint16(int16(s)))
-	}
+		return int16(s)
+	})
 
 	speakingDeep, rmsDeep, _ := audio.processNoiseCancellation(deepPCM, 1)
 	if !speakingDeep || rmsDeep < 0.01 {
@@ -644,11 +650,10 @@ func TestFricativeConsonantOnsetPassthrough(t *testing.T) {
 
 	// Generate synthetic unvoiced fricative 'S' consonant sound (e.g. "Selam" onset)
 	// Turbulent noise concentrated in 4500Hz - 7500Hz with zero pitch harmonicity (natural fricative 'S' sound)
-	fricativePCM := make([]byte, AudioChunkSize)
 	// High-pass filtered turbulent noise (unvoiced fricative 'S' with low harmonicity)
 	var state uint32 = 987654321
 	var hpPrevIn, hpPrevOut float64
-	for i := 0; i < 320; i++ {
+	fricativePCM := upsample16k(func(i int) int16 {
 		state = state*1664525 + 1013904223
 		rawNoise := (float64(int32(state)%2000) / 2000.0) * 1200.0 // +/- 1200 amplitude
 		// 4500Hz high-pass filter at 16000Hz (alpha ~ 0.36)
@@ -656,8 +661,8 @@ func TestFricativeConsonantOnsetPassthrough(t *testing.T) {
 		hpPrevIn = rawNoise
 		hpPrevOut = hpOut
 		val := int16(hpOut)
-		binary.LittleEndian.PutUint16(fricativePCM[i*2:i*2+2], uint16(val))
-	}
+		return val
+	})
 
 	speaking1, rms1, _ := audio.processNoiseCancellation(fricativePCM, 1)
 	t.Logf("Mode 1: speaking=%v, rms=%f, threshold=%f", speaking1, rms1, audio.VADThreshold)
@@ -972,15 +977,7 @@ func TestOutputVolumeAndAGC(t *testing.T) {
 
 func TestChatMessagePacketCodec(t *testing.T) {
 	roomCode := "4820-cyber-otter"
-	key := deriveRoomKey(roomCode)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatalf("aes.NewCipher failed: %v", err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatalf("cipher.NewGCM failed: %v", err)
-	}
+	aead := testKeyring(roomCode)
 
 	chatText := "Selam! Limoni Voice chat test 🚀"
 	pkt := P2PPacket{
@@ -992,13 +989,13 @@ func TestChatMessagePacketCodec(t *testing.T) {
 		Payload:   []byte(chatText),
 	}
 
-	data, err := encodeAndEncryptPacket(&pkt, aead)
+	data, err := sealPacket(&pkt, aead)
 	if err != nil {
 		t.Fatalf("encodeAndEncryptPacket failed: %v", err)
 	}
 
 	var decoded P2PPacket
-	if err := decryptAndDecodePacket(data, &decoded, aead); err != nil {
+	if err := openPacket(data, &decoded, aead); err != nil {
 		t.Fatalf("decryptAndDecodePacket failed: %v", err)
 	}
 
@@ -1073,11 +1070,15 @@ func TestP2PNodeChatCallbacks(t *testing.T) {
 	node := NewP2PNode("test_peer_1", "User1", audio)
 	node.IsConnected = true
 	node.RoomCode = "1234-alpha-beta"
+	node.roomID = node.RoomCode
 
+	var cbMu sync.Mutex
 	receivedCount := 0
 	receivedMsg := ""
 	receivedSender := ""
 	node.OnChatMessage = func(senderID string, nickname string, text string, ts time.Time) {
+		cbMu.Lock()
+		defer cbMu.Unlock()
 		receivedCount++
 		receivedSender = nickname
 		receivedMsg = text
@@ -1102,6 +1103,8 @@ func TestP2PNodeChatCallbacks(t *testing.T) {
 	// Wait briefly for goroutine callback
 	time.Sleep(50 * time.Millisecond)
 
+	cbMu.Lock()
+	defer cbMu.Unlock()
 	if receivedCount != 1 {
 		t.Fatalf("Expected exactly 1 callback (deduplicated), got %d", receivedCount)
 	}
@@ -1115,6 +1118,7 @@ func TestPeerLeaveNoDeadlock(t *testing.T) {
 	node := NewP2PNode("test_host", "Host", audio)
 	node.IsConnected = true
 	node.RoomCode = "5678-delta-echo"
+	node.roomID = node.RoomCode
 
 	// Register peer
 	node.Peers["peer_leaving"] = &PeerInfo{
@@ -1123,10 +1127,10 @@ func TestPeerLeaveNoDeadlock(t *testing.T) {
 		IsSharingScreen: true,
 	}
 
-	leftFired := false
+	var leftFired atomic.Bool
 	node.OnPeerEvent = func(event string, peer *PeerInfo) {
 		if event == "leave" {
-			leftFired = true
+			leftFired.Store(true)
 		}
 	}
 
@@ -1152,10 +1156,10 @@ func TestPeerLeaveNoDeadlock(t *testing.T) {
 	}
 
 	time.Sleep(20 * time.Millisecond)
-	if !leftFired {
+	if !leftFired.Load() {
 		t.Fatalf("Expected OnPeerEvent leave callback to fire")
 	}
-	if node.Peers["peer_leaving"] != nil {
+	if node.GetPeer("peer_leaving") != nil {
 		t.Fatalf("Expected peer removed from map")
 	}
 }
@@ -1220,7 +1224,7 @@ func TestDebugModalAndLogs(t *testing.T) {
 	cleared := false
 	copied := false
 
-	DrawDebugModal(frame, cell.NewRect(0, 0, 120, 40), 0, func() { closed = true }, func() { cleared = true }, func() { copied = true })
+	DrawDebugModal(frame, cell.NewRect(0, 0, 120, 40), 0, []string{"Network: relay"}, func() { closed = true }, func() { cleared = true }, func() { copied = true })
 	_ = closed
 	_ = cleared
 	_ = copied
@@ -1350,11 +1354,16 @@ func TestDynamicPortHopping(t *testing.T) {
 	}
 	defer peerNode.Close()
 	peerNode.HostRoom("1111-jump-test")
+	// Both nodes opened the room independently; share the group key as a completed handshake would.
+	peerNode.mu.Lock()
+	peerNode.keyring = node.keyring
+	peerNode.mu.Unlock()
 
 	// Interconnect nodes over local loopback
 	hostAddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", initialPort))
 	peerAddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", peerNode.Port))
 
+	node.mu.Lock()
 	node.Peers[peerNode.LocalID] = &PeerInfo{
 		ID:        peerNode.LocalID,
 		Nickname:  peerNode.Nickname,
@@ -1362,7 +1371,9 @@ func TestDynamicPortHopping(t *testing.T) {
 		LocalPort: peerNode.Port,
 		LastSeen:  time.Now(),
 	}
+	node.mu.Unlock()
 
+	peerNode.mu.Lock()
 	peerNode.Peers[node.LocalID] = &PeerInfo{
 		ID:        node.LocalID,
 		Nickname:  node.Nickname,
@@ -1370,6 +1381,7 @@ func TestDynamicPortHopping(t *testing.T) {
 		LocalPort: initialPort,
 		LastSeen:  time.Now(),
 	}
+	peerNode.mu.Unlock()
 
 	// Trigger RotatePort on Host
 	var hoppedPort int
@@ -1384,23 +1396,24 @@ func TestDynamicPortHopping(t *testing.T) {
 		t.Fatalf("RotatePort failed: %v", err)
 	}
 
-	if node.Port == initialPort {
-		t.Fatalf("Expected port to rotate to new value, got %d", node.Port)
+	node.mu.RLock()
+	newPort, epoch := node.Port, node.currentEpoch
+	node.mu.RUnlock()
+	if newPort == initialPort {
+		t.Fatalf("Expected port to rotate to new value, got %d", newPort)
 	}
-	if node.currentEpoch != 1 {
-		t.Fatalf("Expected epoch to increment to 1, got %d", node.currentEpoch)
+	if epoch != 1 {
+		t.Fatalf("Expected epoch to increment to 1, got %d", epoch)
 	}
-	if hoppedEpoch != 1 || hoppedPort != node.Port {
-		t.Fatalf("Expected OnPortHopped callback with port %d and epoch 1, got port %d epoch %d", node.Port, hoppedPort, hoppedEpoch)
+	if hoppedEpoch != 1 || hoppedPort != newPort {
+		t.Fatalf("Expected OnPortHopped callback with port %d and epoch 1, got port %d epoch %d", newPort, hoppedPort, hoppedEpoch)
 	}
 
 	// Give UDP packets a brief moment to be transmitted and received on loopback
 	time.Sleep(150 * time.Millisecond)
 
 	// Verify that peerNode dynamically updated Host's address to the new hopped port
-	peerNode.mu.RLock()
-	updatedHostPeer := peerNode.Peers[node.LocalID]
-	peerNode.mu.RUnlock()
+	updatedHostPeer := peerNode.GetPeer(node.LocalID)
 
 	if updatedHostPeer == nil {
 		t.Fatalf("Host peer not found in peerNode")
@@ -1417,19 +1430,20 @@ func TestDynamicPortHopping(t *testing.T) {
 
 	// Test sending chat message from peerNode to node on the new port
 	var receivedChat string
-	var chatReceivedChan = make(chan struct{}, 1)
+	var chatReceivedChan = make(chan string, 1)
+	node.mu.Lock()
 	node.OnChatMessage = func(senderID, nickname, message string, timestamp time.Time) {
-		receivedChat = message
 		select {
-		case chatReceivedChan <- struct{}{}:
+		case chatReceivedChan <- message:
 		default:
 		}
 	}
+	node.mu.Unlock()
 
 	peerNode.SendChatMessage("Hello after port hop!")
 
 	select {
-	case <-chatReceivedChan:
+	case receivedChat = <-chatReceivedChan:
 	case <-time.After(500 * time.Millisecond):
 	}
 
@@ -1543,15 +1557,19 @@ func TestChatMultilineAndSlashCommands(t *testing.T) {
 	}
 
 	// 8. Test /nick
-	nickChanged := ""
+	nickChanged := make(chan string, 1)
 	room.OnChangeNick = func(newNick string) {
-		nickChanged = newNick
+		nickChanged <- newNick
 	}
 	room.ChatInputState.SetValue("/nick SuperUser")
 	room.SendCurrentChat()
-	time.Sleep(20 * time.Millisecond)
-	if nickChanged != "SuperUser" {
-		t.Fatalf("Expected /nick to invoke OnChangeNick with 'SuperUser', got '%s'", nickChanged)
+	select {
+	case got := <-nickChanged:
+		if got != "SuperUser" {
+			t.Fatalf("Expected /nick to invoke OnChangeNick with 'SuperUser', got '%s'", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Expected /nick to invoke OnChangeNick")
 	}
 
 	// 9. Test AudioEngine SFXMuted
@@ -1658,27 +1676,19 @@ func TestE2EEFileTransfer(t *testing.T) {
 	}
 
 	// 3. Test AEAD packet serialization and deserialization
-	roomKey := deriveRoomKey("test-room-key-file")
-	block, err := aes.NewCipher(roomKey)
-	if err != nil {
-		t.Fatalf("aes.NewCipher failed: %v", err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatalf("cipher.NewGCM failed: %v", err)
-	}
+	aead := testKeyring("test-room-key-file")
 
 	headerPacket := &P2PPacket{
 		Type:     PacketFileHeader,
 		FileMeta: meta,
 	}
-	enc, err := encodeAndEncryptPacket(headerPacket, aead)
+	enc, err := sealPacket(headerPacket, aead)
 	if err != nil {
 		t.Fatalf("encodeAndEncryptPacket failed: %v", err)
 	}
 
 	var dec P2PPacket
-	if err := decryptAndDecodePacket(enc, &dec, aead); err != nil {
+	if err := openPacket(enc, &dec, aead); err != nil {
 		t.Fatalf("decryptAndDecodePacket failed: %v", err)
 	}
 	if dec.Type != PacketFileHeader || dec.FileMeta == nil || dec.FileMeta.TransferID != "tx_123" {
@@ -1700,12 +1710,12 @@ func TestE2EEFileTransfer(t *testing.T) {
 		FileMeta: snippetMeta,
 		Payload:  []byte(codeSnippet),
 	}
-	codeEnc, err := encodeAndEncryptPacket(codePacket, aead)
+	codeEnc, err := sealPacket(codePacket, aead)
 	if err != nil {
 		t.Fatalf("Code packet marshal failed: %v", err)
 	}
 	var codeDec P2PPacket
-	if err := decryptAndDecodePacket(codeEnc, &codeDec, aead); err != nil {
+	if err := openPacket(codeEnc, &codeDec, aead); err != nil {
 		t.Fatalf("Code packet unmarshal failed: %v", err)
 	}
 	if string(codeDec.Payload) != codeSnippet || !codeDec.FileMeta.IsCode {
@@ -2173,7 +2183,7 @@ func TestPINProtectionEnforcement(t *testing.T) {
 	// 2. Client joins without PIN or with wrong PIN -> Should be rejected
 	wrongJoinPkt := P2PPacket{
 		Type:      PacketJoinRequest,
-		RoomCode:  roomCode,
+		RoomCode:  hostNode.roomID,
 		SenderID:  "intruder_1",
 		Nickname:  "Intruder",
 		PIN:       "0000",
@@ -2191,7 +2201,7 @@ func TestPINProtectionEnforcement(t *testing.T) {
 	// 3. Client sends random hello packet while host is locked -> Must NOT auto-register
 	helloPkt := P2PPacket{
 		Type:      PacketHello,
-		RoomCode:  roomCode,
+		RoomCode:  hostNode.roomID,
 		SenderID:  "intruder_2",
 		Nickname:  "Intruder2",
 		Timestamp: time.Now().UnixMilli(),
@@ -2208,7 +2218,7 @@ func TestPINProtectionEnforcement(t *testing.T) {
 	// 4. Valid client joins with correct PIN 4829 -> Should be admitted
 	validJoinPkt := P2PPacket{
 		Type:      PacketJoinRequest,
-		RoomCode:  roomCode,
+		RoomCode:  hostNode.roomID,
 		SenderID:  "friend_1",
 		Nickname:  "FriendAlice",
 		PIN:       "4829",
@@ -2233,6 +2243,7 @@ func TestHostMigrationPINPreservation(t *testing.T) {
 
 	roomCode := "migration-test-room"
 	peerNode.RoomCode = roomCode
+	peerNode.roomID = peerNode.RoomCode
 	peerNode.IsConnected = true
 	peerNode.IsHost = false
 	peerNode.HostID = "host_bob"
@@ -2702,6 +2713,7 @@ func TestFileTransferSizeAndChunkLimits(t *testing.T) {
 	node := NewP2PNode("test_receiver", "Receiver", audio)
 	node.IsConnected = true
 	node.RoomCode = NormalizeCode("LIMIT-TEST")
+	node.roomID = node.RoomCode
 
 	// 1. PacketFileHeader exceeding 50 MB should be rejected
 	oversizedPkt := P2PPacket{
@@ -2737,7 +2749,7 @@ func TestFileTransferSizeAndChunkLimits(t *testing.T) {
 			TransferID:  "chunks_tx",
 			FileName:    "split.bin",
 			FileSize:    10 * 1024 * 1024,
-			TotalChunks: 3000, // > 2000 MaxFileChunks
+			TotalChunks: 5000, // > MaxFileChunks (50 MB / 16 KB chunks = 3200)
 		},
 	}
 	node.handlePacket(&tooManyChunksPkt, nil)
@@ -2746,7 +2758,7 @@ func TestFileTransferSizeAndChunkLimits(t *testing.T) {
 	_, exists = node.incomingTransfers["chunks_tx"]
 	node.mu.RUnlock()
 	if exists {
-		t.Fatalf("Expected transfer with 3000 chunks to be rejected, but was accepted")
+		t.Fatalf("Expected transfer with 5000 chunks to be rejected, but was accepted")
 	}
 
 	// 3. Valid file header should be accepted
@@ -2801,6 +2813,7 @@ func TestControlPacketReplayProtection(t *testing.T) {
 	node := NewP2PNode("test_receiver_2", "Receiver2", audio)
 	node.IsConnected = true
 	node.RoomCode = NormalizeCode("REPLAY-TEST")
+	node.roomID = node.RoomCode
 
 	// Register a peer
 	node.Peers["peer_alice"] = &PeerInfo{
@@ -2872,8 +2885,9 @@ func TestRelayHostTokenLifecycle(t *testing.T) {
 	node.mu.RUnlock()
 
 	// 2. Receive room_created with HostToken
-	node.handleRelayControl(RelayControlMessage{
-		Type:      "room_created",
+	node.handleRelaySignal(protocol.Signal{
+		Type:      protocol.SigRoomCreated,
+		Proto:     protocol.SignalVersion,
 		RoomCode:  "TEST-ROOM",
 		HostToken: "secret_token_1234567890abcdef",
 	})
@@ -2893,13 +2907,17 @@ func TestRelayHostTokenLifecycle(t *testing.T) {
 	}
 	node.mu.RUnlock()
 
-	// 4. Test new_host promotion with HostToken
-	node.handleRelayControl(RelayControlMessage{
-		Type:      "new_host",
+	// 4. Test new_host promotion with HostToken. The PIN is never carried by the relay:
+	// a promoted host keeps enforcing the PIN it already knows locally.
+	node.mu.Lock()
+	node.RoomPIN = "7777"
+	node.mu.Unlock()
+	node.handleRelaySignal(protocol.Signal{
+		Type:      protocol.SigNewHost,
 		RoomCode:  "TEST-ROOM-2",
 		SenderID:  node.LocalID,
 		Nickname:  node.Nickname,
-		PIN:       "7777",
+		IsLocked:  true,
 		HostToken: "migrated_token_99999",
 	})
 
@@ -2910,8 +2928,8 @@ func TestRelayHostTokenLifecycle(t *testing.T) {
 	if node.hostToken != "migrated_token_99999" {
 		t.Fatalf("Expected hostToken 'migrated_token_99999', got %s", node.hostToken)
 	}
-	if node.RoomPIN != "7777" {
-		t.Fatalf("Expected RoomPIN '7777', got %s", node.RoomPIN)
+	if node.RoomPIN != "7777" || !node.IsLocked {
+		t.Fatalf("Expected locked room with local PIN '7777', got locked=%v pin=%s", node.IsLocked, node.RoomPIN)
 	}
 	node.mu.RUnlock()
 }
@@ -2994,6 +3012,7 @@ func TestChatMessageLengthCap(t *testing.T) {
 	node.mu.Lock()
 	node.IsConnected = true
 	node.RoomCode = "CHAT-ROOM"
+	node.roomID = node.RoomCode
 	node.mu.Unlock()
 
 	ch := make(chan string, 1)
@@ -3030,24 +3049,32 @@ func TestSendAudioPreRollLookback(t *testing.T) {
 	node := NewP2PNode("sender_preroll", "Sender", audio)
 	defer node.Close()
 
-	key := deriveRoomKey("preroll-test-room")
-	block, _ := aes.NewCipher(key)
-	aead, _ := cipher.NewGCM(block)
+	aead := testKeyring("preroll-test-room")
 
 	priorityCh := make(chan []byte, 10)
 
 	node.mu.Lock()
 	node.IsConnected = true
 	node.RoomCode = "preroll-test-room"
-	node.aead = aead
+	node.roomID = "preroll-test-room"
+	node.keyring = aead
 	node.Peers["peer_1"] = &PeerInfo{ID: "peer_1", Nickname: "Bob"}
 	node.isRelayConnected = true
 	node.wsPriorityCh = priorityCh
 	node.mu.Unlock()
 
+	frame := func(amplitude float64) []byte {
+		pcm := make([]byte, AudioChunkSize)
+		for i := 0; i < AudioFrameSamples; i++ {
+			v := int16(amplitude * math.Sin(2*math.Pi*300*float64(i)/AudioSampleRate))
+			binary.LittleEndian.PutUint16(pcm[2*i:], uint16(v))
+		}
+		return pcm
+	}
+
 	// 1. Silent frames: should be buffered in audioPreRoll, not sent across network
-	node.SendAudio(0.001, false, []byte("silent_chunk_1"))
-	node.SendAudio(0.002, false, []byte("silent_chunk_2"))
+	node.SendAudio(0.001, false, frame(30))
+	node.SendAudio(0.002, false, frame(60))
 
 	node.mu.RLock()
 	preRollCount := len(node.audioPreRoll)
@@ -3065,7 +3092,7 @@ func TestSendAudioPreRollLookback(t *testing.T) {
 	}
 
 	// 2. Speech onset frame: should flush 2 pre-roll frames + send current speech frame (3 packets total)
-	node.SendAudio(0.020, true, []byte("speech_chunk_3"))
+	node.SendAudio(0.020, true, frame(6000))
 
 	node.mu.RLock()
 	preRollAfter := len(node.audioPreRoll)
@@ -3082,19 +3109,35 @@ func TestSendAudioPreRollLookback(t *testing.T) {
 		t.Fatalf("Expected 3 packets transmitted (2 pre-roll + 1 speech), got %d", len(priorityCh))
 	}
 
-	// Verify the 3 packets in order: silent_chunk_1, silent_chunk_2, speech_chunk_3
-	for i, expectedPayload := range []string{"silent_chunk_1", "silent_chunk_2", "speech_chunk_3"} {
-		encrypted := <-priorityCh
+	// Verify the 3 packets in order (consecutive audio sequence numbers, Opus payloads, RMS kept)
+	var lastSeq uint32
+	sizes := map[int]bool{}
+	for i, expectedRMS := range []float64{0.001, 0.002, 0.020} {
+		frameData := <-priorityCh
+		if frameData[0] != protocol.FrameRealtime {
+			t.Fatalf("Expected realtime relay frame class, got %d", frameData[0])
+		}
 		var pkt P2PPacket
-		if err := decryptAndDecodePacket(encrypted, &pkt, aead); err != nil {
+		if err := openPacket(frameData[1:], &pkt, aead); err != nil {
 			t.Fatalf("Failed to decrypt packet %d: %v", i, err)
 		}
-		if string(pkt.Payload) != expectedPayload {
-			t.Fatalf("Packet %d payload mismatch: expected %q, got %q", i, expectedPayload, string(pkt.Payload))
+		if pkt.Type != PacketAudio || len(pkt.Payload) == 0 || len(pkt.Payload) > 200 {
+			t.Fatalf("Packet %d is not a compact Opus audio frame (%d bytes)", i, len(pkt.Payload))
 		}
+		sizes[len(pkt.Payload)] = true
+		if math.Abs(pkt.RMS-expectedRMS) > 1e-6 {
+			t.Fatalf("Packet %d RMS mismatch: expected %v, got %v", i, expectedRMS, pkt.RMS)
+		}
+		if i > 0 && pkt.Seq != lastSeq+1 {
+			t.Fatalf("Packet %d sequence %d does not follow %d", i, pkt.Seq, lastSeq)
+		}
+		lastSeq = pkt.Seq
 		if !pkt.Speaking {
 			t.Fatalf("Expected packet %d Speaking=true, got false", i)
 		}
+	}
+	if len(sizes) != 1 {
+		t.Fatalf("Opus packets must be constant bitrate, got sizes %v", sizes)
 	}
 }
 
@@ -3249,7 +3292,7 @@ func TestP2PScreenShareFPSPacket(t *testing.T) {
 	// Simulate PacketScreenShareStart with 120 FPS
 	startPkt := P2PPacket{
 		Type:            PacketScreenShareStart,
-		RoomCode:        node.RoomCode,
+		RoomCode:        node.roomID,
 		SenderID:        peerID,
 		Nickname:        "GamerPeer",
 		IsSharingScreen: true,
@@ -3267,7 +3310,7 @@ func TestP2PScreenShareFPSPacket(t *testing.T) {
 	// Simulate PacketScreenShareStop
 	stopPkt := P2PPacket{
 		Type:            PacketScreenShareStop,
-		RoomCode:        node.RoomCode,
+		RoomCode:        node.roomID,
 		SenderID:        peerID,
 		Nickname:        "GamerPeer",
 		IsSharingScreen: false,
@@ -3280,20 +3323,9 @@ func TestP2PScreenShareFPSPacket(t *testing.T) {
 }
 
 func TestVideo120FPSPrefixAndQueues(t *testing.T) {
-	key := make([]byte, 32)
-	for i := range key {
-		key[i] = byte(i + 1)
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatalf("aes error: %v", err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatalf("gcm error: %v", err)
-	}
+	aead := testKeyring("video-queues")
 
-	// 1. Video packet must use LVV1 prefix
+	// 1. Video packets carry no plaintext marker (scheduling class lives in the relay frame header)
 	vidPkt := P2PPacket{
 		Type:     PacketScreenShareData,
 		RoomCode: "TEST-120",
@@ -3301,15 +3333,15 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 		Seq:      100,
 		Payload:  make([]byte, 1316),
 	}
-	encVid, err := encodeAndEncryptPacket(&vidPkt, aead)
+	encVid, err := sealPacket(&vidPkt, aead)
 	if err != nil {
 		t.Fatalf("encode video packet failed: %v", err)
 	}
-	if !bytes.HasPrefix(encVid, []byte("LVV1")) {
-		t.Fatalf("Expected LVV1 prefix for video packet, got: %s", string(encVid[:4]))
+	if bytes.HasPrefix(encVid, []byte("LVV1")) || bytes.HasPrefix(encVid, []byte("LVS1")) {
+		t.Fatalf("Sealed video packet must not carry a fixed magic prefix")
 	}
 
-	// 2. Control/Ping packet must use LVS1 prefix
+	// 2. Control/Ping packets are equally unmarked
 	pingPkt := P2PPacket{
 		Type:      PacketPing,
 		RoomCode:  "TEST-120",
@@ -3317,17 +3349,17 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 		Seq:       100,
 		Timestamp: time.Now().UnixMilli(),
 	}
-	encPing, err := encodeAndEncryptPacket(&pingPkt, aead)
+	encPing, err := sealPacket(&pingPkt, aead)
 	if err != nil {
 		t.Fatalf("encode ping packet failed: %v", err)
 	}
-	if !bytes.HasPrefix(encPing, []byte("LVS1")) {
-		t.Fatalf("Expected LVS1 prefix for ping packet, got: %s", string(encPing[:4]))
+	if bytes.Equal(encPing[:4], encVid[:4]) {
+		t.Fatalf("Sealed packets should start with random nonces")
 	}
 
-	// 3. Decrypt must accept both prefixes cleanly
+	// 3. Decrypt must accept both packet kinds cleanly
 	var decVid P2PPacket
-	if err := decryptAndDecodePacket(encVid, &decVid, aead); err != nil {
+	if err := openPacket(encVid, &decVid, aead); err != nil {
 		t.Fatalf("failed to decrypt LVV1 packet: %v", err)
 	}
 	if decVid.Type != PacketScreenShareData || len(decVid.Payload) != 1316 {
@@ -3335,7 +3367,7 @@ func TestVideo120FPSPrefixAndQueues(t *testing.T) {
 	}
 
 	var decPing P2PPacket
-	if err := decryptAndDecodePacket(encPing, &decPing, aead); err != nil {
+	if err := openPacket(encPing, &decPing, aead); err != nil {
 		t.Fatalf("failed to decrypt LVS1 packet: %v", err)
 	}
 	if decPing.Type != PacketPing {

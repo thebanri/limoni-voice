@@ -1,9 +1,32 @@
+# filippo.io/cpace v0.0.0-20210101143347-24d601e2e469
+## explicit; go 1.14
+filippo.io/cpace
+# github.com/ebitengine/purego v0.11.0
+## explicit; go 1.25.0
+github.com/ebitengine/purego
+github.com/ebitengine/purego/internal/cgo
+github.com/ebitengine/purego/internal/fakecgo
+github.com/ebitengine/purego/internal/strings
 # github.com/godbus/dbus/v5 v5.2.2
 ## explicit; go 1.20
 github.com/godbus/dbus/v5
 # github.com/gorilla/websocket v1.5.3
 ## explicit; go 1.12
 github.com/gorilla/websocket
+# github.com/gtank/ristretto255 v0.1.2
+## explicit; go 1.12
+github.com/gtank/ristretto255
+github.com/gtank/ristretto255/internal/edwards25519
+github.com/gtank/ristretto255/internal/radix51
+github.com/gtank/ristretto255/internal/scalar
+# github.com/jezek/xgb v1.3.1
+## explicit; go 1.11
+github.com/jezek/xgb
+github.com/jezek/xgb/xproto
+# github.com/jfreymuth/pulse v0.1.3
+## explicit; go 1.12
+github.com/jfreymuth/pulse
+github.com/jfreymuth/pulse/proto
 # github.com/thebanri/limoni v0.2.4
 ## explicit; go 1.26.5
 github.com/thebanri/limoni/animation
@@ -15,8 +38,34 @@ github.com/thebanri/limoni/core/terminal
 github.com/thebanri/limoni/graphics
 github.com/thebanri/limoni/layout
 github.com/thebanri/limoni/widgets
+# github.com/thesyncim/gopus v0.1.1
+## explicit; go 1.25.0
+github.com/thesyncim/gopus
+github.com/thesyncim/gopus/internal/celt
+github.com/thesyncim/gopus/internal/cpufeat
+github.com/thesyncim/gopus/internal/dnnblob
+github.com/thesyncim/gopus/internal/dnnmath
+github.com/thesyncim/gopus/internal/dred
+github.com/thesyncim/gopus/internal/dred/rdovae
+github.com/thesyncim/gopus/internal/encoder
+github.com/thesyncim/gopus/internal/extsupport
+github.com/thesyncim/gopus/internal/fixedpoint
+github.com/thesyncim/gopus/internal/hybrid
+github.com/thesyncim/gopus/internal/lpcnetplc
+github.com/thesyncim/gopus/internal/opusmath
+github.com/thesyncim/gopus/internal/osce/bwe
+github.com/thesyncim/gopus/internal/osce/lace
+github.com/thesyncim/gopus/internal/plc
+github.com/thesyncim/gopus/internal/rangecoding
+github.com/thesyncim/gopus/internal/silk
+github.com/thesyncim/gopus/internal/util
+github.com/thesyncim/gopus/multistream
+github.com/thesyncim/gopus/types
 # golang.org/x/crypto v0.55.0
 ## explicit; go 1.25.0
+golang.org/x/crypto/cryptobyte
+golang.org/x/crypto/cryptobyte/asn1
+golang.org/x/crypto/hkdf
 # golang.org/x/sys v0.47.0
 ## explicit; go 1.25.0
 golang.org/x/sys/unix

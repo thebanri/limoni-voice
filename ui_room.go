@@ -859,12 +859,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 		peerCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
 		isReconnecting := time.Since(peer.LastSeen) > 8000*time.Millisecond
 		isBeingWatched := node.IsWatchingScreen && node.WatchingPeerID == peer.ID
-		trans := "P2P"
-		if peer.ViaRelay {
-			trans = "Relay"
-		} else if peer.Addr != nil && (peer.Addr.IP.IsLoopback() || peer.Addr.IP.IsPrivate()) {
-			trans = "LAN"
-		}
+		trans := peerTransport(node, peer)
 		r.renderMemberMiniCard(frame, peerCard, peer.Nickname, peer.RMS, peer.Speaking, peer.IsMuted, peer.IsDeafened, peer.IsSharingScreen, isBeingWatched, peer.PingMs, isReconnecting, false, trans)
 
 		if peer.IsSharingScreen {
@@ -1474,13 +1469,10 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 
 	pingStr := "PING: --"
 	if peer.PingMs > 0 {
-		trans := "P2P"
-		if peer.ViaRelay {
-			trans = "Relay"
-		} else if peer.Addr != nil && (peer.Addr.IP.IsLoopback() || peer.Addr.IP.IsPrivate()) {
-			trans = "LAN"
+		pingStr = fmt.Sprintf("PING: %dms (%s)", peer.PingMs, peerTransport(node, peer))
+		if peer.LossPct >= 1 {
+			pingStr = fmt.Sprintf("PING: %dms %d%% loss (%s)", peer.PingMs, int(peer.LossPct), peerTransport(node, peer))
 		}
-		pingStr = fmt.Sprintf("PING: %dms (%s)", peer.PingMs, trans)
 	}
 	volVal := 1.0
 	if audio != nil {
@@ -4231,4 +4223,12 @@ func OpenFolder(dirPath string) error {
 	default:
 		return exec.Command("xdg-open", dirPath).Start()
 	}
+}
+
+// peerTransport labels the path audio to a peer takes: LAN, P2P, P2P-v6, Relay-UDP or Relay.
+func peerTransport(node *P2PNode, peer *PeerInfo) string {
+	if node == nil {
+		return peer.Path(false)
+	}
+	return node.PeerPath(peer)
 }

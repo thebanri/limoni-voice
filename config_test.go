@@ -262,6 +262,7 @@ func TestPingPongDeduplicationAndSmoothing(t *testing.T) {
 	node := &P2PNode{
 		LocalID:     "node_local",
 		RoomCode:    "test-room",
+		roomID:      "test-room",
 		IsConnected: true,
 		Peers:       make(map[string]*PeerInfo),
 	}
@@ -384,14 +385,8 @@ func TestProbeRelayServer(t *testing.T) {
 }
 
 func TestPeerViaRelayAndDirectTracking(t *testing.T) {
-	node := &P2PNode{
-		LocalID:     "node_local",
-		RoomCode:    "room-test",
-		IsConnected: true,
-		Peers:       make(map[string]*PeerInfo),
-		audio:       NewAudioEngine(),
-	}
-	node.aead, _ = deriveRoomCipher(deriveRoomKey("room-test"))
+	node := testRoomNode("node_local", "room-test")
+	node.LanOnly = false
 
 	// 1. Peer packet arrives via WebSocket relay (raddr == nil)
 	pkt1 := P2PPacket{
@@ -446,8 +441,10 @@ func TestPeerViaRelayAndDirectTracking(t *testing.T) {
 	}
 
 	// 4. LAN-only mode accepts private IP
+	node.mu.Lock()
 	node.LanOnly = true
 	peer.ViaRelay = true
+	node.mu.Unlock()
 	node.handlePacket(&pkt2, lanAddr)
 	if peer.ViaRelay {
 		t.Fatalf("Expected ViaRelay to be false for LAN packet when LanOnly is true")

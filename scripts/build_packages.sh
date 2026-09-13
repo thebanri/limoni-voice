@@ -18,6 +18,10 @@ mkdir -p dist/windows-amd64 dist/windows-arm64
 mkdir -p dist/darwin-arm64 dist/darwin-amd64
 
 LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
+if [ -n "${UPDATE_SIGNING_PUBKEY:-}" ]; then
+  # Builds that embed a signing key only accept signed updates (checksums.txt.sig)
+  LDFLAGS="${LDFLAGS} -X main.UpdateSigningPublicKey=${UPDATE_SIGNING_PUBKEY}"
+fi
 
 # 0. Prep installer dependencies
 mkdir -p cmd/installer
@@ -230,7 +234,13 @@ build_deb "linux-arm64" "arm64"
 # 10. Generate Checksums
 echo "==> Generating Checksums..."
 cd release_assets
-sha256sum * > checksums.txt || true
+sha256sum * > checksums.txt
 cat checksums.txt
+cd ..
+
+if [ -n "${UPDATE_SIGNING_KEY:-}" ]; then
+  echo "==> Signing checksums.txt..."
+  go run -mod=vendor ./cmd/limoni-sign sign release_assets/checksums.txt
+fi
 
 echo "==> Build and Packaging Completed Successfully!"

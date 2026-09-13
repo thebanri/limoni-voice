@@ -4,8 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -124,5 +129,48 @@ func TestReplaceExecutable(t *testing.T) {
 
 	if string(readBack) != string(newContent) {
 		t.Fatalf("Replaced content mismatch: expected %q, got %q", newContent, readBack)
+	}
+}
+
+func TestUpdateChecksumVerification(t *testing.T) {
+	asset := []byte("limoni-voice release payload")
+	sum := sha256.Sum256(asset)
+	checksums := []byte(hex.EncodeToString(sum[:]) + "  limoni-voice_v9.9.9_linux_amd64.tar.gz\n" +
+		strings.Repeat("0", 64) + "  checksums-other.bin\n")
+
+	expected, err := ExpectedChecksum(checksums, "limoni-voice_v9.9.9_linux_amd64.tar.gz")
+	if err != nil {
+		t.Fatalf("ExpectedChecksum failed: %v", err)
+	}
+	if err := VerifyAssetChecksum(asset, expected); err != nil {
+		t.Fatalf("valid asset rejected: %v", err)
+	}
+	tampered := append([]byte{}, asset...)
+	tampered[0] ^= 0xff
+	if err := VerifyAssetChecksum(tampered, expected); err == nil {
+		t.Fatal("tampered asset accepted")
+	}
+	if _, err := ExpectedChecksum(checksums, "missing.tar.gz"); err == nil {
+		t.Fatal("missing checksum entry must refuse the update")
+	}
+}
+
+func TestUpdateSignatureVerification(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksums := []byte("abc  file\n")
+	sig := ed25519.Sign(priv, checksums)
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+
+	if err := VerifyChecksumsSignature(pubB64, checksums, sig); err != nil {
+		t.Fatalf("raw signature rejected: %v", err)
+	}
+	if err := VerifyChecksumsSignature(pubB64, checksums, []byte(base64.StdEncoding.EncodeToString(sig))); err != nil {
+		t.Fatalf("base64 signature rejected: %v", err)
+	}
+	if err := VerifyChecksumsSignature(pubB64, []byte("abc  evil\n"), sig); err == nil {
+		t.Fatal("signature over different content accepted")
 	}
 }

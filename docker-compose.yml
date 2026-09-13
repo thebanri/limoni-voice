@@ -6,10 +6,21 @@ services:
     container_name: limoni-relay
     restart: unless-stopped
     ports:
-      - "${PORT:-27850}:${PORT:-27850}"
+      - "${PORT:-27850}:${PORT:-27850}/tcp"
+      # UDP ses rölesi. Cloudflare Tunnel UDP taşımaz: düşük ping için bu portu
+      # VPS / port yönlendirme ile dışarı açın ve RELAY_UDP_PUBLIC_ADDR verin.
+      - "${UDP_PORT:-27850}:${UDP_PORT:-27850}/udp"
     environment:
       - PORT=${PORT:-27850}
+      - UDP_PORT=${UDP_PORT:-27850}
+      # Örn: 203.0.113.10:27850 — istemcilere duyurulan genel UDP adresi.
+      # Boşsa WebSocket host adı + UDP_PORT duyurulur (tünel arkasında bu çalışmaz, istemci WebSocket'e düşer).
+      - RELAY_UDP_PUBLIC_ADDR=${RELAY_UDP_PUBLIC_ADDR:-}
       - RELAY_AUTH_TOKEN=${RELAY_AUTH_TOKEN:-}
+      # Özel ağdan (ör. cloudflared konteyneri) gelen proxy başlıklarına zaten güvenilir;
+      # yalnızca röle önünde başka bir genel proxy varsa true yapın.
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
 
   # 1. Hızlı ve Ücretsiz Tünel (Token veya Cloudflare hesabı GEREKTİRMEZ)
   # Başlatma: docker compose --profile quick-tunnel up -d

@@ -37,12 +37,13 @@
 <td width="50%">
 
 ### 🎙️ Sesli Konuşma
-- **Full-Mesh P2P**: 4 kişilik oda, doğrudan peer-to-peer UDP
-- **AES-256-GCM Şifreleme**: Tüm ses ve kontrol paketleri uçtan uca şifreli
-- **VAD (Voice Activity Detection)**: 60ms dairesel pre-roll tamponu ile konuşan anlık tespit edilir
-- **Harf & Başlangıç Koruma**: Tepe-RMS (Crest Factor) ayrıştırması ile kelime başlangıçlarındaki ötümsüz seslerin (örn. "selam"daki "s" harfi) kesilmesi önlenir
-- **Gürültü Bastırma**: Mekanik klavye ve darbe filtreli çok kademeli filtre (KAPALI / AÇIK / YÜKSEK)
-- **Canlı VU-Meter**: Her katılımcının ses seviyesi gerçek zamanlı görselleştirilir
+- **Opus 48 kHz**: 32 kbps CBR, bant içi FEC ve paket kaybına göre ayarlanan kodlama
+- **Uyarlanabilir Jitter Tamponu**: RFC 3550 jitter tahmini, kayıp gizleme (PLC) ve FEC kurtarma
+- **Yankı Giderme (AEC)**: Saf Go Speex MDF portu — kulaklıksız hoparlörle konuşabilirsiniz
+- **Yapay Zekâ Gürültü Bastırma**: Saf Go RNNoise portu (KAPALI / AÇIK / YÜKSEK / AI)
+- **VAD**: Pre-roll tamponu ve kelime başı korumasıyla anlık konuşma algılama
+- **Global Bas-Konuş**: Terminal odakta değilken de çalışır (X11, Wayland'de XDG portal, Win32, macOS)
+- **Yerel Ses G/Ç**: PulseAudio/PipeWire protokolü, CoreAudio, winmm — harici araç gerekmez
 
 </td>
 <td width="50%">
@@ -64,10 +65,12 @@
 
 ### 🌐 Ağ Mimarisi
 - **LAN Otomatik Keşif**: Broadcast paketleri ile yerel ağda sıfır-konfigürasyon
-- **İnternet P2P**: WebSocket relay sunucusu ile NAT geçişi ve hole-punching
-- **Dinamik Port Hopping**: DPI ve sansür engellemelerine karşı otomatik port rotasyonu
-- **Anti-Replay Koruması**: Zaman damgası penceresi ve kayan sıra önbelleği
-- **Relay Sunucusu**: Railway üzerinde barındırılan ultra hafif Go sunucusu (~7 MB Docker image)
+- **Yol Merdiveni**: LAN → doğrudan P2P (IPv6 / IPv4 hole-punch) → UDP relay → WebSocket relay
+- **NAT Sınıflandırma**: STUN ile cone/symmetric tespiti, port püskürtme ve çoklu soket delme
+- **UDP Relay**: Doğrudan yol kurulamazsa (symmetric NAT, CGNAT) düşük gecikmeli şifreli medya aktarımı
+- **Yedekli Ses**: Ses hem relay hem doğrudan yoldan gönderilir, alıcı tekrarları ayıklar
+- **Canlı Tanılama**: Debug panelinde (`F12`) ve `/net` komutunda peer başına yol, RTT, kayıp ve jitter
+- **Relay Sunucusu**: Prometheus `/metrics` ve yapılandırılmış log destekli hafif Go sunucusu
 
 </td>
 <td width="50%">
@@ -109,46 +112,49 @@
 ## 🏗️ Mimari
 
 ```
-                          ┌─────────────────────────────────┐
-                          │   WebSocket Relay Server        │
-                          │   (Railway / Docker / Self-Host)│
-                          │   NAT Traversal & Hole-Punch    │
-                          └──────────┬──────────────────────┘
-                                     │ WSS
-                     ┌───────────────┼───────────────┐
-                     │               │               │
-              ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
-              │   Peer A    │ │   Peer B    │ │   Peer C    │
-              │  (Host)     │ │             │ │             │
-              ├─────────────┤ ├─────────────┤ ├─────────────┤
-              │ Audio Engine│ │ Audio Engine│ │ Audio Engine│
-              │ Screen Share│ │ Screen Share│ │ Screen Share│
-              │ TUI Render  │ │ TUI Render  │ │ TUI Render  │
-              └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-                     │               │               │
-                     └───── UDP P2P Full-Mesh ───────┘
-                           (AES-256-GCM Encrypted)
+      ┌──────────────────────────────────────────────────────────┐
+      │ Relay server (Docker / VPS / Cloudflare Tunnel)          │
+      │ WSS: signaling, PAKE handshake, fallback media           │
+      │ UDP: low-latency encrypted media relay                   │
+      └───────┬─────────────────────┬─────────────────────┬──────┘
+              │                     │                     │
+              ▼                     ▼                     ▼
+      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+      │ Peer A (Host)│      │ Peer B       │      │ Peer C       │
+      ├──────────────┤      ├──────────────┤      ├──────────────┤
+      │ Opus + FEC   │      │ Opus + FEC   │      │ Opus + FEC   │
+      │ AEC · RNNoise│      │ AEC · RNNoise│      │ AEC · RNNoise│
+      │ Limoni TUI   │      │ Limoni TUI   │      │ Limoni TUI   │
+      └───────┬──────┘      └───────┬──────┘      └───────┬──────┘
+              └─────────────────────┴─────────────────────┘
+                direct UDP / IPv6 hole-punch (full mesh)
+                (group key AES-256-GCM, rotated on leave)
 ```
 
 ### Proje Yapısı
 
 ```
 limoni-voice/
-├── main.go              # Uygulama giriş noktası, event loop & ekran yönetimi
-├── network.go           # P2P mesh ağı, şifreleme, WebSocket relay istemcisi
-├── audio.go             # Ses motoru: yakalama, oynatma, VAD, gürültü filtresi
-├── ui_lobby.go          # Lobi ekranı: 3D mikrofon, input alanları, menü
-├── ui_room.go           # Oda ekranı: katılımcı kartları, VU-meter, loglar
-├── dialogs.go           # Modal dialoglar: çıkış, ayrılma, ses testi, ekran paylaşımı
-├── microphone3d.go      # 3D stüdyo mikrofon modeli (polygon & wireframe)
+├── main.go              # Başlatıcı: bayraklar, terminal, düğüm
+├── app*.go              # Uygulama durumu, tuş/fare yönlendirme, render, ayarlar
+├── network*.go          # P2P düğüm: relay, el sıkışma, NAT, medya, dosya, istatistik
+├── audio.go             # Ses motoru: 48 kHz yakalama/oynatma, VAD, AEC, gürültü
+├── ui_lobby.go          # Lobi ekranı: 3D mikrofon, girişler, menü
+├── ui_room.go           # Oda ekranı: katılımcı kartları, VU-meter, sohbet
+├── dialogs.go           # Modallar: ses ayarları, relay, debug/tanılama, paylaşım
+├── internal/
+│   ├── protocol/        # İkili paket formatı + relay sinyal tipleri
+│   ├── e2ee/            # Oda kodu, CPace PAKE el sıkışma, epoch anahtarlığı
+│   ├── relay/           # Relay sunucusu (WebSocket + UDP) ve metrikler
+│   ├── nat/             # STUN NAT sınıflandırma, delme stratejileri, IPv6
+│   ├── voice/           # Opus codec, uyarlanabilir jitter tamponu
+│   ├── dsp/             # Speex MDF yankı giderici, RNNoise, FFT
+│   ├── audioio/         # PulseAudio / CoreAudio / winmm / tool fallback
+│   └── ptt/             # Sistem geneli bas-konuş (X11, portal, Win32, macOS)
 ├── screenshare/         # Ekran paylaşımı modülü (GPU Rec, FFmpeg, MPV)
-├── clipboard.go         # Platformlar arası pano desteği
-├── roomcode.go          # Croc tarzı oda kodu üreteci
-├── relay-server/        # WebSocket relay sunucusu (bağımsız Go modülü)
-├── scripts/             # Build & paketleme scriptleri
-├── release_assets/      # Derlenmiş binary'ler ve installer'lar
-├── dist/                # Platform bazlı dağıtım paketleri
-└── assets/              # Logo, ikonlar
+├── relay-server/        # Relay binary'si (internal/relay üzerinde ince katman)
+├── cmd/limoni-sign/     # Sürüm checksum'ları için ed25519 imzalama aracı
+└── scripts/             # Build & paketleme scriptleri
 ```
 
 ---
@@ -174,7 +180,7 @@ irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install
 > [!IMPORTANT]
 > - **🪟 Windows**: Sesli konuşma tamamen **sıfır bağımlılıkla** doğrudan çalışır (yerel Win32 `winmm` ses API'leri kullanılır). Ekran paylaşımı için **FFmpeg** ve **MPV** gereklidir.
 > - **🐧 Linux**: Standart PulseAudio, PipeWire veya ALSA bulunan Linux dağıtımlarında sesli konuşma doğrudan çalışır. Ekran paylaşımı için **FFmpeg** ve **MPV** gereklidir.
-> - **🍎 macOS**: macOS işletim sisteminde yerleşik komut satırı ses yakalama aracı bulunmadığından, hem sesli konuşma hem de ekran paylaşımı için **FFmpeg** ve **MPV** (Homebrew ile) kurulmalıdır:
+> - **🍎 macOS**: Sesli konuşma yerel CoreAudio kullanır (bağımlılık gerekmez). Ekran paylaşımı için Homebrew ile **FFmpeg** ve **MPV** kurun:
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
@@ -223,7 +229,7 @@ tar xzf limoni-voice_v1.4.0_linux_amd64.tar.gz
 ### Kaynaktan Derleme
 
 ```bash
-# Gereksinimler: Go 1.24+
+# Gereksinimler: Go 1.26+
 git clone https://github.com/thebanri/limoni-voice.git
 cd limoni-voice
 go build -o limoni-voice .
@@ -320,6 +326,26 @@ docker compose down --remove-orphans
 > [!TIP]
 > **Ağ / UDP QUIC Bağlantı Sorunları:** `docker-compose.yml`, tünel trafiğini UDP port 7844 (QUIC) yerine standart HTTPS (TCP 443) üzerinden geçirmek üzere `--protocol http2` ve genel DNS ile yapılandırılmıştır. Bu sayede servis sağlayıcıların UDP engellemelerine ve "sendmsg: network is unreachable" hatalarına takılmaz.
 
+#### ⚡ Düşük Gecikme: UDP Relay (Cloudflare Tunnel kullananlar için önemli)
+
+Cloudflare Tunnel yalnızca **TCP/WebSocket** taşır. İki kişi doğrudan bağlanamadığında (ör. symmetric NAT veya CGNAT) ses tünel içindeki WebSocket relay'e düşer ve bu genellikle **~100+ ms** ekler. En düşük gecikme için:
+
+1. Relay'i bir VPS'te çalıştırın veya modeminizde **UDP 27850** portunu yönlendirin.
+2. İstemcilere UDP relay adresini bildirin:
+   ```bash
+   RELAY_UDP_PUBLIC_ADDR=203.0.113.10:27850 docker compose --profile tunnel up -d
+   ```
+3. Debug panelini (`F12`) açın veya sohbete `/net` yazın: peer yolu `Relay` yerine `P2P`, `P2P-v6` ya da `Relay-UDP` görünmelidir.
+
+| Ortam Değişkeni | Varsayılan | Açıklama |
+|-----------------|------------|----------|
+| `PORT` | `27850` | HTTP/WebSocket TCP portu |
+| `UDP_PORT` | `PORT` ile aynı | UDP relay portu (`0` / `off` kapatır) |
+| `RELAY_UDP_PUBLIC_ADDR` | – | UDP için duyurulan `host:port` (tünel arkasında zorunlu) |
+| `RELAY_AUTH_TOKEN` | – | İstemciler için isteğe bağlı parola |
+| `TRUST_PROXY` | `false` | `CF-Connecting-IP` / `X-Forwarded-For` başlıklarına her zaman güven (özel ağdaki proxy'lere zaten güvenilir) |
+| `LOG_FORMAT` / `LOG_LEVEL` | `json` / `info` | Log biçimi ve seviyesi |
+
 ---
 
 ### LAN Modu (Çevrimdışı / İnternetsiz Yerel Ağ)
@@ -361,7 +387,7 @@ export LIMONI_LAN_ONLY=1
 # 1. Uygulamayı başlatın
 ./limoni-voice
 
-# 2. Otomatik oluşturulan oda anahtarınız karşınıza çıkar (örn: 9421-azure-wave)
+# 2. Otomatik oluşturulan oda anahtarınız karşınıza çıkar (örn: 9421-azure-wave-lemon)
 # 3. [Enter] ile odayı başlatın
 # 4. Arkadaşınıza anahtarı gönderin!
 ```
@@ -392,25 +418,28 @@ export LIMONI_LAN_ONLY=1
 | `C` / `F2` | 📋 Oda kodunu kopyala |
 | `+` / `-` | 🔉 Mikrofon ses seviyesini ayarla |
 | `T` | 🧪 Ses test modalı |
+| `P` | 🎚️ Ses algılama / Bas-konuş modunu değiştir |
+| `E` | 🔁 Yankı gidermeyi aç / kapat |
+| `F12` | 🩺 Debug & ağ tanılama paneli |
+| `/net`, `/stats` | 📶 Peer başına yol, RTT, kayıp ve jitter bilgisini sohbete yaz |
 | `Esc` | Odadan ayrıl |
 
 ---
 
 ## 🔐 Güvenlik
 
-Limoni Voice, güvenliği temel bir prensip olarak ele alır:
-
 | Katman | Teknoloji | Açıklama |
 |--------|-----------|----------|
-| **Uçtan Uca Şifreleme** | AES-256-GCM | Tüm ses, sohbet, kontrol ve dosya paketleri uçtan uca şifrelenir |
-| **Paket Doğrulama** | AES-256-GCM AEAD Tag | 128-bit GHASH doğrulama etiketi ile paket bütünlüğü garanti edilir |
-| **Anahtar Türetme** | Salted HMAC-SHA256 | Oda kodundan benzersiz tuz (salt) ile türetilen kriptografik anahtar |
-| **Replay Attack Koruması** | Zaman Damgası + Önbellek | 30s tazelik kontrolü ve kayan pencere ile paket tekrarı engellenir |
-| **Girdi Temizleme** | Sıkı Dosya Filtresi | Yol atlama (path traversal), kabuk komutları ve tehlikeli formatlar karantinaya alınır |
-| **Magic Prefix** | `LVS1` | Protokol versiyonu ve paket doğrulama başlığı |
-| **Transport** | WSS (TLS 1.3) / UDP | Sinyalleşme için şifreli WebSocket, medya için doğrudan şifreli UDP |
+| **Oda Kodu** | `NNNN-kelime-kelime-kelime` | 4 hane relay'in gördüğü genel oda kimliğidir; 3 kelime gizli anahtardır ve cihazınızdan çıkmaz |
+| **Kimlik Doğrulama** | CPace PAKE (ristretto255) | Katılan kişi kodu açıklamadan bildiğini kanıtlar; yakalanan trafikten çevrimdışı tahmin yapılamaz |
+| **Grup Anahtarı** | Rastgele AES-256 epoch anahtarı | Host üretir, PAKE kanalıyla iletir; üye ayrıldığında, host değiştiğinde veya port atlandığında yenilenir |
+| **Şifreleme** | AES-256-GCM | Ses, sohbet, kontrol, video ve dosya paketleri rastgele nonce ile uçtan uca şifrelenir |
+| **Replay Koruması** | Sıra + zaman penceresi | Tazelik penceresi ve kayan tekrar önbelleği |
+| **Host Onayı** | Oda kilidi & PIN | Host odayı kilitleyip host tarafında doğrulanan 4 haneli PIN isteyebilir |
+| **Güncellemeler** | SHA-256 + ed25519 | Otomatik güncelleme `checksums.txt` eşleşmeyen dosyayı reddeder; açık anahtar gömülüyse imza da doğrulanır |
+| **Transport** | WSS (TLS) / UDP | Sinyalleşme WebSocket üzerinden, medya doğrudan veya relay üzerinden şifreli UDP ile |
 
-> **Hiçbir ses veya dosya verisi relay sunucusunda işlenmez veya depolanmaz.** Relay yalnızca peer keşfi ve NAT traversal için kullanılır. Gerçek iletişim doğrudan peer-to-peer UDP üzerinden gerçekleşir.
+> **Relay hiçbir şeyi çözemez.** Yalnızca sayısal oda kimliğini, anlamsız PAKE mesajlarını ve şifreli medya çerçevelerini görür. Doğrudan yol kurulamadığında şifreli ses relay üzerinden (mümkünse UDP, değilse WebSocket) iletilir.
 
 ---
 
@@ -429,7 +458,12 @@ Limoni Voice, güvenliği temel bir prensip olarak ele alır:
 | Modül | Amaç |
 |-------|------|
 | [`github.com/thebanri/limoni`](https://github.com/thebanri/limoni) | TUI framework (terminal, widget, grafik, animasyon) |
-| [`github.com/gorilla/websocket`](https://github.com/gorilla/websocket) | WebSocket relay istemcisi |
+| [`github.com/gorilla/websocket`](https://github.com/gorilla/websocket) | WebSocket relay taşıması |
+| [`github.com/thesyncim/gopus`](https://github.com/thesyncim/gopus) | Saf Go Opus codec |
+| [`filippo.io/cpace`](https://pkg.go.dev/filippo.io/cpace) | CPace parola doğrulamalı anahtar değişimi |
+| [`github.com/jfreymuth/pulse`](https://github.com/jfreymuth/pulse) | Yerel PulseAudio/PipeWire istemcisi |
+| [`github.com/ebitengine/purego`](https://github.com/ebitengine/purego) | cgo'suz CoreAudio / macOS API'leri |
+| [`github.com/jezek/xgb`](https://github.com/jezek/xgb), [`github.com/godbus/dbus`](https://github.com/godbus/dbus) | X11 / Wayland portal üzerinde global bas-konuş |
 | [`golang.org/x/sys`](https://pkg.go.dev/golang.org/x/sys) | Platform-native sistem çağrıları |
 
 ---
@@ -437,15 +471,14 @@ Limoni Voice, güvenliği temel bir prensip olarak ele alır:
 ## 🧪 Testler
 
 ```bash
-# Tüm testleri çalıştır
-go test -v ./...
+# Tüm testler (relay sunucusu ve entegrasyon testleri dahil)
+go test -race ./...
 
-# Sadece birim testleri
-go test -v -run TestRoomCode
-go test -v -run TestAudioEngine
+# Uçtan uca relay el sıkışma, yanlış kod reddi ve anahtar yenileme
+go test -run 'TestRelay|TestLAN|TestGroupKey' -v .
 
-# Relay sunucu testleri
-cd relay-server && go test -v ./...
+# DSP portları (AEC, RNNoise), codec ve jitter tamponu
+go test ./internal/...
 ```
 
 ---

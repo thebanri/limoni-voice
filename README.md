@@ -37,12 +37,13 @@
 <td width="50%">
 
 ### 🎙️ Voice Communication
-- **Full-Mesh P2P**: 4-person rooms with direct peer-to-peer UDP
-- **AES-256-GCM Encryption**: All audio and control packets are end-to-end encrypted
-- **VAD (Voice Activity Detection)**: Real-time speaking detection with 60ms pre-roll lookback buffer
-- **Onset & Consonant Protection**: Spectral crest factor discrimination prevents word onset clipping (e.g. unvoiced 's', 'p', 't')
-- **Noise Suppression**: Multi-stage noise filter (OFF / Standard / High) with mechanical keyboard & click rejection
-- **Live VU-Meter**: Real-time audio level visualization per participant
+- **Opus 48 kHz**: 32 kbps CBR with in-band FEC, packet-loss aware FEC tuning
+- **Adaptive Jitter Buffer**: RFC 3550 jitter estimation, packet-loss concealment and FEC recovery
+- **Echo Cancellation (AEC)**: Pure-Go Speex MDF port — use speakers without headphones
+- **AI Noise Suppression**: Pure-Go RNNoise port (OFF / Standard / High / AI)
+- **VAD**: Real-time speaking detection with pre-roll lookback buffer and onset protection
+- **Global Push-to-Talk**: Works while the terminal is unfocused (X11, XDG portal on Wayland, Win32, macOS)
+- **Native Audio I/O**: PulseAudio/PipeWire protocol, CoreAudio, winmm — no external tools needed
 
 </td>
 <td width="50%">
@@ -64,10 +65,12 @@
 
 ### 🌐 Network Architecture
 - **LAN Auto-Discovery**: Zero-configuration local network discovery via broadcast packets
-- **Internet P2P**: WebSocket relay server for NAT traversal and hole-punching
-- **Dynamic Port Hopping**: Automatic UDP endpoint rotation for DPI & censorship resistance
-- **Anti-Replay Protection**: Strict timestamp window and sliding sequence cache
-- **Relay Server**: Ultra-lightweight Go relay hosted on Railway (~7 MB Docker image)
+- **Path Ladder**: LAN → direct P2P (IPv6 / IPv4 hole-punch) → UDP relay → WebSocket relay
+- **NAT Classification**: STUN-based cone/symmetric detection with port spraying & multi-socket punching
+- **UDP Relay**: Low-latency encrypted media relay when direct paths fail (symmetric NAT, CGNAT)
+- **Redundant Audio**: Audio is sent over both relay and direct paths, receiver deduplicates
+- **Live Diagnostics**: Per-peer path, RTT, loss and jitter in the debug panel (`F12`) and `/net`
+- **Relay Server**: Lightweight Go relay with Prometheus `/metrics` and structured logs
 
 </td>
 <td width="50%">
@@ -109,46 +112,49 @@
 ## 🏗️ Architecture
 
 ```
-                          ┌─────────────────────────────────┐
-                          │   WebSocket Relay Server        │
-                          │   (Railway / Docker / Self-Host)│
-                          │   NAT Traversal & Hole-Punch    │
-                          └──────────┬──────────────────────┘
-                                     │ WSS
-                     ┌───────────────┼───────────────┐
-                     │               │               │
-              ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
-              │   Peer A    │ │   Peer B    │ │   Peer C    │
-              │  (Host)     │ │             │ │             │
-              ├─────────────┤ ├─────────────┤ ├─────────────┤
-              │ Audio Engine│ │ Audio Engine│ │ Audio Engine│
-              │ Screen Share│ │ Screen Share│ │ Screen Share│
-              │ TUI Render  │ │ TUI Render  │ │ TUI Render  │
-              └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-                     │               │               │
-                     └───── UDP P2P Full-Mesh ───────┘
-                           (AES-256-GCM Encrypted)
+      ┌──────────────────────────────────────────────────────────┐
+      │ Relay server (Docker / VPS / Cloudflare Tunnel)          │
+      │ WSS: signaling, PAKE handshake, fallback media           │
+      │ UDP: low-latency encrypted media relay                   │
+      └───────┬─────────────────────┬─────────────────────┬──────┘
+              │                     │                     │
+              ▼                     ▼                     ▼
+      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+      │ Peer A (Host)│      │ Peer B       │      │ Peer C       │
+      ├──────────────┤      ├──────────────┤      ├──────────────┤
+      │ Opus + FEC   │      │ Opus + FEC   │      │ Opus + FEC   │
+      │ AEC · RNNoise│      │ AEC · RNNoise│      │ AEC · RNNoise│
+      │ Limoni TUI   │      │ Limoni TUI   │      │ Limoni TUI   │
+      └───────┬──────┘      └───────┬──────┘      └───────┬──────┘
+              └─────────────────────┴─────────────────────┘
+                direct UDP / IPv6 hole-punch (full mesh)
+                (group key AES-256-GCM, rotated on leave)
 ```
 
 ### Project Structure
 
 ```
 limoni-voice/
-├── main.go              # Application entry point, event loop & screen router
-├── network.go           # P2P mesh networking, encryption, WebSocket relay client
-├── audio.go             # Audio engine: capture, playback, VAD, noise suppression
+├── main.go              # Bootstrap: flags, backend, node start
+├── app*.go              # App state, key/mouse routing, render loop, settings
+├── network*.go          # P2P node: relay, handshake, NAT, media, files, stats
+├── audio.go             # Audio engine: 48 kHz capture/playback, VAD, AEC, denoise
 ├── ui_lobby.go          # Lobby screen: 3D microphone, inputs, menu
-├── ui_room.go           # Room screen: participant cards, VU-meters, event logs
-├── dialogs.go           # Modal dialogs: sound test, leave room, exit, screen share
-├── microphone3d.go      # 3D studio microphone model (polygon & wireframe fallback)
+├── ui_room.go           # Room screen: participant cards, VU-meters, chat
+├── dialogs.go           # Modals: audio settings, relay, debug/diagnostics, share
+├── internal/
+│   ├── protocol/        # Binary packet format + relay signaling types
+│   ├── e2ee/            # Room codes, CPace PAKE handshake, epoch keyring
+│   ├── relay/           # Relay server (WebSocket + UDP) and metrics
+│   ├── nat/             # STUN NAT classification, punch strategies, IPv6
+│   ├── voice/           # Opus codec wrapper, adaptive jitter buffer
+│   ├── dsp/             # Speex MDF echo canceller, RNNoise, FFT
+│   ├── audioio/         # PulseAudio / CoreAudio / winmm / tool fallback
+│   └── ptt/             # System-wide push-to-talk (X11, portal, Win32, macOS)
 ├── screenshare/         # Screen sharing module (GPU Rec, FFmpeg, MPV)
-├── clipboard.go         # Cross-platform clipboard support
-├── roomcode.go          # Croc-style room code generator
-├── relay-server/        # WebSocket relay server (standalone Go module)
-├── scripts/             # Build & packaging scripts
-├── release_assets/      # Compiled release assets & installers
-├── dist/                # Target distribution packages
-└── assets/              # Logo, icons, demo preview
+├── relay-server/        # Relay binary (thin wrapper over internal/relay)
+├── cmd/limoni-sign/     # ed25519 signing tool for release checksums
+└── scripts/             # Build & packaging scripts
 ```
 
 ---
@@ -174,7 +180,7 @@ irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install
 > [!IMPORTANT]
 > - **🪟 Windows**: Voice chat works out of the box with **zero dependencies** (using native Win32 `winmm` audio APIs). For Screen Sharing, **FFmpeg** and **MPV** are required.
 > - **🐧 Linux**: Voice chat works out of the box on distributions with standard PulseAudio, PipeWire, or ALSA. For Screen Sharing, **FFmpeg** and **MPV** are required.
-> - **🍎 macOS**: Because macOS does not include built-in command-line audio capture tools, installing **FFmpeg** and **MPV** (via Homebrew) is required for both voice chat and screen sharing:
+> - **🍎 macOS**: Voice chat uses native CoreAudio (no dependencies). For screen sharing, install **FFmpeg** and **MPV** via Homebrew:
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
@@ -223,7 +229,7 @@ tar xzf limoni-voice_v1.4.0_linux_amd64.tar.gz
 ### Building From Source
 
 ```bash
-# Requirements: Go 1.24+
+# Requirements: Go 1.26+
 git clone https://github.com/thebanri/limoni-voice.git
 cd limoni-voice
 go build -o limoni-voice .
@@ -319,6 +325,26 @@ docker compose down --remove-orphans
 > [!TIP]
 > **Network / UDP QUIC Issues:** `docker-compose.yml` is pre-configured with `--protocol http2` and public DNS to route tunnel traffic over standard HTTPS (TCP 443) instead of UDP port 7844 (QUIC), preventing "sendmsg: network is unreachable" errors caused by ISP UDP drops.
 
+#### ⚡ Low Latency: UDP Relay (Important for Cloudflare Tunnel users)
+
+Cloudflare Tunnel only carries **TCP/WebSocket**. When two peers cannot connect directly (e.g. symmetric NAT or CGNAT), audio falls back to the WebSocket relay inside the tunnel, which typically adds **~100+ ms**. For the lowest latency:
+
+1. Run the relay on a VPS, or port-forward **UDP 27850** on your router.
+2. Tell clients where the UDP relay is reachable:
+   ```bash
+   RELAY_UDP_PUBLIC_ADDR=203.0.113.10:27850 docker compose --profile tunnel up -d
+   ```
+3. Check the debug panel (`F12`) or type `/net` in chat: the peer path should show `P2P`, `P2P-v6` or `Relay-UDP` instead of `Relay`.
+
+| Env Variable | Default | Description |
+|--------------|---------|-------------|
+| `PORT` | `27850` | TCP port for HTTP/WebSocket |
+| `UDP_PORT` | same as `PORT` | UDP relay port (`0` / `off` disables it) |
+| `RELAY_UDP_PUBLIC_ADDR` | – | `host:port` advertised for UDP (required behind a tunnel) |
+| `RELAY_AUTH_TOKEN` | – | Optional shared secret for clients |
+| `TRUST_PROXY` | `false` | Always trust `CF-Connecting-IP` / `X-Forwarded-For` (private-network proxies are trusted automatically) |
+| `LOG_FORMAT` / `LOG_LEVEL` | `json` / `info` | Structured logging options |
+
 ---
 
 ### LAN-Only / Offline Mode
@@ -360,7 +386,7 @@ export LIMONI_LAN_ONLY=1
 # 1. Launch the application
 ./limoni-voice
 
-# 2. Your generated room key will appear (e.g. 9421-azure-wave)
+# 2. Your generated room key will appear (e.g. 9421-azure-wave-lemon)
 # 3. Press [Enter] to host the room
 # 4. Share the room key with your friends!
 ```
@@ -391,25 +417,28 @@ export LIMONI_LAN_ONLY=1
 | `C` / `F2` | 📋 Copy Room Code |
 | `+` / `-` | 🔉 Adjust Microphone Volume |
 | `T` | 🧪 Microphone Test Dialog |
+| `P` | 🎚️ Toggle Voice Activity / Push-to-Talk |
+| `E` | 🔁 Toggle echo cancellation |
+| `F12` | 🩺 Debug & network diagnostics |
+| `/net`, `/stats` | 📶 Print per-peer path, RTT, loss & jitter to chat |
 | `Esc` | Leave Room |
 
 ---
 
 ## 🔐 Security
 
-Limoni Voice is built with security from the ground up:
-
 | Layer | Technology | Details |
 |-------|------------|---------|
-| **End-to-End Encryption** | AES-256-GCM | All voice, chat, control, and file data packets are encrypted end-to-end |
-| **Packet Authentication** | AES-256-GCM AEAD Tag | 128-bit GHASH authentication tag guarantees packet integrity |
-| **Key Derivation** | Salted HMAC-SHA256 | Cryptographic master key derived with a unique salt from room code |
-| **Anti-Replay Protection** | Timestamp + Deduplication | Strict 30s freshness window and sliding-cache replay prevention |
-| **Input Sanitization** | Strict Filename Filter | Path traversal, shell characters, and dangerous files quarantined |
-| **Magic Header** | `LVS1` | Protocol versioning and header validation |
-| **Transport** | WSS (TLS 1.3) / UDP | Encrypted WebSocket for signaling, direct encrypted UDP for P2P media |
+| **Room Code** | `NNNN-word-word-word` | The 4 digits are the public room ID the relay sees; the 3 words are the secret and never leave your machine |
+| **Authentication** | CPace PAKE (ristretto255) | Joiners prove they know the code without revealing it; offline guessing from captured traffic is impossible |
+| **Group Key** | Random AES-256 epoch key | Generated by the host and delivered over the PAKE channel; rotated when a member leaves, the host changes or ports hop |
+| **Encryption** | AES-256-GCM | Voice, chat, control, video and file packets are encrypted end-to-end with random nonces |
+| **Anti-Replay** | Sequence + timestamp window | Freshness window and sliding deduplication cache |
+| **Host Approval** | Room lock & PIN | The host can lock the room and require a 4-digit PIN checked on the host side |
+| **Updates** | SHA-256 + ed25519 | Self-update refuses assets without a matching `checksums.txt`; signed checksums are verified when a public key is embedded |
+| **Transport** | WSS (TLS) / UDP | Signaling over WebSocket, media over direct or relayed encrypted UDP |
 
-> **No audio or file data is ever stored or inspected by the relay server.** The relay is strictly used for peer discovery and NAT traversal. All audio and data flows directly peer-to-peer over encrypted UDP.
+> **The relay cannot decrypt anything.** It only sees the numeric room ID, opaque PAKE messages and encrypted media frames. When a direct path is not possible, encrypted audio is forwarded through the relay (UDP when available, otherwise WebSocket).
 
 ---
 
@@ -430,7 +459,12 @@ For screen sharing capabilities:
 | Module | Purpose |
 |--------|---------|
 | [`github.com/thebanri/limoni`](https://github.com/thebanri/limoni) | TUI framework (terminal, widgets, graphics, animations) |
-| [`github.com/gorilla/websocket`](https://github.com/gorilla/websocket) | WebSocket relay client |
+| [`github.com/gorilla/websocket`](https://github.com/gorilla/websocket) | WebSocket relay transport |
+| [`github.com/thesyncim/gopus`](https://github.com/thesyncim/gopus) | Pure-Go Opus codec |
+| [`filippo.io/cpace`](https://pkg.go.dev/filippo.io/cpace) | CPace password-authenticated key exchange |
+| [`github.com/jfreymuth/pulse`](https://github.com/jfreymuth/pulse) | Native PulseAudio/PipeWire client |
+| [`github.com/ebitengine/purego`](https://github.com/ebitengine/purego) | CoreAudio / macOS APIs without cgo |
+| [`github.com/jezek/xgb`](https://github.com/jezek/xgb), [`github.com/godbus/dbus`](https://github.com/godbus/dbus) | Global push-to-talk on X11 / Wayland portal |
 | [`golang.org/x/sys`](https://pkg.go.dev/golang.org/x/sys) | Platform-native system calls |
 
 ---
@@ -438,15 +472,14 @@ For screen sharing capabilities:
 ## 🧪 Testing
 
 ```bash
-# Run all tests
-go test -v ./...
+# Run all tests (including the relay server and integration tests)
+go test -race ./...
 
-# Unit tests
-go test -v -run TestRoomCode
-go test -v -run TestAudioEngine
+# End-to-end relay handshake, wrong-code rejection and key rotation
+go test -run 'TestRelay|TestLAN|TestGroupKey' -v .
 
-# Relay server tests
-cd relay-server && go test -v ./...
+# DSP ports (AEC, RNNoise), codec and jitter buffer
+go test ./internal/...
 ```
 
 ---

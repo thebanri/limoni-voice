@@ -15,8 +15,30 @@ import (
 
 // AppConfig stores user-customizable persistent configuration
 type AppConfig struct {
-	RelayURL   string `json:"relay_url,omitempty"`
-	RelayToken string `json:"relay_token,omitempty"`
+	RelayURL   string         `json:"relay_url,omitempty"`
+	RelayToken string         `json:"relay_token,omitempty"`
+	Nickname   string         `json:"nickname,omitempty"`
+	Audio      *AudioSettings `json:"audio,omitempty"`
+}
+
+// AudioSettings are the persisted microphone / playback preferences.
+type AudioSettings struct {
+	SuppressionMode  int     `json:"suppression_mode"`
+	EchoCancellation bool    `json:"echo_cancellation"`
+	PushToTalk       bool    `json:"push_to_talk"`
+	PTTKey           string  `json:"ptt_key,omitempty"`
+	GlobalPTT        bool    `json:"global_ptt"`
+	Gain             float64 `json:"gain"`
+	OutputVolume     float64 `json:"output_volume"`
+	VADSensitivity   int     `json:"vad_sensitivity"`
+}
+
+// UpdateAppConfig loads the settings file, applies mutate and saves it, preserving fields the
+// caller does not touch.
+func UpdateAppConfig(mutate func(*AppConfig)) error {
+	cfg := LoadAppConfig()
+	mutate(&cfg)
+	return SaveAppConfig(cfg)
 }
 
 func getConfigFilePath() (string, error) {

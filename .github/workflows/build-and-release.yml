@@ -8,12 +8,38 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    name: Vet & Race Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet -mod=vendor ./...
+
+      - name: Race tests
+        run: go test -mod=vendor -race -count=1 ./...
+
+      - name: Cross-compile check (CGO disabled)
+        run: |
+          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build -mod=vendor -o /dev/null . ./relay-server
+          done
+
   build:
     name: Build Packages
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: write
 
@@ -24,7 +50,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
 
       - name: Install System Packaging Tools
         run: |
@@ -32,6 +58,10 @@ jobs:
           sudo apt-get install -y ffmpeg genisoimage zip
 
       - name: Build Packages
+        env:
+          # Optional: generate with `go run ./cmd/limoni-sign keygen` and store as repository secrets.
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_SIGNING_PUBKEY: ${{ secrets.UPDATE_SIGNING_PUBKEY }}
         run: bash scripts/build_packages.sh
 
       - name: Upload Artifacts

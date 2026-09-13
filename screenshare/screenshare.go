@@ -1858,6 +1858,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		// Windows desktop & window capture via FFmpeg (DXGI Desktop Duplication & NVENC/AMF/QSV hardware acceleration)
 		p, err := FindExecutable("ffmpeg")
 		if err != nil {
+			cancel()
 			return nil, errors.New("'ffmpeg.exe' not found. Please place 'ffmpeg.exe' next to the application or run 'winget install Gyan.FFmpeg' in PowerShell.")
 		}
 		binPath = p
@@ -1893,6 +1894,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 	case "darwin":
 		p, err := FindExecutable("ffmpeg")
 		if err != nil {
+			cancel()
 			return nil, errors.New("'ffmpeg' is required on macOS for screen sharing (brew install ffmpeg)")
 		}
 		binPath = p
@@ -1977,6 +1979,7 @@ func StartBroadcasting(ctx context.Context, targetIP string, port int, opts ...B
 		}
 
 	default:
+		cancel()
 		return nil, fmt.Errorf("unsupported platform for screen broadcasting: %s", runtime.GOOS)
 	}
 
