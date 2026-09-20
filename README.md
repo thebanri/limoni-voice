@@ -378,6 +378,7 @@ export LIMONI_LAN_ONLY=1
 | `--offline` | `LIMONI_OFFLINE` | `false` | Alias for `--lan` |
 | `--peer <ip:port>` | `LIMONI_PEER` | `""` | Direct target peer IP/host for cross-subnet or VPN LAN P2P |
 | `--connect <ip:port>` | `LIMONI_PEER` | `""` | Alias for `--peer` |
+| `--sysaudio-test` | - | - | Capture system audio for 5 s, print the level and exit (screen share audio diagnosis) |
 | `--version` | - | - | Print version information and exit |
 | `--help`, `-h` | - | - | Show help message and usage instructions |
 
@@ -389,6 +390,7 @@ export LIMONI_LAN_ONLY=1
 - Nothing is uploaded until someone watches (`W` or click the stream). The sharer's bitrate then adapts to the viewers' connection (a short picture hiccup when it changes).
 - The debug panel (**`F12`**) shows preset, current bitrate, viewers, uplink queue and retransmissions.
 - **Relay operators:** update the relay server to get per-viewer delivery through the relay; older relays still work but forward relayed video to the whole room.
+- **System audio not shared?** Run `limoni-voice --sysaudio-test`: it prints the capture backend and a level meter while you play something. On Windows the default playback device is captured (Sound settings → Output), and an idle device delivers nothing.
 - **macOS:** release builds embed the capture helper; self-built binaries compile it on first use (`xcode-select --install`). System audio needs macOS 13+.
 
 ## 🎮 Usage

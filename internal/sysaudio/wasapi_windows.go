@@ -3,7 +3,7 @@
 package sysaudio
 
 import (
-	"errors"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"runtime"
@@ -28,8 +28,6 @@ var (
 	iidIMMDeviceEnumerator  = windows.GUID{Data1: 0xA95664D2, Data2: 0x9614, Data3: 0x4F35, Data4: [8]byte{0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6}}
 	iidIAudioClient         = windows.GUID{Data1: 0x1CB9AD4C, Data2: 0xDBFA, Data3: 0x4C32, Data4: [8]byte{0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2}}
 	iidIAudioCaptureClient  = windows.GUID{Data1: 0xC8ADBD64, Data2: 0xE71E, Data3: 0x48A0, Data4: [8]byte{0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17}}
-	subtypeIEEEFloat        = windows.GUID{Data1: 0x00000003, Data2: 0x0000, Data3: 0x0010, Data4: [8]byte{0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}}
-	subtypePCM              = windows.GUID{Data1: 0x00000001, Data2: 0x0000, Data3: 0x0010, Data4: [8]byte{0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}}
 )
 
 const (
@@ -39,9 +37,6 @@ const (
 	audclntShareModeShared    = 0
 	audclntStreamFlagLoopback = 0x00020000
 	audclntBufferFlagsSilent  = 0x2
-	waveFormatPCM             = 1
-	waveFormatIEEEFloat       = 3
-	waveFormatExtensible      = 0xFFFE
 	bufferDuration100ns       = 200 * 10000 // 200 ms shared buffer
 )
 
@@ -59,23 +54,6 @@ const (
 	captureGetNextPacketSize    = 5
 	unknownRelease              = 2
 )
-
-type waveFormatEx struct {
-	FormatTag      uint16
-	Channels       uint16
-	SamplesPerSec  uint32
-	AvgBytesPerSec uint32
-	BlockAlign     uint16
-	BitsPerSample  uint16
-	CbSize         uint16
-}
-
-type waveFormatExtensibleT struct {
-	waveFormatEx
-	ValidBitsPerSample uint16
-	ChannelMask        uint32
-	SubFormat          windows.GUID
-}
 
 // comObj is the memory layout of a COM interface pointer target: a pointer to its vtable.
 type comObj struct {
@@ -102,13 +80,28 @@ func release(obj *comObj) {
 }
 
 type wasapiStream struct {
-	stop    chan struct{}
-	done    chan struct{}
-	once    sync.Once
+	stop chan struct{}
+	done chan struct{}
+	once sync.Once
+
+	mu      sync.Mutex
 	backend string
+	frames  uint64
 }
 
-func (s *wasapiStream) Backend() string { return s.backend }
+func (s *wasapiStream) Backend() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.backend
+}
+
+// Frames reports how many audio frames the loopback delivered. It stays at zero while the
+// default output plays nothing: Windows delivers no loopback data from an idle endpoint.
+func (s *wasapiStream) Frames() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.frames
+}
 
 func (s *wasapiStream) Close() error {
 	s.once.Do(func() {
@@ -128,89 +121,92 @@ func open(onFrame FrameFunc) (Stream, error) {
 	return s, nil
 }
 
+// run keeps a loopback capture running. Switching the default output device invalidates the
+// stream on Windows, so a failed session is simply reopened until Close.
 func (s *wasapiStream) run(onFrame FrameFunc, ready chan<- error) {
 	defer close(s.done)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	fail := func(err error) { ready <- err }
 	if r, _, _ := procCoInitializeEx.Call(0, 0 /* COINIT_MULTITHREADED */); int32(r) < 0 && uint32(r) != 0x80010106 {
-		fail(hresult(r, "CoInitializeEx"))
+		ready <- hresult(r, "CoInitializeEx")
 		return
 	}
 	defer procCoUninitialize.Call()
 
+	first := true
+	for {
+		err := s.capture(onFrame, func() {
+			if first {
+				first = false
+				ready <- nil
+			}
+		})
+		if first { // never started: report why
+			ready <- err
+			return
+		}
+		select {
+		case <-s.stop:
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// capture runs one loopback session and returns when it ends or fails.
+func (s *wasapiStream) capture(onFrame FrameFunc, started func()) error {
 	var enumerator *comObj
 	r, _, _ := procCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidMMDeviceEnumerator)), 0, clsctxAll,
 		uintptr(unsafe.Pointer(&iidIMMDeviceEnumerator)), uintptr(unsafe.Pointer(&enumerator)))
 	if err := hresult(r, "CoCreateInstance(MMDeviceEnumerator)"); err != nil {
-		fail(err)
-		return
+		return err
 	}
 	defer release(enumerator)
 
 	var device *comObj
 	if err := hresult(comCall(enumerator, enumGetDefaultAudioEndpoint, eRender, eConsole, uintptr(unsafe.Pointer(&device))), "GetDefaultAudioEndpoint"); err != nil {
-		fail(err)
-		return
+		return err
 	}
 	defer release(device)
 
 	var client *comObj
 	if err := hresult(comCall(device, deviceActivate, uintptr(unsafe.Pointer(&iidIAudioClient)), clsctxAll, 0, uintptr(unsafe.Pointer(&client))), "IMMDevice.Activate"); err != nil {
-		fail(err)
-		return
+		return err
 	}
 	defer release(client)
 
-	var format *waveFormatEx
+	var format *byte
 	if err := hresult(comCall(client, clientGetMixFormat, uintptr(unsafe.Pointer(&format))), "GetMixFormat"); err != nil {
-		fail(err)
-		return
+		return err
 	}
 	defer procCoTaskMemFree.Call(uintptr(unsafe.Pointer(format)))
-	isFloat := format.FormatTag == waveFormatIEEEFloat
-	if format.FormatTag == waveFormatExtensible && format.CbSize >= 22 {
-		ext := (*waveFormatExtensibleT)(unsafe.Pointer(format))
-		switch ext.SubFormat {
-		case subtypeIEEEFloat:
-			isFloat = true
-		case subtypePCM:
-			isFloat = false
-		default:
-			fail(errors.New("sysaudio: unsupported loopback sample format"))
-			return
-		}
-	} else if format.FormatTag != waveFormatIEEEFloat && format.FormatTag != waveFormatPCM {
-		fail(fmt.Errorf("sysaudio: unsupported loopback format tag %d", format.FormatTag))
-		return
+	// WAVEFORMATEX is byte packed on Windows, so read it from the raw block.
+	head := unsafe.Slice(format, waveFormatExSize)
+	blockLen := waveFormatExSize + int(binary.LittleEndian.Uint16(head[16:]))
+	wf, err := parseWaveFormat(unsafe.Slice(format, blockLen))
+	if err != nil {
+		return err
 	}
-	channels := int(format.Channels)
-	bits := int(format.BitsPerSample)
-	rate := int(format.SamplesPerSec)
-	if channels < 1 || (isFloat && bits != 32) || (!isFloat && bits != 16 && bits != 24 && bits != 32) {
-		fail(fmt.Errorf("sysaudio: unsupported loopback format (%d ch, %d bit, float=%v)", channels, bits, isFloat))
-		return
-	}
+	channels, bits, rate, isFloat := wf.Channels, wf.Bits, wf.Rate, wf.Float
 
 	if err := hresult(comCall(client, clientInitialize, audclntShareModeShared, audclntStreamFlagLoopback, bufferDuration100ns, 0, uintptr(unsafe.Pointer(format)), 0), "IAudioClient.Initialize(loopback)"); err != nil {
-		fail(err)
-		return
+		return err
 	}
 	var capture *comObj
 	if err := hresult(comCall(client, clientGetService, uintptr(unsafe.Pointer(&iidIAudioCaptureClient)), uintptr(unsafe.Pointer(&capture))), "GetService(IAudioCaptureClient)"); err != nil {
-		fail(err)
-		return
+		return err
 	}
 	defer release(capture)
 	if err := hresult(comCall(client, clientStart), "IAudioClient.Start"); err != nil {
-		fail(err)
-		return
+		return err
 	}
 	defer comCall(client, clientStop)
 
-	s.backend = fmt.Sprintf("wasapi loopback (%d Hz, %d ch)", rate, channels)
-	ready <- nil
+	s.mu.Lock()
+	s.backend = "wasapi loopback (" + wf.String() + ")"
+	s.mu.Unlock()
+	started()
 
 	fr := newFramer(onFrame)
 	rs := newResampler(rate)
@@ -222,31 +218,33 @@ func (s *wasapiStream) run(onFrame FrameFunc, ready chan<- error) {
 	for {
 		select {
 		case <-s.stop:
-			return
+			return nil
 		case <-ticker.C:
 		}
 		for {
 			var packet uint32
-			if int32(comCall(capture, captureGetNextPacketSize, uintptr(unsafe.Pointer(&packet)))) < 0 || packet == 0 {
+			if hr := comCall(capture, captureGetNextPacketSize, uintptr(unsafe.Pointer(&packet))); int32(hr) < 0 {
+				return hresult(hr, "GetNextPacketSize") // device changed / stream invalidated
+			} else if packet == 0 {
 				break
 			}
 			var data *byte
 			var frames uint32
 			var flags uint32
-			if int32(comCall(capture, captureGetBuffer, uintptr(unsafe.Pointer(&data)), uintptr(unsafe.Pointer(&frames)), uintptr(unsafe.Pointer(&flags)), 0, 0)) < 0 {
-				break
+			if hr := comCall(capture, captureGetBuffer, uintptr(unsafe.Pointer(&data)), uintptr(unsafe.Pointer(&frames)), uintptr(unsafe.Pointer(&flags)), 0, 0); int32(hr) < 0 {
+				return hresult(hr, "GetBuffer")
 			}
 			n := int(frames)
 			mono = mono[:0]
 			if flags&audclntBufferFlagsSilent != 0 || data == nil {
-				for i := 0; i < n; i++ {
+				for range n {
 					mono = append(mono, 0)
 				}
 			} else {
 				raw := unsafe.Slice(data, n*channels*bytesPerSample)
-				for i := 0; i < n; i++ {
+				for i := range n {
 					var sum float64
-					for c := 0; c < channels; c++ {
+					for c := range channels {
 						off := (i*channels + c) * bytesPerSample
 						sum += sampleAt(raw[off:off+bytesPerSample], isFloat, bits)
 					}
@@ -254,6 +252,9 @@ func (s *wasapiStream) run(onFrame FrameFunc, ready chan<- error) {
 				}
 			}
 			comCall(capture, captureReleaseBuffer, uintptr(frames))
+			s.mu.Lock()
+			s.frames += uint64(n)
+			s.mu.Unlock()
 			out = rs.process(mono, out[:0])
 			fr.push(out)
 		}

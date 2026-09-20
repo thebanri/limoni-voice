@@ -5,11 +5,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/sysaudio"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
 )
@@ -77,6 +81,7 @@ func main() {
 		flagConnect    = flag.String("connect", "", "Alias for -peer")
 		flagHelp       = flag.Bool("help", false, "Show help and usage instructions")
 		flagVersion    = flag.Bool("version", false, "Show version information")
+		flagSysAudio   = flag.Bool("sysaudio-test", false, "Capture system (desktop) audio for 5 seconds and print the level, then exit")
 	)
 	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
 	flag.CommandLine.SetOutput(os.Stdout)
@@ -90,6 +95,10 @@ func main() {
 	if *flagHelp {
 		printUsage()
 		os.Exit(0)
+	}
+
+	if *flagSysAudio {
+		os.Exit(runSystemAudioTest())
 	}
 
 	if *flagVersion {
@@ -164,4 +173,51 @@ func main() {
 	}
 
 	NewApp(b, t, node, audio, cfg).Run()
+}
+
+// runSystemAudioTest captures what the computer is playing for five seconds and prints the
+// level, so screen share audio problems can be diagnosed without starting a call.
+func runSystemAudioTest() int {
+	fmt.Printf("Limoni Voice %s — system audio capture test (%s)\n", AppVersion, runtime.GOOS)
+	fmt.Println("Play some sound (music, a video) on your default output device now.")
+	var frames atomic.Int64
+	var peak atomic.Int64
+	stream, err := sysaudio.Open(func(frame []int16) {
+		frames.Add(1)
+		var p int16
+		for _, s := range frame {
+			p = max(p, s, -s)
+		}
+		if int64(p) > peak.Load() {
+			peak.Store(int64(p))
+		}
+	})
+	if err != nil {
+		fmt.Println("FAILED:", err)
+		if runtime.GOOS == "windows" {
+			fmt.Println("Windows captures the default playback device (Sound settings → Output).")
+		}
+		return 1
+	}
+	defer stream.Close()
+	fmt.Println("Capturing from:", stream.Backend())
+	for i := range 5 {
+		time.Sleep(time.Second)
+		level := float64(peak.Swap(0)) / 32768
+		bar := strings.Repeat("█", int(level*40))
+		db := "silent"
+		if level > 0 {
+			db = fmt.Sprintf("%.0f dBFS", 20*math.Log10(level))
+		}
+		fmt.Printf("  %ds  %-40s %s\n", i+1, bar, db)
+	}
+	total := frames.Load()
+	fmt.Printf("Captured %d frames (%.1f s of audio).\n", total, float64(total)*0.02)
+	if total == 0 {
+		fmt.Println("RESULT: no audio was captured. Nothing is playing on the default output, or")
+		fmt.Println("another application holds it in exclusive mode.")
+		return 1
+	}
+	fmt.Println("RESULT: system audio capture works; screen share can carry it.")
+	return 0
 }

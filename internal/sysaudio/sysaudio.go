@@ -24,6 +24,9 @@ var ErrUnsupported = errors.New("sysaudio: system audio capture is not available
 type Stream interface {
 	Close() error
 	Backend() string
+	// Frames reports how many audio frames were captured so far. Loopback capture stays at
+	// zero while the computer plays nothing.
+	Frames() uint64
 }
 
 // FrameFunc receives 20 ms mono frames at SampleRate. The slice is reused after the call.

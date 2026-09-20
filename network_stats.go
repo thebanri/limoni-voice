@@ -154,6 +154,9 @@ func (d NetDiagnostics) Lines() []string {
 		}
 		lines = append(lines, fmt.Sprintf("Screen share: %s at %d kbps%s, %d viewer(s), uplink queue %dms, %d retransmits",
 			sc.Preset, sc.Kbps, audio, sc.Watchers, sc.QueueDelay.Milliseconds(), sc.Retransmits))
+		if sc.AudioStatus != "" {
+			lines = append(lines, "System audio: "+sc.AudioStatus)
+		}
 	}
 	if sc := d.Screen; sc.Watching {
 		lines = append(lines, fmt.Sprintf("Watching screen: residual loss %.2f%%, gap wait %dms", sc.LossPct, sc.MaxWait.Milliseconds()))

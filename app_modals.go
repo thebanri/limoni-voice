@@ -84,8 +84,11 @@ func (a *App) startSelectedScreenShare(target screenshare.WindowInfo) {
 		cfg := ScreenShareConfig{TargetID: target.ID, Preset: presetIdx, SystemAudio: withAudio}
 		if err := a.node.StartScreenShareWith(cfg); err != nil {
 			a.room.SetToast(fmt.Sprintf("Error: %v", err))
-		} else {
-			a.room.SetToast(fmt.Sprintf("%s sharing started (%s)", target.Title, preset.Name))
+			return
+		}
+		a.room.SetToast(fmt.Sprintf("%s sharing started (%s)", target.Title, preset.Name))
+		if st := a.node.ScreenStats(); withAudio && !st.Audio {
+			a.room.SetToast("System audio could not be shared: " + strings.TrimPrefix(st.AudioStatus, "unavailable: "))
 		}
 	}()
 }

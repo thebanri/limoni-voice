@@ -64,28 +64,30 @@ var (
 type screenTx struct {
 	n *P2PNode
 
-	mu         sync.Mutex
-	session    *screenshare.Session
-	conn       *net.UDPConn
-	preset     screenshare.Preset
-	opts       screenshare.BroadcastOptions
-	seq        uint32
-	chunker    video.Chunker
-	history    *video.History
-	pacer      *video.Pacer
-	abr        *video.Controller
-	watchers   map[string]*screenWatcher
-	srcPort    int
-	srcSeen    time.Time
-	withAudio  bool
-	audioOn    bool
-	sys        sysaudio.Stream
-	audioEnc   *voice.Encoder
-	audioSeq   uint32
-	silentRun  int
-	restarting atomic.Bool
-	stop       chan struct{}
-	stopOnce   sync.Once
+	mu          sync.Mutex
+	session     *screenshare.Session
+	conn        *net.UDPConn
+	preset      screenshare.Preset
+	opts        screenshare.BroadcastOptions
+	seq         uint32
+	chunker     video.Chunker
+	history     *video.History
+	pacer       *video.Pacer
+	abr         *video.Controller
+	watchers    map[string]*screenWatcher
+	srcPort     int
+	srcSeen     time.Time
+	withAudio   bool
+	audioOn     bool
+	audioStatus string // backend in use, or why system audio is not being shared
+	audioSilent int    // control ticks with system audio on but nothing captured
+	sys         sysaudio.Stream
+	audioEnc    *voice.Encoder
+	audioSeq    uint32
+	silentRun   int
+	restarting  atomic.Bool
+	stop        chan struct{}
+	stopOnce    sync.Once
 
 	sentChunks, sentBytes, retransmits uint64
 	retxAt                             map[retxKey]time.Time
@@ -232,14 +234,20 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 			n.audio.EnableLoopbackExclusion(true)
 		}
 		if s, err := sysaudio.Open(tx.onSystemAudio); err != nil {
+			tx.audioStatus = "unavailable: " + err.Error()
 			n.log(fmt.Sprintf("[WARN] [SHARE] System audio unavailable: %v", err))
 		} else {
 			tx.sys = s
 			tx.audioOn = true
-			n.debugLog("[SCREEN] [SHARE] System audio via " + s.Backend())
+			tx.audioStatus = s.Backend()
+			n.log("[SCREEN] System audio shared via " + s.Backend())
 		}
-	} else if withAudio && tx.audioEnc != nil {
+	} else if withAudio && tx.audioEnc == nil {
+		tx.audioStatus = "unavailable: audio encoder failed"
+		n.log("[WARN] [SHARE] System audio unavailable: audio encoder failed")
+	} else if withAudio {
 		tx.audioOn = true // delivered by the capture helper
+		tx.audioStatus = "ScreenCaptureKit"
 		if n.audio != nil {
 			n.audio.EnableLoopbackExclusion(true)
 		}
@@ -538,6 +546,19 @@ func (tx *screenTx) controlLoop() {
 		for k, at := range tx.retxAt {
 			if now.Sub(at) > time.Second {
 				delete(tx.retxAt, k)
+			}
+		}
+		if tx.sys != nil && tx.audioOn {
+			// Windows delivers no loopback data while the default output is idle: say so
+			// instead of leaving the user wondering why viewers hear nothing.
+			if tx.sys.Frames() == 0 {
+				tx.audioSilent++
+				if tx.audioSilent == 6 {
+					n.log("[WARN] [SHARE] No system audio captured yet: check that sound is playing on the default output device")
+				}
+			} else if tx.audioSilent > 0 {
+				tx.audioSilent = 0
+				n.debugLog("[SCREEN] [SHARE] System audio is flowing")
 			}
 		}
 		recipients := len(tx.recipientsLocked())
@@ -1109,6 +1130,7 @@ type ScreenStats struct {
 	QueueDelay  time.Duration
 	Retransmits uint64
 	Audio       bool
+	AudioStatus string
 
 	Watching bool
 	LossPct  float64
@@ -1131,6 +1153,7 @@ func (n *P2PNode) ScreenStats() ScreenStats {
 		s.Watchers = len(tx.watchers)
 		s.Retransmits = tx.retransmits
 		s.Audio = tx.audioOn
+		s.AudioStatus = tx.audioStatus
 		tx.mu.Unlock()
 		s.QueueDelay = tx.pacer.QueueDelay()
 	}

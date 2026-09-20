@@ -379,6 +379,7 @@ export LIMONI_LAN_ONLY=1
 | `--offline` | `LIMONI_OFFLINE` | `false` | `--lan` parametresinin takma adı |
 | `--peer <ip:port>` | `LIMONI_PEER` | `""` | Farklı alt ağlar veya VPN için doğrudan hedef eş IP/adresi |
 | `--connect <ip:port>` | `LIMONI_PEER` | `""` | `--peer` parametresinin takma adı |
+| `--sysaudio-test` | - | - | Sistem sesini 5 sn yakalar, seviyeyi yazdırır ve çıkar (ekran paylaşımı sesi teşhisi) |
 | `--version` | - | - | Sürüm bilgisini gösterir |
 | `--help`, `-h` | - | - | Yardım ve kullanım parametrelerini listeler |
 
@@ -390,6 +391,7 @@ export LIMONI_LAN_ONLY=1
 - Biri izlemeye başlayana kadar hiçbir şey yüklenmez (`W` veya yayına tıklama). Sonra bit hızı izleyicinin bağlantısına uyar (değişirken kısa bir takılma olur).
 - Debug panelinde (**`F12`**) ön ayar, anlık bit hızı, izleyici sayısı, gönderim kuyruğu ve yeniden gönderimler görünür.
 - **Relay sunucusu işletenler:** relay üzerinden kişiye özel gönderim için relay sunucusunu güncelleyin; eski relay'ler de çalışır ama relay'e düşen görüntüyü tüm odaya iletir.
+- **Sistem sesi paylaşılmıyorsa:** `limoni-voice --sysaudio-test` komutunu çalıştırın; yakalama arka ucunu ve siz bir şey çalarken seviye çubuğunu gösterir. Windows'ta varsayılan çıkış aygıtı yakalanır (Ses ayarları → Çıkış); o aygıtta ses çalmıyorsa hiçbir veri gelmez.
 - **macOS:** sürüm paketleri yakalama yardımcısını içerir; kendiniz derlerseniz ilk kullanımda derlenir (`xcode-select --install`). Sistem sesi macOS 13+ ister.
 
 ## 🎮 Kullanım ve Kısayollar

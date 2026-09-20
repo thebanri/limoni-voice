@@ -5,6 +5,7 @@ package sysaudio
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jfreymuth/pulse"
@@ -15,7 +16,10 @@ type pulseStream struct {
 	rec    *pulse.RecordStream
 	once   sync.Once
 	sink   string
+	frames atomic.Uint64
 }
+
+func (s *pulseStream) Frames() uint64 { return s.frames.Load() }
 
 func (s *pulseStream) Backend() string { return "pulse monitor (" + s.sink + ")" }
 
@@ -38,8 +42,10 @@ func open(onFrame FrameFunc) (Stream, error) {
 		c.Close()
 		return nil, fmt.Errorf("sysaudio: default output: %w", err)
 	}
+	stream := &pulseStream{client: c, sink: sink.Name()}
 	fr := newFramer(onFrame)
 	rec, err := c.NewRecord(pulse.Int16Writer(func(p []int16) (int, error) {
+		stream.frames.Add(uint64(len(p)))
 		fr.push(p)
 		return len(p), nil
 	}),
@@ -53,6 +59,7 @@ func open(onFrame FrameFunc) (Stream, error) {
 		c.Close()
 		return nil, fmt.Errorf("sysaudio: record monitor of %s: %w", sink.ID(), err)
 	}
+	stream.rec = rec
 	rec.Start()
-	return &pulseStream{client: c, rec: rec, sink: sink.Name()}, nil
+	return stream, nil
 }
