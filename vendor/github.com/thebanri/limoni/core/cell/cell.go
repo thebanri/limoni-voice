@@ -1,6 +1,6 @@
 package cell
 
-import "unicode/utf8"
+import "github.com/thebanri/limoni/core/grapheme"
 
 // ColorType represents the terminal color mode.
 type ColorType uint8
@@ -69,12 +69,14 @@ const (
 )
 
 // Style defines the color and visual styling of a terminal cell.
-// Memory Alignment: 4 (Fg) + 4 (Bg) + 2 (Modifier) = 10 bytes,
-// padded to 12 bytes by the Go compiler.
+// Memory Alignment: 4 (Fg) + 4 (Bg) + 2 (Modifier) + 2 (Link) = 12 bytes,
+// which is what the compiler padded the first three to anyway: the hyperlink
+// handle is free.
 type Style struct {
 	Fg       Color    // 4 bytes
 	Bg       Color    // 4 bytes
 	Modifier Modifier // 2 bytes
+	Link     LinkID   // 2 bytes — 0 for the overwhelming majority of cells
 }
 
 // Reset restores the style to its default values.
@@ -82,6 +84,7 @@ func (s *Style) Reset() {
 	s.Fg = NewColorDefault()
 	s.Bg = NewColorDefault()
 	s.Modifier = ModifierReset
+	s.Link = 0
 }
 
 // AddModifier adds a new modifier flag and returns the updated Style.
@@ -188,102 +191,94 @@ const RuneImage rune = 0xFFFF
 const RuneInvalid rune = 0x10FFFF
 
 // RuneWidth calculates the terminal display column width of a rune.
+// bmpWidth holds the width of every Basic Multilingual Plane codepoint.
+//
+// RuneWidth is the hottest function on the draw path: a 100-layer frame spent
+// 39% of its time in the range checks below, because every cell written — box
+// drawing included — walked roughly twenty comparisons. The BMP covers box
+// drawing, CJK, and all Latin text, so a 64 KB table turns almost every call
+// into a single indexed read.
+//
+// The table is filled from runeWidthSlow, so it cannot drift from the range
+// logic it stands in for.
+var bmpWidth = func() *[0x10000]uint8 {
+	var table [0x10000]uint8
+	for r := rune(0); r < 0x10000; r++ {
+		table[r] = uint8(runeWidthSlow(r))
+	}
+	return &table
+}()
+
+// RuneWidth returns the terminal-cell width of a rune: 0, 1 or 2.
 func RuneWidth(r rune) int {
-	// 1. Control characters and unprintable C0/C1
-	if r < 32 || (r >= 0x7F && r <= 0x9F) {
-		return 0
+	// uint32 conversion also routes negative runes to the slow path, which
+	// classifies them as unprintable.
+	if uint32(r) < 0x10000 {
+		return int(bmpWidth[r])
 	}
-
-	// 2. Zero-width / combining characters
-	if (r >= 0xFE00 && r <= 0xFE0F) || // Variation Selectors
-		(r >= 0x0300 && r <= 0x036F) || // Combining Diacritical Marks
-		(r >= 0x1AB0 && r <= 0x1AFF) || // Combining Diacritical Marks Extended
-		(r >= 0x1DC0 && r <= 0x1DFF) || // Combining Diacritical Marks Supplement
-		(r >= 0x20D0 && r <= 0x20FF) || // Combining Diacritical Marks for Symbols
-		(r >= 0xFE20 && r <= 0xFE2F) || // Combining Half Marks
-		(r >= 0x200B && r <= 0x200F) || // Zero Width Space, ZWNJ, ZWJ, LRM, RLM
-		r == 0x00AD || // Soft Hyphen
-		(r >= 0xE0100 && r <= 0xE01EF) || // Variation Selectors Supplement
-		(r >= 0xE0020 && r <= 0xE007F) { // Tags
-		return 0
-	}
-
-	// 3. Wide character ranges:
-	// - Emojis and Plane 1 symbols: 0x1F000..0x1FFFF
-	// - Plane 2 CJK Unified Ideographs Extension B-F: 0x20000..0x2FFFF
-	// - Plane 3 CJK Unified Ideographs Extension G: 0x30000..0x3FFFF
-	if r >= 0x1F000 && r <= 0x3FFFF {
-		return 2
-	}
-
-	// - CJK Radicals, Kangxi, Hiragana, Katakana, Bopomofo, CJK Unified Ideographs (0x2E80..0xA4CF)
-	// - Hangul Syllables (0xAC00..0xD7A3)
-	// - Hangul Jamo (0x1100..0x115F)
-	// - CJK Compatibility (0xF900..0xFAFF)
-	// - Vertical Forms & CJK Compatibility Forms (0xFE10..0xFE19, 0xFE30..0xFE6F)
-	// - Fullwidth ASCII & Punctuation (0xFF01..0xFF60, 0xFFE0..0xFFE6)
-	if (r >= 0x1100 && r <= 0x115F) ||
-		(r >= 0x2329 && r <= 0x232A) ||
-		(r >= 0x2E80 && r <= 0xA4CF) ||
-		(r >= 0xAC00 && r <= 0xD7A3) ||
-		(r >= 0xF900 && r <= 0xFAFF) ||
-		(r >= 0xFE10 && r <= 0xFE19) ||
-		(r >= 0xFE30 && r <= 0xFE6F) ||
-		(r >= 0xFF01 && r <= 0xFF60) ||
-		(r >= 0xFFE0 && r <= 0xFFE6) {
-		return 2
-	}
-
-	// - BMP Wide Emojis, Symbols and Dingbats (Strict Unicode East Asian Width 'W' / 'F')
-	if (r >= 0x231A && r <= 0x231B) || // ⌚..⌛
-		(r >= 0x23E9 && r <= 0x23EC) || // ⏩..⏬
-		(r == 0x23F0 || r == 0x23F3) || // ⏰, ⏳
-		(r >= 0x25FD && r <= 0x25FE) || // ◽..◾
-		(r >= 0x2614 && r <= 0x2615) || // ☔..☕
-		(r >= 0x2630 && r <= 0x2637) || // ☰..☷
-		(r >= 0x2648 && r <= 0x2653) || // ♈..♓
-		r == 0x267F || // ♿
-		(r >= 0x268A && r <= 0x268F) || // ⚊..⚏
-		r == 0x2693 || // ⚓
-		r == 0x26A1 || // ⚡
-		(r >= 0x26AA && r <= 0x26AB) || // ⚪..⚫
-		(r >= 0x26BD && r <= 0x26BE) || // ⚽..⚾
-		(r >= 0x26C4 && r <= 0x26C5) || // ⛄..⛅
-		r == 0x26CE || // ⛎
-		r == 0x26D4 || // ⛔
-		r == 0x26EA || // ⛪
-		(r >= 0x26F2 && r <= 0x26F3) || // ⛲..⛳
-		r == 0x26F5 || // ⛵
-		r == 0x26FA || // ⛺
-		r == 0x26FD || // ⛽
-		r == 0x2705 || // ✅
-		(r >= 0x270A && r <= 0x270B) || // ✊..✋
-		r == 0x2728 || // ✨
-		r == 0x274C || // ❌
-		r == 0x274E || // ❎
-		(r >= 0x2753 && r <= 0x2755) || // ❓..❕
-		r == 0x2757 || // ❗
-		(r >= 0x2795 && r <= 0x2797) || // ➕..➗
-		r == 0x27B0 || // ➰
-		r == 0x27BF || // ➿
-		(r >= 0x2B1B && r <= 0x2B1C) || // ⬛..⬜
-		(r == 0x2B50 || r == 0x2B55) || // ⭐, ⭕
-		(r >= 0x3297 && r <= 0x3299) { // ㊗, ㊙
-		return 2
-	}
-
-	return 1
+	return runeWidthSlow(r)
 }
 
-// StringWidth returns the terminal-cell width of UTF-8 text.
+func runeWidthSlow(r rune) int {
+	if r >= RuneClusterBase {
+		return clusterWidth(r)
+	}
+	// Generated from the Unicode Character Database rather than written by
+	// hand; see core/grapheme. The hand-written ranges this replaced missed
+	// thousands of combining marks and wide characters, and put thousands of
+	// narrow ones in blanket "wide" blocks.
+	return grapheme.RuneWidth(r)
+}
+
+// StringWidth returns the terminal-cell width of UTF-8 text, measuring each
+// grapheme cluster as a unit — a flag or a family emoji is two cells, not the
+// sum of its code points.
 func StringWidth(text string) int {
 	width := 0
-	for len(text) > 0 {
-		r, size := utf8.DecodeRuneInString(text)
-		width += RuneWidth(r)
-		text = text[size:]
+	for i := 0; i < len(text); {
+		// Printable ASCII followed by more ASCII is always a one-column
+		// cluster of its own, so it is counted without segmenting. The byte
+		// after it has to be checked: a combining mark there would join it.
+		if c := text[i]; c >= 0x20 && c < 0x7F && (i+1 == len(text) || text[i+1] < 0x80) {
+			width++
+			i++
+			continue
+		}
+		cluster, w, _ := NextCluster(text[i:])
+		width += w
+		i += len(cluster)
 	}
 	return width
+}
+
+// Truncate returns the longest prefix of text that fits in maxWidth columns,
+// cut only at grapheme cluster boundaries, and that prefix's width. It returns
+// a substring of text and does not allocate.
+//
+// Use it instead of string([]rune(text)[:n]), which both allocates and can cut
+// a flag, an emoji sequence or an accented letter in half, and which counts
+// code points where the screen counts columns.
+func Truncate(text string, maxWidth int) (prefix string, width int) {
+	if maxWidth <= 0 {
+		return "", 0
+	}
+	for i := 0; i < len(text); {
+		if c := text[i]; c >= 0x20 && c < 0x7F && (i+1 == len(text) || text[i+1] < 0x80) {
+			if width+1 > maxWidth {
+				return text[:i], width
+			}
+			width++
+			i++
+			continue
+		}
+		cluster, w, _ := NextCluster(text[i:])
+		if width+w > maxWidth {
+			return text[:i], width
+		}
+		width += w
+		i += len(cluster)
+	}
+	return text, width
 }
 
 // Downsample maps the color to a compatible representation based on the capabilities.

@@ -1,6 +1,7 @@
 package widgets
 
 import (
+	"github.com/thebanri/limoni/core/accessibility"
 	"strings"
 
 	"github.com/thebanri/limoni/core/buffer"
@@ -71,7 +72,10 @@ func (p *Paragraph) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if p.ID != "" && ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(p.ID)
 	}
-	if p.ID != "" && ctx.RegisterClick != nil {
+	// A click focuses the widget; registered as data, so it does not allocate.
+	if ctx.RegisterClickAction != nil && p.ID != "" {
+		ctx.RegisterClickAction(ctx.Area, cell.ClickAction{Focus: p.ID})
+	} else if p.ID != "" && ctx.RegisterClick != nil {
 		ctx.RegisterClick(ctx.Area, func() {
 			if ctx.SetFocus != nil {
 				ctx.SetFocus(p.ID)
@@ -305,4 +309,23 @@ func splitWords(s string) []string {
 		words = append(words, s[start:])
 	}
 	return words
+}
+
+// AccessibilityNode returns the semantic node description for Paragraph.
+//
+// Static text is invisible to a screen reader unless something announces it,
+// which is why a plain paragraph carries a node at all.
+func (p *Paragraph) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+	state := accessibility.NodeState(0)
+	if focused {
+		state |= accessibility.StateFocused
+	}
+	return accessibility.AccessibilityNode{
+		ID:     p.ID,
+		Role:   accessibility.RoleGeneric,
+		Label:  "Text",
+		Value:  p.Text,
+		State:  state,
+		Bounds: bounds,
+	}
 }

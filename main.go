@@ -102,9 +102,12 @@ func main() {
 	}
 
 	if *flagVersion {
-		fmt.Printf("Limoni Voice %s (Go 1.26+ | E2EE CPace + AES-256-GCM | Opus 48 kHz | P2P Full-Mesh)\n", AppVersion)
+		fmt.Printf("Limoni Voice %s (Go 1.25+ | E2EE CPace + AES-256-GCM | Opus 48 kHz | P2P Full-Mesh)\n", AppVersion)
 		os.Exit(0)
 	}
+
+	setupConsole()
+	defer restoreConsole()
 
 	b := driver.NewBackend(os.Stdin, os.Stdout)
 	if err := b.Setup(); err != nil {

@@ -4,15 +4,19 @@ package driver
 
 import (
 	"os"
+	"sync"
 	"syscall/js"
 )
 
 // Backend manages WebAssembly browser execution with xterm.js / DOM events.
 type Backend struct {
-	events chan Event
-	done   chan struct{}
-	width  uint16
-	height uint16
+	events       chan Event
+	done         chan struct{}
+	width        uint16
+	height       uint16
+	inlineHeight uint16
+	inlineMu     sync.RWMutex
+	replies      replyCollector
 }
 
 // NewBackend creates a new WASM Backend instance.
@@ -45,6 +49,11 @@ func (b *Backend) SetSize(w, h uint16) {
 	b.height = h
 }
 
+// The terminal control sequences are the ones every backend sends; see
+// fullScreenSetupCmds. xterm.js implements them, and omitting them is what
+// once left the browser playground with a blinking cursor over the render, no
+// mouse reporting, and auto-wrap corrupting full-width frames.
+
 // Setup initializes WASM JS callbacks and screen setup.
 func (b *Backend) Setup() error {
 	global := js.Global()
@@ -60,9 +69,11 @@ func (b *Backend) Setup() error {
 						ev, consumed = ParseEvent(bytes)
 					}
 					if consumed > 0 {
-						select {
-						case b.events <- ev:
-						default:
+						if ev.Type != EventNone && !b.replies.record(ev) {
+							select {
+							case b.events <- ev:
+							default:
+							}
 						}
 						bytes = bytes[consumed:]
 					} else {
@@ -93,17 +104,33 @@ func (b *Backend) Setup() error {
 		global.Set("__limoni_resize", resizeCb)
 	}
 
-	return nil
+	// Written after the callbacks are registered, so the output bridge is in
+	// place by the time the first bytes are emitted.
+	setup := fullScreenSetupCmds()
+	if height := b.Inline(); height > 0 {
+		setup = inlineSetupCmds(height)
+	}
+	// xterm.js answers the probe. There is no shell to leak late replies
+	// into, so Close does not wait for them here.
+	setup = b.replies.withProbe(setup)
+	_, err := b.Write([]byte(setup))
+	return err
 }
 
 // Close cleans up JS bindings and stops event delivery.
 func (b *Backend) Close() error {
 	select {
 	case <-b.done:
+		return nil
 	default:
 		close(b.done)
 	}
-	return nil
+	restore := fullScreenRestoreCmds()
+	if height := b.Inline(); height > 0 {
+		restore = inlineRestoreCmds(height)
+	}
+	_, err := b.Write([]byte(restore))
+	return err
 }
 
 // Events returns the event channel.
@@ -142,3 +169,21 @@ func (b *Backend) StartSyncUpdate() {}
 
 // EndSyncUpdate is a no-op on WASM.
 func (b *Backend) EndSyncUpdate() {}
+
+// SetInline switches the backend to inline rendering: no alternate screen, the
+// frame occupying height rows where the cursor already is, and the drawn output
+// left in the scrollback on exit. Zero restores full-screen behaviour.
+//
+// Must be called before Setup.
+func (b *Backend) SetInline(height uint16) {
+	b.inlineMu.Lock()
+	b.inlineHeight = height
+	b.inlineMu.Unlock()
+}
+
+// Inline reports the reserved row count, or zero for full-screen mode.
+func (b *Backend) Inline() uint16 {
+	b.inlineMu.RLock()
+	defer b.inlineMu.RUnlock()
+	return b.inlineHeight
+}

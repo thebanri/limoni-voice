@@ -1,6 +1,7 @@
 package widgets
 
 import (
+	"github.com/thebanri/limoni/core/accessibility"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
@@ -94,7 +95,7 @@ func (s Select) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		indicator = " ▴"
 	}
 	if ctx.Area.Width > 2 {
-		buf.SetString(ctx.Area.X+1, ctx.Area.Y, clipString(label+indicator, int(ctx.Area.Width)-2), fieldStyle)
+		setClipped(buf, ctx.Area.X+1, ctx.Area.Y, label+indicator, fieldStyle, int(ctx.Area.Width)-2)
 	}
 
 	// Fare tıklama ve tekerlek işleyicisi
@@ -182,7 +183,7 @@ func (s Select) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		for x := uint16(0); x < ctx.Area.Width; x++ {
 			buf.SetCell(ctx.Area.X+x, y, cell.Cell{Content: ' ', Style: style})
 		}
-		buf.SetString(ctx.Area.X+1, y, clipString(option, int(ctx.Area.Width)-2), style)
+		setClipped(buf, ctx.Area.X+1, y, option, style, int(ctx.Area.Width)-2)
 
 		// Draw scroll indicators on the right edge if there is overflow
 		if i == startIdx && startIdx > 0 && ctx.Area.Width > 2 {
@@ -216,4 +217,36 @@ func (s Select) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 func (s Select) SizeHint(maxArea cell.Rect) (uint16, uint16) {
 	return maxArea.Width, 1
+}
+
+// AccessibilityNode returns the semantic node description for Select.
+func (s Select) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+	state := accessibility.NodeState(0)
+	if focused {
+		state |= accessibility.StateFocused
+	}
+
+	selected, position, value := -1, 0, ""
+	if s.State != nil {
+		if s.State.Open {
+			state |= accessibility.StateExpanded
+		}
+		selected = s.State.Selected
+	}
+	if selected >= 0 && selected < len(s.Options) {
+		state |= accessibility.StateSelected
+		value = s.Options[selected]
+		position = selected + 1
+	}
+
+	return accessibility.AccessibilityNode{
+		ID:       s.ID,
+		Role:     accessibility.RoleList,
+		Label:    "Select",
+		Value:    value,
+		State:    state,
+		Bounds:   bounds,
+		Position: position,
+		SetSize:  len(s.Options),
+	}
 }

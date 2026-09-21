@@ -3,7 +3,6 @@ package buffer
 import (
 	"bytes"
 	"strconv"
-	"unicode/utf8"
 
 	"github.com/thebanri/limoni/core/cell"
 )
@@ -17,7 +16,58 @@ const AdaptiveDiffThreshold = 0.45
 // - Case A (dirtyRatio < 0.45): Sparse differential rendering with minimal cursor jumps (CUP).
 // - Case B (dirtyRatio >= 0.45): Continuous full stream redraw with synchronized update mode (?2026).
 // Performance: Operates with zero heap allocations (0 B/op) when out has sufficient capacity.
+// DiffOptions selects the encodings the diff is allowed to emit.
+//
+// Emitted bytes, not CPU time, govern responsiveness over a network link, so
+// the encoder can compress runs — but only with sequences the terminal
+// actually implements. A terminal without REP prints the escape instead of
+// obeying it, which corrupts the frame, so these are opt-in per capability
+// rather than assumed.
+type DiffOptions struct {
+	TrueColor bool
+	Colors256 bool
+	// EraseChar allows ECH (CSI n X) for runs of blanks.
+	EraseChar bool
+	// RepeatChar allows REP (CSI n b) for runs of one glyph.
+	RepeatChar bool
+	// SyncOutput wraps the frame in synchronized update mode (?2026) so the
+	// terminal presents it atomically instead of tearing.
+	SyncOutput bool
+	// Hyperlinks allows OSC 8, which makes a styled span clickable. A
+	// terminal that does not implement OSC 8 should ignore it, but not all of
+	// them do, so it is off unless the terminal is recognised.
+	Hyperlinks bool
+	// ClusterWidths says the terminal confirmed mode 2027: it advances the
+	// cursor by a grapheme cluster's width, as the buffer does. The encoder
+	// then trusts the cursor after a cluster instead of re-anchoring it.
+	// Leave it false unless the terminal answered DECRQM for 2027 as set.
+	ClusterWidths bool
+}
+
+// minEraseRun and minRepeatRun are the lengths at which a control sequence
+// becomes shorter than the literal cells it replaces. "CSI n X" is four bytes
+// at a single digit, so a run of four blanks breaks even and five wins.
+const (
+	minEraseRun  = 5
+	minRepeatRun = 5
+)
+
+// Diff compares the buffers with the default encodings. See DiffWithOptions
+// for control over run compression.
 func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, error) {
+	return DiffWithOptions(front, back, out, DiffOptions{
+		TrueColor: trueColor,
+		Colors256: colors256,
+		EraseChar: true,
+	})
+}
+
+// DiffWithOptions compares the buffers and appends the escape sequence stream.
+func DiffWithOptions(front, back *Buffer, out []byte, opts DiffOptions) ([]byte, error) {
+	return diff(front, back, out, opts)
+}
+
+func diff(front, back *Buffer, out []byte, opts DiffOptions) ([]byte, error) {
 	// Zero-Loop Fast-Path: Return immediately if buffer was not dirtied and dimensions match
 	if !front.IsDirty && front.Area.Width == back.Area.Width && front.Area.Height == back.Area.Height {
 		return out, nil
@@ -26,7 +76,7 @@ func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, e
 	// If dimensions mismatch, resize back buffer and execute full stream redraw
 	if front.Area.Width != back.Area.Width || front.Area.Height != back.Area.Height {
 		back.Resize(front.Area)
-		return DiffFullStream(front, back, out, trueColor, colors256)
+		return diffFullStream(front, back, out, opts)
 	}
 
 	width := front.Area.Width
@@ -52,15 +102,20 @@ func Diff(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, e
 
 	dirtyRatio := float64(dirtyCount) / float64(totalCells)
 	if dirtyRatio >= AdaptiveDiffThreshold {
-		return DiffFullStream(front, back, out, trueColor, colors256)
+		return diffFullStream(front, back, out, opts)
 	}
 
-	return DiffSparse(front, back, out, trueColor, colors256)
+	return diffSparse(front, back, out, opts)
 }
 
 // DiffSparse executes Case A: sparse differential rendering using cursor jumps (CUP)
 // for only modified spans within lines. Used when dirtyRatio < 0.45.
 func DiffSparse(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, error) {
+	return diffSparse(front, back, out, DiffOptions{TrueColor: trueColor, Colors256: colors256, EraseChar: true})
+}
+
+func diffSparse(front, back *Buffer, out []byte, opts DiffOptions) ([]byte, error) {
+	trueColor, colors256, links := opts.TrueColor, opts.Colors256, opts.Hyperlinks
 	width := front.Area.Width
 	height := front.Area.Height
 
@@ -157,6 +212,70 @@ func DiffSparse(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]b
 				continue
 			}
 
+			// Run compression. A row of identical cells is common — padding,
+			// cleared regions, rules, fills — and writing it literally is the
+			// single largest avoidable cost in the emitted stream.
+			if opts.EraseChar || opts.RepeatChar {
+				run := uint16(1)
+				for nx := x + 1; nx <= uint16(last); nx++ {
+					nIdx := int(y)*int(width) + int(nx)
+					if front.Content[nIdx] != *frontCell {
+						break
+					}
+					// Only cells that actually need writing may be folded into
+					// a run; stopping at a clean cell keeps the diff minimal.
+					if front.Content[nIdx] == back.Content[nIdx] {
+						break
+					}
+					run++
+				}
+
+				isBlank := frontCell.Content == ' ' || frontCell.Content == 0
+				glyphWidth := cell.RuneWidth(frontCell.Content)
+
+				switch {
+				case opts.EraseChar && isBlank && run >= minEraseRun:
+					if cursorX != x || cursorY != y {
+						out = appendCursor(out, x, y)
+					}
+					if frontCell.Style != currentStyle {
+						out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, links, front.StyleCache)
+					}
+					out = append(out, "\x1b["...)
+					out = strconv.AppendInt(out, int64(run), 10)
+					out = append(out, 'X')
+					// ECH erases in place and leaves the cursor where it was,
+					// so the next write has to reposition.
+					cursorX, cursorY = 9999, 9999
+					for i := uint16(0); i < run; i++ {
+						back.Content[int(y)*int(width)+int(x+i)] = *frontCell
+					}
+					x += run - 1
+					continue
+
+				case opts.RepeatChar && !isBlank && !cell.IsCluster(frontCell.Content) && glyphWidth == 1 && run >= minRepeatRun:
+					if cursorX != x || cursorY != y {
+						out = appendCursor(out, x, y)
+					}
+					if frontCell.Style != currentStyle {
+						out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, links, front.StyleCache)
+					}
+					out = cell.AppendContent(out, frontCell.Content)
+					out = append(out, "\x1b["...)
+					out = strconv.AppendInt(out, int64(run-1), 10)
+					out = append(out, 'b')
+					cursorX, cursorY = x+run, y
+					if cursorX >= width {
+						cursorX, cursorY = 9999, 9999
+					}
+					for i := uint16(0); i < run; i++ {
+						back.Content[int(y)*int(width)+int(x+i)] = *frontCell
+					}
+					x += run - 1
+					continue
+				}
+			}
+
 			if cursorX != x || cursorY != y {
 				out = appendCursor(out, x, y)
 				cursorX = x
@@ -164,14 +283,14 @@ func DiffSparse(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]b
 			}
 
 			if frontCell.Style != currentStyle {
-				out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, front.StyleCache)
+				out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, links, front.StyleCache)
 			}
 
 			w := 1
 			if frontCell.Content == ' ' || frontCell.Content == 0 || frontCell.Content < 32 || frontCell.Content == 0x7F {
 				out = append(out, ' ')
 			} else {
-				out = utf8.AppendRune(out, frontCell.Content)
+				out = cell.AppendContent(out, frontCell.Content)
 				w = cell.RuneWidth(frontCell.Content)
 				if w <= 0 {
 					w = 1
@@ -179,7 +298,10 @@ func DiffSparse(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]b
 			}
 
 			cursorX += uint16(w)
-			if cursorX >= width {
+			if cursorX >= width || (cell.IsCluster(frontCell.Content) && !opts.ClusterWidths) {
+				// A terminal without mode 2027 may advance by a different
+				// amount for a cluster, so its cursor position is unknown
+				// and the next write addresses its cell explicitly.
 				cursorX = 9999
 				cursorY = 9999
 			}
@@ -195,11 +317,17 @@ func DiffSparse(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]b
 	var defaultStyle cell.Style
 	defaultStyle.Reset()
 	if currentStyle != defaultStyle {
-		out, _ = appendStyle(out, currentStyle, defaultStyle, trueColor, colors256, front.StyleCache)
+		out, _ = appendStyle(out, currentStyle, defaultStyle, trueColor, colors256, links, front.StyleCache)
 	}
 
 	front.IsDirty = false
 	return out, nil
+}
+
+// isBlankCell reports whether a cell renders as a space, which is what makes
+// it a candidate for erasure rather than a literal write.
+func isBlankCell(c *cell.Cell) bool {
+	return c.Content == ' ' || c.Content == 0 || c.Content < 32 || c.Content == 0x7F
 }
 
 // DiffFullStream executes Case B: continuous stream redraw for high-churn frames (dirtyRatio >= 0.45).
@@ -207,6 +335,11 @@ func DiffSparse(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]b
 // moves cursor to home (\x1b[H), sequentially overwrites line-by-line using \r\n,
 // maintains lazy SGR color emission, and synchronizes buffers via copy(back.Content, front.Content).
 func DiffFullStream(front, back *Buffer, out []byte, trueColor, colors256 bool) ([]byte, error) {
+	return diffFullStream(front, back, out, DiffOptions{TrueColor: trueColor, Colors256: colors256, EraseChar: true})
+}
+
+func diffFullStream(front, back *Buffer, out []byte, opts DiffOptions) ([]byte, error) {
+	trueColor, colors256, links := opts.TrueColor, opts.Colors256, opts.Hyperlinks
 	if front.Area.Width != back.Area.Width || front.Area.Height != back.Area.Height {
 		back.Resize(front.Area)
 	}
@@ -274,16 +407,66 @@ func DiffFullStream(front, back *Buffer, out []byte, trueColor, colors256 bool) 
 				continue
 			}
 
+			// Erase to end of line. Most of a typical frame is padding, and
+			// three bytes replace the whole tail of the row. EL erases with
+			// the current background, so it is only safe when every remaining
+			// cell shares one style.
+			if opts.EraseChar && isBlankCell(frontCell) {
+				tailStyle := frontCell.Style
+				tailBlank := true
+				for checkX := x + 1; checkX < width; checkX++ {
+					c := &front.Content[rowOffset+int(checkX)]
+					if !isBlankCell(c) || c.Style != tailStyle {
+						tailBlank = false
+						break
+					}
+				}
+				if tailBlank && width-x >= minEraseRun {
+					if tailStyle != currentStyle {
+						out, currentStyle = appendStyle(out, currentStyle, tailStyle, trueColor, colors256, links, front.StyleCache)
+					}
+					out = append(out, "\x1b[K"...)
+					break
+				}
+			}
+
+			// Repeat a run of one glyph. REP advances the cursor exactly as
+			// writing the glyph that many times would, so the sequential
+			// stream stays aligned.
+			if opts.RepeatChar && !isBlankCell(frontCell) && !cell.IsCluster(frontCell.Content) && cell.RuneWidth(frontCell.Content) == 1 {
+				run := uint16(1)
+				for nx := x + 1; nx < width; nx++ {
+					if front.Content[rowOffset+int(nx)] != *frontCell {
+						break
+					}
+					run++
+				}
+				if run >= minRepeatRun {
+					if frontCell.Style != currentStyle {
+						out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, links, front.StyleCache)
+					}
+					out = cell.AppendContent(out, frontCell.Content)
+					out = append(out, "\x1b["...)
+					out = strconv.AppendInt(out, int64(run-1), 10)
+					out = append(out, 'b')
+					x += run - 1
+					continue
+				}
+			}
+
 			// Lazy SGR style emission: only emit escape sequences when style changes
 			if frontCell.Style != currentStyle {
-				out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, front.StyleCache)
+				out, currentStyle = appendStyle(out, currentStyle, frontCell.Style, trueColor, colors256, links, front.StyleCache)
 			}
 
 			// Emit character rune
-			if frontCell.Content == ' ' || frontCell.Content == 0 || frontCell.Content < 32 || frontCell.Content == 0x7F {
+			if isBlankCell(frontCell) {
 				out = append(out, ' ')
 			} else {
-				out = utf8.AppendRune(out, frontCell.Content)
+				out = cell.AppendContent(out, frontCell.Content)
+				if cell.IsCluster(frontCell.Content) && !opts.ClusterWidths {
+					out = appendClusterResync(out, frontCell.Content, x, width)
+				}
 			}
 		}
 	}
@@ -292,7 +475,7 @@ func DiffFullStream(front, back *Buffer, out []byte, trueColor, colors256 bool) 
 	var defaultStyle cell.Style
 	defaultStyle.Reset()
 	if currentStyle != defaultStyle {
-		out, _ = appendStyle(out, currentStyle, defaultStyle, trueColor, colors256, front.StyleCache)
+		out, _ = appendStyle(out, currentStyle, defaultStyle, trueColor, colors256, links, front.StyleCache)
 	}
 
 	// Close synchronized update if this function opened it
@@ -317,11 +500,33 @@ func AppendCursor(out []byte, x, y uint16) []byte {
 }
 
 // appendCursor is an internal alias for AppendCursor.
+// appendClusterResync moves the cursor to the column after a cluster just
+// written at x.
+//
+// Terminals that implement mode 2027 advance by the cluster's width, as the
+// buffer does. Many do not: they advance per code point, so a family emoji
+// moves the cursor six columns and a flag four, and in a sequential stream
+// every later cell on the row would land shifted. CHA names the column
+// outright, which confines the disagreement to the cluster itself. It costs a
+// few bytes per cluster and nothing for text without them.
+func appendClusterResync(out []byte, content rune, x, width uint16) []byte {
+	next := x + uint16(cell.RuneWidth(content))
+	if next >= width {
+		return out // The row ends here; the next row starts with \r.
+	}
+	out = append(out, "\x1b["...)
+	out = strconv.AppendInt(out, int64(next)+1, 10)
+	return append(out, 'G')
+}
+
 func appendCursor(out []byte, x, y uint16) []byte {
 	return AppendCursor(out, x, y)
 }
 
 func getStyleBytes(target cell.Style, trueColor, colors256 bool, cache map[cell.Style][]byte) []byte {
+	// Links are emitted by appendStyle, not cached: one entry per style is
+	// worth keeping, one per style-and-URL is not.
+	target.Link = 0
 	if cache == nil {
 		var out []byte
 		var cur cell.Style
@@ -346,12 +551,25 @@ func getStyleBytes(target cell.Style, trueColor, colors256 bool, cache map[cell.
 	return out
 }
 
-func appendStyle(out []byte, cur, target cell.Style, trueColor, colors256 bool, cache map[cell.Style][]byte) ([]byte, cell.Style) {
+func appendStyle(out []byte, cur, target cell.Style, trueColor, colors256, links bool, cache map[cell.Style][]byte) ([]byte, cell.Style) {
 	if !trueColor {
 		target = target.Downsample(trueColor, colors256)
 	}
 	if cur == target {
 		return out, cur
+	}
+
+	// A hyperlink is not SGR: `ESC[0m` does not close it, and the cached
+	// style bytes below are built without it. So it is emitted here, once per
+	// change, and then the two styles agree on the link for the SGR work.
+	if cur.Link != target.Link {
+		if links {
+			out = appendLink(out, target.Link)
+		}
+		cur.Link = target.Link
+		if cur == target {
+			return out, cur
+		}
 	}
 
 	// If we are resetting anyway, we can use the cached target bytes directly!
@@ -375,7 +593,9 @@ func appendStyleRaw(out []byte, cur, target cell.Style, trueColor, colors256 boo
 	// 1. Modifiers removed
 	if (cur.Modifier & ^target.Modifier) != 0 {
 		out = append(out, "\x1b[0m"...)
+		link := cur.Link // SGR reset does not close a hyperlink.
 		cur.Reset()
+		cur.Link = link
 	}
 
 	// 2. Foreground color change
@@ -504,6 +724,28 @@ func appendStyleRaw(out []byte, cur, target cell.Style, trueColor, colors256 boo
 	}
 
 	return out, cur
+}
+
+// appendLink switches the hyperlink the following cells belong to, with
+// OSC 8. The id parameter matters: the diff emits cells in the order it finds
+// them, so one link's text can arrive in several pieces and on several rows,
+// and terminals use the id to treat those pieces as one link when the pointer
+// hovers over them. The handle serves as that id, which is exactly its job.
+//
+// The zero handle closes the link, as OSC 8 requires, with both fields empty.
+func appendLink(out []byte, id cell.LinkID) []byte {
+	out = append(out, "\x1b]8;"...)
+	if id != 0 {
+		out = append(out, "id="...)
+		out = appendUint16(out, uint16(id))
+	}
+	out = append(out, ';')
+	if id != 0 {
+		out = append(out, cell.LinkURL(id)...)
+	}
+	// ST rather than BEL: BEL inside OSC 8 is accepted but deprecated, and a
+	// terminal that does not know the sequence skips more reliably to ST.
+	return append(out, "\x1b\\"...)
 }
 
 func appendUint8(out []byte, v uint8) []byte {

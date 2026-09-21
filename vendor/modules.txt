@@ -27,13 +27,14 @@ github.com/jezek/xgb/xproto
 ## explicit; go 1.12
 github.com/jfreymuth/pulse
 github.com/jfreymuth/pulse/proto
-# github.com/thebanri/limoni v0.2.4
-## explicit; go 1.26.5
+# github.com/thebanri/limoni v0.8.0
+## explicit; go 1.25.0
 github.com/thebanri/limoni/animation
 github.com/thebanri/limoni/core/accessibility
 github.com/thebanri/limoni/core/buffer
 github.com/thebanri/limoni/core/cell
 github.com/thebanri/limoni/core/driver
+github.com/thebanri/limoni/core/grapheme
 github.com/thebanri/limoni/core/terminal
 github.com/thebanri/limoni/graphics
 github.com/thebanri/limoni/layout

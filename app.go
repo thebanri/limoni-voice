@@ -486,6 +486,7 @@ func (a *App) cleanExit() {
 	a.node.Close()
 	a.audio.Stop()
 	a.backend.Close()
+	restoreConsole()
 	os.Exit(0)
 }
 

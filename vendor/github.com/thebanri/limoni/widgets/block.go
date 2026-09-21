@@ -158,6 +158,13 @@ type Block struct {
 	Borders uint8
 	// BorderSymbols, kenarlık çiziminde kullanılacak olan glif sembolleridir (örn. SymbolsRounded).
 	BorderSymbols BorderSymbols
+	// MergeBorders joins this block's border with light box-drawing characters
+	// already in the buffer, so two adjacent blocks share one edge and meet in
+	// a junction (├ ┤ ┬ ┴ ┼) instead of one line overwriting the other.
+	//
+	// Off by default: it costs a read per border cell, and a block drawn over
+	// unrelated line art would otherwise fuse with it.
+	MergeBorders bool
 	// BorderStyle, kenarlık çizgilerinin rengini ve stilini belirler.
 	BorderStyle cell.Style
 
@@ -291,8 +298,16 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 
 	// 1. Aşama: Bloğun arka planını doldur
+	//
+	// When merging borders, cells that will receive a border of this block are
+	// left alone: the fill would erase the neighbouring block's glyph before
+	// putBorder ever got to merge with it. Those cells are fully restyled by
+	// putBorder a moment later, so nothing is left unpainted.
 	for y := area.Y; y < area.Y+area.Height; y++ {
 		for x := area.X; x < area.X+area.Width; x++ {
+			if b.MergeBorders && b.coversWithBorder(area, x, y) {
+				continue
+			}
 			buf.SetCellDirect(x, y, cell.Cell{Content: ' ', Style: blockStyle})
 		}
 	}
@@ -320,39 +335,39 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	// Yatay çizgileri çiz
 	if hasT {
 		for x := area.X + 1; x < area.X+area.Width-1; x++ {
-			buf.SetCellDirect(x, area.Y, cell.Cell{Content: sym.Horizontal, Style: borderStyle})
+			b.putBorder(buf, x, area.Y, sym.Horizontal, borderStyle)
 		}
 	}
 	if hasB {
 		for x := area.X + 1; x < area.X+area.Width-1; x++ {
-			buf.SetCellDirect(x, area.Y+area.Height-1, cell.Cell{Content: sym.Horizontal, Style: borderStyle})
+			b.putBorder(buf, x, area.Y+area.Height-1, sym.Horizontal, borderStyle)
 		}
 	}
 
 	// Dikey çizgileri çiz
 	if hasL {
 		for y := area.Y + 1; y < area.Y+area.Height-1; y++ {
-			buf.SetCellDirect(area.X, y, cell.Cell{Content: sym.Vertical, Style: borderStyle})
+			b.putBorder(buf, area.X, y, sym.Vertical, borderStyle)
 		}
 	}
 	if hasR {
 		for y := area.Y + 1; y < area.Y+area.Height-1; y++ {
-			buf.SetCellDirect(area.X+area.Width-1, y, cell.Cell{Content: sym.Vertical, Style: borderStyle})
+			b.putBorder(buf, area.X+area.Width-1, y, sym.Vertical, borderStyle)
 		}
 	}
 
 	// Köşe birleşimlerini çiz
 	if hasT && hasL {
-		buf.SetCellDirect(area.X, area.Y, cell.Cell{Content: sym.TopLeft, Style: borderStyle})
+		b.putBorder(buf, area.X, area.Y, sym.TopLeft, borderStyle)
 	}
 	if hasT && hasR {
-		buf.SetCellDirect(area.X+area.Width-1, area.Y, cell.Cell{Content: sym.TopRight, Style: borderStyle})
+		b.putBorder(buf, area.X+area.Width-1, area.Y, sym.TopRight, borderStyle)
 	}
 	if hasB && hasL {
-		buf.SetCellDirect(area.X, area.Y+area.Height-1, cell.Cell{Content: sym.BottomLeft, Style: borderStyle})
+		b.putBorder(buf, area.X, area.Y+area.Height-1, sym.BottomLeft, borderStyle)
 	}
 	if hasB && hasR {
-		buf.SetCellDirect(area.X+area.Width-1, area.Y+area.Height-1, cell.Cell{Content: sym.BottomRight, Style: borderStyle})
+		b.putBorder(buf, area.X+area.Width-1, area.Y+area.Height-1, sym.BottomRight, borderStyle)
 	}
 
 	// 3. Aşama: Başlığı üst kenarlığa çiz
@@ -429,18 +444,17 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				Width:  area.Width - left - right,
 				Height: area.Height - top - bottom,
 			}
-			// Alt bileşene daraltılmış alan ve birleştirilmiş stil bağlamını aktar
-			childCtx := cell.NewContext(childArea, blockStyle)
-			childCtx.RegisterClick = ctx.RegisterClick
-			childCtx.RegisterMouse = ctx.RegisterMouse
-			childCtx.RegisterEvent = ctx.RegisterEvent
-			childCtx.CaptureMouse = ctx.CaptureMouse
-			childCtx.RegisterImage = ctx.RegisterImage
-			childCtx.RegisterFocus = ctx.RegisterFocus
-			childCtx.SetFocus = ctx.SetFocus
-			childCtx.FocusedID = ctx.FocusedID
-			childCtx.ThemeStyle = ctx.ThemeStyle
+			// The child gets the whole context with a narrower area and the
+			// block's style. Copying fields one by one dropped every field
+			// added to Context later — the click actions and wheel scrolling
+			// among them.
+			childCtx := ctx
+			childCtx.Area = childArea
+			childCtx.Style = blockStyle
 			b.Child.Draw(childCtx, buf)
+			if ctx.Describe != nil {
+				ctx.Describe(b.Child, childArea)
+			}
 		}
 	}
 }
@@ -559,4 +573,29 @@ func (b Block) Measure(maxArea cell.Rect) layout.Measure {
 		MaxHeight:   maxArea.Height,
 		Overflow:    layout.OverflowClip,
 	}
+}
+
+// putBorder writes one border glyph, merging it with whatever light
+// box-drawing character the cell already holds when MergeBorders is set.
+//
+// The merge is possible at all because a cell grid still has the previous
+// character to consult; a renderer that concatenates strings has already
+// overwritten it.
+func (b Block) putBorder(buf *buffer.Buffer, x, y uint16, r rune, style cell.Style) {
+	if b.MergeBorders {
+		if existing := buf.Get(x, y); existing != nil {
+			r = cell.MergeBoxDrawing(existing.Content, r)
+		}
+	}
+	buf.SetCellDirect(x, y, cell.Cell{Content: r, Style: style})
+}
+
+// coversWithBorder reports whether this block will draw a border glyph at the
+// given cell, given which edges are enabled.
+func (b Block) coversWithBorder(area cell.Rect, x, y uint16) bool {
+	onLeft := x == area.X && b.Borders&BorderLeft != 0
+	onRight := x == area.X+area.Width-1 && b.Borders&BorderRight != 0
+	onTop := y == area.Y && b.Borders&BorderTop != 0
+	onBottom := y == area.Y+area.Height-1 && b.Borders&BorderBottom != 0
+	return onLeft || onRight || onTop || onBottom
 }

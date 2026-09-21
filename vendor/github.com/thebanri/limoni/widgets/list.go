@@ -1,8 +1,7 @@
 package widgets
 
 import (
-	"unicode/utf8"
-
+	"github.com/thebanri/limoni/core/accessibility"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
@@ -15,6 +14,10 @@ type ListState struct {
 	Selected int
 	// Offset, ekranda listenin en üstünde gösterilen ilk öğenin indeksidir (Scroll kayma mesafesi).
 	Offset int
+
+	// rows is reused for the visible rows' semantic nodes on every frame, so
+	// exposing them allocates only while the list grows taller.
+	rows []accessibility.AccessibilityNode
 }
 
 // NewListState yeni bir ListState örneği oluşturur. Varsayılan olarak hiçbir öğe seçili değildir.
@@ -88,6 +91,9 @@ func (s *ListState) ScrollTo(height int, total int) {
 type List struct {
 	// ID, listenin odaklanma ve kimlik belirleme kimliğidir.
 	ID string
+	// Label names the list in the semantic tree — what a screen reader
+	// announces and what an automation selector matches. Defaults to "List".
+	Label string
 	// Items, listede gösterilecek olan metin dizilimleridir.
 	Items []string
 	// Provider, sanal liste (virtual scrolling) için veri sağlayıcıdır.
@@ -206,8 +212,14 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		offset = l.State.Offset
 	}
 
-	// Fare tekerleği olaylarını dinle ve kaydır
-	if ctx.RegisterMouse != nil && l.State != nil {
+	// The mouse wheel scrolls the list.
+	if ctx.RegisterScroll != nil && l.State != nil {
+		maxOffset := totalItems - int(ctx.Area.Height)
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		ctx.RegisterScroll(ctx.Area, &l.State.Offset, maxOffset)
+	} else if ctx.RegisterMouse != nil && l.State != nil {
 		st := l.State
 		viewHeight := int(ctx.Area.Height)
 		ctx.RegisterMouse(ctx.Area, func(ev driver.MouseEvent) {
@@ -321,7 +333,11 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 
 		// Otomatik fare yönlendirme köprüsünü bağla
-		if ctx.RegisterClick != nil && l.State != nil {
+		if ctx.RegisterClickAction != nil && l.State != nil {
+			// Clicking a row selects it and focuses the list, as data.
+			ctx.RegisterClickAction(cell.Rect{X: area.X, Y: currY, Width: area.Width, Height: 1},
+				cell.ClickAction{Focus: l.ID, Select: &l.State.Selected, Index: itemIdx})
+		} else if ctx.RegisterClick != nil && l.State != nil {
 			st := l.State
 			id := l.ID
 			setFocus := ctx.SetFocus
@@ -378,7 +394,7 @@ func (l List) SizeHint(maxArea cell.Rect) (width, height uint16) {
 		return 0, 0
 	}
 
-	symbolLen := utf8.RuneCountInString(l.HighlightSymbol)
+	symbolLen := cell.StringWidth(l.HighlightSymbol)
 	maxW := 0
 
 	if l.Provider != nil {
@@ -387,14 +403,14 @@ func (l List) SizeHint(maxArea cell.Rect) (width, height uint16) {
 			limit = 100
 		}
 		for i := 0; i < limit; i++ {
-			w := utf8.RuneCountInString(l.Provider.ItemAt(i)) + symbolLen
+			w := cell.StringWidth(l.Provider.ItemAt(i)) + symbolLen
 			if w > maxW {
 				maxW = w
 			}
 		}
 	} else {
 		for _, item := range l.Items {
-			w := utf8.RuneCountInString(item) + symbolLen
+			w := cell.StringWidth(item) + symbolLen
 			if w > maxW {
 				maxW = w
 			}
@@ -428,4 +444,94 @@ func (l List) Measure(maxArea cell.Rect) layout.Measure {
 		MaxHeight:   maxArea.Height,
 		Overflow:    layout.OverflowClip,
 	}
+}
+
+// AccessibilityNode returns the semantic node description for List.
+//
+// The node carries the selected item as its value and one child per visible
+// row, so a screen reader can announce "3 of 20" and an agent or a test can
+// address a row by its label and click it. Only visible rows are included: a
+// virtual list of a million items exposes the dozen on screen.
+//
+// Row nodes are written into a buffer owned by State and reused on every
+// frame, so building them does not allocate once the list has been drawn at
+// its height. A list without State has no scroll position to report rows
+// against and stays flat. Consumers that keep a tree past the frame must copy
+// it; Frame.AccessibilityTree does.
+func (l List) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+	state := accessibility.NodeState(0)
+	if focused {
+		state |= accessibility.StateFocused
+	}
+
+	count := len(l.Items)
+	if l.Provider != nil {
+		count = l.Provider.Len()
+	}
+
+	selected := -1
+	if l.State != nil {
+		selected = l.State.Selected
+	}
+
+	value := ""
+	position := 0
+	if selected >= 0 && selected < count {
+		state |= accessibility.StateSelected
+		value = l.itemAt(selected)
+		position = selected + 1
+	}
+
+	label := l.Label
+	if label == "" {
+		label = "List"
+	}
+
+	var rows []accessibility.AccessibilityNode
+	if l.State != nil && bounds.Width > 0 {
+		rowWidth := bounds.Width
+		// Draw takes the scrollbar column from the text area; the rows do too.
+		if l.Scrollbar && count > int(bounds.Height) && bounds.Width > 1 {
+			rowWidth--
+		}
+		rows = l.State.rows[:0]
+		for i := 0; i < int(bounds.Height); i++ {
+			index := l.State.Offset + i
+			if index < 0 || index >= count {
+				break
+			}
+			rowState := accessibility.NodeState(0)
+			if index == selected {
+				rowState = accessibility.StateSelected
+			}
+			rows = append(rows, accessibility.AccessibilityNode{
+				Role:     accessibility.RoleListItem,
+				Label:    l.itemAt(index),
+				State:    rowState,
+				Bounds:   cell.Rect{X: bounds.X, Y: bounds.Y + uint16(i), Width: rowWidth, Height: 1},
+				Position: index + 1,
+				SetSize:  count,
+			})
+		}
+		l.State.rows = rows
+	}
+
+	return accessibility.AccessibilityNode{
+		ID:       l.ID,
+		Role:     accessibility.RoleList,
+		Label:    label,
+		Value:    value,
+		State:    state,
+		Bounds:   bounds,
+		Position: position,
+		SetSize:  count,
+		Children: rows,
+	}
+}
+
+func (l List) itemAt(index int) string {
+	if l.Provider != nil {
+		return l.Provider.ItemAt(index)
+	}
+	return l.Items[index]
 }

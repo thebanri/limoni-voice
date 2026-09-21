@@ -36,6 +36,14 @@ func (r Role) String() string {
 		return "tree"
 	case RoleTreeItem:
 		return "tree-item"
+	case RoleRow:
+		return "row"
+	case RoleCell:
+		return "cell"
+	case RoleTabList:
+		return "tab-list"
+	case RoleTab:
+		return "tab"
 	default:
 		return "generic"
 	}
@@ -59,7 +67,7 @@ func (m Mode) WriteLineMode(w io.Writer, nodes []AccessibilityNode) error {
 // StateNames returns state flags in a stable order so screen-reader output is
 // deterministic across runs and independent of bit layout changes.
 func (s NodeState) StateNames() []string {
-	states := make([]string, 0, 7)
+	states := make([]string, 0, 8)
 	for _, state := range []struct {
 		flag NodeState
 		name string
@@ -71,6 +79,7 @@ func (s NodeState) StateNames() []string {
 		{StateChecked, "checked"},
 		{StateBusy, "busy"},
 		{StateInvalid, "invalid"},
+		{StateSensitive, "sensitive"},
 	} {
 		if s&state.flag != 0 {
 			states = append(states, state.name)
@@ -113,6 +122,11 @@ func writeLineNode(b *strings.Builder, node AccessibilityNode, depth int, mode M
 	}
 	if node.Description != "" {
 		fmt.Fprintf(b, " description=%q", mode.TextFallback(node.Description))
+	}
+	if node.SetSize > 0 {
+		// Rendered here rather than stored preformatted, so that building a
+		// node on the draw path stays allocation-free.
+		fmt.Fprintf(b, " position=%d/%d", node.Position, node.SetSize)
 	}
 	if states := node.State.StateNames(); len(states) > 0 {
 		b.WriteString(" state=")

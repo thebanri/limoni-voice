@@ -22,6 +22,10 @@ func (b *Buffer) Snapshot() string {
 			if r == cell.RuneContinuation || r == 0 {
 				r = ' '
 			}
+			if cell.IsCluster(r) {
+				out.WriteString(cell.ClusterText(r))
+				continue
+			}
 			out.WriteRune(r)
 		}
 	}

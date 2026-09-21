@@ -22,7 +22,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # go.mod declares the oldest supported Go; releases build with the latest.
+          go-version: stable
 
       - name: Vet
         run: go vet -mod=vendor ./...
@@ -76,7 +77,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # go.mod declares the oldest supported Go; releases build with the latest.
+          go-version: stable
 
       - name: Download macOS helper
         uses: actions/download-artifact@v4

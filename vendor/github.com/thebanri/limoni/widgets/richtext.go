@@ -85,7 +85,10 @@ func (t Text) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if t.ID != "" && ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(t.ID)
 	}
-	if t.ID != "" && ctx.RegisterClick != nil {
+	// A click focuses the widget; registered as data, so it does not allocate.
+	if ctx.RegisterClickAction != nil && t.ID != "" {
+		ctx.RegisterClickAction(ctx.Area, cell.ClickAction{Focus: t.ID})
+	} else if t.ID != "" && ctx.RegisterClick != nil {
 		ctx.RegisterClick(ctx.Area, func() {
 			if ctx.SetFocus != nil {
 				ctx.SetFocus(t.ID)
@@ -124,7 +127,7 @@ func (t Text) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				style = style.Merge(ctx.ThemeStyle(span.Role))
 			}
 			style = style.Merge(span.Style)
-			spanWidth := visualWidth(span.Text)
+			spanWidth := cell.StringWidth(span.Text)
 			if span.OnClick != nil && ctx.RegisterClick != nil && spanWidth > 0 {
 				clickX := uint16(x)
 				clickWidth := uint16(spanWidth)
@@ -176,7 +179,7 @@ func (t Text) Measure(maxArea cell.Rect) layout.Measure {
 func richLineWidth(line Line) int {
 	width := 0
 	for _, span := range line.Spans {
-		width += visualWidth(span.Text)
+		width += cell.StringWidth(span.Text)
 	}
 	return width
 }
@@ -240,10 +243,10 @@ func TextFromRichText(text string, baseStyle cell.Style, theme Theme) Text {
 		// Group consecutive characters with the same style into a single Span to keep rendering fast
 		n := len(currentLine.Spans)
 		if n > 0 && currentLine.Spans[n-1].Style == c.Style {
-			currentLine.Spans[n-1].Text += string(c.Content)
+			currentLine.Spans[n-1].Text += cell.ClusterText(c.Content)
 		} else {
 			currentLine.Spans = append(currentLine.Spans, Span{
-				Text:  string(c.Content),
+				Text:  cell.ClusterText(c.Content),
 				Style: c.Style,
 			})
 		}

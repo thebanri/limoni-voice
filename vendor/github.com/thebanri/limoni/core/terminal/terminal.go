@@ -24,6 +24,10 @@ type Terminal struct {
 	// back, ekranda o an çizili olan hücreleri tutan yedek tampondur (diff alma amacıyla kullanılır).
 	back *buffer.Buffer
 
+	// inline, sıfırdan büyükse uygulama alternatif ekran yerine normal ekranda
+	// bu kadar satırlık bir alanda çizilir.
+	inline uint16
+
 	// frame, çizim döngüsü sırasında widget'lara sunulan çizim ve tıklama alanı kayıt bağlamıdır.
 	frame *Frame
 
@@ -55,8 +59,17 @@ type Terminal struct {
 	lastFrameDuration time.Duration
 	lastWidgetStats   []WidgetStat
 
-	// Terminal capabilities
-	caps CapabilityProfile
+	// Terminal capabilities: caps is what Draw uses; detected is the
+	// environment's guess that the handshake refines into caps.
+	caps     CapabilityProfile
+	detected CapabilityProfile
+	// capsPinned is set by SetCapabilities: the application's word beats the
+	// handshake.
+	capsPinned bool
+	// reportVersion is the TerminalReport counter last folded into caps.
+	reportVersion uint64
+	// drawn is set once a frame has been written to the terminal.
+	drawn bool
 }
 
 // New, belirtilen Backend'i kullanarak yeni bir Terminal yöneticisi oluşturur ve ilk tamponları tahsis eder.
@@ -76,13 +89,15 @@ func New(b *driver.Backend) (*Terminal, error) {
 
 	focusMgr := NewFocusManager()
 
+	detected := DetectCapabilities()
 	return &Terminal{
 		driver:   b,
 		front:    front,
 		back:     back,
 		frame:    NewFrame(front, focusMgr),
 		writeBuf: make([]byte, 0, 8192), // Başlangıçta 8 KB'lık yazma tamponu tahsis et
-		caps:     DetectCapabilities(),
+		caps:     detected,
+		detected: detected,
 	}, nil
 }
 
@@ -137,9 +152,123 @@ func (t *Terminal) LastWidgetStats() []WidgetStat {
 	return t.lastWidgetStats
 }
 
+// SetCapabilities overrides the auto-detected terminal capability profile.
+//
+// Detection is environment-variable based and therefore a guess: it is wrong
+// inside tmux and screen, over SSH with an unhelpful TERM, and anywhere the
+// emulator does not advertise itself. Applications that know better — because
+// they negotiated with the terminal, read a config file, or are driving a
+// backend they control — can say so here.
+//
+// Call it before the first Draw; the profile is read on every flush.
+func (t *Terminal) SetCapabilities(profile CapabilityProfile) {
+	if t == nil {
+		return
+	}
+	t.caps = profile
+	t.capsPinned = true
+}
+
+// refreshCapabilities folds new answers from the capability handshake into
+// the profile. The check is one atomic load, so it runs on every frame: the
+// answers arrive asynchronously, usually before the first frame, but on a slow
+// link possibly after it.
+func (t *Terminal) refreshCapabilities() {
+	if t.capsPinned || t.driver == nil {
+		return
+	}
+	if t.driver.TerminalReportVersion() == t.reportVersion {
+		return
+	}
+	report, version := t.driver.TerminalReport()
+	t.reportVersion = version
+	caps := t.detected.WithReport(report)
+	if caps != t.caps && t.drawn {
+		// What is on screen was encoded for the old profile — with REP the
+		// terminal may not have, or cursor positions that assumed other
+		// cluster widths. Only a full repaint puts it right.
+		t.ForceFullRedraw()
+	}
+	t.caps = caps
+}
+
 // Capabilities returns the capability profile of the active terminal.
 func (t *Terminal) Capabilities() CapabilityProfile {
 	return t.caps
+}
+
+// SetTitle sets the terminal window title with OSC 2 (`ESC ] 2 ; <title> BEL`).
+//
+// Control characters are stripped first so a title containing ESC or BEL
+// cannot inject further escape sequences. An empty title still writes OSC 2
+// (some emulators treat that as "clear the title").
+func (t *Terminal) SetTitle(title string) {
+	if t == nil || t.driver == nil {
+		return
+	}
+	clean := sanitizeWindowTitle(title)
+	seq := make([]byte, 0, 4+len(clean)+1)
+	seq = append(seq, 0x1b, ']', '2', ';')
+	seq = append(seq, clean...)
+	seq = append(seq, 0x07)
+	_, _ = t.driver.Write(seq)
+}
+
+// SaveTitle asks the terminal to push the current window title onto its own
+// stack (`CSI 22 ; 2 t`), so RestoreTitle can put it back on exit. Terminals
+// that do not implement XTWINOPS ignore it, and RestoreTitle then does
+// nothing visible — the title simply stays as the application set it.
+func (t *Terminal) SaveTitle() {
+	if t == nil || t.driver == nil {
+		return
+	}
+	_, _ = t.driver.Write([]byte("\x1b[22;2t"))
+}
+
+// RestoreTitle pops the title saved by SaveTitle (`CSI 23 ; 2 t`).
+func (t *Terminal) RestoreTitle() {
+	if t == nil || t.driver == nil {
+		return
+	}
+	_, _ = t.driver.Write([]byte("\x1b[23;2t"))
+}
+
+// sanitizeWindowTitle drops C0 controls and DEL so OSC 2 cannot be nested
+// or terminated from inside the payload.
+func sanitizeWindowTitle(title string) string {
+	if title == "" {
+		return ""
+	}
+	out := make([]byte, 0, len(title))
+	for i := 0; i < len(title); i++ {
+		c := title[i]
+		if c < 0x20 || c == 0x7F {
+			continue
+		}
+		out = append(out, c)
+	}
+	return string(out)
+}
+
+// Suspend hands the terminal back to the shell and stops the process, as
+// Ctrl+Z does in any other program. It returns when the shell resumes the
+// application, with raw mode and the screen set up again and the next frame
+// forced to repaint in full — the shell has written over the screen, and the
+// terminal may even be a different one.
+//
+// It returns driver.ErrSuspendUnsupported on a backend with no controlling
+// terminal to give back: a remote or in-memory one, the browser, Windows.
+func (t *Terminal) Suspend() error {
+	if t == nil || t.driver == nil {
+		return nil
+	}
+	if err := t.driver.Suspend(); err != nil {
+		return err
+	}
+	// Answers to the fresh handshake land in the report; take them next frame.
+	t.reportVersion = 0
+	t.ForceFullRedraw()
+	return nil
 }
 
 // Draw initiates a frame drawing pass. It detects terminal resize, clears the front buffer,
@@ -148,8 +277,13 @@ func (t *Terminal) Capabilities() CapabilityProfile {
 // Performance: Employs a zero-allocation design on steady-state redraw passes.
 func (t *Terminal) Draw(fn func(f *Frame)) error {
 	t0 := time.Now()
+	t.refreshCapabilities()
 	// Güncel ekran boyutunu sorgula
 	w, h, err := t.driver.Size()
+	if t.inline > 0 {
+		// An inline application owns a fixed band of rows, not the screen.
+		h = t.inline
+	}
 	if err != nil {
 		return err
 	}
@@ -171,6 +305,7 @@ func (t *Terminal) Draw(fn func(f *Frame)) error {
 	t.front.Clear()
 	// Tıklama bölgeleri kaydını sıfırla
 	t.frame.Reset()
+	t.frame.Hyperlinks = t.caps.Hyperlinks
 	if t.frame.FocusManager != nil {
 		t.frame.FocusManager.Clear()
 	}
@@ -221,17 +356,29 @@ func (t *Terminal) Draw(fn func(f *Frame)) error {
 		t.writeBuf = append(t.writeBuf, "\x1b[?2026h"...)
 		syncWrapped = true
 	}
+	// A redraw whose cells all match the previous frame produces no body.
+	// Remember where the body starts so such a frame can be dropped whole
+	// instead of sending an empty ?2026h/?2026l pair on every tick.
+	bodyStart := len(t.writeBuf)
 
 	// Tam yeniden çizimde ESC[2J daha önce gönderilmiş native resimleri silmemelidir.
 	// Boyutları burada eşitleyip temizleme sırasını image pass'inden önceye alıyoruz.
 	needsFullClear := sizeChanged
 	if needsFullClear {
 		t.back.Resize(t.front.Area)
-		t.writeBuf = append(t.writeBuf, "\x1b[2J"...)
+		// ESC[2J clears the whole screen, which in inline mode means the user's
+		// scrollback. An inline frame owns only its own band, and DiffInline
+		// already erases each of its rows with EL.
+		if t.inline == 0 {
+			t.writeBuf = append(t.writeBuf, "\x1b[2J"...)
+		}
 	}
 
 	// ── 1. ADIM: Kitty/Sixel resimlerini tampona ekle (en arka piksel katmanı) ──
-	proto := graphics.DetectProtocol()
+	// The protocol detected when the terminal was created (or set with
+	// SetCapabilities). Detecting it again here read a dozen environment
+	// variables on every frame, and on Windows each read allocates.
+	proto := t.caps.GraphicsProto
 	if proto != graphics.ProtocolHalfBlock {
 		imageRegions := t.clippedImageRegions()
 		if len(imageRegions) > 0 {
@@ -290,13 +437,36 @@ func (t *Terminal) Draw(fn func(f *Frame)) error {
 
 	// ── 2. ADIM: ASCII buffer'ı çiz (piksel katmanının ÜZERİNE) ──
 	var diffErr error
-	t.writeBuf, diffErr = buffer.Diff(t.front, t.back, t.writeBuf, t.caps.TrueColor, t.caps.Colors256)
+	diffOpts := buffer.DiffOptions{
+		TrueColor:  t.caps.TrueColor,
+		Colors256:  t.caps.Colors256,
+		EraseChar:  t.caps.EraseChar,
+		RepeatChar: t.caps.RepeatChar,
+		Hyperlinks: t.caps.Hyperlinks,
+		// A terminal that confirmed mode 2027 needs no cursor re-anchoring
+		// after each grapheme cluster.
+		ClusterWidths: t.caps.ClusterWidths,
+		// Draw already wrapped the frame in ?2026 above; wrapping again inside
+		// the encoder would nest the sequence.
+		SyncOutput: false,
+	}
+	if t.inline > 0 {
+		// Inline frames are emitted relative to the cursor, because the row the
+		// application starts on moves whenever the terminal scrolls.
+		t.writeBuf, diffErr = buffer.DiffInline(t.front, t.back, t.writeBuf, diffOpts)
+	} else {
+		t.writeBuf, diffErr = buffer.DiffWithOptions(t.front, t.back, t.writeBuf, diffOpts)
+	}
 	if diffErr != nil {
 		return diffErr
 	}
 
-	// Senkron güncellemeyi kapat
-	if syncWrapped {
+	if len(t.writeBuf) == bodyStart {
+		t.writeBuf = t.writeBuf[:0]
+	}
+
+	// Close the synchronized update.
+	if syncWrapped && len(t.writeBuf) > 0 {
 		t.writeBuf = append(t.writeBuf, "\x1b[?2026l"...)
 	}
 
@@ -305,6 +475,7 @@ func (t *Terminal) Draw(fn func(f *Frame)) error {
 		if _, err := t.driver.Write(t.writeBuf); err != nil {
 			return err
 		}
+		t.drawn = true
 	}
 
 	dur := time.Since(t0)
@@ -427,7 +598,7 @@ func (t *Terminal) RouteMouseEvent(ev driver.MouseEvent) bool {
 				for i := len(t.frame.ClickRegions) - 1; i >= 0; i-- {
 					reg := t.frame.ClickRegions[i]
 					if reg.LayerID == topLayer.ID && reg.Area.Contains(ev.X, ev.Y) && (reg.MouseOnly && (ev.Button == driver.MouseNone || ev.Button == driver.MouseScrollUp || ev.Button == driver.MouseScrollDown) || ev.Button == driver.MouseLeft) {
-						reg.Handler(ev)
+						reg.Fire(ev, t.frame)
 						if t.frame.mouseCaptureRequest != nil {
 							t.mouseCaptureHandler = t.frame.mouseCaptureRequest
 							t.frame.mouseCaptureRequest = nil
@@ -435,13 +606,8 @@ func (t *Terminal) RouteMouseEvent(ev driver.MouseEvent) bool {
 						return true
 					}
 				}
-				// En üst katman içinde ama o katmana ait tıklama alanı yok.
-				// Geriye dönük uyumluluk: ActiveModal (eski RegisterModal API'si) varsa onu da dene.
-				if t.frame.ActiveModal != nil && t.frame.ActiveModal.ID == topLayer.ID {
-					// ActiveModal path'e devam et (aşağıdaki blokta ele alınacak)
-				} else {
-					return true // Katman içinde ama eşleşen alan yok → olayı yut
-				}
+				// En üst katman içinde ama o katmana ait tıklama alanı yok → olayı yut (asla alt katmanlara sızdırma)
+				return true
 			} else {
 				// En üst katmanın dışına tıklandı → ClickOutside tetikle (sadece sol tıklama basınçlarında)
 				if ev.Button == driver.MouseLeft && !ev.Drag && topLayer.ClickOutside != nil {
@@ -456,11 +622,11 @@ func (t *Terminal) RouteMouseEvent(ev driver.MouseEvent) bool {
 	if t.frame.ActiveModal != nil {
 		modal := t.frame.ActiveModal
 		if modal.Area.Contains(ev.X, ev.Y) {
-			// Modal içinde: LayerID'si boş olan (kök) veya modal ile aynı ID olan bölgeleri ara
+			// Modal içinde: Sadece modal ile aynı ID olan bölgeleri ara
 			for i := len(t.frame.ClickRegions) - 1; i >= 0; i-- {
 				reg := t.frame.ClickRegions[i]
-				if (reg.LayerID == "" || reg.LayerID == modal.ID) && reg.Area.Contains(ev.X, ev.Y) && (reg.MouseOnly && (ev.Button == driver.MouseNone || ev.Button == driver.MouseScrollUp || ev.Button == driver.MouseScrollDown) || ev.Button == driver.MouseLeft) {
-					reg.Handler(ev)
+				if reg.LayerID == modal.ID && reg.Area.Contains(ev.X, ev.Y) && (reg.MouseOnly && (ev.Button == driver.MouseNone || ev.Button == driver.MouseScrollUp || ev.Button == driver.MouseScrollDown) || ev.Button == driver.MouseLeft) {
+					reg.Fire(ev, t.frame)
 					if t.frame.mouseCaptureRequest != nil {
 						t.mouseCaptureHandler = t.frame.mouseCaptureRequest
 						t.frame.mouseCaptureRequest = nil
@@ -482,7 +648,7 @@ func (t *Terminal) RouteMouseEvent(ev driver.MouseEvent) bool {
 	for i := len(t.frame.ClickRegions) - 1; i >= 0; i-- {
 		reg := t.frame.ClickRegions[i]
 		if reg.LayerID == "" && reg.Area.Contains(ev.X, ev.Y) && (reg.MouseOnly && (ev.Button == driver.MouseNone || ev.Button == driver.MouseScrollUp || ev.Button == driver.MouseScrollDown) || ev.Button == driver.MouseLeft) {
-			reg.Handler(ev)
+			reg.Fire(ev, t.frame)
 			if t.frame.mouseCaptureRequest != nil {
 				t.mouseCaptureHandler = t.frame.mouseCaptureRequest
 				t.frame.mouseCaptureRequest = nil
@@ -691,4 +857,13 @@ func (t *Terminal) Layers() []Layer {
 	layers := make([]Layer, len(t.frame.Layers))
 	copy(layers, t.frame.Layers)
 	return layers
+}
+
+// SetInline switches the terminal to inline rendering in a band of the given
+// height, leaving the alternate screen alone. Zero restores full-screen mode.
+//
+// The driver has to be told too, so it reserves the rows and skips the
+// alternate-screen switch; limoni.WithInline wires both.
+func (t *Terminal) SetInline(height uint16) {
+	t.inline = height
 }

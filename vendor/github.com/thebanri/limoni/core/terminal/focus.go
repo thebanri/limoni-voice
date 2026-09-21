@@ -21,14 +21,22 @@ type FocusManager struct {
 	scopes     map[string][]string
 	scopeStack []string
 	bounds     map[string]cell.Rect
+
+	// lastFocusable and lastBounds are the previous frame's registrations.
+	// An immediate-mode application handles its event at the top of the draw
+	// function, after Clear and before anything registers; navigation there
+	// uses these, or Tab would find nothing to move to.
+	lastFocusable []string
+	lastBounds    map[string]cell.Rect
 }
 
 // NewFocusManager, yeni bir FocusManager örneği oluşturur.
 func NewFocusManager() *FocusManager {
 	return &FocusManager{
-		focusable: make([]string, 0, 16),
-		scopes:    make(map[string][]string),
-		bounds:    make(map[string]cell.Rect),
+		focusable:  make([]string, 0, 16),
+		scopes:     make(map[string][]string),
+		bounds:     make(map[string]cell.Rect),
+		lastBounds: make(map[string]cell.Rect),
 	}
 }
 
@@ -126,6 +134,14 @@ func (fm *FocusManager) SetFocused(id string) {
 
 // Clear, çizim karesi başında odaklanabilir elemanlar listesini temizler.
 func (fm *FocusManager) Clear() {
+	// Keep this frame's registrations for navigation that happens before the
+	// next frame registers its own. Swapping rather than copying the bounds
+	// keeps a frame free of allocations.
+	fm.lastFocusable = append(fm.lastFocusable[:0], fm.focusable...)
+	if fm.lastBounds == nil {
+		fm.lastBounds = make(map[string]cell.Rect)
+	}
+	fm.lastBounds, fm.bounds = fm.bounds, fm.lastBounds
 	fm.focusable = fm.focusable[:0]
 	for id := range fm.scopes {
 		fm.scopes[id] = fm.scopes[id][:0]
@@ -186,7 +202,21 @@ func (fm *FocusManager) navigationItems() []string {
 	if scope := fm.ActiveScope(); scope != "" {
 		return fm.scopes[scope]
 	}
+	if len(fm.focusable) == 0 {
+		return fm.lastFocusable
+	}
 	return fm.focusable
+}
+
+// boundsOf looks a widget's bounds up in this frame, or in the last one when
+// nothing has registered yet.
+func (fm *FocusManager) boundsOf(id string) (cell.Rect, bool) {
+	if len(fm.focusable) == 0 {
+		r, ok := fm.lastBounds[id]
+		return r, ok
+	}
+	r, ok := fm.bounds[id]
+	return r, ok
 }
 
 func indexOfFocus(items []string, id string) int {
@@ -217,7 +247,7 @@ func (fm *FocusManager) MoveFocus2D(dir FocusDirection) bool {
 		return false
 	}
 
-	currentRect, ok := fm.bounds[fm.focusedID]
+	currentRect, ok := fm.boundsOf(fm.focusedID)
 	if !ok {
 		return false
 	}
@@ -233,7 +263,7 @@ func (fm *FocusManager) MoveFocus2D(dir FocusDirection) bool {
 		if id == fm.focusedID {
 			continue
 		}
-		r, ok := fm.bounds[id]
+		r, ok := fm.boundsOf(id)
 		if !ok {
 			continue
 		}

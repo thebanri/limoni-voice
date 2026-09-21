@@ -223,15 +223,29 @@ func (b *Buffer) SetStringWithin(x, y uint16, s string, style cell.Style, maxWid
 	currX := x
 	input := s
 	for len(input) > 0 && currX < limitX {
-		r, size := utf8.DecodeRuneInString(input)
-		if r == utf8.RuneError {
-			break
-		}
-
-		w := cell.RuneWidth(r)
-		if w == 0 {
-			input = input[size:]
-			continue // Skip zero-width combining characters
+		var (
+			content rune
+			w       int
+		)
+		if c := input[0]; c >= 0x20 && c < 0x7F && (len(input) == 1 || input[1] < utf8.RuneSelf) {
+			// Printable ASCII followed by more ASCII is a one-column cluster on
+			// its own; skipping segmentation here keeps plain text as fast as it
+			// was before clusters existed.
+			content, w = rune(c), 1
+			input = input[1:]
+		} else {
+			// One grapheme cluster per cell, so "é" written as e plus a
+			// combining accent keeps its accent and a flag is one glyph, not
+			// two letters. Walking runes dropped the accent and split the flag.
+			cluster, cw, rest := cell.NextCluster(input)
+			input = rest
+			if cw == 0 {
+				continue // Controls and stray zero-width code points take no cell.
+			}
+			if first, _ := utf8.DecodeRuneInString(cluster); first == utf8.RuneError {
+				break
+			}
+			content, w = cell.ClusterContent(cluster, cw), cw
 		}
 		if currX+uint16(w) > limitX {
 			break // Prevent clipping overflow beyond maxWidth
@@ -241,8 +255,8 @@ func (b *Buffer) SetStringWithin(x, y uint16, s string, style cell.Style, maxWid
 
 		idx := y*b.Area.Width + currX
 		merged := b.Content[idx].Style.Merge(style)
-		if b.Content[idx].Content != r || b.Content[idx].Style != merged {
-			b.Content[idx].Content = r
+		if b.Content[idx].Content != content || b.Content[idx].Style != merged {
+			b.Content[idx].Content = content
 			b.Content[idx].Style = merged
 			b.IsDirty = true
 			b.clean = false
@@ -259,7 +273,6 @@ func (b *Buffer) SetStringWithin(x, y uint16, s string, style cell.Style, maxWid
 		}
 
 		currX += uint16(w)
-		input = input[size:]
 	}
 	return currX - x
 }

@@ -20,6 +20,10 @@ const (
 	RoleSlider
 	RoleTree
 	RoleTreeItem
+	RoleRow
+	RoleCell
+	RoleTabList
+	RoleTab
 )
 
 type NodeState uint32
@@ -32,6 +36,11 @@ const (
 	StateChecked
 	StateBusy
 	StateInvalid
+	// StateSensitive marks a node whose value is secret, such as a password
+	// field. Widgets that set it must leave Value empty themselves; anything
+	// that carries the tree out of the process clears it again regardless, so a
+	// widget author forgetting the first rule does not leak the value.
+	StateSensitive
 )
 
 type AccessibilityNode struct {
@@ -43,6 +52,17 @@ type AccessibilityNode struct {
 	State       NodeState
 	Bounds      cell.Rect
 	Children    []AccessibilityNode
+
+	// Position is the 1-based index of this node within a set, and SetSize the
+	// size of that set — the pair a screen reader turns into "3 of 20". They
+	// mirror ARIA's aria-posinset and aria-setsize.
+	//
+	// They are integers rather than a preformatted string because a widget
+	// builds its node on every frame: formatting here would allocate on the
+	// draw path. LineMode renders them instead, and it runs only when a tree is
+	// actually consumed. Zero means unset.
+	Position int
+	SetSize  int
 }
 
 // Provider is an optional widget capability for automatic semantic node

@@ -1,6 +1,7 @@
 package widgets
 
 import (
+	"github.com/thebanri/limoni/core/accessibility"
 	"strings"
 
 	"github.com/thebanri/limoni/core/buffer"
@@ -30,6 +31,9 @@ func (s *TextAreaState) HandleKey(ev driver.KeyEvent) bool {
 	}
 	switch ev.Type {
 	case driver.KeyRune:
+		if ev.Ctrl || ev.Alt {
+			return false // a command, not text
+		}
 		s.Text = append(s.Text, 0)
 		copy(s.Text[s.Cursor+1:], s.Text[s.Cursor:])
 		s.Text[s.Cursor] = ev.Ch
@@ -41,27 +45,31 @@ func (s *TextAreaState) HandleKey(ev driver.KeyEvent) bool {
 		s.Text[s.Cursor] = '\n'
 		s.Cursor++
 		return true
+	// Deleting and moving go by grapheme cluster, as in TextInput: one
+	// Backspace removes a whole emoji sequence or accented letter.
 	case driver.KeyBackspace:
 		if s.Cursor == 0 {
 			return false
 		}
-		s.Text = append(s.Text[:s.Cursor-1], s.Text[s.Cursor:]...)
-		s.Cursor--
+		start, _ := clusterBounds(string(s.Text), s.Cursor)
+		s.Text = append(s.Text[:start], s.Text[s.Cursor:]...)
+		s.Cursor = start
 		return true
 	case driver.KeyDelete:
 		if s.Cursor >= len(s.Text) {
 			return false
 		}
-		s.Text = append(s.Text[:s.Cursor], s.Text[s.Cursor+1:]...)
+		_, end := clusterBounds(string(s.Text), s.Cursor)
+		s.Text = append(s.Text[:s.Cursor], s.Text[end:]...)
 		return true
 	case driver.KeyArrowLeft:
 		if s.Cursor > 0 {
-			s.Cursor--
+			s.Cursor, _ = clusterBounds(string(s.Text), s.Cursor)
 			return true
 		}
 	case driver.KeyArrowRight:
 		if s.Cursor < len(s.Text) {
-			s.Cursor++
+			_, s.Cursor = clusterBounds(string(s.Text), s.Cursor)
 			return true
 		}
 	case driver.KeyHome:
@@ -102,7 +110,10 @@ func (a TextArea) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(a.ID)
 	}
-	if ctx.RegisterClick != nil {
+	// A click focuses the widget; registered as data, so it does not allocate.
+	if ctx.RegisterClickAction != nil && a.ID != "" {
+		ctx.RegisterClickAction(ctx.Area, cell.ClickAction{Focus: a.ID})
+	} else if ctx.RegisterClick != nil {
 		ctx.RegisterClick(ctx.Area, func() {
 			if ctx.SetFocus != nil {
 				ctx.SetFocus(a.ID)
@@ -130,7 +141,7 @@ func (a TextArea) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		if row >= int(ctx.Area.Height) {
 			break
 		}
-		buf.SetString(ctx.Area.X, ctx.Area.Y+uint16(row), clipString(line, int(ctx.Area.Width)), style)
+		setClipped(buf, ctx.Area.X, ctx.Area.Y+uint16(row), line, style, int(ctx.Area.Width))
 	}
 }
 func (a TextArea) SizeHint(maxArea cell.Rect) (uint16, uint16) { return maxArea.Width, maxArea.Height }
@@ -144,5 +155,21 @@ func (a TextArea) Measure(maxArea cell.Rect) layout.Measure {
 		MaxWidth:    maxArea.Width,
 		MaxHeight:   maxArea.Height,
 		Overflow:    layout.OverflowScroll,
+	}
+}
+
+// AccessibilityNode returns the semantic node description for TextArea.
+func (a TextArea) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+	state := accessibility.NodeState(0)
+	if focused {
+		state |= accessibility.StateFocused
+	}
+	return accessibility.AccessibilityNode{
+		ID:     a.ID,
+		Role:   accessibility.RoleInput,
+		Label:  "Text Area",
+		Value:  a.State.Value(),
+		State:  state,
+		Bounds: bounds,
 	}
 }
