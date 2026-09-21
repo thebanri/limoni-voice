@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/video"
 	"github.com/thebanri/limoni-voice/screenshare"
 )
 
@@ -359,4 +361,36 @@ func TestScreenShare120FPSFastScroll(t *testing.T) {
 			t.Fatalf("player fed stale data (%v old)", vs.MaxLag)
 		}
 	})
+}
+
+// A restarted encoder sends from a new port, often within milliseconds of the old one's
+// last datagram. Its first datagrams carry the keyframe the viewer needs, so they must not
+// be held back by the 250 ms rule that stops other local processes taking over the stream.
+func TestScreenSourceHandoverKeepsRestartKeyframe(t *testing.T) {
+	ts := make([]byte, video.TSPacketSize)
+	ts[0] = 0x47
+	local := func(port int) *net.UDPAddr { return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port} }
+	tx := &screenTx{}
+
+	if !tx.acceptSource(local(5000), ts) {
+		t.Fatal("first encoder not accepted")
+	}
+	if tx.acceptSource(local(6000), ts) {
+		t.Fatal("another local process took over a live stream")
+	}
+	tx.mu.Lock()
+	tx.srcHandover = true // applyBitrate is restarting the encoder
+	tx.mu.Unlock()
+	if !tx.acceptSource(local(5000), ts) {
+		t.Fatal("old encoder dropped before the new one started")
+	}
+	if !tx.acceptSource(local(7000), ts) {
+		t.Fatal("restarted encoder's first datagram (keyframe) dropped")
+	}
+	if tx.acceptSource(local(5000), ts) {
+		t.Fatal("old encoder's straggler accepted after the handover")
+	}
+	if !tx.acceptSource(local(7000), ts) {
+		t.Fatal("restarted encoder lost its lock")
+	}
 }

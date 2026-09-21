@@ -77,6 +77,7 @@ type screenTx struct {
 	watchers    map[string]*screenWatcher
 	srcPort     int
 	srcSeen     time.Time
+	srcHandover bool // encoder restarting: the next new source port takes over the stream
 	withAudio   bool
 	audioOn     bool
 	audioStatus string // backend in use, or why system audio is not being shared
@@ -427,6 +428,12 @@ func (tx *screenTx) acceptSource(addr *net.UDPAddr, data []byte) bool {
 	case tx.srcPort == addr.Port:
 		tx.srcSeen = now
 		return true
+	case tx.srcHandover:
+		// The restarted encoder, from its new port. Taking it at once keeps its first
+		// keyframe, which the 250 ms silence rule below would drop if it started quickly.
+		tx.srcHandover = false
+		tx.srcPort, tx.srcSeen = addr.Port, now
+		return true
 	case tx.srcPort == 0 || now.Sub(tx.srcSeen) > 250*time.Millisecond:
 		// First datagram, or the encoder was restarted (new ephemeral port). Encoders write at
 		// least every PCR interval (≤ 100 ms), so a live encoder never loses its lock.
@@ -607,13 +614,18 @@ func (tx *screenTx) applyBitrate(kbps int, loss float64) {
 	}
 	opts.BitrateKbps = kbps
 	tx.n.log(fmt.Sprintf("[SCREEN] Adapting stream %s to %d kbps (viewer loss %.1f%%)", direction, kbps, loss))
+	tx.mu.Lock()
+	tx.srcHandover = true // the new encoder sends from a new port
+	tx.mu.Unlock()
 	if err := session.Restart(opts); err != nil {
+		tx.mu.Lock()
+		tx.srcHandover = false
+		tx.mu.Unlock()
 		tx.n.log(fmt.Sprintf("[WARN] Screen encoder restart failed: %v", err))
 		return
 	}
 	tx.mu.Lock()
 	tx.opts = opts
-	tx.srcPort = 0 // the new encoder sends from a new port
 	tx.mu.Unlock()
 	tx.n.announceScreenShare(true)
 }
