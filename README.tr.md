@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <i>Tamamen terminal içinde çalışan, sıfır bağımlılıklı, gerçek zamanlı P2P sesli konuşma uygulaması.<br/>
+  <i>Tamamen terminal içinde çalışan, saf Go ile yazılmış (cgo yok), tek dosyalık, gerçek zamanlı P2P sesli konuşma uygulaması.<br/>
   <a href="https://github.com/thebanri/limoni">Limoni TUI Framework</a> ile Go dilinde yazılmıştır.</i>
 </p>
 
@@ -133,7 +133,7 @@
       └───────┬──────┘      └───────┬──────┘      └───────┬──────┘
               └─────────────────────┴─────────────────────┘
                 direct UDP / IPv6 hole-punch (full mesh)
-                (group key AES-256-GCM, rotated on leave)
+                (group key AES-256-GCM, rotated on join/leave)
 ```
 
 ### Proje Yapısı
@@ -448,7 +448,8 @@ export LIMONI_LAN_ONLY=1
 |--------|-----------|----------|
 | **Oda Kodu** | `NNNN-kelime-kelime-kelime` | 4 hane relay'in gördüğü genel oda kimliğidir; 3 kelime gizli anahtardır ve cihazınızdan çıkmaz |
 | **Kimlik Doğrulama** | CPace PAKE (ristretto255) | Katılan kişi kodu açıklamadan bildiğini kanıtlar; yakalanan trafikten çevrimdışı tahmin yapılamaz |
-| **Grup Anahtarı** | Rastgele AES-256 epoch anahtarı | Host üretir, PAKE kanalıyla iletir; üye ayrıldığında, host değiştiğinde veya port atlandığında yenilenir |
+| **Grup Anahtarı** | Rastgele AES-256 epoch anahtarı | Host üretir, PAKE kanalıyla iletir; üye katıldığında veya ayrıldığında, host değiştiğinde ya da port atlandığında yenilenir |
+| **Anahtar Yenileme** | X25519 üye anahtarları | Her üyenin oturum anahtarını host PAKE kanalı içinde onaylar. Yeni grup anahtarı her üyeye ayrı ayrı mühürlenir; ayrılan üye onu okuyamaz, hiçbir üye sahtesini üretemez; yeni seçilen host da aynı yolla anahtar yeniler |
 | **Şifreleme** | AES-256-GCM | Ses, sohbet, kontrol, video ve dosya paketleri rastgele nonce ile uçtan uca şifrelenir |
 | **Replay Koruması** | Sıra + zaman penceresi | Tazelik penceresi ve kayan tekrar önbelleği |
 | **Host Onayı** | Oda kilidi & PIN | Host odayı kilitleyip host tarafında doğrulanan 4 haneli PIN isteyebilir |

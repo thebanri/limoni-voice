@@ -36,8 +36,13 @@ func TestRoomCodeSplit(t *testing.T) {
 
 func handshake(t *testing.T, hostSecret, joinSecret, pin string) (*JoinClient, *JoinServer, []byte, error) {
 	t.Helper()
+	return handshakeAs(t, hostSecret, joinSecret, pin, NewIdentity().Public())
+}
+
+func handshakeAs(t *testing.T, hostSecret, joinSecret, pin string, joinerKey PublicKey) (*JoinClient, *JoinServer, []byte, error) {
+	t.Helper()
 	const roomID, hostID, joinerID = "7492", "host_1", "joiner_1"
-	client, hello, err := NewJoinClient(roomID, joinSecret, joinerID)
+	client, hello, err := NewJoinClient(roomID, joinSecret, joinerID, joinerKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,22 +55,66 @@ func handshake(t *testing.T, hostSecret, joinSecret, pin string) (*JoinClient, *
 }
 
 func TestHandshakeSuccess(t *testing.T) {
-	client, server, auth, err := handshake(t, "7492-amber-falcon-river", "7492-amber-falcon-river", "1234")
+	joiner := NewIdentity()
+	client, server, auth, err := handshakeAs(t, "7492-amber-falcon-river", "7492-amber-falcon-river", "1234", joiner.Public())
 	if err != nil {
 		t.Fatalf("challenge rejected: %v", err)
 	}
-	pin, nick, err := server.VerifyAuth(auth)
-	if err != nil || pin != "1234" || nick != "Bob" {
-		t.Fatalf("auth failed: %v %q %q", err, pin, nick)
+	ja, err := server.VerifyAuth(auth)
+	if err != nil || ja.PIN != "1234" || ja.Nickname != "Bob" || !ja.HasKey || ja.Identity != joiner.Public() {
+		t.Fatalf("auth failed: %v %+v", err, ja)
 	}
-	gk := NewGroupKey()
-	result, err := server.Result(StatusOK, 3, gk)
+	host := NewIdentity()
+	sent := KeyGrant{Epoch: 3, Key: NewGroupKey(), Members: []MemberKey{{ID: "host_1", Key: host.Public()}, {ID: "carol", Key: NewIdentity().Public()}}}
+	result, err := server.Result(StatusOK, sent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, epoch, key, err := client.HandleResult(result)
-	if err != nil || status != StatusOK || epoch != 3 || key != gk {
-		t.Fatalf("result mismatch: %v status=%d epoch=%d", err, status, epoch)
+	status, got, err := client.HandleResult(result)
+	if err != nil || status != StatusOK || got.Epoch != 3 || got.Key != sent.Key {
+		t.Fatalf("result mismatch: %v status=%d grant=%+v", err, status, got)
+	}
+	if len(got.Members) != 2 || got.Members[0] != sent.Members[0] || got.Members[1] != sent.Members[1] {
+		t.Fatalf("member keys not delivered: %+v", got.Members)
+	}
+}
+
+// An older joiner sends no identity key and an older host sends no member keys: both are
+// detected instead of silently producing a member that can never receive a rekey.
+func TestHandshakeOutdatedPeers(t *testing.T) {
+	_, server, auth, err := handshake(t, "7492-amber-falcon-river", "7492-amber-falcon-river", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Strip the identity key from the sealed auth by re-sealing the v2 body.
+	pt, err := openWith(server.keys.wrap, auth[confirmSize:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBody := pt[:len(pt)-PublicKeySize]
+	oldSealed, err := sealWith(server.keys.wrap, oldBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ja, err := server.VerifyAuth(append(append([]byte{}, auth[:confirmSize]...), oldSealed...))
+	if err != nil || ja.HasKey {
+		t.Fatalf("old joiner auth: err=%v hasKey=%v", err, ja.HasKey)
+	}
+
+	client, server2, auth2, err := handshake(t, "7492-amber-falcon-river", "7492-amber-falcon-river", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server2.VerifyAuth(auth2); err != nil {
+		t.Fatal(err)
+	}
+	gk := NewGroupKey()
+	oldResult, err := sealWith(server2.keys.wrap, append([]byte{0, 0, 0, 1}, gk[:]...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.HandleResult(append([]byte{StatusOK}, oldResult...)); err != ErrOutdatedPeer {
+		t.Fatalf("old host result: want ErrOutdatedPeer, got %v", err)
 	}
 }
 
@@ -74,11 +123,11 @@ func TestHandshakeWrongCode(t *testing.T) {
 	if err != ErrWrongCode {
 		t.Fatalf("joiner must detect wrong code, got %v", err)
 	}
-	if _, err := server.Result(StatusOK, 1, NewGroupKey()); err == nil {
+	if _, err := server.Result(StatusOK, KeyGrant{Epoch: 1, Key: NewGroupKey()}); err == nil {
 		t.Fatal("host released key without verification")
 	}
 	// A joiner that ignores the failed confirmation still cannot pass host verification.
-	if _, _, err := server.VerifyAuth(bytes.Repeat([]byte{7}, 80)); err != ErrWrongCode {
+	if _, err := server.VerifyAuth(bytes.Repeat([]byte{7}, 80)); err != ErrWrongCode {
 		t.Fatalf("forged auth accepted: %v", err)
 	}
 }

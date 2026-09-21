@@ -94,7 +94,10 @@ type P2PNode struct {
 	handshakeFails   []time.Time
 	handshakePauseTo time.Time
 
-	// Group key rotation
+	// Group key rotation. identity is this session's member key; memberKeys holds the
+	// identity keys of the other members, as vouched for by the host.
+	identity   *e2ee.Identity
+	memberKeys map[string]e2ee.PublicKey
 	rekeyAcks  map[string]bool
 	rekeyEpoch uint32
 	rekeyKey   e2ee.GroupKey
@@ -322,6 +325,8 @@ func (n *P2PNode) HostRoom(roomCode string) {
 	n.RoomCode = NormalizeCode(roomCode)
 	n.roomID, n.roomSecret = e2ee.SplitRoomCode(n.RoomCode)
 	n.keyring, _ = e2ee.NewKeyring(1, e2ee.NewGroupKey())
+	n.identity = e2ee.NewIdentity()
+	n.memberKeys = make(map[string]e2ee.PublicKey)
 	n.currentEpoch = 0
 	n.joinClient = nil
 	n.joinSessions = make(map[string]*joinSession)
@@ -401,6 +406,8 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.RoomCode = cleanCode
 	n.roomID, n.roomSecret = e2ee.SplitRoomCode(cleanCode)
 	n.keyring = nil
+	n.identity = e2ee.NewIdentity()
+	n.memberKeys = make(map[string]e2ee.PublicKey)
 	n.joinClient = nil
 	n.joinHostID = ""
 	n.joinHostAddr = nil
@@ -619,6 +626,8 @@ func (n *P2PNode) LeaveRoom() {
 
 	n.mu.Lock()
 	n.keyring = nil
+	n.identity = nil
+	n.memberKeys = nil
 	n.joinSessions = make(map[string]*joinSession)
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
@@ -923,6 +932,8 @@ func (n *P2PNode) heartbeatLoop() {
 			if now.Sub(peer.LastSeen) > 45*time.Second {
 				wasSharing := peer.IsSharingScreen
 				delete(n.Peers, id)
+				delete(n.memberKeys, id)
+				delete(n.joinSessions, id)
 				removed = true
 				if n.audio != nil {
 					n.audio.RemovePeer(id)
@@ -1694,6 +1705,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			wasSharing := peer.IsSharingScreen
 			isHostLeaving := (pkt.SenderID == n.HostID)
 			delete(n.Peers, pkt.SenderID)
+			delete(n.memberKeys, pkt.SenderID)
+			delete(n.joinSessions, pkt.SenderID)
 			if n.audio != nil {
 				n.audio.RemovePeer(pkt.SenderID)
 			}

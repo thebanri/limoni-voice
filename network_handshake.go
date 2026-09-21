@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/thebanri/limoni-voice/internal/e2ee"
@@ -71,7 +72,10 @@ func (n *P2PNode) ensureJoinClientLocked() error {
 	if n.roomID == "" || n.roomSecret == "" {
 		return errors.New("no room code")
 	}
-	client, _, err := e2ee.NewJoinClient(n.roomID, n.roomSecret, n.LocalID)
+	if n.identity == nil {
+		n.identity = e2ee.NewIdentity()
+	}
+	client, _, err := e2ee.NewJoinClient(n.roomID, n.roomSecret, n.LocalID, n.identity.Public())
 	if err != nil {
 		return err
 	}
@@ -147,6 +151,8 @@ func handshakeStatusReason(status byte) string {
 		return "This room is full! (Maximum 4 people)"
 	case e2ee.StatusBusy:
 		return "Host is temporarily refusing joins after repeated failed attempts, try again shortly"
+	case e2ee.StatusOutdated:
+		return "Your Limoni Voice is older than the host's: update to the latest version"
 	default:
 		return "The host rejected the join request"
 	}
@@ -170,14 +176,25 @@ func (n *P2PNode) processResult(hostID string, result []byte, lanAddr *net.UDPAd
 		n.mu.Unlock()
 		return // duplicate result
 	}
-	_, epoch, key, err := n.joinClient.HandleResult(result)
+	_, grant, err := n.joinClient.HandleResult(result)
+	if errors.Is(err, e2ee.ErrOutdatedPeer) {
+		n.mu.Unlock()
+		n.failJoin("The host runs an older Limoni Voice: both sides need the latest version")
+		return
+	}
 	if err != nil {
 		n.mu.Unlock()
 		n.failJoin("Handshake with host failed")
 		return
 	}
-	keyring, err := e2ee.NewKeyring(epoch, key)
+	keyring, err := e2ee.NewKeyring(grant.Epoch, grant.Key)
 	if err != nil {
+		n.mu.Unlock()
+		n.failJoin("Handshake with host failed")
+		return
+	}
+	n.setMemberKeysLocked(grant.Members)
+	if _, ok := n.memberKeys[hostID]; !ok {
 		n.mu.Unlock()
 		n.failJoin("Handshake with host failed")
 		return
@@ -280,30 +297,43 @@ func (n *P2PNode) processAuth(joinerID string, auth []byte) (result []byte, stat
 	if s.result != nil && bytes.Equal(s.auth, auth) {
 		return s.result, s.status, true
 	}
-	pin, nickname, err := s.server.VerifyAuth(auth)
+	ja, err := s.server.VerifyAuth(auth)
 	if err != nil {
 		delete(n.joinSessions, joinerID)
 		n.recordHandshakeFailureLocked("wrong room key")
 		return nil, 0, false
 	}
-	if nickname != "" {
-		s.nickname = nickname
+	if ja.Nickname != "" {
+		s.nickname = ja.Nickname
 	}
-	status = n.decideAdmissionLocked(pin)
+	if ja.HasKey {
+		status = n.decideAdmissionLocked(ja.PIN)
+	} else {
+		status = e2ee.StatusOutdated
+	}
 	if status == e2ee.StatusPinRequired {
 		n.recordHandshakeFailureLocked("wrong PIN")
 	}
-	epoch, key := n.keyring.Current()
-	if staged, ok := n.keyring.StagedEpoch(); ok && n.rekeyEpoch == staged {
-		epoch = staged
-		key = n.rekeyKey
+	grant := e2ee.KeyGrant{}
+	if status == e2ee.StatusOK {
+		n.memberKeys[joinerID] = ja.Identity
+		grant.Epoch, grant.Key = n.keyring.Current()
+		if staged, ok := n.keyring.StagedEpoch(); ok && n.rekeyEpoch == staged {
+			grant.Epoch, grant.Key = staged, n.rekeyKey
+		}
+		grant.Members = n.memberDirectoryLocked(n.rekeyRecipientsLocked())
 	}
-	result, err = s.server.Result(status, epoch, key)
+	result, err = s.server.Result(status, grant)
 	if err != nil {
 		return nil, 0, false
 	}
 	s.auth = append([]byte(nil), auth...)
 	s.result, s.status = result, status
+	if status == e2ee.StatusOK {
+		// Rotate so the other members learn the joiner's identity key (they need it should
+		// they become host) and the joiner cannot read traffic captured before it joined.
+		n.scheduleRekeyLocked("member joined")
+	}
 	return result, status, true
 }
 
@@ -476,29 +506,94 @@ func (n *P2PNode) scheduleRekeyLocked(reason string) {
 	n.rekeyTimer = time.AfterFunc(rekeyDebounce, func() { n.rotateGroupKey(reason) })
 }
 
-// rotateGroupKey distributes a fresh group key to all members, so departed members and old
-// captures can no longer decrypt new traffic.
+// rekeyRecipientsLocked lists the members a rekey goes to: current peers plus joiners that
+// were just admitted but have not been registered as peers yet.
+func (n *P2PNode) rekeyRecipientsLocked() []string {
+	ids := make([]string, 0, len(n.Peers)+1)
+	for id := range n.Peers {
+		ids = append(ids, id)
+	}
+	for id, s := range n.joinSessions {
+		if s.status == e2ee.StatusOK && n.Peers[id] == nil {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// memberDirectoryLocked returns the identity keys of this node and the given members.
+func (n *P2PNode) memberDirectoryLocked(ids []string) []e2ee.MemberKey {
+	dir := []e2ee.MemberKey{{ID: n.LocalID, Key: n.identity.Public()}}
+	for _, id := range ids {
+		if key, ok := n.memberKeys[id]; ok {
+			dir = append(dir, e2ee.MemberKey{ID: id, Key: key})
+		}
+	}
+	return dir
+}
+
+// setMemberKeysLocked replaces the member key directory with one vouched for by the host.
+func (n *P2PNode) setMemberKeysLocked(members []e2ee.MemberKey) {
+	n.memberKeys = make(map[string]e2ee.PublicKey, len(members))
+	for _, m := range members {
+		if m.ID != n.LocalID {
+			n.memberKeys[m.ID] = m.Key
+		}
+	}
+}
+
+// sealGrantsLocked seals a grant of the given group key for every rekey recipient, each with
+// its own pairwise key. Host only.
+func (n *P2PNode) sealGrantsLocked(epoch uint32, key e2ee.GroupKey) map[string][]byte {
+	recipients := n.rekeyRecipientsLocked()
+	grant := e2ee.KeyGrant{Epoch: epoch, Key: key, Members: n.memberDirectoryLocked(recipients)}
+	sealed := make(map[string][]byte, len(recipients))
+	for _, id := range recipients {
+		memberKey, ok := n.memberKeys[id]
+		if !ok {
+			// Only possible after a host change that raced a join: we never learned this
+			// member's key, so it cannot receive the new group key and will drop out.
+			n.writeToFileLog(fmt.Sprintf("[E2EE] No identity key for %s, it cannot receive the new group key", id))
+			continue
+		}
+		payload, err := n.identity.SealGrant(n.roomID, n.LocalID, id, memberKey, grant)
+		if err != nil {
+			continue
+		}
+		sealed[id] = payload
+	}
+	return sealed
+}
+
+// rotateGroupKey distributes a fresh group key to the members, sealed separately for each
+// one with its pairwise identity key: departed members cannot read it (they only hold old
+// group keys) and members cannot forge one, because only the host and the recipient know
+// the pairwise key.
 func (n *P2PNode) rotateGroupKey(reason string) {
 	n.mu.Lock()
 	n.rekeyTimer = nil
-	if !n.IsHost || !n.IsConnected || n.keyring == nil {
+	if !n.IsHost || !n.IsConnected || n.keyring == nil || n.identity == nil {
 		n.mu.Unlock()
 		return
 	}
 	epoch, _ := n.keyring.Current()
+	if staged, ok := n.keyring.StagedEpoch(); ok && staged > epoch {
+		epoch = staged // a rotation is still in flight: supersede it
+	}
 	newEpoch := epoch + 1
 	newKey := e2ee.NewGroupKey()
 	if err := n.keyring.Stage(newEpoch, newKey); err != nil {
 		n.mu.Unlock()
 		return
 	}
+	sealed := n.sealGrantsLocked(newEpoch, newKey)
 	n.rekeyEpoch = newEpoch
 	n.rekeyKey = newKey
-	n.rekeyAcks = make(map[string]bool, len(n.Peers))
-	for id := range n.Peers {
+	n.rekeyAcks = make(map[string]bool, len(sealed))
+	for id := range sealed {
 		n.rekeyAcks[id] = false
 	}
-	members := len(n.Peers)
 	roomID := n.roomID
 	keyring := n.keyring
 	n.mu.Unlock()
@@ -511,28 +606,19 @@ func (n *P2PNode) rotateGroupKey(reason string) {
 		n.mu.Unlock()
 		n.debugLog(fmt.Sprintf("[E2EE] Group key rotated to epoch %d (%s)", newEpoch, reason))
 	}
-	if members == 0 {
+	if len(sealed) == 0 {
 		finish()
 		return
 	}
 
-	pkt := P2PPacket{
-		Type:      PacketRekey,
-		RoomCode:  roomID,
-		SenderID:  n.LocalID,
-		Nickname:  n.Nickname,
-		Epoch:     newEpoch,
-		Payload:   newKey[:],
-		Timestamp: time.Now().UnixMilli(),
-	}
 	go func() {
 		start := time.Now()
 		for attempt := 0; attempt < rekeyMaxRetries; attempt++ {
 			n.mu.RLock()
-			pending := false
-			for _, acked := range n.rekeyAcks {
+			var pending []string
+			for id, acked := range n.rekeyAcks {
 				if !acked {
-					pending = true
+					pending = append(pending, id)
 				}
 			}
 			stillCurrent := n.keyring == keyring && n.rekeyEpoch == newEpoch
@@ -540,11 +626,22 @@ func (n *P2PNode) rotateGroupKey(reason string) {
 			if !stillCurrent {
 				return
 			}
-			if !pending && attempt > 0 {
+			if len(pending) == 0 {
 				break
 			}
-			p := pkt
-			n.sendToRoom(&p, protocol.FrameReliable)
+			for _, id := range pending {
+				pkt := P2PPacket{
+					Type:      PacketRekey,
+					RoomCode:  roomID,
+					SenderID:  n.LocalID,
+					Nickname:  n.Nickname,
+					TargetID:  id,
+					Epoch:     newEpoch,
+					Payload:   sealed[id],
+					Timestamp: time.Now().UnixMilli(),
+				}
+				n.sendToMember(id, &pkt, protocol.FrameReliable)
+			}
 			time.Sleep(rekeyRetry)
 		}
 		if wait := rekeyPromote - time.Since(start); wait > 0 {
@@ -554,20 +651,67 @@ func (n *P2PNode) rotateGroupKey(reason string) {
 	}()
 }
 
-// handleRekeyLocked installs a group key announced by the host and acknowledges it.
+// sendToMember seals a packet with the group key and sends it to one member: directly when
+// a path is known, and through the relay (targeted when supported) when the member is
+// relay-only. Admitted joiners that are not peers yet are reached through their handshake
+// address or the relay.
+func (n *P2PNode) sendToMember(id string, pkt *P2PPacket, class byte) {
+	n.mu.RLock()
+	keyring := n.keyring
+	if pkt.LocalPort == 0 {
+		pkt.LocalPort = n.Port
+	}
+	var addr *net.UDPAddr
+	var conn *net.UDPConn
+	viaRelay := true
+	if peer, ok := n.Peers[id]; ok {
+		addr, conn = peer.Addr, peer.conn
+		viaRelay = peer.ViaRelay || peer.Addr == nil
+	} else if s := n.joinSessions[id]; s != nil && s.lanAddr != nil {
+		addr, viaRelay = s.lanAddr, false
+	}
+	isRelay := n.isRelayConnected
+	targeted := n.relayTargeted
+	n.mu.RUnlock()
+
+	data, err := sealPacket(pkt, keyring)
+	if err != nil {
+		return
+	}
+	if addr != nil {
+		n.writeUDP(data, addr, conn)
+	}
+	if viaRelay && isRelay {
+		if targeted {
+			n.sendRelayTo(class, id, data)
+		} else {
+			n.sendRelayFrame(class, data) // other members ignore it: TargetID and sealing
+		}
+	}
+}
+
+// handleRekeyLocked installs a group key sealed for us by the host and acknowledges it.
 func (n *P2PNode) handleRekeyLocked(pkt *P2PPacket, raddr *net.UDPAddr) {
-	if n.keyring == nil || pkt.SenderID != n.HostID || n.IsHost || len(pkt.Payload) != e2ee.KeySize {
+	if n.keyring == nil || n.identity == nil || n.IsHost || pkt.SenderID != n.HostID || pkt.TargetID != n.LocalID {
+		return
+	}
+	hostKey, ok := n.memberKeys[n.HostID]
+	if !ok {
+		return
+	}
+	grant, err := n.identity.OpenGrant(n.roomID, n.HostID, n.LocalID, hostKey, pkt.Payload)
+	if err != nil {
+		n.writeToFileLog(fmt.Sprintf("[SECURITY] Dropped rekey from %s that is not sealed for us: %v", pkt.Nickname, err))
 		return
 	}
 	cur, _ := n.keyring.Current()
-	if pkt.Epoch > cur {
-		if staged, ok := n.keyring.StagedEpoch(); !ok || staged != pkt.Epoch {
-			var key e2ee.GroupKey
-			copy(key[:], pkt.Payload)
-			if err := n.keyring.Stage(pkt.Epoch, key); err != nil {
+	if grant.Epoch > cur {
+		if staged, ok := n.keyring.StagedEpoch(); !ok || staged < grant.Epoch {
+			if err := n.keyring.Stage(grant.Epoch, grant.Key); err != nil {
 				return
 			}
-			keyring, epoch := n.keyring, pkt.Epoch
+			n.setMemberKeysLocked(grant.Members)
+			keyring, epoch := n.keyring, grant.Epoch
 			time.AfterFunc(rekeyPromote, func() {
 				n.mu.Lock()
 				defer n.mu.Unlock()
@@ -584,7 +728,7 @@ func (n *P2PNode) handleRekeyLocked(pkt *P2PPacket, raddr *net.UDPAddr) {
 		RoomCode:  n.roomID,
 		SenderID:  n.LocalID,
 		Nickname:  n.Nickname,
-		Epoch:     pkt.Epoch,
+		Epoch:     grant.Epoch,
 		Timestamp: time.Now().UnixMilli(),
 	}
 	go n.sendPacketTo(raddr, &ack)

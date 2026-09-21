@@ -16,12 +16,13 @@ import (
 //
 //	J -> H  hello      = msgA (48)
 //	H -> J  challenge  = msgB (32) || confirmH (32)
-//	J -> H  auth       = confirmJ (32) || seal_wrap(pin, nickname)
-//	H -> J  result     = status (1) [|| seal_wrap(epoch, group key)]
+//	J -> H  auth       = confirmJ (32) || seal_wrap(pin, nickname, joiner identity key)
+//	H -> J  result     = status (1) [|| seal_wrap(key grant: epoch, group key, member keys)]
 //
 // The room secret (the words of the room code) authenticates both sides; an attacker,
 // including a malicious relay, gets exactly one online guess per handshake and can never
 // test guesses offline. The host only reveals the group key after confirmJ verifies.
+// The identity keys exchanged here authenticate later rekeys (see members.go).
 const (
 	helloSize     = 48
 	challengeSize = 64
@@ -35,6 +36,7 @@ const (
 	StatusLocked      byte = 3 // host locked the room
 	StatusFull        byte = 4
 	StatusBusy        byte = 5 // host is rate limiting handshakes
+	StatusOutdated    byte = 6 // joiner sent no identity key (older version)
 )
 
 var (
@@ -91,18 +93,20 @@ func mac(key, data []byte) []byte {
 // JoinClient is the joiner side of the handshake.
 type JoinClient struct {
 	roomID, secret, joinerID string
+	identity                 PublicKey
 	state                    *cpace.State
 	hello                    []byte
 	keys                     *handshakeKeys
 }
 
 // NewJoinClient starts a handshake and returns the hello message to send to the host.
-func NewJoinClient(roomID, secret, joinerID string) (*JoinClient, []byte, error) {
+// identity is the joiner's identity public key, delivered to the host inside the sealed auth.
+func NewJoinClient(roomID, secret, joinerID string, identity PublicKey) (*JoinClient, []byte, error) {
 	msgA, st, err := cpace.Start(secret, contextInfo(roomID, joinerID))
 	if err != nil {
 		return nil, nil, err
 	}
-	return &JoinClient{roomID: roomID, secret: secret, joinerID: joinerID, state: st, hello: msgA}, msgA, nil
+	return &JoinClient{roomID: roomID, secret: secret, joinerID: joinerID, identity: identity, state: st, hello: msgA}, msgA, nil
 }
 
 // Hello returns the handshake hello (safe to retransmit).
@@ -134,6 +138,7 @@ func (c *JoinClient) HandleChallenge(challenge []byte, hostID, pin, nickname str
 
 	body := appendLV(nil, []byte(pin))
 	body = appendLV(body, []byte(nickname))
+	body = append(body, c.identity[:]...)
 	sealed, err := sealWith(keys.wrap, body)
 	if err != nil {
 		return nil, err
@@ -142,28 +147,28 @@ func (c *JoinClient) HandleChallenge(challenge []byte, hostID, pin, nickname str
 	return out, nil
 }
 
-// HandleResult parses the host's verdict; on StatusOK it returns the room group key.
-func (c *JoinClient) HandleResult(result []byte) (status byte, epoch uint32, key GroupKey, err error) {
+// HandleResult parses the host's verdict; on StatusOK it returns the group key grant.
+// ErrOutdatedPeer means the host sent no member keys (older version).
+func (c *JoinClient) HandleResult(result []byte) (status byte, grant KeyGrant, err error) {
 	if c.keys == nil {
-		return 0, 0, key, errors.New("e2ee: result before challenge")
+		return 0, grant, errors.New("e2ee: result before challenge")
 	}
 	if len(result) < 1 {
-		return 0, 0, key, ErrMalformed
+		return 0, grant, ErrMalformed
 	}
 	status = result[0]
 	if status != StatusOK {
-		return status, 0, key, nil
+		return status, grant, nil
 	}
 	pt, err := openWith(c.keys.wrap, result[1:])
 	if err != nil {
-		return 0, 0, key, err
+		return 0, grant, err
 	}
-	if len(pt) != 4+KeySize {
-		return 0, 0, key, ErrMalformed
+	grant, err = unmarshalGrant(pt)
+	if err != nil {
+		return 0, KeyGrant{}, err
 	}
-	epoch = binary.BigEndian.Uint32(pt[:4])
-	copy(key[:], pt[4:])
-	return status, epoch, key, nil
+	return status, grant, nil
 }
 
 // JoinServer is the host side of one handshake.
@@ -200,42 +205,60 @@ func (s *JoinServer) Challenge() []byte { return s.challenge }
 // Verified reports whether VerifyAuth succeeded.
 func (s *JoinServer) Verified() bool { return s.verified }
 
-// VerifyAuth checks the joiner's key confirmation and returns the requested PIN and nickname.
-// ErrWrongCode means the joiner used a wrong room code.
-func (s *JoinServer) VerifyAuth(auth []byte) (pin, nickname string, err error) {
+// JoinAuth is what a verified joiner asked for.
+type JoinAuth struct {
+	PIN      string
+	Nickname string
+	Identity PublicKey
+	HasKey   bool // false for joiners running a version without identity keys
+}
+
+// VerifyAuth checks the joiner's key confirmation and returns the requested PIN, nickname
+// and identity key. ErrWrongCode means the joiner used a wrong room code.
+func (s *JoinServer) VerifyAuth(auth []byte) (JoinAuth, error) {
 	if len(auth) < confirmSize {
-		return "", "", ErrMalformed
+		return JoinAuth{}, ErrMalformed
 	}
 	if !hmac.Equal(mac(s.keys.confirmJoin, s.transcript), auth[:confirmSize]) {
-		return "", "", ErrWrongCode
+		return JoinAuth{}, ErrWrongCode
 	}
 	pt, err := openWith(s.keys.wrap, auth[confirmSize:])
 	if err != nil {
-		return "", "", ErrWrongCode
+		return JoinAuth{}, ErrWrongCode
 	}
 	pinB, rest, ok := readLV(pt)
 	if !ok {
-		return "", "", ErrMalformed
+		return JoinAuth{}, ErrMalformed
 	}
-	nickB, _, ok := readLV(rest)
+	nickB, rest, ok := readLV(rest)
 	if !ok {
-		return "", "", ErrMalformed
+		return JoinAuth{}, ErrMalformed
+	}
+	ja := JoinAuth{PIN: string(pinB), Nickname: string(nickB)}
+	switch len(rest) {
+	case 0:
+	case PublicKeySize:
+		copy(ja.Identity[:], rest)
+		ja.HasKey = true
+	default:
+		return JoinAuth{}, ErrMalformed
 	}
 	s.verified = true
-	return string(pinB), string(nickB), nil
+	return ja, nil
 }
 
-// Result builds the verdict message. The group key is only included for StatusOK after VerifyAuth.
-func (s *JoinServer) Result(status byte, epoch uint32, key GroupKey) ([]byte, error) {
+// Result builds the verdict message. The grant is only included for StatusOK after VerifyAuth.
+func (s *JoinServer) Result(status byte, grant KeyGrant) ([]byte, error) {
 	if status != StatusOK {
 		return []byte{status}, nil
 	}
 	if !s.verified {
 		return nil, errors.New("e2ee: refusing to release key before verification")
 	}
-	body := make([]byte, 4, 4+KeySize)
-	binary.BigEndian.PutUint32(body, epoch)
-	body = append(body, key[:]...)
+	body, err := grant.marshal()
+	if err != nil {
+		return nil, err
+	}
 	sealed, err := sealWith(s.keys.wrap, body)
 	if err != nil {
 		return nil, err
