@@ -20,6 +20,7 @@ func TestPacketRoundTrip(t *testing.T) {
 		Seq:             0xfffffff0,
 		Timestamp:       1757777777123,
 		Payload:         []byte{1, 2, 3, 4},
+		Vouch:           []byte{9, 8, 7},
 		IsSharingScreen: true,
 		VideoPort:       50100,
 		VideoFPS:        120,

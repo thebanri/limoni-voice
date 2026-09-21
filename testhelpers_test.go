@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"time"
 
 	"github.com/thebanri/limoni-voice/internal/e2ee"
 )
@@ -37,4 +38,29 @@ func upsample16k(gen func(i int) int16) []byte {
 		}
 	}
 	return pcm
+}
+
+// signedLeave returns a Leave from senderID that n accepts, setting up identity keys the
+// way a real room would: n gets an identity and a host-vouched key for the sender.
+func signedLeave(n *P2PNode, senderID, nick string) P2PPacket {
+	return signedLeaveAt(n, senderID, nick, time.Now().UnixMilli())
+}
+
+func signedLeaveAt(n *P2PNode, senderID, nick string, ts int64) P2PPacket {
+	sender := e2ee.NewIdentity()
+	n.mu.Lock()
+	if n.identity == nil {
+		n.identity = e2ee.NewIdentity()
+	}
+	if n.memberKeys == nil {
+		n.memberKeys = make(map[string]e2ee.PublicKey)
+	}
+	n.memberKeys[senderID] = sender.Public()
+	roomID, self, selfKey := n.roomID, n.LocalID, n.identity.Public()
+	n.mu.Unlock()
+	proof, err := sender.LeaveProof(roomID, senderID, ts, []e2ee.MemberKey{{ID: self, Key: selfKey}})
+	if err != nil {
+		panic(err)
+	}
+	return P2PPacket{Type: PacketLeave, RoomCode: roomID, SenderID: senderID, Nickname: nick, Payload: proof, Timestamp: ts}
 }

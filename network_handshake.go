@@ -199,6 +199,10 @@ func (n *P2PNode) processResult(hostID string, result []byte, lanAddr *net.UDPAd
 		n.failJoin("Handshake with host failed")
 		return
 	}
+	if len(grant.Vouch) > 0 {
+		n.joinVouch, _ = e2ee.MarshalVouch(e2ee.Vouch{HostID: hostID, Key: n.identity.Public(), Tags: grant.Vouch})
+		n.joinVouchUntil = time.Now().Add(joinVouchPeriod)
+	}
 	n.keyring = keyring
 	lan := lanAddr != nil
 	n.mu.Unlock()
@@ -322,6 +326,12 @@ func (n *P2PNode) processAuth(joinerID string, auth []byte) (result []byte, stat
 			grant.Epoch, grant.Key = staged, n.rekeyKey
 		}
 		grant.Members = n.memberDirectoryLocked(n.rekeyRecipientsLocked())
+		// Let the joiner introduce its key to the other members itself, so it is not
+		// stranded if we leave before our next rekey reaches them.
+		grant.Vouch, err = n.identity.VouchTags(n.roomID, n.LocalID, joinerID, ja.Identity, grant.Members)
+		if err != nil {
+			return nil, 0, false
+		}
 	}
 	result, err = s.server.Result(status, grant)
 	if err != nil {
@@ -539,8 +549,115 @@ func (n *P2PNode) setMemberKeysLocked(members []e2ee.MemberKey) {
 	for _, m := range members {
 		if m.ID != n.LocalID {
 			n.memberKeys[m.ID] = m.Key
+			delete(n.departed, m.ID) // re-admitted by the host
 		}
 	}
+}
+
+const (
+	joinVouchPeriod = time.Minute      // how long a new member presents its host vouch
+	prevHostTrust   = 30 * time.Second // how long vouches from the previous host stay valid
+)
+
+func (n *P2PNode) resetMemberTrackingLocked() {
+	n.joinVouch = nil
+	n.joinVouchUntil = time.Time{}
+	n.prevHostID = ""
+	n.prevHostKey = e2ee.PublicKey{}
+	n.prevHostUntil = time.Time{}
+	n.departed = make(map[string]time.Time)
+}
+
+// rememberHostLocked keeps the key of a host that is being replaced, so members it admitted
+// just before leaving can still prove its vouch to us for a short while.
+func (n *P2PNode) rememberHostLocked(hostID string) {
+	if hostID == "" || hostID == n.LocalID {
+		return
+	}
+	if key, ok := n.memberKeys[hostID]; ok {
+		n.prevHostID, n.prevHostKey = hostID, key
+		n.prevHostUntil = time.Now().Add(prevHostTrust)
+	}
+}
+
+// forgetMemberLocked drops a departed member's key and admission state.
+func (n *P2PNode) forgetMemberLocked(id string) {
+	if id == n.HostID {
+		n.rememberHostLocked(id)
+	}
+	delete(n.memberKeys, id)
+	delete(n.joinSessions, id)
+	if n.departed != nil {
+		n.departed[id] = time.Now()
+	}
+}
+
+// acceptVouchLocked learns a member's identity key from its host vouch. A vouch is accepted
+// from the current host or, briefly, the previous one, and never for a member that left.
+// A host that learns a key this way rekeys so the member receives the current group key.
+func (n *P2PNode) acceptVouchLocked(memberID string, raw []byte) {
+	if n.identity == nil || n.memberKeys == nil || memberID == "" || memberID == n.LocalID {
+		return
+	}
+	if _, known := n.memberKeys[memberID]; known {
+		return
+	}
+	if _, gone := n.departed[memberID]; gone {
+		return
+	}
+	v, err := e2ee.UnmarshalVouch(raw)
+	if err != nil || v.HostID == n.LocalID {
+		return
+	}
+	var hostKey e2ee.PublicKey
+	switch {
+	case v.HostID == n.HostID:
+		key, ok := n.memberKeys[v.HostID]
+		if !ok {
+			return
+		}
+		hostKey = key
+	case v.HostID == n.prevHostID && time.Now().Before(n.prevHostUntil):
+		hostKey = n.prevHostKey
+	default:
+		return
+	}
+	if !n.identity.CheckVouch(n.roomID, n.LocalID, memberID, hostKey, v) {
+		n.writeToFileLog(fmt.Sprintf("[SECURITY] Rejected identity key vouch for %s", memberID))
+		return
+	}
+	n.memberKeys[memberID] = v.Key
+	n.debugLog(fmt.Sprintf("[E2EE] Learned identity key of %s from its host vouch", memberID))
+	if n.IsHost {
+		n.scheduleRekeyLocked("member key vouched")
+	}
+}
+
+// leaveProofLocked authenticates our leave to every member whose key we know.
+func (n *P2PNode) leaveProofLocked(timestamp int64) []byte {
+	if n.identity == nil || len(n.memberKeys) == 0 {
+		return nil
+	}
+	peers := make([]e2ee.MemberKey, 0, len(n.memberKeys))
+	for id, key := range n.memberKeys {
+		peers = append(peers, e2ee.MemberKey{ID: id, Key: key})
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
+	proof, err := n.identity.LeaveProof(n.roomID, n.LocalID, timestamp, peers)
+	if err != nil {
+		return nil
+	}
+	return proof
+}
+
+// verifyLeaveLocked reports whether a Leave really comes from its sender. A member whose key
+// we do not know yet cannot be verified; it times out instead.
+func (n *P2PNode) verifyLeaveLocked(pkt *P2PPacket) bool {
+	key, ok := n.memberKeys[pkt.SenderID]
+	if !ok || n.identity == nil {
+		return false
+	}
+	return n.identity.CheckLeave(n.roomID, n.LocalID, pkt.SenderID, key, pkt.Timestamp, pkt.Payload)
 }
 
 // sealGrantsLocked seals a grant of the given group key for every rekey recipient, each with

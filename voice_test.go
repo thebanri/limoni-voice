@@ -1072,13 +1072,7 @@ func TestPeerLeaveNoDeadlock(t *testing.T) {
 		}
 	}
 
-	leavePkt := P2PPacket{
-		Type:      PacketLeave,
-		RoomCode:  "5678-delta-echo",
-		SenderID:  "peer_leaving",
-		Nickname:  "LeavingUser",
-		Timestamp: time.Now().UnixMilli(),
-	}
+	leavePkt := signedLeave(node, "peer_leaving", "LeavingUser")
 
 	done := make(chan struct{})
 	go func() {
@@ -2197,13 +2191,7 @@ func TestHostMigrationPINPreservation(t *testing.T) {
 	}
 
 	// 2. Bob leaves the room (PacketLeave from Host)
-	leavePkt := P2PPacket{
-		Type:      PacketLeave,
-		RoomCode:  roomCode,
-		SenderID:  "host_bob",
-		Nickname:  "Bob",
-		Timestamp: time.Now().UnixMilli(),
-	}
+	leavePkt := signedLeave(peerNode, "host_bob", "Bob")
 	peerNode.handlePacket(&leavePkt, nil)
 
 	// 3. Verify Alice is now the elected host and retains RoomPIN and IsLocked!
@@ -2760,13 +2748,7 @@ func TestControlPacketReplayProtection(t *testing.T) {
 	}
 
 	// 1. A stale PacketLeave from 60 seconds ago should be dropped by freshness check
-	staleLeave := P2PPacket{
-		Type:      PacketLeave,
-		RoomCode:  "REPLAY-TEST",
-		SenderID:  "peer_alice",
-		Nickname:  "Alice",
-		Timestamp: time.Now().UnixMilli() - 60000, // 60s in the past
-	}
+	staleLeave := signedLeaveAt(node, "peer_alice", "Alice", time.Now().UnixMilli()-60000) // 60s in the past
 	node.handlePacket(&staleLeave, nil)
 
 	node.mu.RLock()
@@ -2777,15 +2759,7 @@ func TestControlPacketReplayProtection(t *testing.T) {
 	}
 
 	// 2. A fresh PacketLeave with valid current timestamp should be processed
-	nowMs := time.Now().UnixMilli()
-	freshLeave := P2PPacket{
-		Type:      PacketLeave,
-		RoomCode:  "REPLAY-TEST",
-		SenderID:  "peer_alice",
-		Nickname:  "Alice",
-		Seq:       1,
-		Timestamp: nowMs,
-	}
+	freshLeave := signedLeave(node, "peer_alice", "Alice")
 	node.handlePacket(&freshLeave, nil)
 
 	node.mu.RLock()

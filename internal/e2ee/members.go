@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -42,6 +43,7 @@ type KeyGrant struct {
 	Epoch   uint32
 	Key     GroupKey
 	Members []MemberKey
+	Vouch   []MemberTag // join results only: the host's vouch for the joiner, per member
 }
 
 // maxGrantMembers bounds the member list of a grant (rooms hold at most a handful of members).
@@ -126,7 +128,8 @@ func (id *Identity) OpenGrant(roomID, hostID, memberID string, host PublicKey, s
 	return unmarshalGrant(body)
 }
 
-// Grant layout: epoch (4) || group key (32) || member count (1) || count × (LV id || key (32)).
+// Grant layout: epoch (4) || group key (32) || member count (1) || count × (LV id || key (32))
+// || vouch tag count (1) || count × (LV id || tag (32)).
 // Grants from versions before member keys end after the group key.
 func (g KeyGrant) marshal() ([]byte, error) {
 	if len(g.Members) > maxGrantMembers {
@@ -143,7 +146,7 @@ func (g KeyGrant) marshal() ([]byte, error) {
 		b = appendLV(b, []byte(m.ID))
 		b = append(b, m.Key[:]...)
 	}
-	return b, nil
+	return appendTags(b, g.Vouch)
 }
 
 func unmarshalGrant(b []byte) (KeyGrant, error) {
@@ -173,8 +176,214 @@ func unmarshalGrant(b []byte) (KeyGrant, error) {
 		g.Members = append(g.Members, m)
 		rest = r[PublicKeySize:]
 	}
-	if len(rest) != 0 {
+	tags, rest, err := readTags(rest)
+	if err != nil || len(rest) != 0 {
 		return KeyGrant{}, ErrMalformed
 	}
+	g.Vouch = tags
 	return g, nil
+}
+
+// Pairwise MACs.
+//
+// Two members derive a symmetric MAC key from X25519 of their identities. It authenticates
+// statements one member makes to another about itself or a third member, which the group
+// key cannot do: every member holds the group key, so it only proves room membership.
+
+const (
+	vouchLabel = "limoni-voice vouch v1"
+	leaveLabel = "limoni-voice leave v1"
+)
+
+// TagSize is the length of a pairwise MAC tag.
+const TagSize = sha256.Size
+
+func (id *Identity) pairMACKey(roomID, selfID, peerID string, peer PublicKey, label string) ([]byte, error) {
+	pub, err := ecdh.X25519().NewPublicKey(peer[:])
+	if err != nil {
+		return nil, err
+	}
+	secret, err := id.priv.ECDH(pub)
+	if err != nil {
+		return nil, err
+	}
+	// Order both sides identically so they derive the same key.
+	lowID, highID, lowPub, highPub := selfID, peerID, id.Public(), peer
+	if peerID < selfID {
+		lowID, highID, lowPub, highPub = peerID, selfID, peer, id.Public()
+	}
+	var info []byte
+	for _, part := range [][]byte{[]byte(label), []byte(roomID), []byte(lowID), []byte(highID), lowPub[:], highPub[:]} {
+		info = binary.BigEndian.AppendUint32(info, uint32(len(part)))
+		info = append(info, part...)
+	}
+	return hkdf.Key(sha256.New, secret, nil, string(info), sha256.Size)
+}
+
+func (id *Identity) pairMAC(roomID, selfID, peerID string, peer PublicKey, label string, msg []byte) ([]byte, error) {
+	key, err := id.pairMACKey(roomID, selfID, peerID, peer, label)
+	if err != nil {
+		return nil, err
+	}
+	m := hmac.New(sha256.New, key)
+	m.Write(msg)
+	return m.Sum(nil), nil
+}
+
+// MemberTag is a pairwise MAC addressed to one member.
+type MemberTag struct {
+	MemberID string
+	Tag      [TagSize]byte
+}
+
+func appendTags(b []byte, tags []MemberTag) ([]byte, error) {
+	if len(tags) > maxGrantMembers {
+		return nil, errors.New("e2ee: too many tags")
+	}
+	b = append(b, byte(len(tags)))
+	for _, t := range tags {
+		if t.MemberID == "" || len(t.MemberID) > 255 {
+			return nil, errors.New("e2ee: invalid member ID in tag")
+		}
+		b = appendLV(b, []byte(t.MemberID))
+		b = append(b, t.Tag[:]...)
+	}
+	return b, nil
+}
+
+func readTags(b []byte) ([]MemberTag, []byte, error) {
+	if len(b) < 1 || int(b[0]) > maxGrantMembers {
+		return nil, nil, ErrMalformed
+	}
+	count := int(b[0])
+	rest := b[1:]
+	tags := make([]MemberTag, 0, count)
+	for range count {
+		idB, r, ok := readLV(rest)
+		if !ok || len(idB) == 0 || len(r) < TagSize {
+			return nil, nil, ErrMalformed
+		}
+		var t MemberTag
+		t.MemberID = string(idB)
+		copy(t.Tag[:], r[:TagSize])
+		tags = append(tags, t)
+		rest = r[TagSize:]
+	}
+	return tags, rest, nil
+}
+
+func findTag(tags []MemberTag, memberID string) ([]byte, bool) {
+	for _, t := range tags {
+		if t.MemberID == memberID {
+			return t.Tag[:], true
+		}
+	}
+	return nil, false
+}
+
+// Vouch lets a newly admitted member prove to each existing member that the host that
+// admitted it vouched for its identity key. The joiner presents it itself, so existing
+// members learn its key even if the host leaves before its next rekey reaches them.
+type Vouch struct {
+	HostID string
+	Key    PublicKey // the joiner's identity key
+	Tags   []MemberTag
+}
+
+func vouchMessage(subjectID string, subject PublicKey) []byte {
+	return append(appendLV(nil, []byte(subjectID)), subject[:]...)
+}
+
+// VouchTags returns the host's tags vouching subject's key to each of members.
+func (id *Identity) VouchTags(roomID, hostID, subjectID string, subject PublicKey, members []MemberKey) ([]MemberTag, error) {
+	msg := vouchMessage(subjectID, subject)
+	tags := make([]MemberTag, 0, len(members))
+	for _, m := range members {
+		if m.ID == hostID || m.ID == subjectID {
+			continue
+		}
+		mac, err := id.pairMAC(roomID, hostID, m.ID, m.Key, vouchLabel, msg)
+		if err != nil {
+			return nil, err
+		}
+		t := MemberTag{MemberID: m.ID}
+		copy(t.Tag[:], mac)
+		tags = append(tags, t)
+	}
+	return tags, nil
+}
+
+// CheckVouch reports whether v proves, to this member (selfID), that the host whose
+// identity key is host vouched for subjectID's key v.Key.
+func (id *Identity) CheckVouch(roomID, selfID, subjectID string, host PublicKey, v Vouch) bool {
+	tag, ok := findTag(v.Tags, selfID)
+	if !ok {
+		return false
+	}
+	mac, err := id.pairMAC(roomID, selfID, v.HostID, host, vouchLabel, vouchMessage(subjectID, v.Key))
+	return err == nil && hmac.Equal(mac, tag)
+}
+
+// MarshalVouch encodes v: LV host ID || key (32) || tags.
+func MarshalVouch(v Vouch) ([]byte, error) {
+	if v.HostID == "" || len(v.HostID) > 255 {
+		return nil, errors.New("e2ee: invalid vouch host")
+	}
+	b := appendLV(nil, []byte(v.HostID))
+	b = append(b, v.Key[:]...)
+	return appendTags(b, v.Tags)
+}
+
+// UnmarshalVouch decodes a vouch produced by MarshalVouch.
+func UnmarshalVouch(b []byte) (Vouch, error) {
+	var v Vouch
+	hostB, rest, ok := readLV(b)
+	if !ok || len(hostB) == 0 || len(rest) < PublicKeySize {
+		return v, ErrMalformed
+	}
+	v.HostID = string(hostB)
+	copy(v.Key[:], rest[:PublicKeySize])
+	tags, rest, err := readTags(rest[PublicKeySize:])
+	if err != nil || len(rest) != 0 {
+		return Vouch{}, ErrMalformed
+	}
+	v.Tags = tags
+	return v, nil
+}
+
+func leaveMessage(senderID string, timestamp int64) []byte {
+	return binary.BigEndian.AppendUint64(appendLV(nil, []byte(senderID)), uint64(timestamp))
+}
+
+// LeaveProof authenticates a leave announcement to each of peers: only the leaving member
+// and the recipient can compute the recipient's tag, so no member can make another one
+// appear to leave.
+func (id *Identity) LeaveProof(roomID, selfID string, timestamp int64, peers []MemberKey) ([]byte, error) {
+	msg := leaveMessage(selfID, timestamp)
+	tags := make([]MemberTag, 0, len(peers))
+	for _, p := range peers {
+		mac, err := id.pairMAC(roomID, selfID, p.ID, p.Key, leaveLabel, msg)
+		if err != nil {
+			return nil, err
+		}
+		t := MemberTag{MemberID: p.ID}
+		copy(t.Tag[:], mac)
+		tags = append(tags, t)
+	}
+	return appendTags(nil, tags)
+}
+
+// CheckLeave reports whether proof shows that senderID (identity key sender) announced
+// its leave at timestamp to this member (selfID).
+func (id *Identity) CheckLeave(roomID, selfID, senderID string, sender PublicKey, timestamp int64, proof []byte) bool {
+	tags, rest, err := readTags(proof)
+	if err != nil || len(rest) != 0 {
+		return false
+	}
+	tag, ok := findTag(tags, selfID)
+	if !ok {
+		return false
+	}
+	mac, err := id.pairMAC(roomID, selfID, senderID, sender, leaveLabel, leaveMessage(senderID, timestamp))
+	return err == nil && hmac.Equal(mac, tag)
 }

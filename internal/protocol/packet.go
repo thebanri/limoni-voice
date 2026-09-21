@@ -97,6 +97,7 @@ type Packet struct {
 	TargetID        string        `json:"target_id,omitempty"` // addressed member for point-to-point control packets
 	VideoKbps       uint32        `json:"video_kbps,omitempty"`
 	HasAudio        bool          `json:"has_audio,omitempty"` // screen share carries system audio
+	Vouch           []byte        `json:"vouch,omitempty"`     // new member's host vouch for its identity key (e2ee.MarshalVouch)
 }
 
 // Fixed header layout (20 bytes):
@@ -130,6 +131,7 @@ const (
 	tagJitterMs
 	tagTargetID
 	tagVideoKbps
+	tagVouch
 )
 
 const (
@@ -210,6 +212,9 @@ func (p *Packet) AppendBinary(dst []byte) []byte {
 	dst = appendUint(dst, tagJitterMs, uint64(p.JitterMs))
 	dst = appendString(dst, tagTargetID, p.TargetID)
 	dst = appendUint(dst, tagVideoKbps, uint64(p.VideoKbps))
+	if len(p.Vouch) > 0 {
+		dst = appendBytes(dst, tagVouch, p.Vouch)
+	}
 	return dst
 }
 
@@ -290,6 +295,8 @@ func (p *Packet) UnmarshalBinary(data []byte) error {
 			p.TargetID = string(val)
 		case tagVideoKbps:
 			p.VideoKbps = uint32(clampUvarint(val, math.MaxUint32))
+		case tagVouch:
+			p.Vouch = val
 		}
 		return nil
 	})

@@ -98,10 +98,18 @@ type P2PNode struct {
 	// identity keys of the other members, as vouched for by the host.
 	identity   *e2ee.Identity
 	memberKeys map[string]e2ee.PublicKey
-	rekeyAcks  map[string]bool
-	rekeyEpoch uint32
-	rekeyKey   e2ee.GroupKey
-	rekeyTimer *time.Timer
+	// Our admitting host's vouch, presented to the other members for a while after joining.
+	joinVouch      []byte
+	joinVouchUntil time.Time
+	// The host before the last host change, whose vouches stay valid for a short while.
+	prevHostID    string
+	prevHostKey   e2ee.PublicKey
+	prevHostUntil time.Time
+	departed      map[string]time.Time // members that left: their stale vouches are refused
+	rekeyAcks     map[string]bool
+	rekeyEpoch    uint32
+	rekeyKey      e2ee.GroupKey
+	rekeyTimer    *time.Timer
 
 	// Anti-Tracking & Dynamic Port Hopping
 	AntiTrackingEnabled bool
@@ -327,6 +335,7 @@ func (n *P2PNode) HostRoom(roomCode string) {
 	n.keyring, _ = e2ee.NewKeyring(1, e2ee.NewGroupKey())
 	n.identity = e2ee.NewIdentity()
 	n.memberKeys = make(map[string]e2ee.PublicKey)
+	n.resetMemberTrackingLocked()
 	n.currentEpoch = 0
 	n.joinClient = nil
 	n.joinSessions = make(map[string]*joinSession)
@@ -408,6 +417,7 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.keyring = nil
 	n.identity = e2ee.NewIdentity()
 	n.memberKeys = make(map[string]e2ee.PublicKey)
+	n.resetMemberTrackingLocked()
 	n.joinClient = nil
 	n.joinHostID = ""
 	n.joinHostAddr = nil
@@ -581,6 +591,8 @@ func (n *P2PNode) LeaveRoom() {
 	room := n.roomID
 	wasHost := n.IsHost
 	keyring := n.keyring
+	leaveTs := time.Now().UnixMilli()
+	leaveProof := n.leaveProofLocked(leaveTs)
 	n.IsConnected = false
 	n.Connecting = false
 	n.IsHost = false
@@ -611,7 +623,8 @@ func (n *P2PNode) LeaveRoom() {
 		Nickname:   n.Nickname,
 		IsMuted:    muted,
 		IsDeafened: deafened,
-		Timestamp:  time.Now().UnixMilli(),
+		Payload:    leaveProof,
+		Timestamp:  leaveTs,
 	}
 	if keyring != nil {
 		if data, err := sealPacket(&pkt, keyring); err == nil {
@@ -628,6 +641,7 @@ func (n *P2PNode) LeaveRoom() {
 	n.keyring = nil
 	n.identity = nil
 	n.memberKeys = nil
+	n.resetMemberTrackingLocked()
 	n.joinSessions = make(map[string]*joinSession)
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
@@ -932,8 +946,7 @@ func (n *P2PNode) heartbeatLoop() {
 			if now.Sub(peer.LastSeen) > 45*time.Second {
 				wasSharing := peer.IsSharingScreen
 				delete(n.Peers, id)
-				delete(n.memberKeys, id)
-				delete(n.joinSessions, id)
+				n.forgetMemberLocked(id)
 				removed = true
 				if n.audio != nil {
 					n.audio.RemovePeer(id)
@@ -990,6 +1003,10 @@ func (n *P2PNode) sendPingToPeer(peerID string) {
 	videoFPS := n.ActiveScreenShareFPS
 	peerAddr := peer.Addr
 	viaRelay := peer.ViaRelay
+	var vouch []byte
+	if time.Now().Before(n.joinVouchUntil) {
+		vouch = n.joinVouch
+	}
 	n.mu.RUnlock()
 
 	muted, deafened := n.audioState()
@@ -1005,6 +1022,7 @@ func (n *P2PNode) sendPingToPeer(peerID string) {
 		IsSharingScreen: sharing,
 		VideoPort:       videoPort,
 		VideoFPS:        videoFPS,
+		Vouch:           vouch,
 		Timestamp:       time.Now().UnixMilli(),
 	}
 	if viaRelay || peerAddr == nil {
@@ -1239,7 +1257,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			}
 		}
 		// Rekeys are idempotent (epoch checked) and must be re-acknowledged on retransmission.
-		if pkt.Type != PacketRekey && !n.ctrlDedup.ShouldProcess(pkt.SenderID, pkt.Type, pkt.Seq, pkt.Timestamp) {
+		// Leaves are deduplicated once their proof verified, so forgeries cannot pre-empt them.
+		if pkt.Type != PacketRekey && pkt.Type != PacketLeave && !n.ctrlDedup.ShouldProcess(pkt.SenderID, pkt.Type, pkt.Seq, pkt.Timestamp) {
 			return // Drop duplicate replayed packet!
 		}
 	}
@@ -1342,6 +1361,10 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				}
 			}
 		}
+	}
+
+	if len(pkt.Vouch) > 0 && n.IsConnected {
+		n.acceptVouchLocked(pkt.SenderID, pkt.Vouch)
 	}
 
 	switch pkt.Type {
@@ -1701,12 +1724,21 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketLeave:
+		if !n.verifyLeaveLocked(pkt) {
+			// Every member holds the group key, so a Leave naming someone else (the host,
+			// to force an election, or a member, to drop it from the next rekey) is only
+			// believed with that member's pairwise proof.
+			n.writeToFileLog(fmt.Sprintf("[SECURITY] Ignored unauthenticated leave for %s", pkt.SenderID))
+			return
+		}
+		if !n.ctrlDedup.ShouldProcess(pkt.SenderID, pkt.Type, pkt.Seq, pkt.Timestamp) {
+			return
+		}
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			wasSharing := peer.IsSharingScreen
 			isHostLeaving := (pkt.SenderID == n.HostID)
 			delete(n.Peers, pkt.SenderID)
-			delete(n.memberKeys, pkt.SenderID)
-			delete(n.joinSessions, pkt.SenderID)
+			n.forgetMemberLocked(pkt.SenderID)
 			if n.audio != nil {
 				n.audio.RemovePeer(pkt.SenderID)
 			}
