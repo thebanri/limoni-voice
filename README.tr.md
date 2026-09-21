@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot.gif" alt="Limoni Voice Önizleme" width="85%" />
+  <img src="https://raw.githubusercontent.com/thebanri/limoni-voice/media/screenshot.gif" alt="Limoni Voice Önizleme" width="85%" />
 </p>
 
 ---

@@ -3,7 +3,6 @@ package main
 import (
 	"archive/zip"
 	"bufio"
-	_ "embed"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,16 +12,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/thebanri/limoni-voice/assets"
 )
-
-//go:embed microphone.obj
-var embeddedMicrophoneObj []byte
-
-//go:embed icon.ico
-var embeddedIconIco []byte
-
-//go:embed limoni-voice.exe
-var embeddedVoiceExe []byte
 
 const (
 	FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
@@ -69,21 +61,12 @@ func main() {
 
 	fmt.Printf("[*] Target Install Directory: %s\n\n", installDir)
 
-	// 1. Extract embedded microphone.obj (3D visualizer model)
-	targetMicObj := filepath.Join(installDir, "microphone.obj")
-	if len(embeddedMicrophoneObj) > 0 {
-		fmt.Println("[+] Extracting 3D Microphone model (microphone.obj)...")
-		_ = os.WriteFile(targetMicObj, embeddedMicrophoneObj, 0644)
-	}
-
-	// 2. Extract embedded icon.ico
+	// 1. Extract embedded icon.ico (the 3D microphone model is embedded in the app itself)
 	targetIconIco := filepath.Join(installDir, "icon.ico")
-	if len(embeddedIconIco) > 0 {
-		fmt.Println("[+] Extracting application icon (icon.ico)...")
-		_ = os.WriteFile(targetIconIco, embeddedIconIco, 0644)
-	}
+	fmt.Println("[+] Extracting application icon (icon.ico)...")
+	_ = os.WriteFile(targetIconIco, assets.IconICO, 0644)
 
-	// 3. Install limoni-voice.exe (Standalone Embedded Binary -> Local Copy -> Online Download)
+	// 2. Install limoni-voice.exe (Standalone Embedded Binary -> Local Copy -> Online Download)
 	if len(embeddedVoiceExe) > 1024 {
 		fmt.Println("[+] Extracting Limoni Voice executable (embedded bundle)...")
 		if err := writeOrReplaceExecutable(targetVoiceExe, embeddedVoiceExe); err != nil {
@@ -117,7 +100,7 @@ func main() {
 		fmt.Println("[!] Warning: limoni-voice.exe could not be verified in target path.")
 	}
 
-	// 4. Install FFmpeg
+	// 3. Install FFmpeg
 	targetFfmpeg := filepath.Join(binDir, "ffmpeg.exe")
 	if !fileExists(targetFfmpeg) && !commandExists("ffmpeg.exe") {
 		fmt.Println("[*] Downloading and installing FFmpeg (for screen sharing)...")
@@ -131,7 +114,7 @@ func main() {
 		fmt.Println("[✓] FFmpeg already installed.")
 	}
 
-	// 5. Install MPV
+	// 4. Install MPV
 	targetMpv := filepath.Join(binDir, "mpv.exe")
 	if !fileExists(targetMpv) && !commandExists("mpv.exe") {
 		fmt.Println("[*] Checking MPV Player (for stream viewing)...")
@@ -170,7 +153,7 @@ func main() {
 		fmt.Println("[✓] MPV Player already installed.")
 	}
 
-	// 6. Update PATH
+	// 5. Update PATH
 	fmt.Println("[*] Updating system PATH variable...")
 	psPathScript := fmt.Sprintf(`
 		$binDir = '%s'
@@ -181,7 +164,7 @@ func main() {
 	`, binDir)
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psPathScript).Run()
 
-	// 7. Create Desktop and Start Menu Shortcuts with Icon (Supports OneDrive and International Windows)
+	// 6. Create Desktop and Start Menu Shortcuts with Icon (Supports OneDrive and International Windows)
 	fmt.Println("[*] Creating desktop and start menu shortcuts...")
 	psShortcutScript := fmt.Sprintf(`
 		$wscript = New-Object -ComObject WScript.Shell
@@ -213,7 +196,6 @@ func main() {
 	fmt.Println("   🎉  INSTALLATION COMPLETED SUCCESSFULLY!       ")
 	fmt.Println("==================================================")
 	fmt.Printf("[✓] Limoni Voice: %s\n", targetVoiceExe)
-	fmt.Printf("[✓] 3D Model: %s\n", targetMicObj)
 	fmt.Printf("[✓] App Icon: %s\n", targetIconIco)
 	fmt.Println("[✓] Desktop & Start Menu Shortcuts created!")
 	fmt.Println()
@@ -264,14 +246,10 @@ func selfHealAndLaunch(installDir, targetVoiceExe, currExeAbs string) error {
 		return fmt.Errorf("failed to write application binary: %w", err)
 	}
 
-	// Ensure 3D model & icon exist
-	targetMicObj := filepath.Join(installDir, "microphone.obj")
-	if !fileExists(targetMicObj) && len(embeddedMicrophoneObj) > 0 {
-		_ = os.WriteFile(targetMicObj, embeddedMicrophoneObj, 0644)
-	}
+	// Ensure the icon exists
 	targetIconIco := filepath.Join(installDir, "icon.ico")
-	if !fileExists(targetIconIco) && len(embeddedIconIco) > 0 {
-		_ = os.WriteFile(targetIconIco, embeddedIconIco, 0644)
+	if !fileExists(targetIconIco) {
+		_ = os.WriteFile(targetIconIco, assets.IconICO, 0644)
 	}
 
 	_ = os.Remove(oldPath)

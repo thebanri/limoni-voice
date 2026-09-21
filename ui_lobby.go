@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/thebanri/limoni-voice/assets"
 
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/cell"
@@ -211,29 +212,11 @@ func GenerateMicrophoneModel() graphics.Model3D {
 }
 
 func loadMicrophoneModel() graphics.Model3D {
-	// Search current directory and common paths
-	searchPaths := []string{
-		"microphone.obj",
-		"../limoni-voice/microphone.obj",
-		"/home/thebanri/Projects/limoni-voice/microphone.obj",
+	if model, err := graphics.ParseOBJ(bytes.NewReader(assets.MicrophoneOBJ)); err == nil && len(model.Vertices) > 0 {
+		model.Normalize(2.0)
+		return model
 	}
-
-	execPath, err := os.Executable()
-	if err == nil {
-		searchPaths = append([]string{filepath.Join(filepath.Dir(execPath), "microphone.obj")}, searchPaths...)
-	}
-
-	for _, p := range searchPaths {
-		// Verify file exists and is less than 2.5MB to avoid rendering lag
-		if info, err := os.Stat(p); err == nil && info.Size() < 2500000 {
-			if model, err := graphics.LoadOBJ(p); err == nil && len(model.Vertices) > 0 {
-				model.Normalize(2.0)
-				return model
-			}
-		}
-	}
-
-	// Use our high-performance, beautiful procedurally generated 3D vintage mic
+	// Procedural fallback, should the embedded model ever fail to parse.
 	return GenerateMicrophoneModel()
 }
 

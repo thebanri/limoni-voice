@@ -104,16 +104,7 @@ echo -e "${CYAN}[*] Installing ${APP_NAME} to ${INSTALL_DIR}...${NC}"
 mv "${TMP_DIR}/${APP_NAME}" "${INSTALL_DIR}/${APP_NAME}"
 chmod +x "${INSTALL_DIR}/${APP_NAME}"
 
-# 8. Setup Assets (3D model & App Icon)
-ASSETS_DIR="${HOME}/.limoni-voice"
-mkdir -p "${ASSETS_DIR}"
-if [ -f "${TMP_DIR}/microphone.obj" ]; then
-    cp "${TMP_DIR}/microphone.obj" "${ASSETS_DIR}/microphone.obj" 2>/dev/null || true
-else
-    curl -sSL "https://raw.githubusercontent.com/${REPO}/main/microphone.obj" -o "${ASSETS_DIR}/microphone.obj" 2>/dev/null || true
-fi
-
-# 9. Create Desktop Entry & Icon on Linux
+# 8. Create Desktop Entry & Icon on Linux
 if [ "${OS_TYPE}" = "linux" ]; then
     ICON_DIR="${HOME}/.local/share/icons/hicolor/256x256/apps"
     mkdir -p "${ICON_DIR}"
@@ -135,7 +126,7 @@ EOF
     chmod +x "${DESKTOP_DIR}/limoni-voice.desktop" 2>/dev/null || true
 fi
 
-# 10. Ensure PATH includes INSTALL_DIR
+# 9. Ensure PATH includes INSTALL_DIR
 SHELL_UPDATED=false
 if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     EXPORT_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
@@ -149,7 +140,7 @@ if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     done
 fi
 
-# 11. Check Optional Screen Sharing Tools (FFmpeg & MPV)
+# 10. Check Optional Screen Sharing Tools (FFmpeg & MPV)
 DEPS_HINT=""
 HAS_MPV=false
 HAS_FFMPEG=false
@@ -171,7 +162,7 @@ if [ "${HAS_MPV}" = false ] || [ "${HAS_FFMPEG}" = false ]; then
     fi
 fi
 
-# 12. Completion Message
+# 11. Completion Message
 echo ""
 echo -e "${GREEN}==========================================${NC}"
 echo -e "${GREEN}${BOLD}  ✅ Limoni Voice ${LATEST_TAG} installed!   ${NC}"

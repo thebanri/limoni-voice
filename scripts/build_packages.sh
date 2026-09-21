@@ -23,12 +23,6 @@ if [ -n "${UPDATE_SIGNING_PUBKEY:-}" ]; then
   LDFLAGS="${LDFLAGS} -X main.UpdateSigningPublicKey=${UPDATE_SIGNING_PUBKEY}"
 fi
 
-# 0. Prep installer dependencies
-mkdir -p cmd/installer
-touch cmd/installer/limoni-voice.exe
-cp microphone.obj cmd/installer/microphone.obj || true
-cp assets/icon.ico cmd/installer/icon.ico || true
-
 # 1. Run Unit Tests
 echo "==> Running Unit Tests..."
 go test -mod=vendor -v ./...
@@ -52,16 +46,16 @@ cp dist/windows-arm64/limoni-voice.exe release_assets/limoni-voice_${VERSION}_wi
 cp dist/windows-arm64/limoni-voice.exe release_assets/limoni-voice_windows_arm64.exe
 
 echo "==> Building Windows Setup Installer (.exe)..."
-cp microphone.obj cmd/installer/microphone.obj
-cp assets/icon.ico cmd/installer/icon.ico
+# -tags bundle embeds the app binary copied next to the installer source (bundle.go);
+# without it the installer downloads the app from the latest release.
+trap 'rm -f cmd/installer/limoni-voice.exe' EXIT
 cp dist/windows-amd64/limoni-voice.exe cmd/installer/limoni-voice.exe
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_amd64.exe ./cmd/installer
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup.exe ./cmd/installer
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -tags bundle -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_amd64.exe ./cmd/installer
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -tags bundle -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup.exe ./cmd/installer
 
 cp dist/windows-arm64/limoni-voice.exe cmd/installer/limoni-voice.exe
-CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_arm64.exe ./cmd/installer
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=vendor -tags bundle -ldflags="${LDFLAGS}" -o release_assets/Limoni-Voice-Setup_windows_arm64.exe ./cmd/installer
 rm -f cmd/installer/limoni-voice.exe
-touch cmd/installer/limoni-voice.exe
 
 # 4. Compile macOS (Darwin) Apple Silicon (ARM64) & Intel (AMD64)
 echo "==> Building macOS Apple Silicon (ARM64)..."
@@ -73,10 +67,10 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}
 ## 5. Package Linux Tarballs (.tar.gz)
 echo "==> Packaging Linux Tarballs..."
 mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
-cp dist/linux-amd64/limoni-voice README.md LICENSE microphone.obj dist/pkg-linux-amd64/
+cp dist/linux-amd64/limoni-voice README.md LICENSE dist/pkg-linux-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg-linux-amd64 .
 
-cp dist/linux-arm64/limoni-voice README.md LICENSE microphone.obj dist/pkg-linux-arm64/
+cp dist/linux-arm64/limoni-voice README.md LICENSE dist/pkg-linux-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
 # 6. Package macOS Native Application Bundles (.app.zip & .app.tar.gz)
@@ -93,7 +87,7 @@ build_macos_app() {
 
   cp "dist/${ARCH}/limoni-voice" "${APP_DIR}/Contents/MacOS/limoni-voice"
   chmod 755 "${APP_DIR}/Contents/MacOS/limoni-voice"
-  cp README.md LICENSE microphone.obj "${APP_DIR}/Contents/MacOS/"
+  cp README.md LICENSE "${APP_DIR}/Contents/MacOS/"
 
   cat <<PLIST_EOF > "${APP_DIR}/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -174,10 +168,10 @@ build_macos_app "darwin-amd64" "amd64"
 # 7. Package macOS CLI Tarballs & Zips
 echo "==> Packaging macOS CLI Binaries..."
 mkdir -p dist/pkg-darwin-arm64 dist/pkg-darwin-amd64
-cp dist/darwin-arm64/limoni-voice README.md LICENSE microphone.obj dist/pkg-darwin-arm64/
+cp dist/darwin-arm64/limoni-voice README.md LICENSE dist/pkg-darwin-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_arm64.tar.gz" -C dist/pkg-darwin-arm64 .
 
-cp dist/darwin-amd64/limoni-voice README.md LICENSE microphone.obj dist/pkg-darwin-amd64/
+cp dist/darwin-amd64/limoni-voice README.md LICENSE dist/pkg-darwin-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_amd64.tar.gz" -C dist/pkg-darwin-amd64 .
 
 # 8. Windows Packaging (Setup Installer Only)

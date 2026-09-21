@@ -78,16 +78,12 @@ if ($currentExe -and (Test-Path $currentExe)) {
     }
 }
 
-# 2. Download or copy icon.ico and microphone.obj
+# 2. Download icon.ico (the 3D microphone model is embedded in the app)
 $iconPath = Join-Path $InstallDir "icon.ico"
-$micPath = Join-Path $InstallDir "microphone.obj"
 
 try {
     if (!(Test-Path $iconPath)) {
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/thebanri/limoni-voice/main/assets/icon.ico" -OutFile $iconPath -UseBasicParsing
-    }
-    if (!(Test-Path $micPath)) {
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/thebanri/limoni-voice/main/microphone.obj" -OutFile $micPath -UseBasicParsing
     }
 } catch {
     Write-Host "[-] Warning downloading assets: $_" -ForegroundColor DarkYellow

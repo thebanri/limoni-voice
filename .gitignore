@@ -1,7 +1,6 @@
 # Binaries
 limoni-voice
 *.exe
-!cmd/installer/limoni-voice.exe
 *.test
 
 # Build Artifacts
@@ -18,3 +17,6 @@ website/
 
 # Prebuilt macOS capture helper (produced by CI)
 screenshare/machelper/limoni-sck
+
+# Large media lives on the orphan "media" branch (see its README)
+*.gif
