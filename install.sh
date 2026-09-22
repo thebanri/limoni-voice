@@ -116,14 +116,22 @@ if [ "${OS_TYPE}" = "linux" ]; then
 [Desktop Entry]
 Name=Limoni Voice
 Comment=Terminal P2P Voice Chat & Screen Sharing
-Exec=${INSTALL_DIR}/${APP_NAME}
+Exec=${INSTALL_DIR}/${APP_NAME} %u
 Icon=limoni-voice
 Terminal=true
 Type=Application
 Categories=Network;AudioVideo;Chat;
 Keywords=voice;chat;p2p;terminal;limoni;
+MimeType=x-scheme-handler/limoni;
 EOF
     chmod +x "${DESKTOP_DIR}/limoni-voice.desktop" 2>/dev/null || true
+    # Open limoni://join/<room key> invite links with Limoni Voice.
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default limoni-voice.desktop x-scheme-handler/limoni 2>/dev/null || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
+    fi
 fi
 
 # 9. Ensure PATH includes INSTALL_DIR

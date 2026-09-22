@@ -396,6 +396,12 @@ func (a *App) wireRoomCallbacks() {
 			room.SetToast(fmt.Sprintf("Opened %s in editor", filepath.Base(filePath)))
 		}
 	}
+	room.OnCopyInvite = func() {
+		link := inviteLink(node.RoomCode)
+		CopyToClipboard(link)
+		room.SetToast("Invite link copied: " + link)
+		room.AddLog("[ROOM] Invite link copied. It opens Limoni Voice and joins this room (Linux & Windows installs); anyone with it can join, like the room key.")
+	}
 	room.OnOpenFolder = func(dirPath string) {
 		if err := OpenFolder(dirPath); err != nil {
 			room.SetToast(fmt.Sprintf("Could not open folder: %v", err))

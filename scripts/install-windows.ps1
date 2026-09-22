@@ -217,6 +217,20 @@ if (![string]::IsNullOrWhiteSpace($desktop) -and (Test-Path $desktop)) {
     }
 }
 
+# 7. Open limoni://join/<room key> invite links with Limoni Voice (current user, no admin)
+try {
+    $scheme = "HKCU:\Software\Classes\limoni"
+    New-Item -Path "$scheme\shell\open\command" -Force | Out-Null
+    New-Item -Path "$scheme\DefaultIcon" -Force | Out-Null
+    Set-ItemProperty -Path $scheme -Name "(default)" -Value "URL:Limoni Voice invite"
+    Set-ItemProperty -Path $scheme -Name "URL Protocol" -Value ""
+    Set-ItemProperty -Path "$scheme\DefaultIcon" -Name "(default)" -Value $iconPath
+    Set-ItemProperty -Path "$scheme\shell\open\command" -Name "(default)" -Value "`"$targetExe`" `"%1`""
+    Write-Host "[+] limoni:// invite links now open Limoni Voice" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Could not register limoni:// invite links: $_" -ForegroundColor DarkYellow
+}
+
 # Unblock files so Windows Defender / SmartScreen never interferes
 try {
     Unblock-File -Path "$InstallDir\*" -ErrorAction SilentlyContinue

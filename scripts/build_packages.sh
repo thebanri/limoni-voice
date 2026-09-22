@@ -212,10 +212,11 @@ build_deb() {
 [Desktop Entry]
 Name=Limoni Voice
 Comment=P2P Encrypted Voice Chat TUI
-Exec=/usr/bin/limoni-voice
+Exec=/usr/bin/limoni-voice %u
 Terminal=true
 Type=Application
 Categories=AudioVideo;Audio;Network;
+MimeType=x-scheme-handler/limoni;
 DESKTOP_EOF
 
     cat <<CONTROL_EOF > "${PKG_DIR}/DEBIAN/control"

@@ -39,6 +39,7 @@ Flags:
   --token <token>       Alias for --relay-token
   --lan, --lan-only     Force LAN-only offline mode (disables relay, direct P2P on local network)
   --offline             Alias for --lan
+  --join <key|link>     Join a room right away (a limoni://join/... link works too)
   --peer, --connect     Direct target peer IP/host for cross-subnet or VPN LAN P2P
                         Example: --peer 192.168.1.50:50000
   --version             Show version information
@@ -79,6 +80,7 @@ func main() {
 		flagOffline    = flag.Bool("offline", false, "Alias for -lan")
 		flagPeer       = flag.String("peer", "", "Direct target peer IP / host for LAN / VPN P2P (e.g. 192.168.1.50)")
 		flagConnect    = flag.String("connect", "", "Alias for -peer")
+		flagJoin       = flag.String("join", "", "Join a room right away: room key or limoni:// invite link")
 		flagHelp       = flag.Bool("help", false, "Show help and usage instructions")
 		flagVersion    = flag.Bool("version", false, "Show version information")
 		flagSysAudio   = flag.Bool("sysaudio-test", false, "Capture system (desktop) audio for 5 seconds and print the level, then exit")
@@ -175,7 +177,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	NewApp(b, t, node, audio, cfg).Run()
+	app := NewApp(b, t, node, audio, cfg)
+	app.openInvite(*flagJoin, flag.Arg(0))
+	app.Run()
 }
 
 // runSystemAudioTest captures what the computer is playing for five seconds and prints the

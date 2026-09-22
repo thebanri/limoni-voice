@@ -191,6 +191,13 @@ func main() {
 	`, targetVoiceExe, installDir, targetIconIco, targetVoiceExe, installDir, targetIconIco)
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psShortcutScript).Run()
 
+	// 7. Open limoni://join/<room key> invite links with Limoni Voice (current user only).
+	if err := registerInviteScheme(targetVoiceExe, targetIconIco); err != nil {
+		fmt.Printf("[-] Could not register limoni:// invite links: %v\n", err)
+	} else {
+		fmt.Println("[+] limoni:// invite links now open Limoni Voice")
+	}
+
 	fmt.Println()
 	fmt.Println("==================================================")
 	fmt.Println("   🎉  INSTALLATION COMPLETED SUCCESSFULLY!       ")
@@ -260,6 +267,23 @@ func selfHealAndLaunch(installDir, targetVoiceExe, currExeAbs string) error {
 	launchCmd := exec.Command("cmd.exe", "/c", "start", "", targetVoiceExe)
 	launchCmd.Dir = installDir
 	return launchCmd.Start()
+}
+
+// registerInviteScheme registers the limoni:// URL scheme under HKCU, so no administrator
+// rights are needed; removing HKCU\Software\Classes\limoni undoes it.
+func registerInviteScheme(exe, icon string) error {
+	const key = `HKCU\Software\Classes\limoni`
+	for _, args := range [][]string{
+		{"add", key, "/ve", "/d", "URL:Limoni Voice invite", "/f"},
+		{"add", key, "/v", "URL Protocol", "/d", "", "/f"},
+		{"add", key + `\DefaultIcon`, "/ve", "/d", icon, "/f"},
+		{"add", key + `\shell\open\command`, "/ve", "/d", `"` + exe + `" "%1"`, "/f"},
+	} {
+		if out, err := exec.Command("reg", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 func writeOrReplaceExecutable(targetPath string, data []byte) error {
