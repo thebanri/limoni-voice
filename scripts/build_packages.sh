@@ -38,7 +38,11 @@ fi
 
 # 1. Run Unit Tests
 echo "==> Running Unit Tests..."
-go test -mod=vendor -v ./...
+# -short: CI's test job has already run everything with -race. This step installs ffmpeg
+# for packaging, which un-skips the real-time screen share tests, and those miss their
+# frame and decode-error budgets on 2-core runners (the cause of every failed build since
+# 2026-09-13). They still run locally; see network_screen_test.go.
+go test -mod=vendor -short ./...
 
 # 2. Compile Linux AMD64 & ARM64
 echo "==> Building Linux AMD64..."
