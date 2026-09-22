@@ -473,10 +473,16 @@ func (n *P2PNode) handleRelayPacket(sealed []byte) {
 	if !active || keyring == nil {
 		return
 	}
-	var pkt P2PPacket
-	if err := openPacket(sealed, &pkt, keyring); err != nil {
+	if n.handleKeyFrame(sealed, nil) {
 		return
 	}
+
+	var pkt P2PPacket
+	if err := openPacket(sealed, &pkt, keyring); err != nil {
+		n.noteUndecryptable()
+		return
+	}
+	n.noteDecrypted()
 	if n.handleScreenPacket(&pkt) {
 		return
 	}

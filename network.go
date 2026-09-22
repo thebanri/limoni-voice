@@ -114,6 +114,9 @@ type P2PNode struct {
 	rekeyEpoch    uint32
 	rekeyKey      e2ee.GroupKey
 	rekeyTimer    *time.Timer
+	// Group key recovery: when a member last asked the host for the key it is missing, and
+	// when the host last answered each member.
+	keyAnswers map[string]time.Time
 
 	// Anti-Tracking & Dynamic Port Hopping
 	AntiTrackingEnabled bool
@@ -143,6 +146,8 @@ type P2PNode struct {
 	audioDedup           AudioDeduplicator
 	chatDedup            ChatDeduplicator
 	ctrlDedup            ControlDeduplicator
+	undecryptable        atomic.Int64 // packets in a row we could not open (lost group key)
+	keyRequestAt         atomic.Int64 // unix nanos of the last group key request or answer
 	silenceHangover      int
 	audioPreRoll         []audioPreRollFrame
 	OnScreenShare        func(peerID string, isSharing bool, videoPort int)
@@ -1218,10 +1223,16 @@ func (n *P2PNode) handleDatagram(data []byte, raddr *net.UDPAddr, via *net.UDPCo
 		return
 	}
 
-	var pkt P2PPacket
-	if err := openPacket(data, &pkt, keyring); err != nil {
+	if n.handleKeyFrame(data, raddr) {
 		return
 	}
+
+	var pkt P2PPacket
+	if err := openPacket(data, &pkt, keyring); err != nil {
+		n.noteUndecryptable()
+		return
+	}
+	n.noteDecrypted()
 
 	if fromRelay {
 		raddr = nil

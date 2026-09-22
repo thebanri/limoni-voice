@@ -107,6 +107,16 @@ func (k *Keyring) Stage(epoch uint32, key GroupKey) error {
 	return nil
 }
 
+// StagedKey returns the staged epoch and key, if any.
+func (k *Keyring) StagedKey() (uint32, GroupKey) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	if k.next == nil {
+		return 0, GroupKey{}
+	}
+	return k.next.epoch, k.next.key
+}
+
 // StagedEpoch returns the staged epoch, if any.
 func (k *Keyring) StagedEpoch() (uint32, bool) {
 	k.mu.RLock()
