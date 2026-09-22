@@ -220,7 +220,6 @@ type AudioEngine struct {
 	// Echo canceller & neural denoiser
 	aecMu    sync.Mutex
 	aec      *dsp.EchoCanceller
-	aecIn    []int16
 	aecOut   []int16
 	residual []float64
 	denoiser *rnnoise.State

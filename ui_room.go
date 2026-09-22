@@ -3274,11 +3274,10 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 			}
 			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 		}
-		curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, pingPill, cell.Style{
+		drawHUDPill(buf, frame, curX, rowY, maxX, pingPill, cell.Style{
 			Fg: pingColor,
 			Bg: theme.CardBg,
 		}, nil)
-		curX++
 
 		// 7. Full UI expand button pinned on right
 		expandLabel := " [▲ FULL UI [H]] "
@@ -3372,11 +3371,10 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 			}
 			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 		}
-		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
+		drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
 			Fg: pingColor,
 			Bg: theme.CardBg,
 		}, nil)
-		curX++
 
 		// Expand button right aligned
 		expandLabel := " [▲ FULL UI [H]] "
@@ -3603,13 +3601,12 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		hopMin = int(remHop.Minutes())
 	}
 	portPill := fmt.Sprintf(" 🛡️ :%d (%dm) ", node.Port, hopMin)
-	curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, portPill, cell.Style{
+	drawHUDPill(buf, frame, curX, row1Y, maxX, portPill, cell.Style{
 		Fg: theme.Accent,
 		Bg: theme.CardBg,
 	}, func() {
 		r.SetToast(fmt.Sprintf("Port Hopping: :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.currentEpoch))
 	})
-	curX++
 
 	// Right-aligned Full UI expand button
 	expandLabel := " [▲ FULL UI [H]] "
@@ -3758,7 +3755,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 	curX++
 
 	// Leave Button
-	curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, " 🚪 LEAVE ", cell.Style{
+	drawHUDPill(buf, frame, curX, row2Y, maxX, " 🚪 LEAVE ", cell.Style{
 		Fg: theme.Danger,
 		Bg: theme.CardBg,
 	}, func() {
@@ -3876,7 +3873,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 
 		// Self Screen Share Badge
 		if node.IsSharingScreen {
-			curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, " [📺 SHARING SCREEN [V]] ", cell.Style{
+			drawHUDPill(buf, frame, curX, curRowY, maxX, " [📺 SHARING SCREEN [V]] ", cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Accent,
 				Modifier: cell.ModifierBold,
@@ -3885,7 +3882,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 				r.SetToast("Screen share stopped")
 			})
 		} else {
-			curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, " [📺 SHARE [V]] ", cell.Style{
+			drawHUDPill(buf, frame, curX, curRowY, maxX, " [📺 SHARE [V]] ", cell.Style{
 				Fg: theme.Text,
 				Bg: theme.CardBg,
 			}, func() {
@@ -4005,7 +4002,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 		// 4. Stream Watch Button or Latency Indicator
 		if targetPeer.IsSharingScreen {
 			if node.IsWatchingScreen && node.WatchingPeerID == targetPeer.ID {
-				curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, " [📺 WATCHING [W]] ", cell.Style{
+				drawHUDPill(buf, frame, curX, curRowY, maxX, " [📺 WATCHING [W]] ", cell.Style{
 					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 					Bg:       theme.Secondary,
 					Modifier: cell.ModifierBold,
@@ -4014,7 +4011,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 					r.SetToast("Stream viewer closed")
 				})
 			} else {
-				curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, " [🔴 WATCH LIVE [W]] ", cell.Style{
+				drawHUDPill(buf, frame, curX, curRowY, maxX, " [🔴 WATCH LIVE [W]] ", cell.Style{
 					Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
 					Bg:       theme.Danger,
 					Modifier: cell.ModifierBold,
@@ -4047,7 +4044,7 @@ func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node 
 				}
 				pPill = fmt.Sprintf(" ⚡ %dms (%s) ", pPing, trans)
 			}
-			curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, pPill, cell.Style{
+			drawHUDPill(buf, frame, curX, curRowY, maxX, pPill, cell.Style{
 				Fg: theme.TextMuted,
 				Bg: theme.SurfaceBg,
 			}, nil)

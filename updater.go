@@ -386,7 +386,7 @@ func extractBinaryFromTarGz(r io.Reader) ([]byte, error) {
 			return nil, err
 		}
 
-		if header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA {
+		if header.Typeflag == tar.TypeReg {
 			base := filepath.Base(header.Name)
 			if strings.HasPrefix(base, "limoni-voice") {
 				return io.ReadAll(io.LimitReader(tr, 150*1024*1024))

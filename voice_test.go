@@ -824,7 +824,7 @@ func TestGainRange300(t *testing.T) {
 	}
 	boosted := applyGain(testPCM, 3.0)
 	val := int16(binary.LittleEndian.Uint16(boosted[0:2]))
-	if val <= 10000 || val > 32767 {
+	if val <= 10000 {
 		t.Fatalf("Expected soft-boosted sample between 10000 and 32767, got %d", val)
 	}
 }
@@ -2084,7 +2084,9 @@ func TestCodeSnippetTransferNoDeadlock(t *testing.T) {
 	}
 
 	// Verify node mutex is still usable and not deadlocked
-	node.mu.Lock()
+	if !node.mu.TryLock() {
+		t.Fatal("node mutex left locked after the failed send")
+	}
 	node.mu.Unlock()
 }
 
