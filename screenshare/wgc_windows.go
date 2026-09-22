@@ -84,11 +84,14 @@ const (
 	sessionPutIsBorderRequired = inspectableFirst + 1 // IGraphicsCaptureSession3
 	closableClose              = inspectableFirst
 
-	deviceCreateTexture2D = 5  // ID3D11Device
-	textureGetDesc        = 10 // ID3D11Texture2D
-	contextMap            = 10 // ID3D11DeviceContext
-	contextUnmap          = 11
-	contextCopyResource   = 43
+	// ID3D11Device derives straight from IUnknown, so its own methods start at 3.
+	deviceCreateTexture2D = 5
+	// ID3D11Texture2D and ID3D11DeviceContext both reach their own methods past IUnknown (3),
+	// ID3D11DeviceChild (4 more) and, for the texture, ID3D11Resource (3 more).
+	textureGetDesc      = 10
+	contextMap          = 14
+	contextUnmap        = 15
+	contextCopyResource = 47
 )
 
 const (
@@ -401,6 +404,11 @@ func (w *wgcSession) nextFrame(fn func(pixels []byte, width, height int32, rowPi
 	if desc.Width == 0 || desc.Height == 0 {
 		return false, nil
 	}
+	// No display is this large: a size like that means the description was read wrongly, and
+	// acting on it would allocate nonsense or worse.
+	if desc.Width > 16384 || desc.Height > 16384 {
+		return false, fmt.Errorf("wgc: the captured texture reports %dx%d", desc.Width, desc.Height)
+	}
 	if err := w.ensureStaging(int32(desc.Width), int32(desc.Height)); err != nil {
 		return false, err
 	}
@@ -422,7 +430,7 @@ func (w *wgcSession) nextFrame(fn func(pixels []byte, width, height int32, rowPi
 	if width <= 0 || height <= 0 {
 		return false, nil
 	}
-	if mapped.Data == nil {
+	if mapped.Data == nil || mapped.RowPitch < 4*desc.Width {
 		return false, nil
 	}
 	pixels := unsafe.Slice(mapped.Data, int(mapped.RowPitch)*int(desc.Height))
