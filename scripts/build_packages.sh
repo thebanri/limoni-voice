@@ -17,6 +17,19 @@ mkdir -p dist/linux-amd64 dist/linux-arm64
 mkdir -p dist/windows-amd64 dist/windows-arm64
 mkdir -p dist/darwin-arm64 dist/darwin-amd64
 
+# Update signing. The public key is embedded in the binaries, which from then on refuse
+# unsigned updates, so both halves must be present together, and a tagged release (which
+# every installed copy auto-updates to) must be signed.
+if { [ -n "${UPDATE_SIGNING_KEY:-}" ] && [ -z "${UPDATE_SIGNING_PUBKEY:-}" ]; } ||
+   { [ -z "${UPDATE_SIGNING_KEY:-}" ] && [ -n "${UPDATE_SIGNING_PUBKEY:-}" ]; }; then
+  echo "error: set both UPDATE_SIGNING_KEY and UPDATE_SIGNING_PUBKEY, or neither" >&2
+  exit 1
+fi
+if [[ "${GITHUB_REF:-}" == refs/tags/* ]] && [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
+  echo "error: refusing to build release ${VERSION} unsigned: add the UPDATE_SIGNING_KEY and UPDATE_SIGNING_PUBKEY repository secrets" >&2
+  exit 1
+fi
+
 LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
 if [ -n "${UPDATE_SIGNING_PUBKEY:-}" ]; then
   # Builds that embed a signing key only accept signed updates (checksums.txt.sig)
@@ -235,6 +248,9 @@ cd ..
 if [ -n "${UPDATE_SIGNING_KEY:-}" ]; then
   echo "==> Signing checksums.txt..."
   go run -mod=vendor ./cmd/limoni-sign sign release_assets/checksums.txt
+  # Catch a key pair that does not match before shipping binaries that would reject every
+  # future update.
+  go run -mod=vendor ./cmd/limoni-sign verify release_assets/checksums.txt
 fi
 
 echo "==> Build and Packaging Completed Successfully!"

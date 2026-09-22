@@ -93,7 +93,8 @@ jobs:
 
       - name: Build Packages
         env:
-          # Optional: generate with `go run ./cmd/limoni-sign keygen` and store as repository secrets.
+          # Required for tag releases (build_packages.sh refuses to build them unsigned).
+          # Generate with `go run ./cmd/limoni-sign keygen` and store as repository secrets.
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
           UPDATE_SIGNING_PUBKEY: ${{ secrets.UPDATE_SIGNING_PUBKEY }}
         run: bash scripts/build_packages.sh
