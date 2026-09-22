@@ -38,6 +38,7 @@ func writeAll(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Bool {
 @available(macOS 12.3, *)
 class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var stream: SCStream?
+    var audioStream: SCStream? // app-only audio when sharing one window
     var isRunning = false
     var frameCount = 0
 
@@ -109,10 +110,16 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             logToFile("[INFO] Found \(content.displays.count) displays and \(content.windows.count) windows")
 
             var filter: SCContentFilter
+            // Sharing one window shares only its application's sound, captured by a second
+            // stream filtered to that application; the video stream then carries no audio.
+            var audioApp: SCRunningApplication? = nil
             if let winID = targetWindowID, let targetWin = content.windows.first(where: { $0.windowID == winID }) {
                 logToFile("[INFO] Target window found: '\(targetWin.title ?? "")' (app: '\(targetWin.owningApplication?.applicationName ?? "")', id: \(winID), frame: \(targetWin.frame))")
                 // Use display-including window filter: guarantees exact fixed canvas dimensions for FFmpeg
                 filter = SCContentFilter(display: display, including: [targetWin])
+                if captureAudio {
+                    audioApp = targetWin.owningApplication
+                }
             } else {
                 logToFile("[INFO] Using full display capture (Display ID: \(display.displayID), resolution: \(display.width)x\(display.height))")
                 // Exclude Limoni Voice itself (the parent process) so voice chat is not re-shared.
@@ -129,7 +136,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             config.pixelFormat = kCVPixelFormatType_32BGRA
             config.showsCursor = true
             config.queueDepth = 8
-            if #available(macOS 13.0, *), captureAudio {
+            if #available(macOS 13.0, *), captureAudio, audioApp == nil {
                 config.capturesAudio = true
                 config.sampleRate = 48000
                 config.channelCount = 2
@@ -138,27 +145,63 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
             let stream = SCStream(filter: filter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
-            addAudioOutput(stream, captureAudio)
+            addAudioOutput(stream, captureAudio && audioApp == nil)
 
             do {
                 try await stream.startCapture()
                 self.stream = stream
                 self.isRunning = true
                 logToFile("[OK] Stream started successfully at \(width)x\(height) @ \(fps) FPS")
+                if let app = audioApp {
+                    if #available(macOS 13.0, *) {
+                        await startAppAudio(display: display, app: app)
+                    } else {
+                        logToFile("[AUDIO] System audio capture requires macOS 13+")
+                    }
+                }
             } catch {
                 logToFile("[WARN] Filter startCapture failed (\(error)), trying fallback full display filter...")
                 let fallbackFilter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
                 let fallbackStream = SCStream(filter: fallbackFilter, configuration: config, delegate: self)
                 try fallbackStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
-                addAudioOutput(fallbackStream, captureAudio)
+                addAudioOutput(fallbackStream, captureAudio && audioApp == nil)
                 try await fallbackStream.startCapture()
                 self.stream = fallbackStream
                 self.isRunning = true
                 logToFile("[OK] Fallback display stream running at \(width)x\(height) @ \(fps) FPS")
+                if #available(macOS 13.0, *), let app = audioApp {
+                    await startAppAudio(display: display, app: app)
+                }
             }
         } catch {
             logToFile("[FATAL] Error initializing ScreenCaptureKit: \(error)")
             exit(1)
+        }
+    }
+
+    // startAppAudio captures only what one application plays. The stream still needs a video
+    // size; a tiny one at one frame per second costs next to nothing and is never read.
+    @available(macOS 13.0, *)
+    func startAppAudio(display: SCDisplay, app: SCRunningApplication) async {
+        let filter = SCContentFilter(display: display, including: [app], exceptingWindows: [])
+        let config = SCStreamConfiguration()
+        config.width = 2
+        config.height = 2
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        config.queueDepth = 3
+        config.capturesAudio = true
+        config.sampleRate = 48000
+        config.channelCount = 2
+        config.excludesCurrentProcessAudio = true
+        let audio = SCStream(filter: filter, configuration: config, delegate: self)
+        do {
+            try audio.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
+            try await audio.startCapture()
+            audioStream = audio
+            audioEnabled = true
+            logToFile("[AUDIO] Capturing audio of '\(app.applicationName)' (pid \(app.processID)) only")
+        } catch {
+            logToFile("[AUDIO] App audio unavailable: \(error)")
         }
     }
 
@@ -168,7 +211,7 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             handleAudio(sampleBuffer)
             return
         }
-        guard type == .screen else { return }
+        guard type == .screen, stream !== audioStream else { return }
         guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
 
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
@@ -204,6 +247,13 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        if stream === audioStream {
+            // Losing the sound must not end the video.
+            logToFile("[AUDIO] App audio stream stopped: \(error)")
+            audioEnabled = false
+            audioStream = nil
+            return
+        }
         logToFile("[STOP] Stream stopped with error: \(error)")
         exit(1)
     }

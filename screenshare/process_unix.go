@@ -29,3 +29,6 @@ func killProcessGroup(cmd *exec.Cmd) {
 	// Fallback to safely killing only the subprocess instantly
 	_ = cmd.Process.Kill()
 }
+
+// windowProcessID resolves Windows window handles; there are none here.
+func windowProcessID(uintptr) int { return 0 }

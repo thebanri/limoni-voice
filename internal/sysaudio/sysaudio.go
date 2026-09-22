@@ -1,6 +1,7 @@
 // Package sysaudio captures what the computer is playing (system / desktop audio) for screen
 // sharing: the PulseAudio / PipeWire monitor of the default output on Linux and WASAPI loopback
 // on Windows. On macOS system audio comes from the ScreenCaptureKit capture helper instead.
+// On Linux OpenApp narrows the capture to the streams of one application.
 //
 // Captured audio still contains Limoni Voice's own playback (other participants' voices); the
 // caller removes it with an echo canceller that uses the rendered mix as reference.
@@ -9,6 +10,7 @@ package sysaudio
 import (
 	"errors"
 	"sync"
+	"time"
 )
 
 // Audio format delivered to callbacks.
@@ -102,4 +104,103 @@ func clamp16(v float64) int16 {
 		return -32768
 	}
 	return int16(v)
+}
+
+// App identifies the application whose audio OpenApp captures.
+type App struct {
+	PID  int    // a process of the application; its descendants count too
+	Name string // executable name; also matches the application's other processes
+}
+
+// OpenApp captures only what one application plays, not the whole output. Browsers play from
+// a helper process, so a stream matches when its process descends from app.PID or runs the
+// same executable. It returns ErrUnsupported where per-application capture is not available.
+func OpenApp(app App, onFrame FrameFunc) (Stream, error) {
+	if app.PID <= 1 && app.Name == "" {
+		return nil, errors.New("sysaudio: no application to capture")
+	}
+	return openApp(app, onFrame)
+}
+
+// maxMixBacklog bounds how much a stream that runs ahead of the clock stream may queue.
+const maxMixBacklog = 5 * FrameSamples
+
+// mixer sums several capture streams into 20 ms frames. One stream sets the pace (the
+// clock); the others contribute whatever they have queued when it completes a frame, so the
+// output never runs faster than real time however many streams there are.
+type mixer struct {
+	mu    sync.Mutex
+	srcs  map[uint32]*mixSource
+	clock uint32
+	has   bool
+	acc   []int32
+	out   []int16
+	emit  FrameFunc
+}
+
+type mixSource struct {
+	buf  []int16
+	last time.Time
+}
+
+func newMixer(emit FrameFunc) *mixer {
+	return &mixer{
+		srcs: map[uint32]*mixSource{},
+		acc:  make([]int32, FrameSamples),
+		out:  make([]int16, FrameSamples),
+		emit: emit,
+	}
+}
+
+func (m *mixer) add(id uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.srcs[id] == nil {
+		m.srcs[id] = &mixSource{}
+	}
+}
+
+func (m *mixer) remove(id uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.srcs, id)
+	if m.has && m.clock == id {
+		m.has = false
+	}
+}
+
+// push queues samples of stream id and emits every frame the clock stream completes. A
+// stream becomes the clock when there is none or the clock has gone quiet (paused).
+func (m *mixer) push(id uint32, samples []int16, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.srcs[id]
+	if src == nil {
+		return
+	}
+	src.buf = append(src.buf, samples...)
+	if over := len(src.buf) - maxMixBacklog; over > 0 {
+		src.buf = append(src.buf[:0], src.buf[over:]...)
+	}
+	src.last = now
+	if clock := m.srcs[m.clock]; !m.has || clock == nil || now.Sub(clock.last) > 60*time.Millisecond {
+		m.clock, m.has = id, true
+	}
+	if m.clock != id {
+		return
+	}
+	for len(src.buf) >= FrameSamples {
+		clear(m.acc)
+		for _, s := range m.srcs {
+			n := min(FrameSamples, len(s.buf))
+			for i, v := range s.buf[:n] {
+				m.acc[i] += int32(v)
+			}
+			s.buf = append(s.buf[:0], s.buf[n:]...)
+		}
+		for i, v := range m.acc {
+			m.out[i] = int16(max(-32768, min(32767, v)))
+		}
+		m.emit(m.out)
+	}
 }

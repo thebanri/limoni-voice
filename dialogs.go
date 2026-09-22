@@ -16,6 +16,28 @@ import (
 	"github.com/thebanri/limoni/widgets"
 )
 
+// openModal registers a modal layer and makes it the active layer, so the
+// click handlers the dialog registers next belong to it. Since Limoni v0.8.0
+// a click inside a modal reaches only regions tagged with that modal's layer;
+// untagged ones are swallowed. Callers must defer frame.EndLayer(). Each modal
+// stacks above the ones drawn before it in the same frame.
+func openModal(frame *terminal.Frame, id string, area cell.Rect, onClickOutside func()) {
+	frame.RegisterLayer(id, terminal.LayerModal, area, 1000+len(frame.Layers), onClickOutside)
+	frame.BeginLayer(id)
+}
+
+// renderTextInput draws a text input with a white cursor block. Limoni v0.8 paints the cursor
+// white-on-black and then also reverses it, so terminals show it black; drop the reverse.
+func renderTextInput(frame *terminal.Frame, input widgets.TextInput, area cell.Rect) {
+	frame.RenderWidget(input, area)
+	white, black := cell.NewColorRGB(255, 255, 255), cell.NewColorRGB(0, 0, 0)
+	for x := area.X; x < area.X+area.Width; x++ {
+		if c := frame.Buffer.Get(x, area.Y); c != nil && c.Style.Modifier&cell.ModifierReverse != 0 && c.Style.Bg == white && c.Style.Fg == black {
+			c.Style.Modifier &^= cell.ModifierReverse
+		}
+	}
+}
+
 // DrawVerticalLevelMeter renders a sleek multi-column equalizer VU bar
 // that rises and falls with live voice volume level without using any emojis or icons.
 func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isSpeaking bool, isMuted bool, label string) {
@@ -157,7 +179,8 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	modalArea := terminal.CenterRect(screenArea, modalW, modalH)
 	widgets.DrawShadow(frame.Buffer, modalArea, 2, 1)
 
-	frame.RegisterModal("sound_test_modal", modalArea, onClose)
+	openModal(frame, "sound_test_modal", modalArea, onClose)
+	defer frame.EndLayer()
 
 	theme := CurrentTheme()
 	mainBlock := widgets.Block{
@@ -838,7 +861,8 @@ func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float6
 		return
 	}
 
-	frame.RegisterModal("leave_room_dialog", animatedArea, onCancel)
+	openModal(frame, "leave_room_dialog", animatedArea, onCancel)
+	defer frame.EndLayer()
 
 	theme := CurrentTheme()
 	leaveDialog := widgets.Dialog{
@@ -886,7 +910,8 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 		return
 	}
 
-	frame.RegisterModal("exit_app_dialog", animatedArea, onCancel)
+	openModal(frame, "exit_app_dialog", animatedArea, onCancel)
+	defer frame.EndLayer()
 
 	theme := CurrentTheme()
 	exitDialog := widgets.Dialog{
@@ -973,7 +998,8 @@ func DrawRelayModal(
 
 	// 1. Drop shadow behind the dialog
 	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
-	frame.RegisterModal("relay_settings_dialog", animatedArea, onCancel)
+	openModal(frame, "relay_settings_dialog", animatedArea, onCancel)
+	defer frame.EndLayer()
 
 	theme := CurrentTheme()
 	dialogBg := theme.SurfaceBg
@@ -1089,7 +1115,7 @@ func DrawRelayModal(
 	if activeField == 0 {
 		urlInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
-	frame.RenderWidget(urlInput, urlInputRect)
+	renderTextInput(frame, urlInput, urlInputRect)
 
 	// Render text selection highlight if active
 	if urlSelS >= 0 && urlSelE >= 0 && urlSelS < urlSelE {
@@ -1159,7 +1185,7 @@ func DrawRelayModal(
 	if activeField == 1 {
 		tokenInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
-	frame.RenderWidget(tokenInput, tokenInputRect)
+	renderTextInput(frame, tokenInput, tokenInputRect)
 
 	if tokenSelS >= 0 && tokenSelE >= 0 && tokenSelS < tokenSelE {
 		col := 0
@@ -1321,7 +1347,8 @@ func DrawScreenShareModal(
 	}
 
 	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
-	frame.RegisterModal("screenshare_select_dialog", animatedArea, onCancel)
+	openModal(frame, "screenshare_select_dialog", animatedArea, onCancel)
+	defer frame.EndLayer()
 
 	theme := CurrentTheme()
 	dialogBg := theme.SurfaceBg
@@ -1801,7 +1828,8 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 	// 1. Drop shadow behind the dialog
 	widgets.DrawShadow(frame.Buffer, animatedArea, 2, 1)
 
-	frame.RegisterModal("file_offer_dialog", animatedArea, onDecline)
+	openModal(frame, "file_offer_dialog", animatedArea, onDecline)
+	defer frame.EndLayer()
 
 	theme := CurrentTheme()
 	dialogBg := theme.SurfaceBg

@@ -84,9 +84,10 @@ type wasapiStream struct {
 	done chan struct{}
 	once sync.Once
 
-	mu      sync.Mutex
-	backend string
-	frames  uint64
+	mu       sync.Mutex
+	backend  string
+	frames   uint64
+	handlers []*activationHandler // COM completion handlers Windows may still call
 }
 
 func (s *wasapiStream) Backend() string {
@@ -114,7 +115,7 @@ func (s *wasapiStream) Close() error {
 func open(onFrame FrameFunc) (Stream, error) {
 	s := &wasapiStream{stop: make(chan struct{}), done: make(chan struct{})}
 	ready := make(chan error, 1)
-	go s.run(onFrame, ready)
+	go s.run(func(started func()) error { return s.capture(onFrame, started) }, ready)
 	if err := <-ready; err != nil {
 		return nil, err
 	}
@@ -123,7 +124,7 @@ func open(onFrame FrameFunc) (Stream, error) {
 
 // run keeps a loopback capture running. Switching the default output device invalidates the
 // stream on Windows, so a failed session is simply reopened until Close.
-func (s *wasapiStream) run(onFrame FrameFunc, ready chan<- error) {
+func (s *wasapiStream) run(session func(started func()) error, ready chan<- error) {
 	defer close(s.done)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -136,7 +137,7 @@ func (s *wasapiStream) run(onFrame FrameFunc, ready chan<- error) {
 
 	first := true
 	for {
-		err := s.capture(onFrame, func() {
+		err := session(func() {
 			if first {
 				first = false
 				ready <- nil
@@ -188,9 +189,8 @@ func (s *wasapiStream) capture(onFrame FrameFunc, started func()) error {
 	if err != nil {
 		return err
 	}
-	channels, bits, rate, isFloat := wf.Channels, wf.Bits, wf.Rate, wf.Float
 
-	if err := hresult(comCall(client, clientInitialize, audclntShareModeShared, audclntStreamFlagLoopback, bufferDuration100ns, 0, uintptr(unsafe.Pointer(format)), 0), "IAudioClient.Initialize(loopback)"); err != nil {
+	if err := initialize(client, audclntStreamFlagLoopback, unsafe.Pointer(format)); err != nil {
 		return err
 	}
 	var capture *comObj
@@ -208,18 +208,29 @@ func (s *wasapiStream) capture(onFrame FrameFunc, started func()) error {
 	s.mu.Unlock()
 	started()
 
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	return s.pump(capture, wf, onFrame, func() bool {
+		select {
+		case <-s.stop:
+			return false
+		case <-ticker.C:
+			return true
+		}
+	})
+}
+
+// pump drains captured packets into frames until wait reports a stop or the stream fails.
+func (s *wasapiStream) pump(capture *comObj, wf waveFormat, onFrame FrameFunc, wait func() bool) error {
+	channels, bits, isFloat := wf.Channels, wf.Bits, wf.Float
 	fr := newFramer(onFrame)
-	rs := newResampler(rate)
+	rs := newResampler(wf.Rate)
 	bytesPerSample := bits / 8
 	var mono []float64
 	var out []int16
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
 	for {
-		select {
-		case <-s.stop:
+		if !wait() {
 			return nil
-		case <-ticker.C:
 		}
 		for {
 			var packet uint32
@@ -259,6 +270,19 @@ func (s *wasapiStream) capture(onFrame FrameFunc, started func()) error {
 			fr.push(out)
 		}
 	}
+}
+
+// initialize calls IAudioClient.Initialize in shared mode. Its buffer duration and periodicity
+// are 64-bit REFERENCE_TIMEs, which take two argument slots on 32-bit Windows.
+func initialize(client *comObj, flags uintptr, format unsafe.Pointer) error {
+	args := []uintptr{audclntShareModeShared, flags}
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		args = append(args, bufferDuration100ns, 0, 0, 0)
+	} else {
+		args = append(args, bufferDuration100ns, 0)
+	}
+	args = append(args, uintptr(format), 0)
+	return hresult(comCall(client, clientInitialize, args...), "IAudioClient.Initialize")
 }
 
 func sampleAt(b []byte, isFloat bool, bits int) float64 {

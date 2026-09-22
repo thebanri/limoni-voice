@@ -82,6 +82,7 @@ type screenTx struct {
 	audioOn     bool
 	audioStatus string // backend in use, or why system audio is not being shared
 	audioSilent int    // control ticks with system audio on but nothing captured
+	appAudio    bool   // audio comes from the shared application only, not the whole output
 	sys         sysaudio.Stream
 	audioEnc    *voice.Encoder
 	audioSeq    uint32
@@ -234,13 +235,18 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 		if n.audio != nil {
 			n.audio.EnableLoopbackExclusion(true)
 		}
-		if s, err := sysaudio.Open(tx.onSystemAudio); err != nil {
+		if s, appOnly, err := n.openShareAudio(opts.WindowID, tx.onSystemAudio); err != nil {
 			tx.audioStatus = "unavailable: " + err.Error()
 			n.log(fmt.Sprintf("[WARN] [SHARE] System audio unavailable: %v", err))
 		} else {
 			tx.sys = s
 			tx.audioOn = true
+			tx.appAudio = appOnly
 			tx.audioStatus = s.Backend()
+			if appOnly && n.audio != nil {
+				// Our own playback is not in another program's streams: nothing to remove.
+				n.audio.EnableLoopbackExclusion(false)
+			}
 			n.log("[SCREEN] System audio shared via " + s.Backend())
 		}
 	} else if withAudio && tx.audioEnc == nil {
@@ -249,7 +255,10 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 	} else if withAudio {
 		tx.audioOn = true // delivered by the capture helper
 		tx.audioStatus = "ScreenCaptureKit"
-		if n.audio != nil {
+		if screenshare.MacWindowTarget(opts.WindowID) {
+			tx.appAudio = true
+			tx.audioStatus = "ScreenCaptureKit (shared window's app only)"
+		} else if n.audio != nil {
 			n.audio.EnableLoopbackExclusion(true)
 		}
 	}
@@ -333,6 +342,20 @@ func (n *P2PNode) StopScreenShare() error {
 	n.announceScreenShare(false)
 	n.log("[SCREEN] Screen share stopped.")
 	return nil
+}
+
+// openShareAudio captures only the shared program's sound when the target is one application
+// or window and the platform can isolate it (appOnly), and the whole output otherwise.
+func (n *P2PNode) openShareAudio(targetID string, onFrame sysaudio.FrameFunc) (s sysaudio.Stream, appOnly bool, err error) {
+	if pid, name, ok := screenshare.TargetProcess(targetID); ok {
+		s, err := sysaudio.OpenApp(sysaudio.App{PID: pid, Name: name}, onFrame)
+		if err == nil {
+			return s, true, nil
+		}
+		n.log(fmt.Sprintf("[WARN] [SHARE] Cannot capture the audio of %s (pid %d) alone (%v); sharing the whole output", name, pid, err))
+	}
+	s, err = sysaudio.Open(onFrame)
+	return s, false, err
 }
 
 func (tx *screenTx) shutdown() {
@@ -560,7 +583,9 @@ func (tx *screenTx) controlLoop() {
 			// instead of leaving the user wondering why viewers hear nothing.
 			if tx.sys.Frames() == 0 {
 				tx.audioSilent++
-				if tx.audioSilent == 6 {
+				if tx.audioSilent == 6 && tx.appAudio {
+					n.log("[SCREEN] [SHARE] The shared application is not playing any sound yet")
+				} else if tx.audioSilent == 6 {
 					n.log("[WARN] [SHARE] No system audio captured yet: check that sound is playing on the default output device")
 				}
 			} else if tx.audioSilent > 0 {

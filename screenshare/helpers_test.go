@@ -46,3 +46,22 @@ func TestInstallHint(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetProcess(t *testing.T) {
+	if pid, name, ok := TargetProcess("app:4242:chrome"); !ok || pid != 4242 || name != "chrome" {
+		t.Fatalf("app target: %d %q %v", pid, name, ok)
+	}
+	for _, id := range []string{"desktop", "focused", "portal", "monitor:0:0:0:1920:1080", "app:1:init", "app:x:y"} {
+		if _, _, ok := TargetProcess(id); ok {
+			t.Fatalf("%s resolved to a process; it must share the whole output", id)
+		}
+	}
+}
+
+func TestMacWindowTarget(t *testing.T) {
+	for id, want := range map[string]bool{"4821": true, "desktop": false, "portal": false, "": false, "monitor:1": false} {
+		if got := MacWindowTarget(id); got != want {
+			t.Fatalf("MacWindowTarget(%q) = %v", id, got)
+		}
+	}
+}

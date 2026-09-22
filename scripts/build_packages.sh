@@ -5,6 +5,9 @@ VERSION="${GITHUB_REF_NAME:-}"
 if [ -z "${VERSION}" ] || [ "${VERSION}" = "main" ] || [ "${VERSION}" = "master" ]; then
   VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
 fi
+# A pull request builds from a ref named like "2/merge"; keep the version to one path segment
+# so the package file names stay valid.
+VERSION="${VERSION//[^A-Za-z0-9._-]/-}"
 RAW_VERSION="${VERSION#v}"
 
 echo "=========================================="
