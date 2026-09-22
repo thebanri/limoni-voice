@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os/exec"
 	"sync/atomic"
 	"testing"
@@ -115,4 +116,90 @@ func TestSharerEndsAShareWhoseCaptureStopped(t *testing.T) {
 		p := viewer.Peers[host.LocalID]
 		return p != nil && !p.IsSharingScreen
 	})
+}
+
+// A player that dies on startup is replaced by the alternative one. When watching ended while
+// that replacement was starting, nobody owned it: the shutdown had already killed the player it
+// knew about, so the replacement stayed on screen for good. That is the stuck viewer left
+// behind by stopping a share and starting another one right away.
+func TestAReplacementPlayerStartedWhileStoppingIsClosed(t *testing.T) {
+	if _, err := screenshare.FindExecutable("ffplay"); err != nil {
+		t.Skip("the fallback player is not installed, so the replacement path cannot run")
+	}
+	host, viewer := relayRoom(t, "5356-amber-falcon-river")
+
+	var started atomic.Int64
+	release := make(chan struct{})
+	replacement := make(chan *screenshare.Session, 1)
+	startPlayerSession = func(ctx context.Context, opts ...screenshare.ReceiverOptions) (*screenshare.Session, error) {
+		if started.Add(1) == 1 {
+			// The first player dies at once, which sends the viewer to the fallback.
+			return screenshare.StartProcess(ctx, "sh", []string{"-c", "exit 1"}, nil, true)
+		}
+		<-release // the replacement starts only after watching has been stopped
+		s, err := screenshare.StartProcess(ctx, "sh", []string{"-c", "sleep 30"}, nil, true)
+		replacement <- s
+		return s, err
+	}
+	t.Cleanup(func() { startPlayerSession = screenshare.StartReceiving })
+
+	if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the viewer reaches for the fallback player", 5*time.Second, func() bool { return started.Load() == 2 })
+	if err := viewer.StopWatchingScreen(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	var next *screenshare.Session
+	select {
+	case next = <-replacement:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the replacement player never started")
+	}
+	select {
+	case <-next.Done():
+	case <-next.Err():
+	case <-time.After(3 * time.Second):
+		t.Fatal("the replacement player was left running after watching stopped")
+	}
+}
+
+// Stopping a viewer killed its player, and the watcher goroutine took that for a player that
+// had crashed on startup and launched the alternative one. Nothing owned that replacement, so
+// it stayed on screen for good — which is what happened when a share was stopped and another
+// started right away.
+func TestStoppingTheViewerLeavesNoPlayerBehind(t *testing.T) {
+	if _, err := screenshare.FindExecutable("ffplay"); err != nil {
+		t.Skip("the fallback player is not installed, so the replacement path cannot run")
+	}
+	host, viewer := relayRoom(t, "5356-amber-falcon-river")
+	_ = host
+
+	var started atomic.Int64
+	startPlayerSession = func(ctx context.Context, opts ...screenshare.ReceiverOptions) (*screenshare.Session, error) {
+		started.Add(1)
+		// A player that ignores end of stream, so stopping has to kill it.
+		return screenshare.StartProcess(ctx, "sh", []string{"-c", "sleep 30"}, nil, true)
+	}
+	t.Cleanup(func() { startPlayerSession = screenshare.StartReceiving })
+
+	if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := viewer.StopWatchingScreen(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The replacement, if any, is launched right after the kill.
+	time.Sleep(1500 * time.Millisecond)
+	if n := started.Load(); n != 1 {
+		t.Fatalf("%d players were started; the viewer left one behind", n)
+	}
+	viewer.mu.RLock()
+	defer viewer.mu.RUnlock()
+	if viewer.screenRx != nil || viewer.IsWatchingScreen {
+		t.Fatal("the viewer is still watching after it was stopped")
+	}
 }

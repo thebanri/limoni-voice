@@ -337,7 +337,17 @@ func (n *P2PNode) announceScreenShare(sharing bool) {
 			tx.mu.Unlock()
 		}
 	}
-	n.broadcastToPeers(&pkt)
+	// Reliable, and repeated when the share ends: a viewer that misses this keeps its player
+	// open on the last picture until a stall guard closes it seconds later.
+	n.sendToRoom(&pkt, protocol.FrameReliable)
+	if !sharing {
+		go func() {
+			for range 2 {
+				time.Sleep(200 * time.Millisecond)
+				n.sendToRoom(&pkt, protocol.FrameReliable)
+			}
+		}()
+	}
 }
 
 // StopScreenShare stops active broadcasting
@@ -907,6 +917,16 @@ func (n *P2PNode) StopWatchingScreen() error {
 	return nil
 }
 
+// stopping reports whether watching has ended, so nothing starts another player behind it.
+func (rx *screenRx) stopping() bool {
+	select {
+	case <-rx.stop:
+		return true
+	default:
+		return false
+	}
+}
+
 func (rx *screenRx) shutdown() {
 	rx.stopOnce.Do(func() {
 		close(rx.stop)
@@ -916,15 +936,24 @@ func (rx *screenRx) shutdown() {
 		if session == nil {
 			return
 		}
-		// End of stream first so the player can exit cleanly, then make sure it is gone.
+		// End of stream first so the player can exit cleanly, then make sure it is gone. mpv
+		// runs with --keep-open, so it sits on the last picture instead of exiting: waiting
+		// long for that only delays closing the window.
 		if stdin := session.Stdin(); stdin != nil {
 			_ = stdin.Close()
 		}
 		select {
 		case <-session.Done():
-		case <-time.After(400 * time.Millisecond):
+		case <-time.After(150 * time.Millisecond):
 		}
 		_ = session.Stop()
+		// A replacement player may have been started while this ran; it belongs to nobody now.
+		rx.mu.Lock()
+		next := rx.session
+		rx.mu.Unlock()
+		if next != nil && next != session {
+			_ = next.Stop()
+		}
 	})
 }
 
@@ -1099,6 +1128,9 @@ func (rx *screenRx) watchPlayer(session *screenshare.Session, started time.Time)
 	case <-rx.stop:
 		return
 	case err := <-session.Err():
+		if rx.stopping() {
+			return // we killed it ourselves when watching ended
+		}
 		n.log(fmt.Sprintf("[WARN] Screen viewer closed/error: %v", err))
 		if time.Since(started) < 3*time.Second {
 			alt := "ffplay"
@@ -1110,6 +1142,12 @@ func (rx *screenRx) watchPlayer(session *screenshare.Session, started time.Time)
 				opt := rx.opt
 				opt.PreferredPlayer = alt
 				if next, err := startPlayerSession(context.Background(), opt); err == nil {
+					// Watching may have ended while the replacement was starting. Nothing
+					// would ever close it: the shutdown killed the player it knew about.
+					if rx.stopping() {
+						_ = next.Stop()
+						return
+					}
 					rx.mu.Lock()
 					rx.session = next
 					rx.reorder.Reset()
