@@ -114,6 +114,9 @@ type P2PNode struct {
 	rekeyEpoch    uint32
 	rekeyKey      e2ee.GroupKey
 	rekeyTimer    *time.Timer
+	// Group key recovery: when a member last asked the host for the key it is missing, and
+	// when the host last answered each member.
+	keyAnswers map[string]time.Time
 
 	// Anti-Tracking & Dynamic Port Hopping
 	AntiTrackingEnabled bool
@@ -143,6 +146,8 @@ type P2PNode struct {
 	audioDedup           AudioDeduplicator
 	chatDedup            ChatDeduplicator
 	ctrlDedup            ControlDeduplicator
+	undecryptable        atomic.Int64 // packets in a row we could not open (lost group key)
+	keyRequestAt         atomic.Int64 // unix nanos of the last group key request or answer
 	silenceHangover      int
 	audioPreRoll         []audioPreRollFrame
 	OnScreenShare        func(peerID string, isSharing bool, videoPort int)
@@ -1134,13 +1139,36 @@ func (n *P2PNode) listenLoopOnConn(conn *net.UDPConn) {
 		return
 	}
 	buf := make([]byte, 65535)
+	var failures int
 	for {
 		readBytes, raddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			return
+			if !n.readErrorRecoverable(err, conn.LocalAddr(), &failures) {
+				return
+			}
+			continue
 		}
+		failures = 0
 		n.handleDatagram(buf[:readBytes], raddr, conn)
 	}
+}
+
+// readErrorRecoverable reports whether a socket read may be retried. A closed socket ends the
+// loop; anything else is transient and must not, because nothing restarts these loops: a node
+// that stopped reading keeps sending and shows every peer as reconnecting until it is
+// restarted. Repeated failures back off so a broken socket cannot spin a core.
+func (n *P2PNode) readErrorRecoverable(err error, local net.Addr, failures *int) bool {
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	*failures++
+	if *failures == 1 || *failures%100 == 0 {
+		n.writeToFileLog(fmt.Sprintf("[WARN] [NET] Read error on %s (%d in a row), still listening: %v", local, *failures, err))
+	}
+	if *failures > 1 {
+		time.Sleep(min(time.Duration(*failures)*10*time.Millisecond, 500*time.Millisecond))
+	}
+	return true
 }
 
 func (n *P2PNode) listenBroadcastLoop() {
@@ -1151,11 +1179,16 @@ func (n *P2PNode) listenBroadcastLoop() {
 		return
 	}
 	buf := make([]byte, 65535)
+	var failures int
 	for {
 		readBytes, raddr, err := bConn.ReadFromUDP(buf)
 		if err != nil {
-			return
+			if !n.readErrorRecoverable(err, bConn.LocalAddr(), &failures) {
+				return
+			}
+			continue
 		}
+		failures = 0
 		n.handleDatagram(buf[:readBytes], raddr, nil)
 	}
 }
@@ -1190,10 +1223,16 @@ func (n *P2PNode) handleDatagram(data []byte, raddr *net.UDPAddr, via *net.UDPCo
 		return
 	}
 
-	var pkt P2PPacket
-	if err := openPacket(data, &pkt, keyring); err != nil {
+	if n.handleKeyFrame(data, raddr) {
 		return
 	}
+
+	var pkt P2PPacket
+	if err := openPacket(data, &pkt, keyring); err != nil {
+		n.noteUndecryptable()
+		return
+	}
+	n.noteDecrypted()
 
 	if fromRelay {
 		raddr = nil

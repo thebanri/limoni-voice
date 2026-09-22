@@ -54,8 +54,10 @@ func newEpochKey(epoch uint32, key GroupKey) (*epochKey, error) {
 	return &epochKey{epoch: epoch, key: key, aead: aead}, nil
 }
 
-// PreviousKeyGrace is how long packets sealed with a superseded key are still accepted.
-const PreviousKeyGrace = 15 * time.Second
+// PreviousKeyGrace is how long packets sealed with a superseded key are still accepted. It
+// covers a member that is slow to take up a new key: once it lapses, that member is unreadable
+// until it asks the host for the key again.
+const PreviousKeyGrace = 60 * time.Second
 
 // Keyring holds the active group key plus the previous (grace period) and a staged next key.
 // Seal always uses the active key; Open accepts active, staged and previous keys.
@@ -103,6 +105,16 @@ func (k *Keyring) Stage(epoch uint32, key GroupKey) error {
 	}
 	k.next = ek
 	return nil
+}
+
+// StagedKey returns the staged epoch and key, if any.
+func (k *Keyring) StagedKey() (uint32, GroupKey) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	if k.next == nil {
+		return 0, GroupKey{}
+	}
+	return k.next.epoch, k.next.key
 }
 
 // StagedEpoch returns the staged epoch, if any.
