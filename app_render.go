@@ -100,7 +100,7 @@ func (a *App) render(now time.Time) {
 			case a.showRelayModal || relayProg > 0.001:
 				drawRelay(f, a.lobby.RelayStatus)
 			case a.showTestModal:
-				DrawTestModal(f, f.Area(), a.audio, a.node, a.toggleGlobalPTT, a.closeTestModal)
+				DrawTestModal(f, f.Area(), a.audio, a.node, a.toggleGlobalPTT, a.notifier.enabled.Load(), a.toggleNotificationsToast, a.closeTestModal)
 			case a.showExitModal || exitProg > 0.001:
 				DrawExitModal(f, f.Area(), exitProg, a.cleanExit, a.closeExitModal)
 			}
@@ -130,7 +130,7 @@ func (a *App) render(now time.Time) {
 		case a.showRelayModal || relayProg > 0.001:
 			drawRelay(f, a.node.RelayStatus())
 		case a.showTestModal:
-			DrawTestModal(f, f.Area(), a.audio, a.node, a.toggleGlobalPTT, a.closeTestModal)
+			DrawTestModal(f, f.Area(), a.audio, a.node, a.toggleGlobalPTT, a.notifier.enabled.Load(), a.toggleNotificationsToast, a.closeTestModal)
 		case a.showLeaveModal || leaveProg > 0.001:
 			DrawLeaveModal(f, f.Area(), leaveProg, a.leaveRoom, a.closeLeaveModal)
 		case a.showScreenShareModal || screenShareProg > 0.001:

@@ -372,7 +372,7 @@ func TestVerticalMeterAndDialogs(t *testing.T) {
 
 	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
 	closed := false
-	DrawTestModal(frame, cell.NewRect(0, 0, 80, 30), audio, nil, nil, func() { closed = true })
+	DrawTestModal(frame, cell.NewRect(0, 0, 80, 30), audio, nil, nil, true, nil, func() { closed = true })
 	_ = closed
 	DrawLeaveModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
 	DrawExitModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})

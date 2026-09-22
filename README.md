@@ -104,6 +104,7 @@
 
 ### 💬 Chat & Room Security
 - **Terminal Chat**: Multi-line messaging, clickable links & slash commands (`/help`, `/clear`)
+- **Desktop Notifications**: Chat messages, joins and file offers raise a system notification while the terminal is in the background (toggle with `B` in settings)
 - **Room Lock & PIN**: 4-digit PIN protection (`/lock <pin>`) and host access control
 - **Push-to-Talk (PTT)**: Configurable push-to-talk mode with voice activity detection
 - **Per-User Volume**: Independent volume leveling and boost per participant

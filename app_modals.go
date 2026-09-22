@@ -195,6 +195,7 @@ func (a *App) enqueueFileOffer(offer *FileOffer) {
 		targetLabel = "code snippet"
 	}
 	a.toast(fmt.Sprintf("📥 Incoming %s from %s: %s", targetLabel, offer.SenderNick, offer.FileName))
+	a.notifier.NotifyNow(notifyTitle, fmt.Sprintf("%s wants to send you a %s: %s", offer.SenderNick, targetLabel, offer.FileName))
 	a.term.ForceFullRedraw()
 }
 

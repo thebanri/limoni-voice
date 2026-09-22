@@ -20,6 +20,8 @@ type AppConfig struct {
 	Nickname   string          `json:"nickname,omitempty"`
 	Audio      *AudioSettings  `json:"audio,omitempty"`
 	Screen     *ScreenSettings `json:"screen,omitempty"`
+	// Notifications turns desktop notifications for room events on or off (nil = on).
+	Notifications *bool `json:"notifications,omitempty"`
 }
 
 // ScreenSettings are the persisted screen share preferences.

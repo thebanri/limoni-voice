@@ -145,7 +145,7 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 }
 
 // DrawTestModal renders the interactive Microphone & Audio Device Settings panel without any icons or emojis.
-func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onToggleGlobalPTT func(), onClose func()) {
+func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onToggleGlobalPTT func(), notificationsOn bool, onToggleNotifications func(), onClose func()) {
 	modalW, modalH := uint16(68), uint16(28)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
@@ -609,10 +609,10 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 10. Loopback / Echo test toggle
 	loopbackY := inner.Y + 18
-	loopBox := "[ ] Hear My Own Voice (Loopback Test) [L]"
+	loopBox := "[ ] Hear Myself [L]"
 	loopStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.Loopback {
-		loopBox = "[X] Hear My Own Voice (Loopback ACTIVE) [L]"
+		loopBox = "[X] Hear Myself [L]"
 		loopStyle = cell.Style{
 			Fg:       theme.Accent,
 			Bg:       theme.SurfaceBg,
@@ -624,13 +624,32 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.ToggleLoopback()
 	})
 
+	notifyBox := "[ ] Notifications [B]"
+	notifyStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+	if notificationsOn {
+		notifyBox = "[X] Notifications [B]"
+		notifyStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+	}
+	notifyX := inner.X + uint16(len([]rune(loopBox))) + 3
+	notifyEnd := notifyX + uint16(len([]rune(notifyBox)))
+	if notifyEnd < inner.X+inner.Width {
+		buf.SetString(notifyX, loopbackY, notifyBox, notifyStyle)
+		frame.RegisterClickHandler(cell.NewRect(notifyX, loopbackY, uint16(len([]rune(notifyBox))), 1), func(_ driver.MouseEvent) {
+			if onToggleNotifications != nil {
+				onToggleNotifications()
+			}
+		})
+	} else {
+		notifyEnd = inner.X + uint16(len([]rune(loopBox))) + 1
+	}
+
 	smoothBox := "[ ] Smoothing [S]"
 	smoothStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.VoiceSmoothing {
 		smoothBox = "[X] Smoothing [S]"
 		smoothStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	}
-	if smoothX := inner.X + inner.Width - uint16(len([]rune(smoothBox))) - 1; smoothX > inner.X+uint16(len([]rune(loopBox)))+2 {
+	if smoothX := inner.X + inner.Width - uint16(len([]rune(smoothBox))) - 1; smoothX > notifyEnd+1 {
 		buf.SetString(smoothX, loopbackY, smoothBox, smoothStyle)
 		frame.RegisterClickHandler(cell.NewRect(smoothX, loopbackY, uint16(len([]rune(smoothBox))), 1), func(_ driver.MouseEvent) {
 			audio.ToggleVoiceSmoothing()

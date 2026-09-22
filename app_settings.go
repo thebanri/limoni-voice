@@ -12,6 +12,9 @@ func (a *App) applySettings(cfg AppConfig) {
 	if cfg.Nickname != "" {
 		a.lobby.NickState.SetValue(cfg.Nickname)
 	}
+	if cfg.Notifications != nil {
+		a.notifier.enabled.Store(*cfg.Notifications)
+	}
 	if sc := cfg.Screen; sc != nil {
 		a.screenPreset = sc.Preset
 		if a.screenPreset < 0 || a.screenPreset >= len(screenshare.Presets) {

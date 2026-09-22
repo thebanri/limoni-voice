@@ -30,6 +30,8 @@ type App struct {
 	lobby   *LobbyView
 	room    *RoomView
 
+	notifier *desktopNotifier
+
 	currentScreen AppScreen
 	appStartTime  time.Time
 	lastTime      time.Time
@@ -83,6 +85,7 @@ func NewApp(b *driver.Backend, t *terminal.Terminal, node *P2PNode, audio *Audio
 		audio:                 audio,
 		lobby:                 NewLobbyView(),
 		room:                  NewRoomView(),
+		notifier:              newDesktopNotifier(),
 		currentScreen:         ScreenLobby,
 		appStartTime:          time.Now(),
 		lastTime:              time.Now(),
@@ -150,9 +153,11 @@ func (a *App) wireNodeCallbacks() {
 		if event == "join" {
 			audio.PlaySound(SoundJoin)
 			a.room.AddLog(fmt.Sprintf("[+] %s joined the room.", peer.Nickname))
+			a.notifier.Notify(notifyTitle, peer.Nickname+" joined the room")
 		} else if event == "leave" {
 			audio.PlaySound(SoundLeave)
 			a.room.AddLog(fmt.Sprintf("[-] %s left the room.", peer.Nickname))
+			a.notifier.Notify(notifyTitle, peer.Nickname+" left the room")
 		}
 	}
 
@@ -165,6 +170,7 @@ func (a *App) wireNodeCallbacks() {
 	node.OnChatMessage = func(senderID string, nickname string, text string, ts time.Time) {
 		audio.PlaySound(SoundChat)
 		a.room.AddChatMessage(nickname, senderID, text, false, ts)
+		a.notifier.Notify(nickname, text)
 	}
 
 	node.OnFileTransferProgress = func(transferID string, fileName string, transferred int64, total int64, speed float64, isUpload bool, done bool, err error) {
@@ -530,6 +536,8 @@ func (a *App) Run() {
 				a.handleKey(ev.Key)
 			case driver.EventMouse:
 				a.handleMouse(ev.Mouse)
+			case driver.EventFocus:
+				a.notifier.SetFocused(ev.Focus.Gained)
 			}
 		case now := <-renderTicker.C:
 			a.render(now)

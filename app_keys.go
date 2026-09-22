@@ -452,6 +452,8 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 			}
 		case 'l', 'L':
 			audio.ToggleLoopback()
+		case 'b', 'B':
+			a.toggleNotificationsToast()
 		case 's', 'S':
 			if audio.ToggleVoiceSmoothing() {
 				a.toast("Voice smoothing ON")
