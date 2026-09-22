@@ -57,6 +57,10 @@ var (
 	// liveStreamStall applies while the sharer still answers pings: the link is fine, so
 	// silence means the share ended.
 	liveStreamStall = stallGuard(1500 * time.Millisecond)
+	// streamStartStall is the wait before the first chunk. Starting a capture and an encoder
+	// takes seconds, and closing the viewer in the middle of that looks like a share that
+	// refuses to open.
+	streamStartStall = stallGuard(30 * time.Second)
 )
 
 func stallGuard(d time.Duration) *atomic.Int64 {
@@ -142,6 +146,7 @@ type screenRx struct {
 	catchUps  uint64       // times the player fell behind and was resynchronised
 	maxLag    atomic.Int64 // longest time a chunk waited for the player (ns)
 	lastData  time.Time
+	gotData   bool // a chunk has arrived, so silence now means the stream ended
 	received  uint64
 	lost      uint64
 
@@ -974,6 +979,7 @@ func (rx *screenRx) onData(seq uint32, payload []byte) {
 	rx.mu.Lock()
 	defer rx.mu.Unlock()
 	rx.lastData = now
+	rx.gotData = true
 	rx.dispatchLocked(rx.reorder.Push(seq, payload, now), now)
 }
 
@@ -1070,16 +1076,24 @@ func (rx *screenRx) loop() {
 
 		rx.mu.Lock()
 		silent := now.Sub(rx.lastData)
+		gotData := rx.gotData
 		rx.mu.Unlock()
-		// A sharer still answering pings while its video has stopped has ended the share: its
-		// announcement was lost or is still queued behind the video it just sent. One that
-		// answers nothing may only be having a bad minute, so that waits longer.
-		limit := time.Duration(streamStall.Load())
-		if sharerAlive {
-			limit = min(limit, time.Duration(liveStreamStall.Load()))
+		// Nothing has arrived yet: the sharer's encoder may still be starting, which takes
+		// seconds, so give it room before giving up.
+		limit := time.Duration(streamStartStall.Load())
+		reason := "The stream never started"
+		if gotData {
+			// A sharer still answering pings while its video has stopped has ended the share:
+			// its announcement was lost or is still queued behind the video it just sent. One
+			// that answers nothing may only be having a bad minute, so that waits longer.
+			limit = time.Duration(streamStall.Load())
+			if sharerAlive {
+				limit = min(limit, time.Duration(liveStreamStall.Load()))
+			}
+			reason = "The stream stopped"
 		}
 		if silent > limit {
-			n.log(fmt.Sprintf("[WATCH] The stream stopped %.1f s ago; closing the viewer.", silent.Seconds()))
+			n.log(fmt.Sprintf("[WATCH] %s %.1f s ago; closing the viewer.", reason, silent.Seconds()))
 			go func() { _ = n.StopWatchingScreen() }()
 			return
 		}

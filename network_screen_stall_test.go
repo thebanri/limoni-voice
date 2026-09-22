@@ -24,6 +24,23 @@ func shortStallGuards(t *testing.T, d time.Duration) {
 	})
 }
 
+// waitForFirstChunk waits until the viewer has actually received video, so a test that cuts
+// the stream is testing a stream that stopped rather than one that never started.
+func waitForFirstChunk(t *testing.T, viewer *P2PNode) {
+	t.Helper()
+	waitFor(t, "the viewer receives video", 10*time.Second, func() bool {
+		viewer.mu.RLock()
+		rx := viewer.screenRx
+		viewer.mu.RUnlock()
+		if rx == nil {
+			return false
+		}
+		rx.mu.Lock()
+		defer rx.mu.Unlock()
+		return rx.gotData
+	})
+}
+
 // A stream that stops dead used to leave the player showing its last frame for good: the
 // sharer's machine sleeping or its capture dying looks exactly like a frozen picture. The
 // viewer now closes the player when nothing arrives for a while.
@@ -57,6 +74,7 @@ func TestViewerClosesThePlayerWhenTheStreamStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "sharer registers the viewer", 5*time.Second, func() bool { return host.ScreenStats().Watchers == 1 })
+	waitForFirstChunk(t, viewer)
 
 	streamGone.Store(true)
 
@@ -284,6 +302,7 @@ func TestAViewerClosesQuicklyWhileTheSharerIsStillAnswering(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "sharer registers the viewer", 5*time.Second, func() bool { return host.ScreenStats().Watchers == 1 })
+	waitForFirstChunk(t, viewer)
 
 	videoGone.Store(true)
 	start := time.Now()
@@ -293,5 +312,58 @@ func TestAViewerClosesQuicklyWhileTheSharerIsStillAnswering(t *testing.T) {
 		return viewer.screenRx == nil
 	})
 	t.Logf("the viewer closed %v after the video stopped", time.Since(start))
+	_ = host.StopScreenShare()
+}
+
+// Starting a capture and an encoder takes seconds. A viewer that gives up during that wait
+// looks like a share that refuses to open, which is what the short stall guard caused.
+func TestAViewerWaitsForASlowStartingStream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts a share")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	host, viewer := relayRoom(t, "5359-amber-falcon-river")
+	useSyntheticScreenPipeline(t, ffmpeg)
+
+	stream, live := streamStall.Load(), liveStreamStall.Load()
+	streamStall.Store(int64(300 * time.Millisecond))
+	liveStreamStall.Store(int64(300 * time.Millisecond))
+	t.Cleanup(func() {
+		streamStall.Store(stream)
+		liveStreamStall.Store(live)
+	})
+
+	// The encoder takes its time: nothing reaches the viewer yet.
+	var slow atomic.Bool
+	slow.Store(true)
+	setScreenSendFilter(func(data []byte, to string, class byte) bool { return !slow.Load() })
+
+	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: screenshare.DefaultPreset}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+		viewer.mu.RLock()
+		defer viewer.mu.RUnlock()
+		p := viewer.Peers[host.LocalID]
+		return p != nil && p.IsSharingScreen
+	})
+	if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(2 * time.Second) // far longer than the guards that apply once video flows
+	viewer.mu.RLock()
+	watching := viewer.screenRx != nil && viewer.IsWatchingScreen
+	viewer.mu.RUnlock()
+	if !watching {
+		t.Fatal("the viewer gave up on a stream that had not started yet")
+	}
+
+	// Once the stream does arrive, the picture flows.
+	slow.Store(false)
+	waitForFirstChunk(t, viewer)
 	_ = host.StopScreenShare()
 }
