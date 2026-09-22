@@ -432,7 +432,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		State:       l.NickState,
 		Placeholder: "Enter your nickname...",
 	}
-	frame.RenderWidget(nickInput, nickInner)
+	renderTextInput(frame, nickInput, nickInner)
 
 	// 2. Host Room Block
 	isHostFocused := (l.ActiveInput == 2 || l.ActiveInput == 3)
@@ -544,7 +544,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			State:       l.PinState,
 			Placeholder: "1234",
 		}
-		frame.RenderWidget(pinInput, pinInputRect)
+		renderTextInput(frame, pinInput, pinInputRect)
 		frame.RegisterClickHandler(pinInputRect, func(_ driver.MouseEvent) {
 			l.ActiveInput = 3
 		})
@@ -663,7 +663,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		State:       l.CodeState,
 		Placeholder: "e.g. 7492-neon-falcon (or 7492-neon-falcon:1234)",
 	}
-	frame.RenderWidget(codeInput, joinInputRect)
+	renderTextInput(frame, codeInput, joinInputRect)
 
 	joinBtns := "[Enter] Connect to Room (Max: 4 Members)"
 	if l.IsConnecting {

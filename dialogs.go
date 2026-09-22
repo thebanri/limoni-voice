@@ -26,6 +26,18 @@ func openModal(frame *terminal.Frame, id string, area cell.Rect, onClickOutside 
 	frame.BeginLayer(id)
 }
 
+// renderTextInput draws a text input with a white cursor block. Limoni v0.8 paints the cursor
+// white-on-black and then also reverses it, so terminals show it black; drop the reverse.
+func renderTextInput(frame *terminal.Frame, input widgets.TextInput, area cell.Rect) {
+	frame.RenderWidget(input, area)
+	white, black := cell.NewColorRGB(255, 255, 255), cell.NewColorRGB(0, 0, 0)
+	for x := area.X; x < area.X+area.Width; x++ {
+		if c := frame.Buffer.Get(x, area.Y); c != nil && c.Style.Modifier&cell.ModifierReverse != 0 && c.Style.Bg == white && c.Style.Fg == black {
+			c.Style.Modifier &^= cell.ModifierReverse
+		}
+	}
+}
+
 // DrawVerticalLevelMeter renders a sleek multi-column equalizer VU bar
 // that rises and falls with live voice volume level without using any emojis or icons.
 func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isSpeaking bool, isMuted bool, label string) {
@@ -1103,7 +1115,7 @@ func DrawRelayModal(
 	if activeField == 0 {
 		urlInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
-	frame.RenderWidget(urlInput, urlInputRect)
+	renderTextInput(frame, urlInput, urlInputRect)
 
 	// Render text selection highlight if active
 	if urlSelS >= 0 && urlSelE >= 0 && urlSelS < urlSelE {
@@ -1173,7 +1185,7 @@ func DrawRelayModal(
 	if activeField == 1 {
 		tokenInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
 	}
-	frame.RenderWidget(tokenInput, tokenInputRect)
+	renderTextInput(frame, tokenInput, tokenInputRect)
 
 	if tokenSelS >= 0 && tokenSelE >= 0 && tokenSelS < tokenSelE {
 		col := 0

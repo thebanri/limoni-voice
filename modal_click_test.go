@@ -6,6 +6,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni/widgets"
 )
 
 // Since Limoni v0.8.0 a click inside a modal reaches only click regions
@@ -54,3 +55,21 @@ func TestModalButtonsReceiveClicks(t *testing.T) {
 	}
 }
 
+// The text cursor is a white block: Limoni's cursor paints white-on-black and reverses it.
+func TestTextInputCursorIsWhite(t *testing.T) {
+	b := driver.NewPortableBackend(driver.NewMemoryTerminalIO(nil, 40, 3))
+	term, err := terminal.New(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := widgets.NewTextInputState()
+	state.SetValue("hi")
+	_ = term.Draw(func(f *terminal.Frame) {
+		area := cell.NewRect(0, 1, 20, 1)
+		renderTextInput(f, widgets.TextInput{ID: "in", State: state, Focused: true}, area)
+		c := f.Buffer.Get(2, 1) // after "hi"
+		if c.Style.Modifier&cell.ModifierReverse != 0 || c.Style.Bg != cell.NewColorRGB(255, 255, 255) {
+			t.Fatalf("cursor style %+v, want a white background without reverse", c.Style)
+		}
+	})
+}

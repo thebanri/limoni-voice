@@ -554,7 +554,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *P2P
 					},
 					PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 				}
-				frame.RenderWidget(chatInput, inputArea)
+				renderTextInput(frame, chatInput, inputArea)
 			}
 		} else {
 			if r.UnreadChatCount > 0 {
