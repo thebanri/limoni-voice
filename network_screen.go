@@ -45,6 +45,22 @@ const (
 	maxPlayerLag = 250 * time.Millisecond
 )
 
+// Stall guards. Encoders write at least every PCR interval, so a live capture never goes quiet
+// for seconds: silence this long means the capture died, the machine slept or the sharer
+// vanished. Without them the player keeps its last frame on screen for good and the sharer
+// keeps announcing a stream that carries nothing. The tests shorten them while loops read
+// them, so they are atomic.
+var (
+	captureStall = stallGuard(10 * time.Second)
+	streamStall  = stallGuard(8 * time.Second)
+)
+
+func stallGuard(d time.Duration) *atomic.Int64 {
+	v := &atomic.Int64{}
+	v.Store(int64(d))
+	return v
+}
+
 // playerChunk is an ordered chunk waiting for the player.
 type playerChunk struct {
 	data []byte
@@ -57,7 +73,8 @@ var (
 	startCaptureSession = screenshare.StartBroadcasting
 	startPlayerSession  = screenshare.StartReceiving
 	// screenSendFilter, when set, can drop outgoing screen packets (loss injection in tests).
-	screenSendFilter func(data []byte, to string, class byte) bool
+	// It is atomic because a test may replace it while a share is running.
+	screenSendFilter atomic.Pointer[func(data []byte, to string, class byte) bool]
 )
 
 // screenTx is the sharing side.
@@ -503,7 +520,7 @@ func (tx *screenTx) deliver(data []byte, to string) {
 // sendScreenData routes a sealed packet to a member: direct UDP when reachable, otherwise the
 // relay (targeted when supported).
 func (n *P2PNode) sendScreenData(data []byte, to string, class byte) {
-	if screenSendFilter != nil && !screenSendFilter(data, to, class) {
+	if drop := screenSendFilter.Load(); drop != nil && !(*drop)(data, to, class) {
 		return
 	}
 	if to == relayAllMembers {
@@ -577,6 +594,12 @@ func (tx *screenTx) controlLoop() {
 			if now.Sub(at) > time.Second {
 				delete(tx.retxAt, k)
 			}
+		}
+		if since := now.Sub(tx.srcSeen); !tx.srcSeen.IsZero() && since > time.Duration(captureStall.Load()) {
+			tx.mu.Unlock()
+			n.log(fmt.Sprintf("[WARN] [SHARE] The capture stopped producing frames %.0f s ago; ending the screen share.", since.Seconds()))
+			go func() { _ = n.StopScreenShare() }()
+			return
 		}
 		if tx.sys != nil && tx.audioOn {
 			// Windows delivers no loopback data while the default output is idle: say so
@@ -828,6 +851,8 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 		reorder:  video.NewReorder(0),
 		playerCh: make(chan playerChunk, playerQueue),
 		stop:     make(chan struct{}),
+		// The stall guard counts from here, so a sharer that never sends also closes the player.
+		lastData: time.Now(),
 	}
 	session, err := startPlayerSession(context.Background(), opt)
 	if err != nil {
@@ -999,6 +1024,15 @@ func (rx *screenRx) loop() {
 		}
 		if report {
 			n.sendScreenControl(&P2PPacket{Type: PacketScreenWatch, LossPct: uint8(math.Min(100, math.Round(lossPct)))}, rx.peerID)
+		}
+
+		rx.mu.Lock()
+		silent := now.Sub(rx.lastData)
+		rx.mu.Unlock()
+		if silent > time.Duration(streamStall.Load()) {
+			n.log(fmt.Sprintf("[WATCH] The stream stopped %.0f s ago; closing the viewer.", silent.Seconds()))
+			go func() { _ = n.StopWatchingScreen() }()
+			return
 		}
 	}
 }

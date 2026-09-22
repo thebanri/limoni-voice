@@ -51,9 +51,14 @@ func useSyntheticSource(t *testing.T, ffmpeg, source string, gop int) (frames, r
 	t.Cleanup(func() {
 		startCaptureSession = screenshare.StartBroadcasting
 		startPlayerSession = screenshare.StartReceiving
-		screenSendFilter = nil
+		screenSendFilter.Store(nil)
 	})
 	return frames, report
+}
+
+// setScreenSendFilter installs the outgoing-packet filter while a share may be running.
+func setScreenSendFilter(fn func(data []byte, to string, class byte) bool) {
+	screenSendFilter.Store(&fn)
 }
 
 func countFrames(path string) int {
@@ -124,7 +129,7 @@ func TestScreenShareEndToEnd(t *testing.T) {
 
 	frames, report := useSyntheticScreenPipeline(t, ffmpeg)
 	var sent, dropped atomic.Int64
-	screenSendFilter = func(data []byte, to string, class byte) bool {
+	setScreenSendFilter(func(data []byte, to string, class byte) bool {
 		if len(data) < 1000 { // control / audio packets pass
 			return true
 		}
@@ -133,7 +138,7 @@ func TestScreenShareEndToEnd(t *testing.T) {
 			return false
 		}
 		return true
-	}
+	})
 	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: screenshare.DefaultPreset}); err != nil {
 		t.Fatal(err)
 	}
@@ -198,10 +203,10 @@ func TestScreenShareAdaptsBitrateAndCarriesSystemAudio(t *testing.T) {
 	var lossy atomic.Bool
 	lossy.Store(true)
 	var n atomic.Int64
-	screenSendFilter = func(data []byte, to string, class byte) bool {
+	setScreenSendFilter(func(data []byte, to string, class byte) bool {
 		// 25 % loss on video (retransmissions too) until the encoder has adapted.
 		return len(data) < 1000 || !lossy.Load() || n.Add(1)%4 != 0
-	}
+	})
 
 	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: 2, SystemAudio: false}); err != nil {
 		t.Fatal(err)
