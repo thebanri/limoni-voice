@@ -52,7 +52,7 @@ const (
 // them, so they are atomic.
 var (
 	captureStall = stallGuard(10 * time.Second)
-	streamStall  = stallGuard(8 * time.Second)
+	streamStall  = stallGuard(5 * time.Second)
 )
 
 func stallGuard(d time.Duration) *atomic.Int64 {
@@ -938,15 +938,11 @@ func (rx *screenRx) shutdown() {
 		if session == nil {
 			return
 		}
-		// End of stream first so the player can exit cleanly, then make sure it is gone. mpv
-		// runs with --keep-open, so it sits on the last picture instead of exiting: waiting
-		// long for that only delays closing the window.
+		// mpv runs with --keep-open, so end of stream leaves it sitting on the last picture:
+		// waiting for it to exit by itself only keeps a dead window on screen. Close the
+		// stream and end the player at once.
 		if stdin := session.Stdin(); stdin != nil {
 			_ = stdin.Close()
-		}
-		select {
-		case <-session.Done():
-		case <-time.After(150 * time.Millisecond):
 		}
 		_ = session.Stop()
 		// A replacement player may have been started while this ran; it belongs to nobody now.

@@ -1725,7 +1725,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		watchingThisPeer := n.IsWatchingScreen && (n.WatchingPeerID == pkt.SenderID || n.WatchingPeerID == "")
 		if watchingThisPeer {
 			go func() {
+				start := time.Now()
 				_ = n.StopWatchingScreen()
+				n.debugLog(fmt.Sprintf("[WATCH] Player closed %v after the sharer said it stopped", time.Since(start).Round(time.Millisecond)))
 			}()
 		}
 
