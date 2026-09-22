@@ -107,6 +107,9 @@ func (a *App) handleKey(e driver.KeyEvent) {
 	case a.activeFileOffer() != nil:
 		a.handleFileOfferKey(e)
 		return
+	case a.currentScreen == ScreenRoom && a.activeKnock() != nil:
+		a.handleKnockKey(e)
+		return
 	case a.showExitModal:
 		a.handleConfirmModalKey(e, "exit_app_dialog_btn_0", a.cleanExit, a.closeExitModal)
 		return

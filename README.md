@@ -106,6 +106,7 @@
 - **Terminal Chat**: Multi-line messaging, clickable links & slash commands (`/help`, `/clear`)
 - **Desktop Notifications**: Chat messages, joins and file offers raise a system notification while the terminal is in the background (toggle with `B` in settings)
 - **Invite Links**: `/invite` copies a `limoni://join/<key>` link; on Linux and Windows installs it opens Limoni Voice with the room filled in (press Enter to join). `limoni-voice --join <key or link>` joins directly
+- **Knock to Join**: `/knock` makes everyone who has the room key wait until the host lets them in (`Y`) or turns them away (`N`)
 - **Room Lock & PIN**: 4-digit PIN protection (`/lock <pin>`) and host access control
 - **Push-to-Talk (PTT)**: Configurable push-to-talk mode with voice activity detection
 - **Per-User Volume**: Independent volume leveling and boost per participant

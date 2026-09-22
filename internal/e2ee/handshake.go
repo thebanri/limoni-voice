@@ -37,6 +37,8 @@ const (
 	StatusFull        byte = 4
 	StatusBusy        byte = 5 // host is rate limiting handshakes
 	StatusOutdated    byte = 6 // joiner sent no identity key (older version)
+	StatusWaiting     byte = 7 // knock-to-join: verified, waiting for the host to decide
+	StatusDenied      byte = 8 // knock-to-join: the host declined
 )
 
 var (

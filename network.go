@@ -86,6 +86,10 @@ type P2PNode struct {
 	udpRelay         *udpRelayClient
 
 	// Join handshake & admission
+	KnockToJoin      bool                            // host: every verified joiner waits for ApproveJoin
+	OnKnock          func(joinerID, nickname string) // host: a joiner is waiting for a decision
+	OnJoinWaiting    func()                          // joiner: the host has to let us in
+	joinWaitUntil    time.Time                       // joiner: how long the host's decision may take
 	joinClient       *e2ee.JoinClient
 	joinHostID       string
 	joinHostAddr     *net.UDPAddr
@@ -422,6 +426,7 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 	n.joinHostID = ""
 	n.joinHostAddr = nil
 	n.joinAuth = nil
+	n.joinWaitUntil = time.Time{}
 	n.memberToken = ""
 	n.currentEpoch = 0
 	n.lastHopTime = time.Now()
@@ -480,6 +485,22 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 
 			case <-timeoutTimer.C:
 				n.mu.Lock()
+				if wait := time.Until(n.joinWaitUntil); n.Connecting && !n.IsConnected && wait > 0 {
+					// Knock-to-join: the host is deciding, give it its window.
+					n.mu.Unlock()
+					timeoutTimer.Reset(wait)
+					continue
+				}
+				if n.Connecting && !n.IsConnected && !n.joinWaitUntil.IsZero() {
+					failedCb := n.OnJoinFailed
+					n.resetJoinStateLocked()
+					n.mu.Unlock()
+					n.log("[ERROR] The host did not let us in in time.")
+					if failedCb != nil {
+						failedCb("The host did not answer your join request in time")
+					}
+					return
+				}
 				if n.Connecting && !n.IsConnected {
 					failedCb := n.OnJoinFailed
 					n.resetJoinStateLocked()
@@ -520,6 +541,7 @@ func (n *P2PNode) resetJoinStateLocked() {
 	n.joinHostID = ""
 	n.joinHostAddr = nil
 	n.joinAuth = nil
+	n.joinWaitUntil = time.Time{}
 }
 
 // failJoin aborts a pending join with a user-visible reason.

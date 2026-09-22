@@ -106,6 +106,7 @@
 - **Terminal İçi Chat**: Çok satırlı metin yazımı, tıklanabilir linkler & slash komutları (`/help`, `/clear`)
 - **Masaüstü Bildirimleri**: Terminal arka plandayken gelen mesaj, katılım ve dosya teklifleri sistem bildirimi olarak gösterilir (ayarlarda `B` ile açılıp kapanır)
 - **Davet Bağlantıları**: `/invite` bir `limoni://join/<anahtar>` bağlantısı kopyalar; Linux ve Windows kurulumlarında bağlantı Limoni Voice'u oda kodu dolu olarak açar (katılmak için Enter). `limoni-voice --join <anahtar veya bağlantı>` doğrudan katılır
+- **Kapı Çalma**: `/knock` açıkken oda anahtarını bilen herkes, host onu içeri alana (`Y`) ya da geri çevirene (`N`) kadar bekler
 - **Oda Kilidi & PIN**: 4 haneli PIN koruması (`/lock <pin>`) ve host kilit yönetimi
 - **Bas-Konuş (PTT)**: Ayarlanabilir bas-konuş tuşu ve konuşma algılama
 - **Kişi Bazlı Ses Ayarı**: Katılımcı başına bağımsız ses seviyesi ve AGC güçlendirme

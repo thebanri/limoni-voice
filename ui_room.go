@@ -53,6 +53,7 @@ type RoomView struct {
 	OnOpenEditor           func(filePath string)
 	OnOpenFolder           func(dirPath string)
 	OnCopyInvite           func()
+	OnToggleKnock          func()
 	OnTriggerHop           func()
 	OnChangeNick           func(newNick string)
 	OnTriggerMute          func()
@@ -222,7 +223,7 @@ func (r *RoomView) SendCurrentChat() {
 		case "/help", "/?":
 			r.Messages = append(r.Messages, RoomMessage{
 				Timestamp: time.Now(),
-				Text:      "Commands: /invite, /copy <text>, /vol [user] [0-200], /send <path>, /code <snippet>, /folder, /lock [pin], /unlock, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
+				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send <path>, /code <snippet>, /folder, /lock [pin], /unlock, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
 				IsChat:    false,
 			})
 			r.mu.Unlock()
@@ -248,6 +249,14 @@ func (r *RoomView) SendCurrentChat() {
 			r.mu.Unlock()
 			if onSend != nil {
 				onSend(formattedMsg)
+			}
+			return
+
+		case "/knock", "/kapi":
+			toggle := r.OnToggleKnock
+			r.mu.Unlock()
+			if toggle != nil {
+				toggle()
 			}
 			return
 

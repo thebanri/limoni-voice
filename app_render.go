@@ -148,5 +148,9 @@ func (a *App) render(now time.Time) {
 				a.closeScreenShareModal)
 		}
 		drawFileOffer(f)
+		if r := a.activeKnock(); r != nil && a.activeFileOffer() == nil {
+			DrawKnockModal(f, f.Area(), r, knockWindow-time.Since(r.at),
+				func() { a.answerKnock(true) }, func() { a.answerKnock(false) })
+		}
 	})
 }

@@ -31,6 +31,7 @@ type App struct {
 	room    *RoomView
 
 	notifier *desktopNotifier
+	knocks   knockQueue
 
 	currentScreen AppScreen
 	appStartTime  time.Time
@@ -147,6 +148,11 @@ func (a *App) wireNodeCallbacks() {
 
 	node.OnDebugLog = func(msg string) {
 		AddDebugLog("[NET] " + msg)
+	}
+
+	node.OnKnock = a.onKnock
+	node.OnJoinWaiting = func() {
+		a.lobby.SetToast("Room key verified: waiting for the host to let you in...")
 	}
 
 	node.OnPeerEvent = func(event string, peer *PeerInfo) {
@@ -396,6 +402,7 @@ func (a *App) wireRoomCallbacks() {
 			room.SetToast(fmt.Sprintf("Opened %s in editor", filepath.Base(filePath)))
 		}
 	}
+	room.OnToggleKnock = a.toggleKnock
 	room.OnCopyInvite = func() {
 		link := inviteLink(node.RoomCode)
 		CopyToClipboard(link)

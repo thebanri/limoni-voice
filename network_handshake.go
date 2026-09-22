@@ -40,7 +40,16 @@ type joinSession struct {
 	status   byte
 	nickname string
 	lanAddr  *net.UDPAddr
+	viaRelay bool
+
+	// Knock-to-join: a verified joiner waiting for the host's decision.
+	pin      string
+	identity e2ee.PublicKey
 }
+
+// knockWindow is how long the host has to let a knocking joiner in. The public relay drops
+// joiners it has not seen admitted after 30 s, so the decision has to come before that.
+const knockWindow = 25 * time.Second
 
 func lanHandshakeTag(roomID string) []byte {
 	m := hmac.New(sha256.New, []byte("limoni-lan-handshake-v2"))
@@ -151,6 +160,8 @@ func handshakeStatusReason(status byte) string {
 		return "This room is full! (Maximum 4 people)"
 	case e2ee.StatusBusy:
 		return "Host is temporarily refusing joins after repeated failed attempts, try again shortly"
+	case e2ee.StatusDenied:
+		return "The host declined your join request"
 	case e2ee.StatusOutdated:
 		return "Your Limoni Voice is older than the host's: update to the latest version"
 	default:
@@ -161,6 +172,22 @@ func handshakeStatusReason(status byte) string {
 // processResult installs the group key delivered by the host.
 func (n *P2PNode) processResult(hostID string, result []byte, lanAddr *net.UDPAddr) {
 	if len(result) == 0 {
+		return
+	}
+	if result[0] == e2ee.StatusWaiting {
+		n.mu.Lock()
+		first := n.Connecting && !n.IsConnected && n.joinWaitUntil.IsZero()
+		if first {
+			n.joinWaitUntil = time.Now().Add(knockWindow + 5*time.Second)
+		}
+		cb := n.OnJoinWaiting
+		n.mu.Unlock()
+		if first {
+			n.log("[E2EE] Room key verified; waiting for the host to let you in")
+			if cb != nil {
+				go cb()
+			}
+		}
 		return
 	}
 	if result[0] != e2ee.StatusOK {
@@ -318,9 +345,28 @@ func (n *P2PNode) processAuth(joinerID string, auth []byte) (result []byte, stat
 	if status == e2ee.StatusPinRequired {
 		n.recordHandshakeFailureLocked("wrong PIN")
 	}
+	s.auth = append([]byte(nil), auth...)
+	s.pin, s.identity = ja.PIN, ja.Identity
+	if status == e2ee.StatusOK && n.KnockToJoin {
+		// Verified, but the host decides; the key is only released by ApproveJoin.
+		s.result, s.status = []byte{e2ee.StatusWaiting}, e2ee.StatusWaiting
+		if cb := n.OnKnock; cb != nil {
+			go cb(joinerID, s.nickname)
+		}
+		return s.result, s.status, true
+	}
+	if err := n.finishAdmissionLocked(joinerID, s, status); err != nil {
+		return nil, 0, false
+	}
+	return s.result, s.status, true
+}
+
+// finishAdmissionLocked builds the verdict for a verified joiner and, when it is admitted,
+// the key grant it carries.
+func (n *P2PNode) finishAdmissionLocked(joinerID string, s *joinSession, status byte) error {
 	grant := e2ee.KeyGrant{}
 	if status == e2ee.StatusOK {
-		n.memberKeys[joinerID] = ja.Identity
+		n.memberKeys[joinerID] = s.identity
 		grant.Epoch, grant.Key = n.keyring.Current()
 		if staged, ok := n.keyring.StagedEpoch(); ok && n.rekeyEpoch == staged {
 			grant.Epoch, grant.Key = staged, n.rekeyKey
@@ -328,23 +374,61 @@ func (n *P2PNode) processAuth(joinerID string, auth []byte) (result []byte, stat
 		grant.Members = n.memberDirectoryLocked(n.rekeyRecipientsLocked())
 		// Let the joiner introduce its key to the other members itself, so it is not
 		// stranded if we leave before our next rekey reaches them.
-		grant.Vouch, err = n.identity.VouchTags(n.roomID, n.LocalID, joinerID, ja.Identity, grant.Members)
+		var err error
+		grant.Vouch, err = n.identity.VouchTags(n.roomID, n.LocalID, joinerID, s.identity, grant.Members)
 		if err != nil {
-			return nil, 0, false
+			return err
 		}
 	}
-	result, err = s.server.Result(status, grant)
+	result, err := s.server.Result(status, grant)
 	if err != nil {
-		return nil, 0, false
+		return err
 	}
-	s.auth = append([]byte(nil), auth...)
 	s.result, s.status = result, status
 	if status == e2ee.StatusOK {
 		// Rotate so the other members learn the joiner's identity key (they need it should
 		// they become host) and the joiner cannot read traffic captured before it joined.
 		n.scheduleRekeyLocked("member joined")
 	}
-	return result, status, true
+	return nil
+}
+
+// ApproveJoin lets a knocking joiner in (allow) or turns it away. It reports whether the
+// joiner was still waiting.
+func (n *P2PNode) ApproveJoin(joinerID string, allow bool) bool {
+	n.mu.Lock()
+	s := n.joinSessions[joinerID]
+	if s == nil || !n.IsHost || s.status != e2ee.StatusWaiting {
+		n.mu.Unlock()
+		return false
+	}
+	status := byte(e2ee.StatusDenied)
+	if allow {
+		status = n.decideAdmissionLocked(s.pin) // the room may have filled or locked meanwhile
+	}
+	if err := n.finishAdmissionLocked(joinerID, s, status); err != nil {
+		n.mu.Unlock()
+		return false
+	}
+	result, lanAddr, viaRelay := s.result, s.lanAddr, s.viaRelay
+	var frame []byte
+	if lanAddr != nil {
+		frame = n.lanFrameLocked(hsResult, n.LocalID, result)
+	}
+	n.mu.Unlock()
+
+	if viaRelay {
+		n.sendRelaySignal(protocol.Signal{Type: protocol.SigPake, Target: joinerID, Data: append([]byte{hsResult}, result...)})
+		if status == e2ee.StatusOK {
+			n.sendRelaySignal(protocol.Signal{Type: protocol.SigAdmit, Target: joinerID})
+		} else {
+			n.sendRelaySignal(protocol.Signal{Type: protocol.SigReject, Target: joinerID, Message: handshakeStatusReason(status)})
+		}
+	}
+	if frame != nil {
+		n.writeUDP(frame, lanAddr, nil)
+	}
+	return true
 }
 
 // handleRelayPake dispatches handshake frames forwarded by the relay.
@@ -372,12 +456,20 @@ func (n *P2PNode) handleRelayPake(msg protocol.Signal) {
 			n.sendRelaySignal(protocol.Signal{Type: protocol.SigPake, Target: msg.SenderID, Data: append([]byte{hsAuth}, auth...)})
 		}
 	case hsAuth:
+		n.mu.Lock()
+		if s := n.joinSessions[msg.SenderID]; s != nil {
+			s.viaRelay = true
+		}
+		n.mu.Unlock()
 		result, status, verified := n.processAuth(msg.SenderID, body)
 		if !verified {
 			n.sendRelaySignal(protocol.Signal{Type: protocol.SigReject, Target: msg.SenderID, Message: "Wrong room key"})
 			return
 		}
 		n.sendRelaySignal(protocol.Signal{Type: protocol.SigPake, Target: msg.SenderID, Data: append([]byte{hsResult}, result...)})
+		if status == e2ee.StatusWaiting {
+			return // ApproveJoin sends the verdict
+		}
 		if status == e2ee.StatusOK {
 			n.sendRelaySignal(protocol.Signal{Type: protocol.SigAdmit, Target: msg.SenderID})
 		} else {
