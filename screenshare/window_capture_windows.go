@@ -168,10 +168,32 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 	return w, h
 }
 
-// StreamWindowFrames captures isolated application windows via PrintWindow PW_RENDERFULLCONTENT,
+// StreamWindowFrames captures one window. Windows Graphics Capture reads the composited
+// window, so it carries GPU-drawn content (video, games) and keeps working while the window is
+// covered; where it is unavailable the GDI capture below takes over.
+func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int, outHeight int, outPipe io.WriteCloser) error {
+	err := streamWindowFramesWGC(ctx, hwnd, fps, outWidth, outHeight, outPipe)
+	if errors.Is(err, errWGCUnavailable) {
+		logMsg("[WGC] Unavailable (%v); capturing the window with PrintWindow instead.", err)
+		return streamWindowFramesGDI(ctx, hwnd, fps, outWidth, outHeight, outPipe)
+	}
+	_ = outPipe.Close()
+	return err
+}
+
+// isIconicWindow reports whether a window is minimized.
+func isIconicWindow(hwnd uintptr) bool {
+	if procWinIsIconic.Find() != nil {
+		return false
+	}
+	ret, _, _ := procWinIsIconic.Call(hwnd)
+	return ret != 0
+}
+
+// streamWindowFramesGDI captures isolated application windows via PrintWindow PW_RENDERFULLCONTENT,
 // dynamically adapts to window resizing with high-quality aspect-fit scaling, overlays the live mouse cursor,
 // and writes raw BGRA frames directly to the stdin pipe of FFmpeg.
-func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int, outHeight int, outPipe io.WriteCloser) error {
+func streamWindowFramesGDI(ctx context.Context, hwnd uintptr, fps int, outWidth int, outHeight int, outPipe io.WriteCloser) error {
 	defer outPipe.Close()
 
 	if procWinTimeBeginPeriod.Find() == nil {
