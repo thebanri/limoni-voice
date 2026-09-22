@@ -25,8 +25,18 @@ jobs:
           # go.mod declares the oldest supported Go; releases build with the latest.
           go-version: stable
 
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^vendor/'))
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt -w on:"; echo "$unformatted"; exit 1
+          fi
+
       - name: Vet
         run: go vet -mod=vendor ./...
+
+      - name: Staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
       - name: Race tests
         run: go test -mod=vendor -race -count=1 ./...
