@@ -594,9 +594,12 @@ func (n *P2PNode) handleLANHandshake(data []byte, raddr *net.UDPAddr) bool {
 // --- group key rotation ---
 
 const (
-	rekeyDebounce   = 2 * time.Second
-	rekeyRetry      = 700 * time.Millisecond
-	rekeyMaxRetries = 6
+	rekeyDebounce = 2 * time.Second
+	rekeyRetry    = 700 * time.Millisecond
+	// rekeyMaxRetries spans about fifteen seconds. The host promotes the new key even if a
+	// member never acknowledges it, so the retries have to outlast an ordinary network
+	// hiccup; a member that still missed it asks for the key once it cannot read the room.
+	rekeyMaxRetries = 20
 	rekeyPromote    = 1500 * time.Millisecond
 )
 
