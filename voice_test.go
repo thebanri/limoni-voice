@@ -3332,22 +3332,6 @@ func TestVideo120FPSKeyframeBurstAndJitter(t *testing.T) {
 	}
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 func TestRoomControlsVolumeMinusLowersGain(t *testing.T) {
 	audio := NewAudioEngine()
 	node := NewP2PNode("vol_click_test", "Bob", audio)

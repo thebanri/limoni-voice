@@ -45,10 +45,10 @@ var (
 	procWinPatBlt                 = modWinGdi32.NewProc("PatBlt")
 	procWinSetBrushOrgEx          = modWinGdi32.NewProc("SetBrushOrgEx")
 
-	procWinDwmGetWindowAttribute  = modWinDwmapi.NewProc("DwmGetWindowAttribute")
+	procWinDwmGetWindowAttribute = modWinDwmapi.NewProc("DwmGetWindowAttribute")
 
-	procWinTimeBeginPeriod        = modWinMm.NewProc("timeBeginPeriod")
-	procWinTimeEndPeriod          = modWinMm.NewProc("timeEndPeriod")
+	procWinTimeBeginPeriod = modWinMm.NewProc("timeBeginPeriod")
+	procWinTimeEndPeriod   = modWinMm.NewProc("timeEndPeriod")
 )
 
 const (

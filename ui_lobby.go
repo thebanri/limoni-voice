@@ -9,8 +9,8 @@ import (
 
 	"github.com/thebanri/limoni-voice/assets"
 
-	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/graphics"
 	"github.com/thebanri/limoni/layout"
@@ -44,10 +44,10 @@ type LobbyView struct {
 	ConnectingTarget string
 
 	// Action Callbacks
-	OnStartHost     func()
-	OnJoinRoom      func(code string)
-	OnCancelJoin    func()
-	OnCopyCode      func(code string)
+	OnStartHost      func()
+	OnJoinRoom       func(code string)
+	OnCancelJoin     func()
+	OnCopyCode       func(code string)
 	OnNewCode        func()
 	OnOpenTestModal  func()
 	OnOpenRelayModal func()
@@ -114,11 +114,11 @@ func GenerateMicrophoneModel() graphics.Model3D {
 	segs := 12
 
 	// Palette
-	darkMetal := cell.NewColorRGB(0x2D, 0x34, 0x36)      // Gunmetal gray
-	goldMetal := cell.NewColorRGB(0xFD, 0xCB, 0x6E)      // Warm polished gold
-	silverChassis := cell.NewColorRGB(220, 225, 235)      // Chrome body
-	meshGrill := cell.NewColorRGB(165, 172, 185)          // Classic steel condenser mesh
-	blackCord := cell.NewColorRGB(0x0A, 0x0E, 0x17)      // Elastic cords
+	darkMetal := cell.NewColorRGB(0x2D, 0x34, 0x36)  // Gunmetal gray
+	goldMetal := cell.NewColorRGB(0xFD, 0xCB, 0x6E)  // Warm polished gold
+	silverChassis := cell.NewColorRGB(220, 225, 235) // Chrome body
+	meshGrill := cell.NewColorRGB(165, 172, 185)     // Classic steel condenser mesh
+	blackCord := cell.NewColorRGB(0x0A, 0x0E, 0x17)  // Elastic cords
 
 	// 1. BEVELED BASE
 	baseRing1 := addRing(-1.8, 1.5, segs)

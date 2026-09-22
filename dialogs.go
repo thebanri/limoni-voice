@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thebanri/limoni/core/driver"
+	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
-	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 // DrawVerticalLevelMeter renders a sleek multi-column equalizer VU bar
@@ -804,6 +804,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		buf.SetString(inner.X+1, inner.Y+25, backendLine, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 	}
 }
+
 // DrawLeaveModal renders the official Limoni widgets.Dialog confirmation dialog for leaving the room with opening/closing scale animation.
 func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, onConfirm func(), onCancel func()) {
 	if progress <= 0.001 {

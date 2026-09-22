@@ -17,13 +17,13 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/thebanri/limoni/core/driver"
+	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/layout"
 	"github.com/thebanri/limoni/widgets"
-	"github.com/thebanri/limoni-voice/screenshare"
 )
 
 type RoomMessage struct {
@@ -1240,7 +1240,6 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		return
 	}
 }
-
 
 func DrawHorizontalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isSpeaking, isMuted bool) {
 	if area.Width == 0 || area.Height == 0 {

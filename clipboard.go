@@ -282,4 +282,3 @@ func OpenBrowserURL(urlStr string) error {
 		return cmd.Start()
 	}
 }
-
