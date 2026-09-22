@@ -174,7 +174,7 @@ func GetWindowDimensions(hwnd uintptr) (int, int) {
 func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int, outHeight int, outPipe io.WriteCloser) error {
 	err := streamWindowFramesWGC(ctx, hwnd, fps, outWidth, outHeight, outPipe)
 	if errors.Is(err, errWGCUnavailable) {
-		logMsg("[WGC] Unavailable (%v); capturing the window with PrintWindow instead.", err)
+		logMsg("[WGC] Not in use (%v); capturing the window with PrintWindow instead.", err)
 		return streamWindowFramesGDI(ctx, hwnd, fps, outWidth, outHeight, outPipe)
 	}
 	_ = outPipe.Close()

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -51,6 +53,11 @@ var (
 	classCaptureItem           = "Windows.Graphics.Capture.GraphicsCaptureItem"
 	classFramePool             = "Windows.Graphics.Capture.Direct3D11CaptureFramePool"
 )
+
+// wgcDefault says whether the capture is used unless LIMONI_WGC says otherwise. It stays off
+// until the COM interop has been seen working on real hardware: a wrong vtable slot does not
+// return an error, it takes the whole application down.
+const wgcDefault = false
 
 // COM vtable slots. WinRT interfaces start their own methods at 6, after IUnknown (3) and
 // IInspectable (GetIids, GetRuntimeClassName, GetTrustLevel).
@@ -195,6 +202,18 @@ func activationFactory(class string, iid *windows.GUID) (*comObject, error) {
 	return factory, nil
 }
 
+// wgcEnabled reports whether the capture may be used. It is new and reached through raw COM
+// vtables, so LIMONI_WGC=0 puts the GDI capture back without a new build.
+func wgcEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LIMONI_WGC"))) {
+	case "0", "off", "false", "no":
+		return false
+	case "1", "on", "true", "yes":
+		return true
+	}
+	return wgcDefault
+}
+
 // wgcSupported reports whether this Windows build has the capture API at all.
 func wgcSupported() bool {
 	for _, p := range []*windows.LazyProc{procRoInitialize, procRoGetActivationFactory, procWindowsCreateString, procD3D11CreateDevice, procCreateDirect3D11Device} {
@@ -231,6 +250,9 @@ func (w *wgcSession) close() {
 
 // startWGC opens a capture of one window.
 func startWGC(hwnd uintptr) (*wgcSession, error) {
+	if !wgcEnabled() {
+		return nil, fmt.Errorf("%w: turned off", errWGCUnavailable)
+	}
 	if !wgcSupported() {
 		return nil, errWGCUnavailable
 	}
@@ -255,6 +277,9 @@ func startWGC(hwnd uintptr) (*wgcSession, error) {
 	if err := hr(r, "D3D11CreateDevice"); err != nil {
 		return nil, err
 	}
+	if w.device == nil || w.context == nil {
+		return nil, errors.New("wgc: D3D11CreateDevice returned no device")
+	}
 
 	var dxgi *comObject
 	if err := hr(call(w.device, comQueryInterface, uintptr(unsafe.Pointer(&iidDxgiDevice)), uintptr(unsafe.Pointer(&dxgi))), "QueryInterface(IDXGIDevice)"); err != nil {
@@ -265,6 +290,9 @@ func startWGC(hwnd uintptr) (*wgcSession, error) {
 	if err := hr(r, "CreateDirect3D11DeviceFromDXGIDevice"); err != nil {
 		return nil, err
 	}
+	if w.rtDevice == nil {
+		return nil, errors.New("wgc: no Direct3D device for the capture")
+	}
 
 	interop, err := activationFactory(classCaptureItem, &iidCaptureItemInterop)
 	if err != nil {
@@ -273,6 +301,9 @@ func startWGC(hwnd uintptr) (*wgcSession, error) {
 	defer releaseObj(interop)
 	if err := hr(call(interop, interopCreateForWindow, hwnd, uintptr(unsafe.Pointer(&iidGraphicsCaptureItem)), uintptr(unsafe.Pointer(&w.item))), "CreateForWindow"); err != nil {
 		return nil, err
+	}
+	if w.item == nil {
+		return nil, errors.New("wgc: the window cannot be captured")
 	}
 
 	var size sizeInt32
@@ -293,8 +324,14 @@ func startWGC(hwnd uintptr) (*wgcSession, error) {
 	if err := hr(call(statics, framePoolCreateFreeThreaded, args...), "Direct3D11CaptureFramePool.CreateFreeThreaded"); err != nil {
 		return nil, err
 	}
+	if w.pool == nil {
+		return nil, errors.New("wgc: no frame pool")
+	}
 	if err := hr(call(w.pool, framePoolCreateCaptureSesion, uintptr(unsafe.Pointer(w.item)), uintptr(unsafe.Pointer(&w.session))), "CreateCaptureSession"); err != nil {
 		return nil, err
+	}
+	if w.session == nil {
+		return nil, errors.New("wgc: no capture session")
 	}
 
 	// Keep the mouse pointer in the picture, and drop the yellow capture border where Windows
@@ -339,6 +376,9 @@ func (w *wgcSession) nextFrame(fn func(pixels []byte, width, height int32, rowPi
 	if err := hr(call(frame, frameGetSurface, uintptr(unsafe.Pointer(&surface))), "Frame.Surface"); err != nil {
 		return false, err
 	}
+	if surface == nil {
+		return false, nil
+	}
 	defer releaseObj(surface)
 
 	var access *comObject
@@ -350,6 +390,9 @@ func (w *wgcSession) nextFrame(fn func(pixels []byte, width, height int32, rowPi
 	var texture *comObject
 	if err := hr(call(access, dxgiAccessGetInterface, uintptr(unsafe.Pointer(&iidTexture2D)), uintptr(unsafe.Pointer(&texture))), "GetInterface(ID3D11Texture2D)"); err != nil {
 		return false, err
+	}
+	if texture == nil {
+		return false, nil
 	}
 	defer releaseObj(texture)
 
@@ -405,6 +448,9 @@ func (w *wgcSession) ensureStaging(width, height int32) error {
 	}
 	if err := hr(call(w.device, deviceCreateTexture2D, uintptr(unsafe.Pointer(&desc)), 0, uintptr(unsafe.Pointer(&w.staging))), "CreateTexture2D(staging)"); err != nil {
 		return err
+	}
+	if w.staging == nil {
+		return errors.New("wgc: no staging texture")
 	}
 	w.stagingW, w.stagingH = width, height
 	return nil
