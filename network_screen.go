@@ -45,14 +45,18 @@ const (
 	maxPlayerLag = 250 * time.Millisecond
 )
 
-// Stall guards. Encoders write at least every PCR interval, so a live capture never goes quiet
-// for seconds: silence this long means the capture died, the machine slept or the sharer
-// vanished. Without them the player keeps its last frame on screen for good and the sharer
-// keeps announcing a stream that carries nothing. The tests shorten them while loops read
-// them, so they are atomic.
+// Stall guards. Encoders write at least every PCR interval, so a live stream never goes quiet
+// for a second: silence this long means the capture died, the machine slept or the sharer
+// stopped. The viewer's guard is deliberately short, because it is the only end-of-stream
+// signal that cannot be lost: the sharer's announcement travels through a link its own video
+// has just congested, where it is either dropped or queued behind seconds of frames. The
+// tests shorten both while the loops read them, so they are atomic.
 var (
 	captureStall = stallGuard(10 * time.Second)
 	streamStall  = stallGuard(5 * time.Second)
+	// liveStreamStall applies while the sharer still answers pings: the link is fine, so
+	// silence means the share ended.
+	liveStreamStall = stallGuard(1500 * time.Millisecond)
 )
 
 func stallGuard(d time.Duration) *atomic.Int64 {
@@ -367,8 +371,13 @@ func (n *P2PNode) StopScreenShare() error {
 	if tx == nil && !wasSharing {
 		return nil
 	}
-	// Tell the room first: tearing the capture down kills processes and closes audio, which
-	// can take a moment, and viewers should not sit on a dead picture while it happens.
+	// Stop sending video first, so the announcement does not queue behind frames this share is
+	// still producing, then tell the room, and only then tear the capture down: killing
+	// processes and closing audio takes a moment that viewers should not spend on a dead
+	// picture.
+	if tx != nil {
+		tx.pacer.Stop()
+	}
 	n.announceScreenShare(false)
 	if tx != nil {
 		tx.shutdown()
@@ -1024,8 +1033,10 @@ func (rx *screenRx) loop() {
 		now := time.Now()
 		n.mu.RLock()
 		rtt := time.Duration(0)
+		sharerAlive := false
 		if p, ok := n.Peers[rx.peerID]; ok {
 			rtt = time.Duration(p.PingMs) * time.Millisecond
+			sharerAlive = now.Sub(p.LastSeen) < 2*time.Second
 		}
 		n.mu.RUnlock()
 
@@ -1060,8 +1071,15 @@ func (rx *screenRx) loop() {
 		rx.mu.Lock()
 		silent := now.Sub(rx.lastData)
 		rx.mu.Unlock()
-		if silent > time.Duration(streamStall.Load()) {
-			n.log(fmt.Sprintf("[WATCH] The stream stopped %.0f s ago; closing the viewer.", silent.Seconds()))
+		// A sharer still answering pings while its video has stopped has ended the share: its
+		// announcement was lost or is still queued behind the video it just sent. One that
+		// answers nothing may only be having a bad minute, so that waits longer.
+		limit := time.Duration(streamStall.Load())
+		if sharerAlive {
+			limit = min(limit, time.Duration(liveStreamStall.Load()))
+		}
+		if silent > limit {
+			n.log(fmt.Sprintf("[WATCH] The stream stopped %.1f s ago; closing the viewer.", silent.Seconds()))
 			go func() { _ = n.StopWatchingScreen() }()
 			return
 		}

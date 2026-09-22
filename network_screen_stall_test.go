@@ -13,12 +13,14 @@ import (
 // shortStallGuards makes the stall guards fire in test time instead of after several seconds.
 func shortStallGuards(t *testing.T, d time.Duration) {
 	t.Helper()
-	capture, stream := captureStall.Load(), streamStall.Load()
+	capture, stream, live := captureStall.Load(), streamStall.Load(), liveStreamStall.Load()
 	captureStall.Store(int64(d))
 	streamStall.Store(int64(d))
+	liveStreamStall.Store(int64(d))
 	t.Cleanup(func() {
 		captureStall.Store(capture)
 		streamStall.Store(stream)
+		liveStreamStall.Store(live)
 	})
 }
 
@@ -240,4 +242,56 @@ func TestTheViewerClosesAsSoonAsTheSharerStops(t *testing.T) {
 		return viewer.screenRx == nil && !viewer.IsWatchingScreen
 	})
 	t.Logf("the viewer closed %v after the sharer stopped", time.Since(start))
+}
+
+// The sharer's "I stopped" travels through a link its own video has just congested, so it can
+// be dropped or arrive seconds late. A sharer that still answers pings while its video has
+// stopped has ended the share, and the viewer must not wait for the long guard to say so.
+func TestAViewerClosesQuicklyWhileTheSharerIsStillAnswering(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams real video for a few seconds")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	host, viewer := relayRoom(t, "5358-amber-falcon-river")
+	useSyntheticScreenPipeline(t, ffmpeg)
+
+	long, live := streamStall.Load(), liveStreamStall.Load()
+	streamStall.Store(int64(time.Minute)) // the long guard must not be what closes this viewer
+	liveStreamStall.Store(int64(700 * time.Millisecond))
+	t.Cleanup(func() {
+		streamStall.Store(long)
+		liveStreamStall.Store(live)
+	})
+
+	// Only the screen stream is cut; pings and heartbeats keep flowing, so the sharer stays
+	// visibly alive the way it does when its announcement was lost.
+	var videoGone atomic.Bool
+	setScreenSendFilter(func(data []byte, to string, class byte) bool { return !videoGone.Load() })
+
+	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: screenshare.DefaultPreset}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+		viewer.mu.RLock()
+		defer viewer.mu.RUnlock()
+		p := viewer.Peers[host.LocalID]
+		return p != nil && p.IsSharingScreen
+	})
+	if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "sharer registers the viewer", 5*time.Second, func() bool { return host.ScreenStats().Watchers == 1 })
+
+	videoGone.Store(true)
+	start := time.Now()
+	waitFor(t, "the viewer closes without the announcement", 3*time.Second, func() bool {
+		viewer.mu.RLock()
+		defer viewer.mu.RUnlock()
+		return viewer.screenRx == nil
+	})
+	t.Logf("the viewer closed %v after the video stopped", time.Since(start))
+	_ = host.StopScreenShare()
 }
