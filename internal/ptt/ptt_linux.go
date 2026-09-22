@@ -17,7 +17,14 @@ import (
 	"github.com/jezek/xgb/xproto"
 )
 
+// errMouseUnsupported: X11 core input only exposes buttons 1–5 (4 and 5 are the scroll
+// wheel), so the side buttons need XInput2, and the portal binds keyboard shortcuts only.
+var errMouseUnsupported = errors.New("ptt: mouse side buttons are not supported for push-to-talk on Linux, choose a key")
+
 func startPlatform(key string, onChange ChangeFunc) (Watcher, error) {
+	if key == "Mouse4" || key == "Mouse5" {
+		return nil, errMouseUnsupported
+	}
 	wayland := os.Getenv("WAYLAND_DISPLAY") != ""
 	var errs []error
 	try := []func(string, ChangeFunc) (Watcher, error){startX11, startPortal}
@@ -44,15 +51,22 @@ var x11Keysyms = map[string]xproto.Keysym{
 	"F7": 0xffc4, "F8": 0xffc5, "F9": 0xffc6, "F10": 0xffc7, "F11": 0xffc8,
 }
 
+// x11Keysym returns the keysym of a canonical key name.
+func x11Keysym(key string) (xproto.Keysym, bool) {
+	if sym, ok := x11Keysyms[key]; ok {
+		return sym, true
+	}
+	if len(key) == 1 {
+		return xproto.Keysym(strings.ToLower(key)[0]), true
+	}
+	return 0, false
+}
+
 func startX11(key string, onChange ChangeFunc) (Watcher, error) {
 	if os.Getenv("DISPLAY") == "" {
 		return nil, errors.New("x11: DISPLAY not set")
 	}
-	sym, ok := x11Keysyms[key]
-	if !ok && len(key) == 1 {
-		sym = xproto.Keysym(strings.ToLower(key)[0])
-		ok = true
-	}
+	sym, ok := x11Keysym(key)
 	if !ok {
 		return nil, errors.New("x11: key not supported")
 	}
@@ -118,6 +132,17 @@ func (p *portalWatcher) Backend() string { return "XDG GlobalShortcuts portal" }
 func (p *portalWatcher) Close() error {
 	p.once.Do(func() { p.conn.Close() })
 	return nil
+}
+
+// portalTrigger returns the XDG shortcut trigger (an xkb key name) for a canonical key name.
+func portalTrigger(key string) string {
+	if trigger := portalTriggers[key]; trigger != "" {
+		return trigger
+	}
+	if strings.HasPrefix(key, "F") && len(key) > 1 {
+		return key // F1 … F11
+	}
+	return strings.ToLower(key) // letters and digits
 }
 
 func randomToken() string {
@@ -202,13 +227,7 @@ func startPortal(key string, onChange ChangeFunc) (Watcher, error) {
 		return nil, errors.New("portal: invalid session handle")
 	}
 
-	trigger := portalTriggers[key]
-	if trigger == "" {
-		trigger = strings.ToLower(key)
-		if strings.HasPrefix(key, "F") && len(key) > 1 {
-			trigger = key
-		}
-	}
+	trigger := portalTrigger(key)
 	shortcuts := []portalShortcut{{
 		ID: "push-to-talk",
 		Options: map[string]dbus.Variant{
