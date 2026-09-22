@@ -222,7 +222,10 @@ func CheckDependencies() DependencyStatus {
 
 // installHint returns an install command for the platform's package manager.
 func installHint(packages []string) string {
-	has := func(bin string) bool { _, err := exec.LookPath(bin); return err == nil }
+	return installHintFor(runtime.GOOS, func(bin string) bool { _, err := exec.LookPath(bin); return err == nil }, packages)
+}
+
+func installHintFor(goos string, has func(string) bool, packages []string) string {
 	names := func(m map[string]string) string {
 		var out []string
 		for _, p := range packages {
@@ -230,7 +233,7 @@ func installHint(packages []string) string {
 		}
 		return strings.Join(out, " ")
 	}
-	switch runtime.GOOS {
+	switch goos {
 	case "windows":
 		ids := map[string]string{"mpv": "shinchiro.mpv", "ffmpeg": "Gyan.FFmpeg"}
 		var cmds []string
