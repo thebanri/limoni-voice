@@ -54,10 +54,10 @@ var (
 	classFramePool             = "Windows.Graphics.Capture.Direct3D11CaptureFramePool"
 )
 
-// wgcDefault says whether the capture is used unless LIMONI_WGC says otherwise. It stays off
-// until the COM interop has been seen working on real hardware: a wrong vtable slot does not
-// return an error, it takes the whole application down.
-const wgcDefault = false
+// wgcDefault says whether the capture is used unless LIMONI_WGC says otherwise. It captures
+// GPU-drawn content and covered windows, which the GDI capture cannot; LIMONI_WGC=0 goes back
+// to that one.
+const wgcDefault = true
 
 // COM vtable slots. WinRT interfaces start their own methods at 6, after IUnknown (3) and
 // IInspectable (GetIids, GetRuntimeClassName, GetTrustLevel).

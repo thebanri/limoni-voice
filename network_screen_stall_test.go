@@ -203,3 +203,41 @@ func TestStoppingTheViewerLeavesNoPlayerBehind(t *testing.T) {
 		t.Fatal("the viewer is still watching after it was stopped")
 	}
 }
+
+// A viewer must lose the picture as soon as the sharer stops, not when a guard notices the
+// silence: the sharer says so before it tears its own capture down.
+func TestTheViewerClosesAsSoonAsTheSharerStops(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams real video for a few seconds")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	host, viewer := relayRoom(t, "5357-amber-falcon-river")
+	useSyntheticScreenPipeline(t, ffmpeg)
+	shortStallGuards(t, time.Minute) // the guards must not be what closes the viewer here
+
+	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: screenshare.DefaultPreset}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+		viewer.mu.RLock()
+		defer viewer.mu.RUnlock()
+		p := viewer.Peers[host.LocalID]
+		return p != nil && p.IsSharingScreen
+	})
+	if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "sharer registers the viewer", 5*time.Second, func() bool { return host.ScreenStats().Watchers == 1 })
+
+	start := time.Now()
+	go func() { _ = host.StopScreenShare() }()
+	waitFor(t, "the viewer closes with the share", 3*time.Second, func() bool {
+		viewer.mu.RLock()
+		defer viewer.mu.RUnlock()
+		return viewer.screenRx == nil && !viewer.IsWatchingScreen
+	})
+	t.Logf("the viewer closed %v after the sharer stopped", time.Since(start))
+}

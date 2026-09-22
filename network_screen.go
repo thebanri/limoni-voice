@@ -363,10 +363,12 @@ func (n *P2PNode) StopScreenShare() error {
 	if tx == nil && !wasSharing {
 		return nil
 	}
+	// Tell the room first: tearing the capture down kills processes and closes audio, which
+	// can take a moment, and viewers should not sit on a dead picture while it happens.
+	n.announceScreenShare(false)
 	if tx != nil {
 		tx.shutdown()
 	}
-	n.announceScreenShare(false)
 	n.log("[SCREEN] Screen share stopped.")
 	return nil
 }
