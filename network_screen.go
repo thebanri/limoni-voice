@@ -337,17 +337,21 @@ func (n *P2PNode) announceScreenShare(sharing bool) {
 			tx.mu.Unlock()
 		}
 	}
-	// Reliable, and repeated when the share ends: a viewer that misses this keeps its player
-	// open on the last picture until a stall guard closes it seconds later.
-	n.sendToRoom(&pkt, protocol.FrameReliable)
-	if !sharing {
-		go func() {
-			for range 2 {
-				time.Sleep(200 * time.Millisecond)
-				n.sendToRoom(&pkt, protocol.FrameReliable)
-			}
-		}()
-	}
+	// The fast path first: it is never queued behind the share's own video, which is what
+	// decides how quickly viewers see a share appear and disappear. The reliable copy follows
+	// in the background, where its queue may block for seconds, so a dropped announcement
+	// still arrives; a viewer that misses both waits for a stall guard instead.
+	n.sendToRoom(&pkt, protocol.FrameRealtime)
+	go func() {
+		n.sendToRoom(&pkt, protocol.FrameReliable)
+		if sharing {
+			return
+		}
+		for range 2 {
+			time.Sleep(200 * time.Millisecond)
+			n.sendToRoom(&pkt, protocol.FrameRealtime)
+		}
+	}()
 }
 
 // StopScreenShare stops active broadcasting
