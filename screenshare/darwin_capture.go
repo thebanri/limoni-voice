@@ -12,7 +12,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 )
+
+// MacWindowTarget reports whether a macOS target is a single window. The capture helper then
+// shares only the sound of the window's application instead of the whole system.
+func MacWindowTarget(targetID string) bool {
+	_, err := strconv.ParseUint(targetID, 10, 32)
+	return err == nil
+}
 
 func getMacScreenDevice(binPath string) string {
 	return "3:none"

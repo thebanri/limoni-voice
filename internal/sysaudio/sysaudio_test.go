@@ -110,3 +110,56 @@ func TestParseWaveFormat(t *testing.T) {
 		t.Error("truncated block accepted")
 	}
 }
+
+// Several streams of one application mix into real-time frames paced by one of them; a
+// paused clock hands over to a stream that is still playing.
+func TestMixerPacesOnOneStream(t *testing.T) {
+	var frames [][]int16
+	m := newMixer(func(f []int16) { frames = append(frames, append([]int16(nil), f...)) })
+	m.add(1)
+	m.add(2)
+	now := time.Unix(0, 0)
+	fill := func(v int16, n int) []int16 {
+		s := make([]int16, n)
+		for i := range s {
+			s[i] = v
+		}
+		return s
+	}
+
+	for range 10 {
+		m.push(1, fill(100, FrameSamples), now)
+		m.push(2, fill(20000, FrameSamples), now)
+		now = now.Add(20 * time.Millisecond)
+	}
+	if len(frames) != 10 {
+		t.Fatalf("two streams for 200 ms gave %d frames, want 10", len(frames))
+	}
+	// The second stream's frame joins the next clock frame; sums clip instead of wrapping.
+	if got := frames[len(frames)-1][0]; got != 20100 {
+		t.Fatalf("mixed sample %d, want 20100", got)
+	}
+	m.push(2, fill(20000, FrameSamples), now)
+	m.push(2, fill(20000, FrameSamples), now)
+	m.push(1, fill(20000, FrameSamples), now)
+	if got := frames[len(frames)-1][0]; got != 32767 {
+		t.Fatalf("sum above full scale gave %d, want 32767", got)
+	}
+
+	// Stream 1 pauses: stream 2 takes over as the clock.
+	frames = nil
+	for range 5 {
+		now = now.Add(20 * time.Millisecond)
+		m.push(2, fill(7, FrameSamples), now.Add(100*time.Millisecond))
+	}
+	if len(frames) < 4 {
+		t.Fatalf("after the clock paused, %d frames from the playing stream", len(frames))
+	}
+
+	m.remove(2)
+	frames = nil
+	m.push(2, fill(7, FrameSamples), now)
+	if len(frames) != 0 {
+		t.Fatal("a removed stream still produced frames")
+	}
+}

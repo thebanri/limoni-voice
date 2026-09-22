@@ -257,6 +257,58 @@ func watchPIDLiveness(ctx context.Context, pid int, cancel context.CancelFunc) {
 	}
 }
 
+// TargetProcess returns the process behind an application or window target (Linux app:/win:,
+// Windows hwnd:), so screen share audio can be limited to that program. ok is false for
+// screens, the focused-window and portal targets, and wherever the process cannot be found;
+// those share the whole system output. macOS windows are handled by the capture helper.
+func TargetProcess(targetID string) (pid int, name string, ok bool) {
+	switch {
+	case strings.HasPrefix(targetID, "app:"):
+		parts := strings.SplitN(strings.TrimPrefix(targetID, "app:"), ":", 2)
+		pid, _ = strconv.Atoi(parts[0])
+		if len(parts) == 2 {
+			name = parts[1]
+		}
+	case strings.HasPrefix(targetID, "win:") && runtime.GOOS == "linux":
+		winID, _, _ := strings.Cut(strings.TrimPrefix(targetID, "win:"), ":")
+		pid = x11WindowPID(winID)
+	case strings.HasPrefix(targetID, "hwnd:"):
+		handle, _, _ := strings.Cut(strings.TrimPrefix(targetID, "hwnd:"), ":")
+		if h, err := strconv.ParseUint(handle, 10, 64); err == nil && h != 0 {
+			pid = windowProcessID(uintptr(h))
+		}
+	}
+	if pid <= 1 {
+		return 0, "", false
+	}
+	if name == "" && runtime.GOOS == "linux" {
+		if comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); err == nil {
+			name = strings.TrimSpace(string(comm))
+		}
+	}
+	return pid, name, true
+}
+
+// x11WindowPID reads _NET_WM_PID of an X11 (or XWayland) window.
+func x11WindowPID(winID string) int {
+	xpropBin, err := FindExecutable("xprop")
+	if err != nil || winID == "" {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, xpropBin, "-id", winID, "_NET_WM_PID").Output()
+	if err != nil {
+		return 0
+	}
+	_, val, found := strings.Cut(string(out), "=")
+	if !found {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(val))
+	return pid
+}
+
 func findX11WindowByPID(pid int) string {
 	if pid <= 1 {
 		return ""
