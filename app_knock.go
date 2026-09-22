@@ -158,7 +158,8 @@ func DrawKnockModal(frame *terminal.Frame, screenArea cell.Rect, r *knockRequest
 	theme := CurrentTheme()
 	buf := frame.Buffer
 	widgets.DrawShadow(buf, area, 2, 1)
-	frame.RegisterModal("knock_dialog", area, onDeny)
+	openModal(frame, "knock_dialog", area, onDeny)
+	defer frame.EndLayer()
 	for y := area.Y; y < area.Y+area.Height; y++ {
 		for x := area.X; x < area.X+area.Width; x++ {
 			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
