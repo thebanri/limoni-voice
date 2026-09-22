@@ -281,6 +281,7 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 
 	ticker := time.NewTicker(time.Second / time.Duration(fps))
 	defer ticker.Stop()
+	wasIconic := false
 
 	for {
 		select {
@@ -300,6 +301,18 @@ func StreamWindowFrames(ctx context.Context, hwnd uintptr, fps int, outWidth int
 			if procWinIsIconic.Find() == nil {
 				ret, _, _ := procWinIsIconic.Call(hwnd)
 				isIconic = (ret != 0)
+			}
+
+			if isIconic != wasIconic {
+				wasIconic = isIconic
+				if isIconic {
+					// A minimized window has no surface to capture and the application stops
+					// drawing into it, so no Windows API can read live content from it: say so
+					// rather than letting the sharer wonder why viewers report a frozen picture.
+					logMsg("[SHARE] The shared window is minimized: viewers keep seeing the last picture (sound still plays) until you restore it.")
+				} else {
+					logMsg("[SHARE] The shared window is back: the picture is live again.")
+				}
 			}
 
 			if isIconic {
