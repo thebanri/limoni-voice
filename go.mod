@@ -9,7 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/jezek/xgb v1.3.1
 	github.com/jfreymuth/pulse v0.1.3
-	github.com/thebanri/limoni v0.8.0
+	github.com/thebanri/limoni v0.8.1
 	github.com/thesyncim/gopus v0.1.1
 	golang.org/x/sys v0.47.0
 )

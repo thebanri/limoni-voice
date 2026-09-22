@@ -3,6 +3,7 @@ package driver
 import (
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 )
@@ -14,6 +15,7 @@ type ExecPTYAdapter struct {
 	stdin         io.WriteCloser
 	stdout        io.ReadCloser
 	width, height uint16
+	stopped       bool
 	mu            sync.Mutex
 }
 
@@ -32,23 +34,56 @@ func (p *ExecPTYAdapter) Start() error {
 	p.stdin, p.stdout = in, out
 	return p.cmd.Start()
 }
+
+// Stop kills the process, closes its stdin and reaps it. Writes after Stop
+// fail instead of landing in a pipe nobody reads, and a second Stop is a no-op.
 func (p *ExecPTYAdapter) Stop() error {
-	if p.cmd.Process == nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped || p.cmd.Process == nil {
 		return nil
 	}
-	return p.cmd.Process.Kill()
+	p.stopped = true
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+	}
+	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	// The exit status of a killed process is the kill; it is not an error here.
+	_ = p.cmd.Wait()
+	return nil
 }
+
+// Read returns io.EOF once the adapter is stopped, including for a Read that
+// was blocked when Stop closed the pipe.
 func (p *ExecPTYAdapter) Read(b []byte) (int, error) {
-	if p.stdout == nil {
+	p.mu.Lock()
+	out, stopped := p.stdout, p.stopped
+	p.mu.Unlock()
+	if out == nil {
 		return 0, errors.New("pty not started")
 	}
-	return p.stdout.Read(b)
+	if stopped {
+		return 0, io.EOF
+	}
+	n, err := out.Read(b)
+	if errors.Is(err, os.ErrClosed) {
+		err = io.EOF
+	}
+	return n, err
 }
 func (p *ExecPTYAdapter) Write(b []byte) (int, error) {
-	if p.stdin == nil {
+	p.mu.Lock()
+	in, stopped := p.stdin, p.stopped
+	p.mu.Unlock()
+	if in == nil {
 		return 0, errors.New("pty not started")
 	}
-	return p.stdin.Write(b)
+	if stopped {
+		return 0, errors.New("pty stopped")
+	}
+	return in.Write(b)
 }
 func (p *ExecPTYAdapter) Size() (uint16, uint16, error) {
 	p.mu.Lock()

@@ -305,7 +305,7 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 
 	asciiWidget := widgets.Ascii3D{
 		Model:                l.MicModel,
-		Mode:                 widgets.ModeBlock,
+		Mode:                 widgets.ModeBraille,
 		Scale:                l.Scale,
 		XOffset:              0.0,
 		YOffset:              0.0,
@@ -317,7 +317,7 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 		CellAspect:           0.50,
 		Time:                 time.Since(l.StartTime).Seconds(),
 		LightDirection:       graphics.Vector3D{X: 1.2, Y: 1.5, Z: 1.8},
-		EnvironmentIntensity: 0.35,
+		EnvironmentIntensity: 0.6,
 		Contrast:             1.25,
 		EdgeContrast:         2.2,
 		Exposure:             1.15,
@@ -325,7 +325,7 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 		Ascii:                false,
 		Colored:              true,
 		Invert:               false,
-		Color:                cell.NewColorRGB(220, 225, 235),
+		Color:                theme.Secondary,
 		Highlight:            cell.NewColorRGB(255, 255, 255),
 	}
 
