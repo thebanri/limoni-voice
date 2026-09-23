@@ -1219,3 +1219,24 @@ func TestRoomControlsVolumeMinusLowersGain(t *testing.T) {
 		t.Fatalf("plus: gain %.2f, want 1.00", audio.Gain)
 	}
 }
+
+// A narrow member card keeps its status readable: the volume and ping pills give way instead
+// of being drawn over it (seen as "[SPEAKIN[VOL: 100%]" in a 99 column terminal).
+func TestPeerCardPillsNeverCoverTheStatus(t *testing.T) {
+	node := p2p.NewP2PNode("self", "Me", engine.NewAudioEngine())
+	peer := &p2p.PeerInfo{ID: "p", Nickname: "User_9065", Speaking: true, PingMs: 137, LastSeen: time.Now()}
+	for _, width := range []uint16{30, 40, 48, 60, 90} {
+		buf := buffer.NewBuffer(cell.NewRect(0, 0, width, 12))
+		frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+		NewRoomView().renderPeerSlot(frame, cell.NewRect(0, 0, width, 12), peer, node, engine.NewAudioEngine(), 2)
+		var row strings.Builder
+		for x := uint16(0); x < width; x++ {
+			if c := buf.Get(x, 1); c != nil && c.Content != 0 {
+				row.WriteRune(c.Content)
+			}
+		}
+		if !strings.Contains(row.String(), "[SPEAKING...]") {
+			t.Errorf("width %d: status covered: %q", width, row.String())
+		}
+	}
+}

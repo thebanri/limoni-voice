@@ -739,9 +739,14 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *p
 	volStr := Tf("[VOL: %d%%]", volPct)
 	volLen := uint16(len([]rune(volStr)))
 	pingLen := uint16(len([]rune(pingStr)))
+	// Right-aligned pills never cover the status text: a narrow card drops the volume
+	// pill first, then the ping.
+	statusEnd := inner.X + 1 + uint16(len([]rune(statusLabel))) + uint16(len([]rune(statusText))) + 1
+	pingX := int(inner.X) + int(inner.Width) - int(pingLen) - 1
+	volX := pingX - int(volLen) - 1
 
-	if inner.Width > pingLen+volLen+4 {
-		volX := inner.X + inner.Width - pingLen - volLen - 2
+	if volX >= int(statusEnd) {
+		volX := uint16(volX)
 		volStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Secondary,
@@ -783,9 +788,9 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *p
 			}
 		})
 
-		buf.SetString(inner.X+inner.Width-pingLen-1, inner.Y, pingStr, cell.Style{Fg: theme.Success, Bg: theme.CardBg})
-	} else if inner.Width > pingLen+1 {
-		buf.SetString(inner.X+inner.Width-pingLen-1, inner.Y, pingStr, cell.Style{Fg: theme.Success, Bg: theme.CardBg})
+		buf.SetString(uint16(pingX), inner.Y, pingStr, cell.Style{Fg: theme.Success, Bg: theme.CardBg})
+	} else if pingX >= int(statusEnd) {
+		buf.SetString(uint16(pingX), inner.Y, pingStr, cell.Style{Fg: theme.Success, Bg: theme.CardBg})
 	}
 
 	// Discord-style Stream Preview Banner if peer is sharing screen
