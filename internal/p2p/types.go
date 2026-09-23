@@ -16,6 +16,11 @@ const MaxPeers = 4
 // DefaultRelayURL is the default public WebSocket relay server URL
 const DefaultRelayURL = "wss://relay.thebanri.dpdns.org/ws"
 
+// DefaultRelayFallbacks are official relays tried, in order, when DefaultRelayURL cannot be
+// reached or does not have the room. Rooms live on one relay, so every client lists them in
+// the same order and they only help when the primary is down for everyone.
+var DefaultRelayFallbacks []string
+
 // File transfer limits preventing DoS and memory exhaustion
 const (
 	MaxFileTransferSize    = 50 * 1024 * 1024 // 50 MB safety limit

@@ -36,7 +36,8 @@ Usage:
   limoni-voice [flags]
 
 Flags:
-  --relay <url>         Custom WebSocket relay URL for self-hosted servers
+  --relay <url>         Custom WebSocket relay URL for self-hosted servers; add backups after
+                        commas, tried in order (e.g. --relay my.relay.com,backup.relay.com)
                         Example: --relay ws://192.168.1.100:27850/ws
                         (Set to 'none' or 'off' to disable relay)
   --relay-token <token> Authentication token for password-protected relay servers
@@ -173,23 +174,21 @@ func main() {
 	}
 	i18n.Set(lang)
 
-	if *flagLAN || *flagLANOnly || *flagOffline {
-		node.LanOnly = true
-		node.RelayURL = ""
-	} else if *flagRelay != "" {
-		if strings.EqualFold(*flagRelay, "none") || strings.EqualFold(*flagRelay, "off") {
-			node.LanOnly = true
-			node.RelayURL = ""
-		} else {
-			node.RelayURL = p2p.NormalizeRelayURL(*flagRelay)
-		}
-	} else if cfg.RelayURL != "" {
-		if strings.EqualFold(cfg.RelayURL, "none") || strings.EqualFold(cfg.RelayURL, "off") {
-			node.LanOnly = true
-			node.RelayURL = ""
-		} else {
-			node.RelayURL = p2p.NormalizeRelayURL(cfg.RelayURL)
-		}
+	// --relay and the saved setting take one relay or a comma separated list: the first is
+	// the primary, the others are tried when it is unreachable or does not have the room.
+	relaySetting := ""
+	switch {
+	case *flagLAN || *flagLANOnly || *flagOffline:
+		relaySetting = "none"
+	case *flagRelay != "":
+		relaySetting = *flagRelay
+	case cfg.RelayURL != "":
+		relaySetting = cfg.RelayURL
+	}
+	if relaySetting != "" {
+		relays := p2p.ParseRelayList(relaySetting)
+		node.SetRelays(relays)
+		node.LanOnly = len(relays) == 0
 	}
 
 	switch {

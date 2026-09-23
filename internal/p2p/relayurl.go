@@ -92,3 +92,40 @@ func NormalizeRelayURL(raw string) string {
 
 	return scheme + rest + query
 }
+
+// ParseRelayList reads one relay or several separated by commas or spaces, in the order they
+// are tried. Each entry is normalized like NormalizeRelayURL and duplicates are dropped. An
+// empty value or "default" means the official relay with its backups; a LAN keyword ("none",
+// "off", "lan", "local") means no relay at all and returns nil.
+func ParseRelayList(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' })
+	if len(fields) == 0 {
+		fields = []string{"default"}
+	}
+	var list []string
+	seen := map[string]bool{}
+	add := func(u string) {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			list = append(list, u)
+		}
+	}
+	for _, f := range fields {
+		u := NormalizeRelayURL(f)
+		if u == "" {
+			return nil // a LAN keyword anywhere turns the relay off
+		}
+		add(u)
+		if u == DefaultRelayURL {
+			for _, b := range DefaultRelayFallbacks {
+				add(b)
+			}
+		}
+	}
+	return list
+}
+
+// FormatRelayList writes a relay list the way ParseRelayList reads it back.
+func FormatRelayList(list []string) string {
+	return strings.Join(list, ", ")
+}

@@ -674,6 +674,8 @@ func (n *P2PNode) resetMemberTrackingLocked() {
 	n.bannedIDs = make(map[string]bool)
 	n.bannedIPs = make(map[string]bool)
 	n.kickedHandled = false
+	n.activeRelay = "" // a new room picks its relay again
+	n.relayTried = 0
 }
 
 // rememberHostLocked keeps the key of a host that is being replaced, so members it admitted

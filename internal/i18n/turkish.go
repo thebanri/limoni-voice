@@ -3,6 +3,7 @@ package i18n
 // turkish maps English user interface text to Turkish. Bracketed tags such as [HOST] or
 // [SECURITY] are log categories and stay in English.
 var turkish = map[string]string{
+	"e.g. voice.domain.com or 192.168.1.3:27850 — add backups after a comma":                                                                                 "ör. voice.domain.com veya 192.168.1.3:27850 — yedekleri virgülle ekle",
 	"macOS is blocking the microphone: System Settings → Privacy & Security → Microphone, turn on your terminal app, then restart it":                        "macOS mikrofonu engelliyor: Sistem Ayarları → Gizlilik ve Güvenlik → Mikrofon, terminal uygulamanı aç, sonra terminali yeniden başlat",
 	"[WARN] macOS is blocking the microphone: System Settings → Privacy & Security → Microphone, turn on your terminal app, then restart it":                 "[WARN] macOS mikrofonu engelliyor: Sistem Ayarları → Gizlilik ve Güvenlik → Mikrofon, terminal uygulamanı aç, sonra terminali yeniden başlat",
 	"macOS is blocking screen recording: System Settings → Privacy & Security → Screen & System Audio Recording, turn on your terminal app, then restart it": "macOS ekran kaydını engelliyor: Sistem Ayarları → Gizlilik ve Güvenlik → Ekran ve Sistem Sesi Kaydı, terminal uygulamanı aç, sonra terminali yeniden başlat",
@@ -556,8 +557,7 @@ var turkish = map[string]string{
 	"[X] PIN Protected (4 Digits):": "[X] PIN Korumalı (4 Hane):",
 	"[X] Smoothing [S]":             "[X] Yumuşatma [S]",
 	"code snippet":                  "kod parçası",
-	"e.g. 7492-neon-falcon (or 7492-neon-falcon:1234)":                     "ör. 7492-neon-falcon (veya 7492-neon-falcon:1234)",
-	"e.g. voice.domain.com, https://voice.domain.com or 192.168.1.3:27850": "ör. voice.domain.com, https://voice.domain.com veya 192.168.1.3:27850",
+	"e.g. 7492-neon-falcon (or 7492-neon-falcon:1234)": "ör. 7492-neon-falcon (veya 7492-neon-falcon:1234)",
 	"file":                      "dosya",
 	"only the host can do that": "bunu yalnızca oda sahibi yapabilir",
 	"shares what your computer plays (your voice chat is left out)": "bilgisayarında çalan sesi paylaşır (sesli sohbetin dahil edilmez)",
