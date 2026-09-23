@@ -33,10 +33,19 @@ jobs:
           fi
 
       - name: Vet
-        run: go vet -mod=vendor ./...
+        run: |
+          for goos in linux darwin windows; do
+            GOOS=$goos go vet -mod=vendor ./...
+          done
 
       - name: Staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+        # The platform files (CoreAudio, ScreenCaptureKit, Win32, ...) only build for their OS,
+        # so each one is checked from here as well.
+        run: |
+          GOBIN=/tmp/bin go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          for goos in linux darwin windows; do
+            GOOS=$goos /tmp/bin/staticcheck ./...
+          done
 
       - name: Race tests
         run: go test -mod=vendor -race -count=1 ./...
@@ -67,11 +76,26 @@ jobs:
           codesign --force --sign - limoni-sck
           ./limoni-sck --list || true
 
+      - name: Compile universal app launcher
+        run: |
+          set -e
+          for arch in arm64 x86_64; do
+            swiftc -O -target ${arch}-apple-macos12 -framework AppKit macos/launcher.swift -o limoni-launcher-${arch}
+          done
+          lipo -create -output limoni-launcher limoni-launcher-arm64 limoni-launcher-x86_64
+          codesign --force --sign - limoni-launcher
+
       - name: Upload helper
         uses: actions/upload-artifact@v4
         with:
           name: mac-helper
           path: limoni-sck
+
+      - name: Upload launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-launcher
+          path: limoni-launcher
 
   build:
     name: Build Packages
@@ -96,10 +120,26 @@ jobs:
           name: mac-helper
           path: screenshare/machelper
 
+      - name: Download macOS app launcher
+        uses: actions/download-artifact@v4
+        with:
+          name: mac-launcher
+          path: macos/build
+
       - name: Install System Packaging Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg genisoimage zip
+
+      - name: Install rcodesign (signs the macOS app bundles)
+        run: |
+          set -e
+          v=0.29.0
+          f=apple-codesign-${v}-x86_64-unknown-linux-musl
+          curl -fsSL -o /tmp/rcodesign.tgz "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign/${v}/${f}.tar.gz"
+          echo "dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002  /tmp/rcodesign.tgz" | sha256sum -c -
+          tar -xzf /tmp/rcodesign.tgz -C /tmp
+          sudo install -m 755 /tmp/${f}/rcodesign /usr/local/bin/rcodesign
 
       - name: Build Packages
         env:
@@ -107,6 +147,11 @@ jobs:
           # Generate with `go run ./cmd/limoni-sign keygen` and store as repository secrets.
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
           UPDATE_SIGNING_PUBKEY: ${{ secrets.UPDATE_SIGNING_PUBKEY }}
+          # Optional: a Developer ID certificate and notarization key. Without them the macOS
+          # app is signed ad-hoc (users confirm "Open" once instead of seeing it as damaged).
+          MAC_SIGN_P12: ${{ secrets.MAC_SIGN_P12 }}
+          MAC_SIGN_P12_PASSWORD: ${{ secrets.MAC_SIGN_P12_PASSWORD }}
+          MAC_NOTARY_API_KEY: ${{ secrets.MAC_NOTARY_API_KEY }}
         run: bash scripts/build_packages.sh
 
       - name: Upload Artifacts
@@ -128,3 +173,31 @@ jobs:
             echo "Creating new release ${GITHUB_REF_NAME}..."
             gh release create "${GITHUB_REF_NAME}" * --title "Limoni Voice ${GITHUB_REF_NAME}" --generate-notes
           fi
+
+  mac-verify:
+    name: Verify macOS App on a Mac
+    runs-on: macos-latest
+    needs: build
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: limoni-voice-packages
+          path: packages
+
+      - name: Check bundle, signature and binary
+        run: |
+          set -e
+          arch=$(uname -m); [ "$arch" = x86_64 ] && arch=amd64
+          zip=$(ls packages/Limoni-Voice_*_macOS_${arch}.app.zip)
+          ditto -x -k "$zip" app
+          bundle="app/Limoni Voice.app"
+          plutil -lint "$bundle/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:0:CFBundleURLSchemes:0" "$bundle/Contents/Info.plist" | grep -qx limoni
+          codesign --verify --deep --strict --verbose=2 "$bundle"
+          file "$bundle/Contents/MacOS/limoni-voice-launcher" | grep -q Mach-O
+          "$bundle/Contents/MacOS/limoni-voice" --version
+          "$bundle/Contents/MacOS/limoni-voice" --lang tr --version
+          "$bundle/Contents/MacOS/limoni-voice" --help | grep -q -- --lang
+

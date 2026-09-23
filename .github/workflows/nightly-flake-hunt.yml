@@ -1,0 +1,30 @@
+name: Nightly Flake Hunt
+
+# The network tests run real sockets, relays and timers. A test that fails one run in five
+# passes most pull requests, so the whole suite runs several times every night to catch it.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: Race tests x3
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Race tests, three times
+        run: go test -mod=vendor -race -count=3 -timeout 40m ./...
