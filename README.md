@@ -37,7 +37,7 @@
 <td width="50%">
 
 ### 🎙️ Voice Communication
-- **Opus 48 kHz**: 32 kbps CBR with in-band FEC, packet-loss aware FEC tuning
+- **Opus 48 kHz**: CBR with in-band FEC; FEC redundancy follows the receivers' packet loss, and the bitrate steps between 12 and 32 kbps with the worst link in the room (drops quickly on loss or high latency, climbs back after 10 s of clean reports)
 - **Adaptive Jitter Buffer**: RFC 3550 jitter estimation, packet-loss concealment and FEC recovery
 - **Echo Cancellation (AEC)**: Pure-Go Speex MDF port — use speakers without headphones
 - **Noise & Click Suppression**: Multi-band filter or pure-Go RNNoise (OFF / Standard / High / AI) plus a look-ahead transient suppressor for keyboard clicks and claps
@@ -53,7 +53,7 @@
 - **60 FPS Hardware-Accelerated** screen capture (1080p, ultra-low-latency)
 - **Native Platform API Support**:
   - **🪟 Windows**: ✅ **Fully Tested & Working** (Win32 GDI & DWM window capture / FFmpeg gdigrab display capture with monitor and window selector)
-  - **🍎 macOS**: ✅ **Fully Tested & Working** (Native ScreenCaptureKit & CoreMedia APIs with system permission integration)
+  - **🍎 macOS**: ✅ **Fully Tested & Working** (Native ScreenCaptureKit capture of any display or window, VideoToolbox hardware encoding with an x264 fallback, and a clear message when a macOS permission is missing)
   - **🐧 Linux (GNOME)**: ✅ **Fully Tested & Working** (Direct Mutter PipeWire zero-popup monitor capture & Portal window selector)
   - **🐧 Linux (KDE Plasma)**: ✅ **Fully Tested & Working** (XDG Desktop Portal PipeWire capture)
   - **🐧 Other Linux DEs (Hyprland, Sway, XFCE, etc.)**: ⚠️ *Untested / Experimental* (Fallback to GPU Screen Recorder / FFmpeg)
@@ -75,7 +75,7 @@
 - **UDP Relay**: Low-latency encrypted media relay when direct paths fail (symmetric NAT, CGNAT)
 - **Redundant Audio**: Audio is sent over both relay and direct paths, receiver deduplicates
 - **Live Diagnostics**: Per-peer path, RTT, loss and jitter in the debug panel (`F12`) and `/net`
-- **Relay Server**: Lightweight Go relay with Prometheus `/metrics` and structured logs
+- **Relay Server**: Lightweight Go relay with Prometheus `/metrics` (including idle-room and kick/ban counters), structured logs and auth tokens that rotate without a restart
 
 </td>
 <td width="50%">
@@ -87,6 +87,7 @@
 - **Neon & Cyberpunk Palettes**: Multiple themes (Neon, Cyberpunk, Synthwave, Monokai, Dracula)
 - **Live VU-Meter**: Real-time audio waveform and volume visualization
 - **Toast Notifications**: Instant status updates
+- **English & Türkçe**: Switch the interface language with `L` in the lobby, `I` in the audio settings, `--lang tr` or `LIMONI_LANG=tr`
 
 </td>
 </tr>
@@ -105,9 +106,10 @@
 ### 💬 Chat & Room Security
 - **Terminal Chat**: Multi-line messaging, clickable links & slash commands (`/help`, `/clear`)
 - **Desktop Notifications**: Chat messages, joins and file offers raise a system notification while the terminal is in the background (toggle with `B` in settings)
-- **Invite Links**: `/invite` copies a `limoni://join/<key>` link; on Linux and Windows installs it opens Limoni Voice with the room filled in (press Enter to join). `limoni-voice --join <key or link>` joins directly
+- **Invite Links**: `/invite` copies a `limoni://join/<key>` link; on Linux, Windows and macOS (Limoni Voice.app) installs it opens Limoni Voice with the room filled in (press Enter to join). `limoni-voice --join <key or link>` joins directly
 - **Knock to Join**: `/knock` makes everyone who has the room key wait until the host lets them in (`Y`) or turns them away (`N`)
 - **Room Lock & PIN**: 4-digit PIN protection (`/lock <pin>`) and host access control
+- **Kick & Ban**: The host removes a member with `/kick <user>` or keeps them out with `/ban <user>` (for as long as the room is open). The removal is proven with the host's key, so no member can fake one, and the group key is rotated at once so the removed member cannot follow the room
 - **Push-to-Talk (PTT)**: Configurable push-to-talk mode with voice activity detection
 - **Per-User Volume**: Independent volume leveling and boost per participant
 
@@ -143,21 +145,26 @@
 
 ```
 limoni-voice/
-├── main.go              # Bootstrap: flags, backend, node start
-├── app*.go              # App state, key/mouse routing, render loop, settings
-├── network*.go          # P2P node: relay, handshake, NAT, media, files, stats
-├── audio.go             # Audio engine: 48 kHz capture/playback, VAD, AEC, denoise
-├── ui_lobby.go          # Lobby screen: 3D microphone, inputs, menu
-├── ui_room.go           # Room screen: participant cards, VU-meters, chat
-├── dialogs.go           # Modals: audio settings, relay, debug/diagnostics, share
+├── main.go              # Bootstrap: flags, language, log file, backend, node start
+├── app*.go              # App state, key/mouse routing, render loop, settings, kick/knock UI
+├── ui_*.go              # Lobby and room screens: cards, HUD, chat, controls
+├── dialogs.go           # Modals: audio settings, relay, debug/diagnostics, share, file offers
+├── i18n.go              # T / Tf / tr helpers over internal/i18n
 ├── internal/
+│   ├── p2p/             # P2P node: relay, handshake, NAT, media, files, screen share, kick/ban, stats
+│   ├── engine/          # Audio engine: 48 kHz capture/playback, VAD, AEC, denoise, mixing, SFX
+│   ├── i18n/            # Interface translations (English source, Turkish catalog)
+│   ├── applog/          # Rotating diagnostic log in the per-user state directory
 │   ├── protocol/        # Binary packet format + relay signaling types
-│   ├── e2ee/            # Room codes, CPace PAKE handshake, epoch keyring
-│   ├── relay/           # Relay server (WebSocket + UDP) and metrics
+│   ├── e2ee/            # Room codes, CPace PAKE handshake, epoch keyring, member proofs
+│   ├── relay/           # Relay server (WebSocket + UDP), kick/ban, token rotation, metrics
 │   ├── nat/             # STUN NAT classification, punch strategies, IPv6
-│   ├── voice/           # Opus codec wrapper, adaptive jitter buffer
+│   ├── voice/           # Opus codec wrapper, adaptive bitrate controller, jitter buffer
 │   ├── dsp/             # Speex MDF echo canceller, RNNoise, FFT
 │   ├── audioio/         # PulseAudio / CoreAudio / winmm / tool fallback
+│   ├── sysaudio/        # System audio capture for screen share
+│   ├── video/           # Screen share video transport (reorder, pacing, NACK)
+│   ├── notify/          # Desktop notifications
 │   └── ptt/             # System-wide push-to-talk (X11, portal, Win32, macOS)
 ├── screenshare/         # Screen sharing module (GPU Rec, FFmpeg, MPV)
 ├── relay-server/        # Relay binary (thin wrapper over internal/relay)
@@ -188,7 +195,7 @@ irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install
 > [!IMPORTANT]
 > - **🪟 Windows**: Voice chat works out of the box with **zero dependencies** (using native Win32 `winmm` audio APIs). For Screen Sharing, **FFmpeg** and **MPV** are required.
 > - **🐧 Linux**: Voice chat works out of the box on distributions with standard PulseAudio, PipeWire, or ALSA. For Screen Sharing, **FFmpeg** and **MPV** are required.
-> - **🍎 macOS**: Voice chat uses native CoreAudio (no dependencies). For screen sharing, install **FFmpeg** and **MPV** via Homebrew:
+> - **🍎 macOS**: Requires macOS 12 Monterey or later. Voice chat uses native CoreAudio (no dependencies). For screen sharing, install **FFmpeg** and **MPV** via Homebrew:
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
@@ -270,7 +277,7 @@ To configure without messing with command-line arguments:
 - From any screen, press the **`F5`** shortcut.
 - In room chat, type **`/relay`** or **`/server`**.
 
-In the animated dialog, configure the **WebSocket URL** and optional **Server Password / Token**, then click **`[ Kaydet ve Baglan ]`**. Settings are persisted across sessions (`settings.json`).
+In the animated dialog, configure the **WebSocket URL** and optional **Server Password / Token**, then click **`[ Save & Connect ]`**. Settings are persisted across sessions (`settings.json`).
 
 ##### 2. Via Command-Line Flags or Environment Variables:
 ```bash
@@ -349,7 +356,8 @@ Cloudflare Tunnel only carries **TCP/WebSocket**. When two peers cannot connect 
 | `PORT` | `27850` | TCP port for HTTP/WebSocket |
 | `UDP_PORT` | same as `PORT` | UDP relay port (`0` / `off` disables it) |
 | `RELAY_UDP_PUBLIC_ADDR` | – | `host:port` advertised for UDP (required behind a tunnel) |
-| `RELAY_AUTH_TOKEN` | – | Optional shared secret for clients |
+| `RELAY_AUTH_TOKEN` | – | Optional shared secret for clients; several can be given separated by commas (e.g. the old and the new one while rotating) |
+| `RELAY_AUTH_TOKEN_FILE` | – | File with one accepted secret per line (`#` comments). Re-read on `SIGHUP` (`docker kill -s HUP limoni-relay`) and whenever it changes, so secrets rotate without a restart; open connections stay up |
 | `TRUST_PROXY` | `false` | Always trust `CF-Connecting-IP` / `X-Forwarded-For` (private-network proxies are trusted automatically) |
 | `LOG_FORMAT` / `LOG_LEVEL` | `json` / `info` | Structured logging options |
 
@@ -383,9 +391,25 @@ export LIMONI_LAN_ONLY=1
 | `--connect <ip:port>` | `LIMONI_PEER` | `""` | Alias for `--peer` |
 | `--sysaudio-test` | - | - | Capture system audio for 5 s, print the level and exit (screen share audio diagnosis) |
 | `--version` | - | - | Print version information and exit |
+| `--lang <en\|tr>` | `LIMONI_LANG` | saved setting, else `en` | Interface language (English / Türkçe) |
+| `--log-file <path>` | `LIMONI_LOG_FILE` | see below | Diagnostic log file |
 | `--help`, `-h` | - | - | Show help message and usage instructions |
 
 ---
+
+### 🌍 Interface Language
+
+The interface is written in English and ships with a Turkish translation. Press `L` in the lobby or `I` in the audio settings (`T`) to switch; the choice is saved in `settings.json`. `--lang` and `LIMONI_LANG` override it for one run. Log files stay in English so they can be shared in bug reports.
+
+### 📝 Diagnostic Log
+
+The log is written to the per-user state directory instead of the folder the app was started from, and rotates at 5 MB (one `.1` backup is kept):
+
+| Platform | Location |
+|----------|----------|
+| Linux | `$XDG_STATE_HOME/limoni-voice/limoni-voice.log` (`~/.local/state/limoni-voice/`) |
+| macOS | `~/Library/Logs/limoni-voice/limoni-voice.log` |
+| Windows | `%LOCALAPPDATA%\limoni-voice\logs\limoni-voice.log` |
 
 ### 🖥️ Screen Sharing Tips
 
@@ -394,7 +418,22 @@ export LIMONI_LAN_ONLY=1
 - The debug panel (**`F12`**) shows preset, current bitrate, viewers, uplink queue and retransmissions.
 - **Relay operators:** update the relay server to get per-viewer delivery through the relay; older relays still work but forward relayed video to the whole room.
 - **System audio not shared?** Run `limoni-voice --sysaudio-test`: it prints the capture backend and a level meter while you play something. On Windows the default playback device is captured (Sound settings → Output), and an idle device delivers nothing.
-- **macOS:** release builds embed the capture helper; self-built binaries compile it on first use (`xcode-select --install`). System audio needs macOS 13+.
+- **macOS:** release builds embed the capture helper; self-built binaries compile it on first use (`xcode-select --install`). System audio needs macOS 13+. Every display is offered separately, and a shared window is captured from the display it is on. Video is encoded by the VideoToolbox hardware encoder when your FFmpeg has it (Homebrew's does), otherwise by x264.
+
+### 🍎 macOS Notes
+
+- **Install:** the one-line installer puts `Limoni Voice.app` in `/Applications` (or `~/Applications`) and links the `limoni-voice` command to it, so there is one copy to update. The app opens Limoni Voice in Terminal and handles `limoni://` invite links.
+- **First launch:** release apps are signed ad-hoc unless the release was built with a Developer ID. If macOS says it cannot verify the developer, Control-click the app → **Open** (on macOS 15: System Settings → Privacy & Security → **Open Anyway**) once.
+- **Permissions belong to your terminal** (Terminal, iTerm2, …), because Limoni Voice runs inside it. Allow it under System Settings → Privacy & Security, then restart the terminal:
+
+| Feature | Permission | What happens without it |
+|---------|------------|-------------------------|
+| Talking | Microphone | Limoni Voice warns at start: others would hear silence |
+| Screen sharing, system audio | Screen & System Audio Recording | The share dialog and the room log say what to enable |
+| Global push-to-talk | Input Monitoring | The audio settings show the permission to enable |
+| Opening from the app | Automation → Terminal | Asked once, the first time the app opens Terminal |
+
+- **Updates:** a copy running from `Limoni Voice.app` updates the whole app bundle (checksum-verified), so its signature stays intact.
 
 ## 🎮 Usage
 
@@ -418,6 +457,7 @@ export LIMONI_LAN_ONLY=1
 | `C` / `F2` | Copy room key to clipboard |
 | `G` / `F3` | Generate a new room key |
 | `T` / `F4` | Open microphone sound test panel |
+| `L` | Switch interface language (English / Türkçe) |
 | `Esc` | Exit confirmation |
 | `Ctrl+V` | Paste key from clipboard |
 | `🖱️ Drag` | Rotate 3D microphone model |
@@ -440,6 +480,8 @@ export LIMONI_LAN_ONLY=1
 | `S` | 🪶 Toggle voice smoothing (soft highs, even loudness, peak limiter) |
 | `F12` | 🩺 Debug & network diagnostics |
 | `/net`, `/stats` | 📶 Print per-peer path, RTT, loss & jitter to chat |
+| `/kick <user>` | 👢 Remove a member (host only; they may knock again) |
+| `/ban <user>` | ⛔ Remove a member and keep their ID and address out while the room is open (host only) |
 | `Esc` | Leave Room |
 
 ---
@@ -455,6 +497,7 @@ export LIMONI_LAN_ONLY=1
 | **Encryption** | AES-256-GCM | Voice, chat, control, video and file packets are encrypted end-to-end with random nonces |
 | **Anti-Replay** | Sequence + timestamp window | Freshness window and sliding deduplication cache |
 | **Host Approval** | Room lock & PIN | The host can lock the room and require a 4-digit PIN checked on the host side |
+| **Removal** | Host-proven kick / ban | A removal carries pairwise tags only the host can compute; the group key rotates immediately without the removed member, and a missed rotation is recovered by asking the host for the key |
 | **Updates** | SHA-256 + ed25519 | Self-update refuses assets without a matching `checksums.txt`; signed checksums are verified when a public key is embedded |
 | **Transport** | WSS (TLS) / UDP | Signaling over WebSocket, media over direct or relayed encrypted UDP |
 
@@ -495,8 +538,11 @@ For screen sharing capabilities:
 # Run all tests (including the relay server and integration tests)
 go test -race ./...
 
-# End-to-end relay handshake, wrong-code rejection and key rotation
-go test -run 'TestRelay|TestLAN|TestGroupKey' -v .
+# End-to-end relay handshake, wrong-code rejection, key rotation, kick/ban
+go test -run 'TestRelay|TestLAN|TestGroupKey|TestHostKicks' -v ./internal/p2p
+
+# Every UI message has a Turkish translation and fixed-width labels still fit
+go test -run 'TestEveryUIMessage|TestFixedColumn' .
 
 # DSP ports (AEC, RNNoise), codec and jitter buffer
 go test ./internal/...
