@@ -314,7 +314,15 @@ CONTROL_EOF
 build_deb "linux-amd64" "amd64"
 build_deb "linux-arm64" "arm64"
 
-# 10. Generate Checksums
+# 10. Package manager manifests (Homebrew, Scoop, winget, AUR) for this release. The Scoop
+# manifest is published as its own asset so "scoop install <its URL>" works without a bucket.
+echo "==> Rendering package manager manifests..."
+(cd release_assets && sha256sum *) > dist/asset-checksums.txt
+bash scripts/package_manifests.sh "${VERSION}" dist/asset-checksums.txt dist/manifests
+cp dist/manifests/scoop/limoni-voice.json release_assets/limoni-voice.json
+tar -czf "release_assets/limoni-voice_${VERSION}_package-manifests.tar.gz" -C dist/manifests .
+
+# 11. Generate Checksums
 echo "==> Generating Checksums..."
 cd release_assets
 sha256sum * > checksums.txt
