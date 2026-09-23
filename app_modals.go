@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/widgets"
@@ -81,7 +83,7 @@ func (a *App) startSelectedScreenShare(target screenshare.WindowInfo) {
 	a.saveScreenSettings()
 	a.room.SetToast(fmt.Sprintf("🎬 Starting %s (%s)...", target.Title, preset.Name))
 	go func() {
-		cfg := ScreenShareConfig{TargetID: target.ID, Preset: presetIdx, SystemAudio: withAudio}
+		cfg := p2p.ScreenShareConfig{TargetID: target.ID, Preset: presetIdx, SystemAudio: withAudio}
 		if err := a.node.StartScreenShareWith(cfg); err != nil {
 			a.room.SetToast(fmt.Sprintf("Error: %v", err))
 			return
@@ -133,7 +135,7 @@ func (a *App) watchFirstStream() {
 		a.room.SetToast("Screen viewer closed")
 		return
 	}
-	var target *PeerInfo
+	var target *p2p.PeerInfo
 	for _, p := range a.node.GetPeersList() {
 		if p.IsSharingScreen {
 			target = p
@@ -180,7 +182,7 @@ func (a *App) showNextFileOffer() {
 	a.term.ForceFullRedraw()
 }
 
-func (a *App) enqueueFileOffer(offer *FileOffer) {
+func (a *App) enqueueFileOffer(offer *p2p.FileOffer) {
 	a.fileOfferMu.Lock()
 	a.pendingFileOffers = append(a.pendingFileOffers, offer)
 	if a.currentFileOffer == nil {
@@ -189,17 +191,17 @@ func (a *App) enqueueFileOffer(offer *FileOffer) {
 		a.fileOfferDialogAnim.AnimateTo(1.0, 250*time.Millisecond, animation.EaseOutCubic)
 	}
 	a.fileOfferMu.Unlock()
-	a.audio.PlaySound(SoundChat)
+	a.audio.PlaySound(engine.SoundChat)
 	targetLabel := "file"
 	if offer.IsCode {
 		targetLabel = "code snippet"
 	}
 	a.toast(fmt.Sprintf("📥 Incoming %s from %s: %s", targetLabel, offer.SenderNick, offer.FileName))
-	a.notifier.NotifyNow(notifyTitle, fmt.Sprintf("%s wants to send you a %s: %s", offer.SenderNick, targetLabel, offer.FileName))
+	a.notifier.NotifyNow(notifyTitle, Tf("%s wants to send you a %s: %s", offer.SenderNick, T(targetLabel), offer.FileName))
 	a.term.ForceFullRedraw()
 }
 
-func (a *App) activeFileOffer() *FileOffer {
+func (a *App) activeFileOffer() *p2p.FileOffer {
 	a.fileOfferMu.Lock()
 	defer a.fileOfferMu.Unlock()
 	return a.currentFileOffer
@@ -210,7 +212,7 @@ func (a *App) acceptCurrentOffer(openInEditor bool) {
 	if offer == nil {
 		return
 	}
-	savedPath, err := SaveAcceptedFile(offer)
+	savedPath, err := p2p.SaveAcceptedFile(offer)
 	switch {
 	case err != nil:
 		a.toast(fmt.Sprintf("Save error: %v", err))
@@ -249,7 +251,7 @@ func (a *App) declineCurrentOffer() {
 // --- relay settings modal ---
 
 func (a *App) probeRelayStatus(u, tok string) {
-	target := NormalizeRelayURL(u)
+	target := p2p.NormalizeRelayURL(u)
 	if target == "" {
 		a.lobby.RelayOnline = false
 		a.lobby.RelayStatus = "LAN Mode"
@@ -268,7 +270,7 @@ func (a *App) openRelayModal() {
 	a.showRelayModal = true
 	currURL := a.node.RelayURL
 	if currURL == "" && !a.node.LanOnly {
-		currURL = DefaultRelayURL
+		currURL = p2p.DefaultRelayURL
 	}
 	a.relayURLInput.SetValue(currURL)
 	a.relayTokenInput.SetValue(a.node.RelayToken)
@@ -398,11 +400,11 @@ func (a *App) saveRelaySettings(rawURL, rawToken string) {
 		a.switchToLAN()
 		return
 	}
-	newURL := NormalizeRelayURL(rawURL)
+	newURL := p2p.NormalizeRelayURL(rawURL)
 	newToken := strings.TrimSpace(rawToken)
 	a.node.UpdateRelaySettings(newURL, newToken)
 	_ = UpdateAppConfig(func(c *AppConfig) {
-		if newURL == DefaultRelayURL && newToken == "" {
+		if newURL == p2p.DefaultRelayURL && newToken == "" {
 			c.RelayURL, c.RelayToken = "", ""
 		} else {
 			c.RelayURL, c.RelayToken = newURL, newToken
@@ -427,12 +429,12 @@ func (a *App) switchToLAN() {
 }
 
 func (a *App) resetRelayToDefault() {
-	a.node.UpdateRelaySettings(DefaultRelayURL, "")
+	a.node.UpdateRelaySettings(p2p.DefaultRelayURL, "")
 	_ = UpdateAppConfig(func(c *AppConfig) { c.RelayURL, c.RelayToken = "", "" })
-	a.relayURLInput.SetValue(DefaultRelayURL)
+	a.relayURLInput.SetValue(p2p.DefaultRelayURL)
 	a.relayTokenInput.SetValue("")
-	a.probeRelayStatus(DefaultRelayURL, "")
-	a.lobby.RelayURL = DefaultRelayURL
+	a.probeRelayStatus(p2p.DefaultRelayURL, "")
+	a.lobby.RelayURL = p2p.DefaultRelayURL
 	a.toast("Restored official default relay server!")
 	a.closeRelayModal()
 }

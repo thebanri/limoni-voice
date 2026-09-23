@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni-voice/internal/ptt"
 	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/animation"
@@ -25,13 +28,14 @@ import (
 type App struct {
 	backend *driver.Backend
 	term    *terminal.Terminal
-	node    *P2PNode
-	audio   *AudioEngine
+	node    *p2p.P2PNode
+	audio   *engine.AudioEngine
 	lobby   *LobbyView
 	room    *RoomView
 
 	notifier *desktopNotifier
 	knocks   knockQueue
+	kicked   atomic.Pointer[string] // set when the host removed us; the event loop acts on it
 
 	currentScreen AppScreen
 	appStartTime  time.Time
@@ -68,8 +72,8 @@ type App struct {
 
 	// File offers
 	fileOfferMu       sync.Mutex
-	currentFileOffer  *FileOffer
-	pendingFileOffers []*FileOffer
+	currentFileOffer  *p2p.FileOffer
+	pendingFileOffers []*p2p.FileOffer
 
 	// Global push-to-talk
 	pttMu      sync.Mutex
@@ -78,7 +82,7 @@ type App struct {
 }
 
 // NewApp builds the application and wires network / audio callbacks.
-func NewApp(b *driver.Backend, t *terminal.Terminal, node *P2PNode, audio *AudioEngine, cfg AppConfig) *App {
+func NewApp(b *driver.Backend, t *terminal.Terminal, node *p2p.P2PNode, audio *engine.AudioEngine, cfg AppConfig) *App {
 	app := &App{
 		backend:               b,
 		term:                  t,
@@ -127,9 +131,9 @@ func (a *App) toast(msg string) {
 func (a *App) wireNodeCallbacks() {
 	node, audio := a.node, a.audio
 
-	screenshare.LogCallback = func(msg string) {
+	screenshare.SetLogCallback(func(msg string) {
 		AddDebugLog("[SCREEN] " + msg)
-	}
+	})
 
 	node.OnLog = func(msg string) {
 		AddDebugLog("[ROOM] " + msg)
@@ -151,19 +155,20 @@ func (a *App) wireNodeCallbacks() {
 	}
 
 	node.OnKnock = a.onKnock
+	node.OnKicked = a.onKicked
 	node.OnJoinWaiting = func() {
 		a.lobby.SetToast("Room key verified: waiting for the host to let you in...")
 	}
 
-	node.OnPeerEvent = func(event string, peer *PeerInfo) {
+	node.OnPeerEvent = func(event string, peer *p2p.PeerInfo) {
 		if event == "join" {
-			audio.PlaySound(SoundJoin)
+			audio.PlaySound(engine.SoundJoin)
 			a.room.AddLog(fmt.Sprintf("[+] %s joined the room.", peer.Nickname))
-			a.notifier.Notify(notifyTitle, peer.Nickname+" joined the room")
+			a.notifier.Notify(notifyTitle, Tf("%s joined the room", peer.Nickname))
 		} else if event == "leave" {
-			audio.PlaySound(SoundLeave)
+			audio.PlaySound(engine.SoundLeave)
 			a.room.AddLog(fmt.Sprintf("[-] %s left the room.", peer.Nickname))
-			a.notifier.Notify(notifyTitle, peer.Nickname+" left the room")
+			a.notifier.Notify(notifyTitle, Tf("%s left the room", peer.Nickname))
 		}
 	}
 
@@ -174,7 +179,7 @@ func (a *App) wireNodeCallbacks() {
 	}
 
 	node.OnChatMessage = func(senderID string, nickname string, text string, ts time.Time) {
-		audio.PlaySound(SoundChat)
+		audio.PlaySound(engine.SoundChat)
 		a.room.AddChatMessage(nickname, senderID, text, false, ts)
 		a.notifier.Notify(nickname, text)
 	}
@@ -207,7 +212,7 @@ func (a *App) wireNodeCallbacks() {
 	node.OnFileOfferReceived = a.enqueueFileOffer
 
 	node.OnFileReceived = func(transferID string, fileName string, filePath string, isCode bool, content string) {
-		audio.PlaySound(SoundChat)
+		audio.PlaySound(engine.SoundChat)
 		var size int64
 		if fi, err := os.Stat(filePath); err == nil {
 			size = fi.Size()
@@ -256,6 +261,7 @@ func (a *App) wireLobbyCallbacks() {
 	}
 	a.lobby.OnOpenTestModal = a.openTestModal
 	a.lobby.OnOpenRelayModal = a.openRelayModal
+	a.lobby.OnCycleLanguage = a.cycleLanguage
 	a.lobby.RelayURL = a.node.RelayURL
 }
 
@@ -326,7 +332,7 @@ func (a *App) wireRoomCallbacks() {
 			room.SetToast("No other users in the room")
 			return
 		}
-		var matched *PeerInfo
+		var matched *p2p.PeerInfo
 		if target == "" {
 			if len(peers) != 1 {
 				room.SetToast("Multiple peers in room. Use: /vol <nickname> <0-200>")
@@ -403,6 +409,7 @@ func (a *App) wireRoomCallbacks() {
 		}
 	}
 	room.OnToggleKnock = a.toggleKnock
+	room.OnKickMember = a.kickMember
 	room.OnCopyInvite = func() {
 		link := inviteLink(node.RoomCode)
 		CopyToClipboard(link)
@@ -446,7 +453,7 @@ func (a *App) startHost() {
 	}
 	a.room = NewRoomView()
 	a.currentScreen = ScreenRoom
-	a.audio.PlaySound(SoundJoin)
+	a.audio.PlaySound(engine.SoundJoin)
 }
 
 func (a *App) joinRoom(code string) {
@@ -465,7 +472,7 @@ func (a *App) joinRoom(code string) {
 			a.lobby.IsConnecting = false
 			a.room = NewRoomView()
 			a.currentScreen = ScreenRoom
-			a.audio.PlaySound(SoundJoin)
+			a.audio.PlaySound(engine.SoundJoin)
 			a.room.AddLog(fmt.Sprintf("[+] Successfully joined room %s! (Host: %s)", cleanCode, hostNick))
 			a.room.SetToast(fmt.Sprintf("Joined Room! Host: %s", hostNick))
 		},
@@ -483,8 +490,13 @@ func (a *App) cancelJoin() {
 }
 
 func (a *App) leaveRoom() {
-	a.audio.PlaySound(SoundLeave)
+	a.audio.PlaySound(engine.SoundLeave)
 	a.node.LeaveRoom()
+	a.resetToLobby()
+}
+
+// resetToLobby clears the room screen's state and shows the lobby with a fresh room key.
+func (a *App) resetToLobby() {
 	a.lobby.CurrentCode = GenerateRoomCode()
 	a.lobby.IsPinProtected = false
 	a.lobby.PinState.SetValue("")
@@ -513,12 +525,13 @@ func (a *App) cleanExit() {
 func (a *App) Run() {
 	a.audio.Start(func(rms float64, speaking bool, pcm []byte) {
 		if a.currentScreen == ScreenRoom && !a.audio.InTestMode && !a.audio.Muted {
-			if a.audio.InputMode == InputModeVoiceActivity || a.audio.IsTransmitting() {
+			if a.audio.InputMode == engine.InputModeVoiceActivity || a.audio.IsTransmitting() {
 				a.node.SendAudio(rms, speaking, pcm)
 			}
 		}
 	})
 	a.syncGlobalPTT()
+	a.warnIfMicBlocked()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -553,6 +566,7 @@ func (a *App) Run() {
 				a.notifier.SetFocused(ev.Focus.Gained)
 			}
 		case now := <-renderTicker.C:
+			a.applyKicked()
 			a.render(now)
 		}
 	}

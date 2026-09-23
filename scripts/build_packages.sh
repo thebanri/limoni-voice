@@ -44,7 +44,7 @@ echo "==> Running Unit Tests..."
 # -short: CI's test job has already run everything with -race. This step installs ffmpeg
 # for packaging, which un-skips the real-time screen share tests, and those miss their
 # frame and decode-error budgets on 2-core runners (the cause of every failed build since
-# 2026-09-13). They still run locally; see network_screen_test.go.
+# 2026-09-13). They still run locally; see internal/p2p/screen_test.go.
 go test -mod=vendor -short ./...
 
 # 2. Compile Linux AMD64 & ARM64
@@ -94,6 +94,46 @@ cp dist/linux-arm64/limoni-voice README.md LICENSE dist/pkg-linux-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
 # 6. Package macOS Native Application Bundles (.app.zip & .app.tar.gz)
+#
+# The bundle opens Limoni Voice in Terminal. Its executable is the native launcher
+# (macos/launcher.swift, compiled by CI on macOS into macos/build/limoni-launcher), which also
+# receives limoni:// invite links; a local build without it falls back to a shell script that
+# opens the app but cannot receive links.
+MAC_LAUNCHER="${MAC_LAUNCHER:-macos/build/limoni-launcher}"
+
+# sign_macos_app seals a bundle. Without a signature Apple Silicon Macs report a downloaded app
+# as damaged; an ad-hoc signature turns that into the usual "unidentified developer" prompt.
+# With MAC_SIGN_P12 (base64 Developer ID .p12) and MAC_SIGN_P12_PASSWORD the signature is a
+# real one, and MAC_NOTARY_API_KEY (App Store Connect API key JSON) also notarizes the app.
+sign_macos_app() {
+  local APP_DIR=$1
+  if ! command -v rcodesign >/dev/null 2>&1; then
+    echo "    (rcodesign not installed: ${APP_DIR} stays unsigned)"
+    return
+  fi
+  if [ "$(head -c 2 "${APP_DIR}/Contents/MacOS/limoni-voice-launcher")" = "#!" ]; then
+    echo "    (shell launcher: ${APP_DIR} cannot be signed, only a native launcher can)"
+    return
+  fi
+  if [ -n "${MAC_SIGN_P12:-}" ]; then
+    local SECRETS
+    SECRETS="$(mktemp -d)"
+    echo "${MAC_SIGN_P12}" | base64 -d > "${SECRETS}/cert.p12"
+    printf '%s' "${MAC_SIGN_P12_PASSWORD:-}" > "${SECRETS}/cert.pass"
+    rcodesign sign --p12-file "${SECRETS}/cert.p12" --p12-password-file "${SECRETS}/cert.pass" \
+      --code-signature-flags runtime "${APP_DIR}"
+    if [ -n "${MAC_NOTARY_API_KEY:-}" ]; then
+      printf '%s' "${MAC_NOTARY_API_KEY}" > "${SECRETS}/notary.json"
+      rcodesign notary-submit --api-key-file "${SECRETS}/notary.json" --staple "${APP_DIR}"
+    fi
+    rm -rf "${SECRETS}"
+  else
+    rcodesign sign "${APP_DIR}"
+  fi
+  # rcodesign's own verify is unreliable for ad-hoc signatures; CI checks the result with
+  # Apple's codesign on a Mac (the mac-verify job).
+}
+
 build_macos_app() {
   local ARCH=$1
   local MAC_ARCH=$2
@@ -107,7 +147,9 @@ build_macos_app() {
 
   cp "dist/${ARCH}/limoni-voice" "${APP_DIR}/Contents/MacOS/limoni-voice"
   chmod 755 "${APP_DIR}/Contents/MacOS/limoni-voice"
-  cp README.md LICENSE "${APP_DIR}/Contents/MacOS/"
+  # Only code belongs in Contents/MacOS; anything else there breaks the bundle signature.
+  cp README.md LICENSE "${APP_DIR}/Contents/Resources/"
+  cp macos/LimoniVoice.icns "${APP_DIR}/Contents/Resources/LimoniVoice.icns"
 
   cat <<PLIST_EOF > "${APP_DIR}/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -122,16 +164,33 @@ build_macos_app() {
     <string>Limoni Voice</string>
     <key>CFBundleDisplayName</key>
     <string>Limoni Voice</string>
+    <key>CFBundleIconFile</key>
+    <string>LimoniVoice</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>${RAW_VERSION}</string>
     <key>CFBundleVersion</key>
     <string>${RAW_VERSION}</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Limoni Voice invite</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>limoni</string>
+            </array>
+        </dict>
+    </array>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.social-networking</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.13</string>
+    <string>12.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Limoni Voice opens itself in Terminal, which runs the voice chat.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Limoni Voice requires microphone access for real-time P2P encrypted voice chat.</string>
 </dict>
@@ -140,17 +199,26 @@ PLIST_EOF
 
   echo -n "APPL????" > "${APP_DIR}/Contents/PkgInfo"
 
-  cat <<'LAUNCHER_EOF' > "${APP_DIR}/Contents/MacOS/limoni-voice-launcher"
+  if [ -f "${MAC_LAUNCHER}" ]; then
+    cp "${MAC_LAUNCHER}" "${APP_DIR}/Contents/MacOS/limoni-voice-launcher"
+  else
+    echo "    (no native launcher at ${MAC_LAUNCHER}: using the shell launcher, invite links will not open the app)"
+    cat <<'LAUNCHER_EOF' > "${APP_DIR}/Contents/MacOS/limoni-voice-launcher"
 #!/bin/sh
 DIR="$(cd "$(dirname "$0")" && pwd)"
-osascript <<EOF
-tell application "Terminal"
-    activate
-    do script "cd \"$DIR\" && clear && \"$DIR/limoni-voice\"; exit"
-end tell
-EOF
+osascript - "$DIR/limoni-voice" <<'OSA_EOF'
+on run argv
+    tell application "Terminal"
+        activate
+        do script "clear; " & quoted form of (item 1 of argv) & "; exit"
+    end tell
+end run
+OSA_EOF
 LAUNCHER_EOF
+  fi
   chmod 755 "${APP_DIR}/Contents/MacOS/limoni-voice-launcher"
+
+  sign_macos_app "${APP_DIR}"
 
   # Package into .app.zip and .app.tar.gz
   (

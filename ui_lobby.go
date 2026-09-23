@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/thebanri/limoni-voice/assets"
-
+	"github.com/thebanri/limoni-voice/internal/i18n"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
@@ -51,6 +51,7 @@ type LobbyView struct {
 	OnNewCode        func()
 	OnOpenTestModal  func()
 	OnOpenRelayModal func()
+	OnCycleLanguage  func()
 	RelayURL         string
 	RelayOnline      bool
 	RelayStatus      string
@@ -283,7 +284,7 @@ func (l *LobbyView) Render(frame *terminal.Frame, area cell.Rect) {
 func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 	theme := CurrentTheme()
 	block := widgets.Block{
-		Title:         " 3D STUDIO MICROPHONE ",
+		Title:         T(" 3D STUDIO MICROPHONE "),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
@@ -334,28 +335,28 @@ func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 
 func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	theme := CurrentTheme()
-	mainTitle := " P2P ROOM & CONNECTION (CROC ENGINE) "
+	mainTitle := T(" P2P ROOM & CONNECTION (CROC ENGINE) ")
 	if IsCustomRelayActive(l.RelayURL) {
 		if l.RelayOnline {
-			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: ONLINE - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [CUSTOM RELAY: ONLINE - (R)] ")
 		} else if l.RelayStatus == "Offline" {
-			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: OFFLINE (LAN ONLY) - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [CUSTOM RELAY: OFFLINE (LAN ONLY) - (R)] ")
 		} else if l.RelayStatus == "Connecting..." || l.RelayStatus == "Checking..." {
-			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY: CONNECTING... - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [CUSTOM RELAY: CONNECTING... - (R)] ")
 		} else if l.RelayStatus != "" {
-			mainTitle = fmt.Sprintf(" P2P ROOM & CONNECTION [CUSTOM RELAY: %s - (R)] ", strings.ToUpper(l.RelayStatus))
+			mainTitle = Tf(" P2P ROOM & CONNECTION [CUSTOM RELAY: %s - (R)] ", strings.ToUpper(tr(l.RelayStatus)))
 		} else {
-			mainTitle = " P2P ROOM & CONNECTION [CUSTOM RELAY ACTIVE - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [CUSTOM RELAY ACTIVE - (R)] ")
 		}
 	} else {
 		if l.RelayOnline {
-			mainTitle = " P2P ROOM & CONNECTION [RELAY: ONLINE - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [RELAY: ONLINE - (R)] ")
 		} else if l.RelayStatus == "Connecting..." || l.RelayStatus == "Checking..." {
-			mainTitle = " P2P ROOM & CONNECTION [RELAY: CONNECTING... - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [RELAY: CONNECTING... - (R)] ")
 		} else if l.RelayStatus == "LAN Mode" {
-			mainTitle = " P2P ROOM & CONNECTION [RELAY: LAN MODE - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [RELAY: LAN MODE - (R)] ")
 		} else if l.RelayStatus == "Offline" {
-			mainTitle = " P2P ROOM & CONNECTION [RELAY: OFFLINE (LAN ONLY) - (R)] "
+			mainTitle = T(" P2P ROOM & CONNECTION [RELAY: OFFLINE (LAN ONLY) - (R)] ")
 		}
 	}
 	mainBlock := widgets.Block{
@@ -395,11 +396,11 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	// 1. Nickname Block
 	isNickFocused := (l.ActiveInput == 0)
-	nickTitle := " [1] YOUR NICKNAME "
+	nickTitle := T(" [1] YOUR NICKNAME ")
 	nickBorderStyle := unfocusedBorder
 	nickBgStyle := unfocusedBg
 	if isNickFocused {
-		nickTitle = " ► [1] YOUR NICKNAME (FOCUSED - Type to Change) ◄ "
+		nickTitle = T(" ► [1] YOUR NICKNAME (FOCUSED - Type to Change) ◄ ")
 		nickBorderStyle = cell.Style{
 			Fg:       theme.Accent,
 			Modifier: cell.ModifierBold,
@@ -430,13 +431,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	nickInput := widgets.TextInput{
 		ID:          "nickname_input",
 		State:       l.NickState,
-		Placeholder: "Enter your nickname...",
+		Placeholder: T("Enter your nickname..."),
 	}
 	renderTextInput(frame, nickInput, nickInner)
 
 	// 2. Host Room Block
 	isHostFocused := (l.ActiveInput == 2 || l.ActiveInput == 3)
-	hostTitle := " [2] CREATE ROOM (YOU HOST) "
+	hostTitle := T(" [2] CREATE ROOM (YOU HOST) ")
 	hostBorderStyle := unfocusedBorder
 	hostBgStyle := unfocusedBg
 	keyStyle := cell.Style{
@@ -449,7 +450,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	if isHostFocused {
-		hostTitle = " ► [2] CREATE ROOM (YOU HOST) [SELECTED] ◄ "
+		hostTitle = T(" ► [2] CREATE ROOM (YOU HOST) [SELECTED] ◄ ")
 		hostBorderStyle = cell.Style{
 			Fg:       theme.Warning,
 			Modifier: cell.ModifierBold,
@@ -490,7 +491,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 
-	codeLabel := "Your Room Key (Share with Friends):"
+	codeLabel := T("Your Room Key (Share with Friends):")
 	codeLabelStyle := cell.Style{Fg: theme.TextMuted, Bg: hostBgStyle.Bg}
 	if isHostFocused {
 		codeLabelStyle = cell.Style{Fg: theme.Text, Bg: hostBgStyle.Bg}
@@ -508,10 +509,10 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	})
 
 	// PIN Protection Checkbox row
-	pinCheckStr := "[ ] PIN Protected (4 Digits)"
+	pinCheckStr := T("[ ] PIN Protected (4 Digits)")
 	pinCheckStyle := cell.Style{Fg: theme.TextMuted, Bg: hostBgStyle.Bg}
 	if l.IsPinProtected {
-		pinCheckStr = "[X] PIN Protected (4 Digits):"
+		pinCheckStr = T("[X] PIN Protected (4 Digits):")
 		pinCheckStyle = cell.Style{
 			Fg:       theme.Accent,
 			Bg:       hostBgStyle.Bg,
@@ -550,9 +551,9 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		})
 	}
 
-	openLabel := "[Enter] Open This Room"
-	copyLabel := "[F2] Copy Code"
-	newLabel := "[F3] New Code"
+	openLabel := T("[Enter] Open This Room")
+	copyLabel := T("[F2] Copy Code")
+	newLabel := T("[F3] New Code")
 	sep := "   •   "
 	hostBtns := openLabel + sep + copyLabel + sep + newLabel
 	buf.SetString(hostInner.X, hostInner.Y+4, hostBtns, hostBtnStyle)
@@ -586,7 +587,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	// 3. Join Room Block
 	isJoinFocused := (l.ActiveInput == 1)
-	joinTitle := " [3] JOIN EXISTING ROOM "
+	joinTitle := T(" [3] JOIN EXISTING ROOM ")
 	joinBorderStyle := unfocusedBorder
 	joinBgStyle := unfocusedBg
 	joinBtnStyle := cell.Style{
@@ -595,7 +596,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	if l.IsConnecting {
-		joinTitle = fmt.Sprintf(" ► [3] CONNECTING TO ROOM (Verifying Host: %s) ◄ ", l.ConnectingTarget)
+		joinTitle = Tf(" ► [3] CONNECTING TO ROOM (Verifying Host: %s) ◄ ", l.ConnectingTarget)
 		joinBorderStyle = cell.Style{
 			Fg:       theme.Warning,
 			Modifier: cell.ModifierBold,
@@ -607,7 +608,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Modifier: cell.ModifierBold,
 		}
 	} else if isJoinFocused {
-		joinTitle = " ► [3] JOIN EXISTING ROOM (FOCUSED - Paste with Ctrl+V) ◄ "
+		joinTitle = T(" ► [3] JOIN EXISTING ROOM (FOCUSED - Paste with Ctrl+V) ◄ ")
 		joinBorderStyle = cell.Style{
 			Fg:       theme.Accent,
 			Modifier: cell.ModifierBold,
@@ -641,9 +642,9 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 
-	joinLabel := "Paste the Room Key from Your Friend (Ctrl+V):"
+	joinLabel := T("Paste the Room Key from Your Friend (Ctrl+V):")
 	if l.IsConnecting {
-		joinLabel = "Verifying room, searching host and establishing E2EE connection..."
+		joinLabel = T("Verifying room, searching host and establishing E2EE connection...")
 	}
 	joinLabelStyle := cell.Style{Fg: theme.TextMuted, Bg: joinBgStyle.Bg}
 	if isJoinFocused || l.IsConnecting {
@@ -661,13 +662,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	codeInput := widgets.TextInput{
 		ID:          "roomcode_input",
 		State:       l.CodeState,
-		Placeholder: "e.g. 7492-neon-falcon (or 7492-neon-falcon:1234)",
+		Placeholder: T("e.g. 7492-neon-falcon (or 7492-neon-falcon:1234)"),
 	}
 	renderTextInput(frame, codeInput, joinInputRect)
 
-	joinBtns := "[Enter] Connect to Room (Max: 4 Members)"
+	joinBtns := T("[Enter] Connect to Room (Max: 4 Members)")
 	if l.IsConnecting {
-		joinBtns = "⏳ [Wait] Connecting to host...   •   [Esc] Cancel"
+		joinBtns = T("⏳ [Wait] Connecting to host...   •   [Esc] Cancel")
 	}
 	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
 
@@ -685,7 +686,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 				l.OnJoinRoom(cleanCode)
 			}
 		} else {
-			l.SetToast("Please enter a room key to connect")
+			l.SetToast(T("Please enter a room key to connect"))
 		}
 	})
 
@@ -696,7 +697,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	// 4. Info and Help Block
 	bottomArea := vSplits[3]
 	botBlock := widgets.Block{
-		Title:         " INFO & SHORTCUTS ",
+		Title:         T(" INFO & SHORTCUTS "),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.Border},
@@ -717,17 +718,17 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Bg:       theme.Accent,
 			Modifier: cell.ModifierBold,
 		}
-		buf.SetString(botInner.X+1, botInner.Y, "  "+l.ToastMsg+"  ", toastStyle)
+		buf.SetString(botInner.X+1, botInner.Y, "  "+tr(l.ToastMsg)+"  ", toastStyle)
 	} else {
 		isCustom := IsCustomRelayActive(l.RelayURL)
-		relayBtn := "[ R : Relay & Security Settings ]"
+		relayBtn := T("[ R : Relay & Security Settings ]")
 		relayBtnStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.BorderFocused,
 			Modifier: cell.ModifierBold,
 		}
 		if isCustom {
-			relayBtn = "[ R : Custom Relay Active ]"
+			relayBtn = T("[ R : Custom Relay Active ]")
 			relayBtnStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Success,
@@ -742,7 +743,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			}
 		})
 
-		testBtn := "[ T : Audio / Mic Test ]"
+		testBtn := T("[ T : Audio / Mic Test ]")
 		testBtnStyle := cell.Style{
 			Fg:       theme.Text,
 			Bg:       theme.InputBg,
@@ -756,23 +757,34 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 					l.OnOpenTestModal()
 				}
 			})
+
+			langBtn := Tf("[ L : %s ]", i18n.Current().Name())
+			langBtnX := testBtnX + uint16(len([]rune(testBtn))) + 2
+			if langBtnX+uint16(len([]rune(langBtn))) <= botInner.X+botInner.Width {
+				buf.SetString(langBtnX, botInner.Y, langBtn, testBtnStyle)
+				frame.RegisterClickHandler(cell.NewRect(langBtnX, botInner.Y, uint16(len([]rune(langBtn))), 1), func(_ driver.MouseEvent) {
+					if l.OnCycleLanguage != nil {
+						l.OnCycleLanguage()
+					}
+				})
+			}
 		}
 
 		rowOffset := uint16(1)
 		if botInner.Height > 3 {
-			relayInfo := "Active Relay: " + l.RelayURL
+			relayInfo := T("Active Relay: ") + l.RelayURL
 			if l.RelayURL == "" {
-				relayInfo = "Active Relay: Official Public Server (Railway)"
+				relayInfo = T("Active Relay: Official Public Server (Railway)")
 			}
 			buf.SetString(botInner.X+1, botInner.Y+1, relayInfo, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 			rowOffset = 2
 		}
 
 		helpLines := []string{
-			"• [R] Relay & Security Settings (Click or press R)",
-			"• [T] or [F4] Audio & Microphone Test (Click or press T)",
-			"• [Tab] Switch input field • [Enter] Open / Connect",
-			"• [F2]/[C] Copy key • [F3]/[G] New key • [Esc] Exit",
+			T("• [R] Relay & Security Settings (Click or press R)"),
+			T("• [T] or [F4] Audio & Microphone Test (Click or press T)"),
+			T("• [Tab] Switch input field • [Enter] Open / Connect"),
+			T("• [F2]/[C] Copy key • [F3]/[G] New key • [L] Language • [Esc] Exit"),
 		}
 		for i, h := range helpLines {
 			lineY := botInner.Y + rowOffset + uint16(i)

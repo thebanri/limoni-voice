@@ -17,6 +17,7 @@ const (
 	SigPake       = "pake"   // opaque PAKE handshake frame, forwarded between a pending joiner and the host
 	SigAdmit      = "admit"  // host approves a pending joiner that completed the handshake
 	SigReject     = "reject" // host refuses a pending joiner
+	SigKick       = "kick"   // host removes a member (Target); with Ban its address stays refused
 
 	// relay -> client
 	SigRoomCreated     = "room_created"
@@ -33,6 +34,7 @@ const (
 	SigRejected        = "rejected"
 	SigError           = "error"
 	SigPong            = "pong"
+	SigKicked          = "kicked" // the host removed you from the room (Ban: for good)
 )
 
 // Endpoint describes how a member can be reached directly (hole punching candidates).
@@ -68,6 +70,7 @@ type Signal struct {
 
 	IsLocked    bool   `json:"is_locked,omitempty"`
 	PinRequired bool   `json:"pin_required,omitempty"`
+	Ban         bool   `json:"ban,omitempty"` // kick / kicked: the member may not come back
 	HostToken   string `json:"host_token,omitempty"`
 	MemberToken string `json:"member_token,omitempty"`
 
@@ -85,6 +88,10 @@ type Signal struct {
 // FeatureTargeted: the relay forwards targeted frames (FrameTargetFlag / UDPKindTo) to a
 // single member instead of the whole room.
 const FeatureTargeted = "targeted"
+
+// FeatureKick: the relay removes a member the host kicks (SigKick) and refuses banned
+// addresses. Older relays ignore SigKick; the kicked member still loses the group key.
+const FeatureKick = "kick"
 
 // HasFeature reports whether the signal advertises feature f.
 func (s Signal) HasFeature(f string) bool {

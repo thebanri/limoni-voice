@@ -108,38 +108,17 @@ func ListWindows() []WindowInfo {
 		}
 
 	case "darwin":
-		targets = append(targets, WindowInfo{
-			ID:    "desktop",
-			Title: "[Desktop] Entire Screen (Primary Display)",
-		})
+		out := ""
 		if binPath, err := getOrBuildMacCaptureBinary(); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			cmd := exec.CommandContext(ctx, binPath, "--list")
-			out, err := cmd.Output()
-			cancel()
-			if err == nil {
-				lines := strings.Split(string(out), "\n")
-				seen := make(map[string]bool)
-				for _, line := range lines {
-					trimmed := strings.TrimSpace(line)
-					if trimmed == "" {
-						continue
-					}
-					parts := strings.SplitN(trimmed, "|", 3)
-					if len(parts) == 3 && parts[0] == "WIN" {
-						winID := parts[1]
-						title := parts[2]
-						if !seen[title] && !strings.Contains(title, "Item-0") && !strings.Contains(title, "WindowServer") {
-							seen[title] = true
-							targets = append(targets, WindowInfo{
-								ID:    winID,
-								Title: "[Window] " + title,
-							})
-						}
-					}
-				}
+			if b, err := exec.CommandContext(ctx, binPath, "--list").Output(); err == nil {
+				out = string(b)
 			}
+			cancel()
 		}
+		var permissionMissing bool
+		targets, permissionMissing = parseMacHelperList(out)
+		setMacScreenPermissionMissing(permissionMissing)
 
 	case "linux":
 		targets = listLinuxTargets()

@@ -147,6 +147,7 @@ func newFrameAccumulator(cb CaptureFunc) *frameAccumulator {
 	return &frameAccumulator{buf: make([]int16, FrameSamples), emit: cb}
 }
 
+//lint:ignore U1000 used by the PulseAudio and CoreAudio backends, not by winmm
 func (a *frameAccumulator) push(samples []int16) {
 	for len(samples) > 0 {
 		k := copy(a.buf[a.n:], samples)
@@ -193,6 +194,7 @@ func newRenderAdapter(cb RenderFunc) *renderAdapter {
 	return &renderAdapter{frame: make([]int16, FrameSamples), pos: FrameSamples, cb: cb}
 }
 
+//lint:ignore U1000 used by the PulseAudio and CoreAudio backends, not by winmm
 func (r *renderAdapter) fill(out []int16) {
 	for len(out) > 0 {
 		if r.pos == FrameSamples {

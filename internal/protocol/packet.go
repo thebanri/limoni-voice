@@ -44,6 +44,8 @@ const (
 	PacketScreenUnwatch // Viewer → sharer (TargetID): stop watching
 	PacketScreenNack    // Viewer → sharer (TargetID): Payload = missing video sequence numbers (see AppendSeqList)
 	PacketScreenAudio   // Sharer → watchers: Opus system audio frame (Seq, Timestamp, Payload)
+
+	PacketKick // Host → room: TargetID was removed; Payload = [ban flag] + host kick proof
 )
 
 // FileMetadata describes a chunked file / code snippet transfer.

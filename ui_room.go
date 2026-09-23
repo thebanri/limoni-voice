@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
@@ -54,6 +56,7 @@ type RoomView struct {
 	OnOpenFolder           func(dirPath string)
 	OnCopyInvite           func()
 	OnToggleKnock          func()
+	OnKickMember           func(target string, ban bool)
 	OnTriggerHop           func()
 	OnChangeNick           func(newNick string)
 	OnTriggerMute          func()
@@ -223,7 +226,7 @@ func (r *RoomView) SendCurrentChat() {
 		case "/help", "/?":
 			r.Messages = append(r.Messages, RoomMessage{
 				Timestamp: time.Now(),
-				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send <path>, /code <snippet>, /folder, /lock [pin], /unlock, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
+				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send <path>, /code <snippet>, /folder, /lock [pin], /unlock, /kick <user>, /ban <user>, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
 				IsChat:    false,
 			})
 			r.mu.Unlock()
@@ -252,6 +255,23 @@ func (r *RoomView) SendCurrentChat() {
 			}
 			return
 
+		case "/kick", "/ban":
+			if len(parts) < 2 {
+				r.Messages = append(r.Messages, RoomMessage{
+					Timestamp: time.Now(),
+					Text:      "Usage: " + cmd + " <user> (host only; /ban also keeps them out while the room is open)",
+					IsChat:    false,
+				})
+				r.mu.Unlock()
+				return
+			}
+			kick := r.OnKickMember
+			r.mu.Unlock()
+			if kick != nil {
+				kick(strings.Join(parts[1:], " "), cmd == "/ban")
+			}
+			return
+
 		case "/knock", "/kapi":
 			toggle := r.OnToggleKnock
 			r.mu.Unlock()
@@ -272,9 +292,9 @@ func (r *RoomView) SendCurrentChat() {
 			openFolderCb := r.OnOpenFolder
 			r.mu.Unlock()
 			if openFolderCb != nil {
-				openFolderCb(GetLimoniTransfersDir())
+				openFolderCb(p2p.GetLimoniTransfersDir())
 			} else {
-				_ = OpenFolder(GetLimoniTransfersDir())
+				_ = OpenFolder(p2p.GetLimoniTransfersDir())
 			}
 			return
 
@@ -524,7 +544,7 @@ func (r *RoomView) Update() {
 	}
 }
 
-func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
+func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
 	if r.IsCompactMode || GetCompactHUD() || area.Height <= 6 {
 		r.renderCompactHUD(frame, area, node, audio)
 		return
@@ -550,10 +570,10 @@ func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *P2PNode, 
 	r.renderFooter(frame, vSplits[2], node, audio)
 }
 
-func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2PNode) {
+func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode) {
 	theme := CurrentTheme()
 	block := widgets.Block{
-		Title:         " LIMONI VOICE ROOM ",
+		Title:         T(" LIMONI VOICE ROOM "),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
@@ -573,7 +593,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	peers := node.GetPeersList()
 	totalCount := len(peers) + 1 // +1 for self
 
-	durStr := fmt.Sprintf("Duration: %s", formatDuration(time.Since(r.StartTime)))
+	durStr := Tf("Duration: %s", formatDuration(time.Since(r.StartTime)))
 	durLen := uint16(len([]rune(durStr)))
 	durX := inner.X + inner.Width - durLen - 1
 
@@ -603,7 +623,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	}
 
 	// 2. Room Code Badge
-	codeBadge := fmt.Sprintf(" Room: %s ", node.RoomCode)
+	codeBadge := Tf(" Room: %s ", node.RoomCode)
 	codeLen := uint16(len([]rune(codeBadge)))
 	if curX+codeLen <= limitX {
 		buf.SetString(curX, inner.Y, codeBadge, cell.Style{
@@ -623,7 +643,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	var roleBadge string
 	var roleStyle cell.Style
 	if node.IsHost {
-		roleBadge = " HOST (YOU) "
+		roleBadge = T(" HOST (YOU) ")
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Warning,
@@ -632,9 +652,9 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	} else {
 		hostName := node.HostNick
 		if hostName == "" {
-			hostName = "Host"
+			hostName = T("Host")
 		}
-		roleBadge = fmt.Sprintf(" MEMBER (Host: %s) ", hostName)
+		roleBadge = Tf(" MEMBER (Host: %s) ", hostName)
 		roleStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Secondary,
@@ -648,7 +668,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	}
 
 	// 4. Member Count
-	countStr := fmt.Sprintf("Members: %d/4", totalCount)
+	countStr := Tf("Members: %d/4", totalCount)
 	countLen := uint16(len([]rune(countStr)))
 	if curX+countLen <= limitX {
 		buf.SetString(curX, inner.Y, countStr, cell.Style{
@@ -665,7 +685,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	if remHop > 0 {
 		hopMin = int(remHop.Minutes())
 	}
-	portBadge := fmt.Sprintf(" Port: :%d (%dm) ", node.Port, hopMin)
+	portBadge := Tf(" Port: :%d (%dm) ", node.Port, hopMin)
 	portLen := uint16(len([]rune(portBadge)))
 	if curX+portLen <= limitX {
 		buf.SetString(curX, inner.Y, portBadge, cell.Style{
@@ -675,7 +695,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 		})
 		pRect := cell.NewRect(curX, inner.Y, portLen, 1)
 		frame.RegisterClickHandler(pRect, func(_ driver.MouseEvent) {
-			r.SetToast(fmt.Sprintf("Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.currentEpoch))
+			r.SetToast(fmt.Sprintf("Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.HopEpoch()))
 		})
 		curX += portLen + 2
 	}
@@ -684,9 +704,9 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	if node.IsLocked {
 		var lockBadge string
 		if node.IsHost && node.RoomPIN != "" {
-			lockBadge = fmt.Sprintf(" LOCKED (PIN: %s) ", node.RoomPIN)
+			lockBadge = Tf(" LOCKED (PIN: %s) ", node.RoomPIN)
 		} else {
-			lockBadge = " LOCKED "
+			lockBadge = T(" LOCKED ")
 		}
 		lockLen := uint16(len([]rune(lockBadge)))
 		if curX+lockLen <= limitX {
@@ -712,28 +732,28 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	var relayBadge string
 	var relayStyle cell.Style
 	if node.IsRelayConnected() {
-		relayBadge = " 🌐 RELAY: CONNECTED "
+		relayBadge = T(" 🌐 RELAY: CONNECTED ")
 		relayStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Success,
 			Modifier: cell.ModifierBold,
 		}
 	} else if node.LanOnly || node.RelayURL == "" || strings.EqualFold(node.RelayURL, "none") || strings.EqualFold(node.RelayURL, "off") || strings.EqualFold(node.RelayURL, "lan") {
-		relayBadge = " 🏠 LAN ONLY "
+		relayBadge = T(" 🏠 LAN ONLY ")
 		relayStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Secondary,
 			Modifier: cell.ModifierBold,
 		}
 	} else if node.Connecting || node.RelayStatus() == "Connecting..." {
-		relayBadge = " ⏳ RELAY: CONNECTING... "
+		relayBadge = T(" ⏳ RELAY: CONNECTING... ")
 		relayStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Warning,
 			Modifier: cell.ModifierBold,
 		}
 	} else {
-		relayBadge = " ⚠ RELAY: OFFLINE (LAN MODE) "
+		relayBadge = T(" ⚠ RELAY: OFFLINE (LAN MODE) ")
 		relayStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Danger,
@@ -747,11 +767,11 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *P2P
 	}
 }
 
-func (r *RoomView) renderGrid(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
+func (r *RoomView) renderGrid(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
 	peers := node.GetPeersList()
 
 	// Find all peers sharing screen in the room
-	var streamingPeers []*PeerInfo
+	var streamingPeers []*p2p.PeerInfo
 	for _, p := range peers {
 		if p.IsSharingScreen {
 			streamingPeers = append(streamingPeers, p)

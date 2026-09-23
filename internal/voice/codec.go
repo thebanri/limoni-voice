@@ -24,6 +24,7 @@ type Encoder struct {
 	pcm          []int16
 	buf          []byte
 	lossHint     int
+	bitrate      int
 }
 
 // NewEncoder creates an encoder for sampleRate (8/12/16/24/48 kHz) and frameSamples per frame.
@@ -37,7 +38,7 @@ func NewEncoder(sampleRate, frameSamples int) (*Encoder, error) {
 	_ = enc.SetComplexity(8)
 	_ = enc.SetInBandFEC(1)
 	_ = enc.SetPacketLoss(DefaultLossHint)
-	return &Encoder{enc: enc, frameSamples: frameSamples, pcm: make([]int16, frameSamples), buf: make([]byte, maxOpusFrameSize), lossHint: DefaultLossHint}, nil
+	return &Encoder{enc: enc, frameSamples: frameSamples, pcm: make([]int16, frameSamples), buf: make([]byte, maxOpusFrameSize), lossHint: DefaultLossHint, bitrate: DefaultBitrate}, nil
 }
 
 // NewMusicEncoder creates an encoder tuned for general audio (screen share system audio):
@@ -52,7 +53,7 @@ func NewMusicEncoder(sampleRate, frameSamples, bitrate int) (*Encoder, error) {
 	_ = enc.SetComplexity(8)
 	_ = enc.SetInBandFEC(1)
 	_ = enc.SetPacketLoss(DefaultLossHint)
-	return &Encoder{enc: enc, frameSamples: frameSamples, pcm: make([]int16, frameSamples), buf: make([]byte, maxOpusFrameSize), lossHint: DefaultLossHint}, nil
+	return &Encoder{enc: enc, frameSamples: frameSamples, pcm: make([]int16, frameSamples), buf: make([]byte, maxOpusFrameSize), lossHint: DefaultLossHint, bitrate: bitrate}, nil
 }
 
 // EncodeInt16 encodes one frame of samples and returns a new packet slice.
@@ -96,6 +97,25 @@ func (e *Encoder) SetPacketLoss(percent int) {
 	}
 	e.lossHint = percent
 	_ = e.enc.SetPacketLoss(percent)
+}
+
+// SetBitrate changes the constant bitrate in bits per second.
+func (e *Encoder) SetBitrate(bps int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if bps == e.bitrate {
+		return
+	}
+	if e.enc.SetBitrate(bps) == nil {
+		e.bitrate = bps
+	}
+}
+
+// Bitrate returns the current bitrate in bits per second.
+func (e *Encoder) Bitrate() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.bitrate
 }
 
 // PacketLoss returns the current loss hint.

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
@@ -17,7 +19,7 @@ import (
 	"github.com/thebanri/limoni/widgets"
 )
 
-func (r *RoomView) renderClassicGrid(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine, peers []*PeerInfo) {
+func (r *RoomView) renderClassicGrid(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine, peers []*p2p.PeerInfo) {
 	rowFl := layout.NewFlexLayout(layout.Vertical, 0,
 		layout.Percentage(50),
 		layout.Percentage(50),
@@ -65,10 +67,10 @@ func (r *RoomView) renderClassicGrid(frame *terminal.Frame, area cell.Rect, node
 	}
 }
 
-func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine, peers []*PeerInfo) {
+func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine, peers []*p2p.PeerInfo) {
 	theme := CurrentTheme()
 	block := widgets.Block{
-		Title:         " VOICE CHANNEL MEMBERS ",
+		Title:         T(" VOICE CHANNEL MEMBERS "),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused},
@@ -95,7 +97,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 
 	// 1. Self Slot
 	selfCard := cell.Rect{X: inner.X, Y: currY, Width: inner.Width, Height: uint16(slotHeight)}
-	r.renderMemberMiniCard(frame, selfCard, node.Nickname+" (YOU)", audio.LocalRMS, audio.IsSpeaking, audio.Muted, audio.Deafened, node.IsSharingScreen, false, 0, false, true)
+	r.renderMemberMiniCard(frame, selfCard, node.Nickname+T(" (YOU)"), audio.LocalRMS, audio.IsSpeaking, audio.Muted, audio.Deafened, node.IsSharingScreen, false, 0, false, true)
 	currY += uint16(slotHeight)
 
 	// 2. Peers Slots
@@ -121,7 +123,7 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 					fps = 60
 				}
 				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
+				opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 				r.SetToast(fmt.Sprintf("Starting %s stream (%d FPS)...", targetPeer.Nickname, fps))
 				go func() {
 					err := node.StartWatchingScreen(targetPeer.ID, port, opts)
@@ -187,9 +189,9 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 
 	titleText := fmt.Sprintf("%s %s", icon, name)
 	if isBeingWatched {
-		titleText += " [WATCHING]"
+		titleText += T(" [WATCHING]")
 	} else if isSharing {
-		titleText += " [LIVE]"
+		titleText += T(" [LIVE]")
 	}
 	buf.SetString(area.X+1, area.Y, titleText, nameStyle)
 
@@ -197,19 +199,19 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	statusStr := ""
 	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if isReconnecting {
-		statusStr = "[Reconnecting...]"
+		statusStr = T("[Reconnecting...]")
 		statusStyle.Fg = theme.Warning
 	} else if isDeafened {
-		statusStr = "[Deafened]"
+		statusStr = T("[Deafened]")
 		statusStyle.Fg = theme.Warning
 	} else if isMuted {
-		statusStr = "[Muted]"
+		statusStr = T("[Muted]")
 		statusStyle.Fg = theme.Danger
 	} else if isSpeaking {
-		statusStr = "[Speaking]"
+		statusStr = T("[Speaking]")
 		statusStyle.Fg = theme.Success
 	} else {
-		statusStr = "[Connected]"
+		statusStr = T("[Connected]")
 	}
 
 	if pingMs > 0 {
@@ -231,9 +233,9 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	}
 }
 
-func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeers []*PeerInfo, node *P2PNode) {
+func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeers []*p2p.PeerInfo, node *p2p.P2PNode) {
 	theme := CurrentTheme()
-	stageTitle := " LIVE STREAM STAGE "
+	stageTitle := T(" LIVE STREAM STAGE ")
 	borderCol := theme.Accent
 	if !node.IsWatchingScreen && !node.IsSharingScreen {
 		borderCol = theme.BorderFocused
@@ -267,7 +269,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			} else if len(streamingPeers) > 0 {
 				watchedNick = streamingPeers[0].Nickname
 			} else {
-				watchedNick = "Stream"
+				watchedNick = T("Stream")
 			}
 		}
 
@@ -275,15 +277,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		if p, ok := node.Peers[node.WatchingPeerID]; ok && p.VideoFPS > 0 {
 			streamFPS = p.VideoFPS
 		}
-		topBarText := fmt.Sprintf(" %s'S LIVE STREAM ACTIVE (%d FPS) ", strings.ToUpper(watchedNick), streamFPS)
+		topBarText := Tf(" %s'S LIVE STREAM ACTIVE (%d FPS) ", strings.ToUpper(watchedNick), streamFPS)
 		buf.SetString(inner.X+3, inner.Y+1, topBarText, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 
-		msg1 := "Playing in high-performance hardware-accelerated video window."
-		msg2 := "Press [W] / [Esc] to close viewer, or click the stop button below."
+		msg1 := T("Playing in high-performance hardware-accelerated video window.")
+		msg2 := T("Press [W] / [Esc] to close viewer, or click the stop button below.")
 		buf.SetString(inner.X+3, inner.Y+3, msg1, cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg})
 		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 
-		btnText := "   [W] STOP WATCHING (Click)   "
+		btnText := T("   [W] STOP WATCHING (Click)   ")
 		btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold}
 		buf.SetString(inner.X+3, inner.Y+6, btnText, btnStyle)
 
@@ -293,7 +295,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		})
 
 		// Show other streams in room to switch easily
-		otherPeers := make([]*PeerInfo, 0)
+		otherPeers := make([]*p2p.PeerInfo, 0)
 		for _, p := range streamingPeers {
 			if p.ID != node.WatchingPeerID {
 				otherPeers = append(otherPeers, p)
@@ -302,7 +304,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 
 		if len(otherPeers) > 0 {
 			switchY := inner.Y + 8
-			buf.SetString(inner.X+3, switchY, "Switch to another live stream:", cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+			buf.SetString(inner.X+3, switchY, T("Switch to another live stream:"), cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 			switchY += 1
 			for idx, p := range otherPeers {
 				btnRowY := switchY + uint16(idx*2)
@@ -314,7 +316,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				if fps <= 0 {
 					fps = 60
 				}
-				swBtnText := fmt.Sprintf("   ► Switch to %s's Stream (%d FPS)   ", p.Nickname, fps)
+				swBtnText := Tf("   ► Switch to %s's Stream (%d FPS)   ", p.Nickname, fps)
 				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
@@ -324,7 +326,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 						port = 50100
 					}
 					opts := screenshare.DefaultReceiverOptions(fps)
-					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
+					opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 					r.SetToast(fmt.Sprintf("Switching to %s...", targetPeer.Nickname))
 					go func() {
 						err := node.StartWatchingScreen(targetPeer.ID, port, opts)
@@ -347,15 +349,15 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			localFPS = 60
 		}
 		stats := node.ScreenStats()
-		msg1 := fmt.Sprintf("YOUR SCREEN IS LIVE (%d FPS)", localFPS)
-		msg2 := "Nobody is watching yet: no video is uploaded until someone opens your stream."
+		msg1 := Tf("YOUR SCREEN IS LIVE (%d FPS)", localFPS)
+		msg2 := T("Nobody is watching yet: no video is uploaded until someone opens your stream.")
 		if stats.Watchers > 0 {
-			msg2 = fmt.Sprintf("%d viewer(s) · %s · %.1f Mbps (adapts to their connection)", stats.Watchers, stats.Preset, float64(stats.Kbps)/1000)
+			msg2 = Tf("%d viewer(s) · %s · %.1f Mbps (adapts to their connection)", stats.Watchers, stats.Preset, float64(stats.Kbps)/1000)
 		}
 		if stats.Audio {
-			msg1 += " + SYSTEM AUDIO"
+			msg1 += T(" + SYSTEM AUDIO")
 		}
-		btnText := "   [V] STOP BROADCAST (Click)   "
+		btnText := T("   [V] STOP BROADCAST (Click)   ")
 
 		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
@@ -371,14 +373,14 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		// If other peers are ALSO broadcasting, allow watching them too
 		if len(streamingPeers) > 0 {
 			switchY := inner.Y + 9
-			buf.SetString(inner.X+3, switchY, "Other Members Streaming in Room (Click to watch):", cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+			buf.SetString(inner.X+3, switchY, T("Other Members Streaming in Room (Click to watch):"), cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 			switchY += 1
 			for idx, p := range streamingPeers {
 				if switchY+uint16(idx*2) >= inner.Y+inner.Height {
 					break
 				}
 				btnRowY := switchY + uint16(idx*2)
-				swBtnText := fmt.Sprintf("   ► Watch %s's Stream   ", p.Nickname)
+				swBtnText := Tf("   ► Watch %s's Stream   ", p.Nickname)
 				swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 				buf.SetString(inner.X+3, btnRowY, swBtnText, swBtnStyle)
 
@@ -393,7 +395,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 						fps = 60
 					}
 					opts := screenshare.DefaultReceiverOptions(fps)
-					opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
+					opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 					r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
 					go func() {
 						err := node.StartWatchingScreen(targetPeer.ID, port, opts)
@@ -416,9 +418,9 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		if streamFPS <= 0 {
 			streamFPS = 60
 		}
-		msg1 := fmt.Sprintf("%s IS SHARING SCREEN (%d FPS)", strings.ToUpper(p.Nickname), streamFPS)
-		msg2 := "Click the button below to watch with 20ms ultra-low latency:"
-		btnText := fmt.Sprintf("   ► [W] WATCH %s STREAM (Click)   ", strings.ToUpper(p.Nickname))
+		msg1 := Tf("%s IS SHARING SCREEN (%d FPS)", strings.ToUpper(p.Nickname), streamFPS)
+		msg2 := T("Click the button below to watch with 20ms ultra-low latency:")
+		btnText := Tf("   ► [W] WATCH %s STREAM (Click)   ", strings.ToUpper(p.Nickname))
 
 		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 		buf.SetString(inner.X+3, inner.Y+4, msg2, cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
@@ -432,7 +434,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				port = 50100
 			}
 			opts := screenshare.DefaultReceiverOptions(streamFPS)
-			opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", p.Nickname, streamFPS)
+			opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", p.Nickname, streamFPS)
 			r.SetToast("Starting stream viewer...")
 			go func() {
 				err := node.StartWatchingScreen(p.ID, port, opts)
@@ -445,8 +447,8 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		})
 		return
 	} else if len(streamingPeers) > 1 {
-		msg1 := fmt.Sprintf("%d MEMBERS ARE SHARING SCREEN IN THIS ROOM", len(streamingPeers))
-		msg2 := "Select which member's live stream you want to watch:"
+		msg1 := Tf("%d MEMBERS ARE SHARING SCREEN IN THIS ROOM", len(streamingPeers))
+		msg2 := T("Select which member's live stream you want to watch:")
 
 		buf.SetString(inner.X+3, inner.Y+2, msg1, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 		buf.SetString(inner.X+3, inner.Y+3, msg2, cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
@@ -462,7 +464,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 			if fps <= 0 {
 				fps = 60
 			}
-			btnText := fmt.Sprintf("   ► WATCH %s'S LIVE STREAM (%d FPS)   ", strings.ToUpper(p.Nickname), fps)
+			btnText := Tf("   ► WATCH %s'S LIVE STREAM (%d FPS)   ", strings.ToUpper(p.Nickname), fps)
 			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 			buf.SetString(inner.X+3, btnRowY, btnText, btnStyle)
 
@@ -472,7 +474,7 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 					port = 50100
 				}
 				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
+				opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
 				r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
 				go func() {
 					err := node.StartWatchingScreen(targetPeer.ID, port, opts)
@@ -517,27 +519,27 @@ func DrawHorizontalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, i
 	}
 }
 
-func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *P2PNode, audio *AudioEngine) {
+func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
 	theme := CurrentTheme()
 	borderStyle := cell.Style{Fg: theme.BorderFocused}
-	statusText := "[LISTENING]"
+	statusText := T("[LISTENING]")
 	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.CardBg}
 
 	if audio.Deafened {
 		borderStyle = cell.Style{Fg: theme.Warning}
-		statusText = "[DEAFENED]"
+		statusText = T("[DEAFENED]")
 		statusStyle = cell.Style{Fg: theme.Warning, Bg: theme.CardBg}
 	} else if audio.Muted {
 		borderStyle = cell.Style{Fg: theme.Danger}
-		statusText = "[MIC OFF]"
+		statusText = T("[MIC OFF]")
 		statusStyle = cell.Style{Fg: theme.Danger, Bg: theme.CardBg}
-	} else if audio.InputMode == InputModePushToTalk {
+	} else if audio.InputMode == engine.InputModePushToTalk {
 		if audio.IsTransmitting() {
 			borderStyle = cell.Style{
 				Fg:       theme.Success,
 				Modifier: cell.ModifierBold,
 			}
-			statusText = "[PTT TALKING...]"
+			statusText = T("[PTT TALKING...]")
 			statusStyle = cell.Style{
 				Fg:       theme.Success,
 				Bg:       theme.CardBg,
@@ -545,7 +547,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			}
 		} else {
 			borderStyle = cell.Style{Fg: theme.BorderFocused}
-			statusText = "[PTT IDLE (SPACE)]"
+			statusText = T("[PTT IDLE (SPACE)]")
 			statusStyle = cell.Style{
 				Fg: theme.Warning,
 				Bg: theme.CardBg,
@@ -556,7 +558,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			Fg:       theme.Success,
 			Modifier: cell.ModifierBold,
 		}
-		statusText = "[SPEAKING...]"
+		statusText = T("[SPEAKING...]")
 		statusStyle = cell.Style{
 			Fg:       theme.Success,
 			Bg:       theme.CardBg,
@@ -564,7 +566,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		}
 	}
 
-	title := fmt.Sprintf(" [1] %s (YOU) ", node.Nickname)
+	title := Tf(" [1] %s (YOU) ", node.Nickname)
 	block := widgets.Block{
 		Title:         title,
 		Borders:       widgets.BorderAll,
@@ -583,10 +585,11 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: theme.Text, Bg: theme.CardBg})
-	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
+	statusLabel := T("Status: ")
+	buf.SetString(inner.X+1, inner.Y, statusLabel, cell.Style{Fg: theme.Text, Bg: theme.CardBg})
+	buf.SetString(inner.X+1+uint16(len([]rune(statusLabel))), inner.Y, statusText, statusStyle)
 
-	gainStr := fmt.Sprintf("Vol: %.0f%%", audio.Gain*100)
+	gainStr := Tf("Vol: %.0f%%", audio.Gain*100)
 	if inner.Width > uint16(len([]rune(gainStr)))+1 {
 		buf.SetString(inner.X+inner.Width-uint16(len([]rune(gainStr)))-1, inner.Y, gainStr, cell.Style{Fg: theme.Secondary, Bg: theme.CardBg})
 	}
@@ -603,7 +606,7 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			Width:  inner.Width - 2,
 			Height: meterHeight,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "AUDIO LEVEL")
+		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, T("AUDIO LEVEL"))
 
 		// Broadcast Banner
 		bannerY := inner.Y + meterHeight + 1
@@ -622,13 +625,13 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 		if localFPS <= 0 {
 			localFPS = 60
 		}
-		bTitle := fmt.Sprintf(" LIVE: Sharing Your Screen (%d FPS) ", localFPS)
+		bTitle := Tf(" LIVE: Sharing Your Screen (%d FPS) ", localFPS)
 		if uint16(len([]rune(bTitle))) > bannerW {
-			bTitle = " LIVE STREAMING "
+			bTitle = T(" LIVE STREAMING ")
 		}
 		buf.SetString(inner.X+2, bannerY, bTitle, bannerStyle)
 
-		bAction := "   [V] Stop Broadcast (Click)   "
+		bAction := T("   [V] Stop Broadcast (Click)   ")
 		bActionStyle := cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Danger,
@@ -648,14 +651,14 @@ func (r *RoomView) renderLocalSlot(frame *terminal.Frame, area cell.Rect, node *
 			Width:  inner.Width - 2,
 			Height: inner.Height - 1,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "AUDIO LEVEL")
+		DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, T("AUDIO LEVEL"))
 	}
 }
 
-func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *PeerInfo, node *P2PNode, audio *AudioEngine, slotNum int) {
+func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *p2p.PeerInfo, node *p2p.P2PNode, audio *engine.AudioEngine, slotNum int) {
 	theme := CurrentTheme()
 	borderStyle := cell.Style{Fg: theme.Border}
-	statusText := "[LISTENING]"
+	statusText := T("[LISTENING]")
 	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.CardBg}
 
 	if peer.IsSharingScreen {
@@ -667,7 +670,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 
 	if time.Since(peer.LastSeen) > 3500*time.Millisecond {
 		borderStyle = cell.Style{Fg: theme.Warning}
-		statusText = "[RECONNECTING...]"
+		statusText = T("[RECONNECTING...]")
 		statusStyle = cell.Style{
 			Fg:       theme.Warning,
 			Bg:       theme.CardBg,
@@ -675,18 +678,18 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		}
 	} else if peer.IsDeafened {
 		borderStyle = cell.Style{Fg: theme.Warning}
-		statusText = "[DEAFENED]"
+		statusText = T("[DEAFENED]")
 		statusStyle = cell.Style{Fg: theme.Warning, Bg: theme.CardBg}
 	} else if peer.IsMuted {
 		borderStyle = cell.Style{Fg: theme.Danger}
-		statusText = "[MIC OFF]"
+		statusText = T("[MIC OFF]")
 		statusStyle = cell.Style{Fg: theme.Danger, Bg: theme.CardBg}
 	} else if peer.Speaking {
 		borderStyle = cell.Style{
 			Fg:       theme.Success,
 			Modifier: cell.ModifierBold,
 		}
-		statusText = "[SPEAKING...]"
+		statusText = T("[SPEAKING...]")
 		statusStyle = cell.Style{
 			Fg:       theme.Success,
 			Bg:       theme.CardBg,
@@ -696,7 +699,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 
 	title := fmt.Sprintf(" [%d] %s ", slotNum, peer.Nickname)
 	if peer.IsSharingScreen {
-		title = fmt.Sprintf(" [%d] %s 🔴 [LIVE STREAMING] ", slotNum, peer.Nickname)
+		title = Tf(" [%d] %s 🔴 [LIVE STREAMING] ", slotNum, peer.Nickname)
 	}
 
 	block := widgets.Block{
@@ -717,14 +720,15 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: theme.Text, Bg: theme.CardBg})
-	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
+	statusLabel := T("Status: ")
+	buf.SetString(inner.X+1, inner.Y, statusLabel, cell.Style{Fg: theme.Text, Bg: theme.CardBg})
+	buf.SetString(inner.X+1+uint16(len([]rune(statusLabel))), inner.Y, statusText, statusStyle)
 
-	pingStr := "PING: --"
+	pingStr := T("PING: --")
 	if peer.PingMs > 0 {
-		pingStr = fmt.Sprintf("PING: %dms (%s)", peer.PingMs, peerTransport(node, peer))
+		pingStr = Tf("PING: %dms (%s)", peer.PingMs, peerTransport(node, peer))
 		if peer.LossPct >= 1 {
-			pingStr = fmt.Sprintf("PING: %dms %d%% loss (%s)", peer.PingMs, int(peer.LossPct), peerTransport(node, peer))
+			pingStr = Tf("PING: %dms %d%% loss (%s)", peer.PingMs, int(peer.LossPct), peerTransport(node, peer))
 		}
 	}
 	volVal := 1.0
@@ -732,7 +736,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		volVal = audio.GetPeerVolume(peer.ID)
 	}
 	volPct := int(math.Round(volVal * 100))
-	volStr := fmt.Sprintf("[VOL: %d%%]", volPct)
+	volStr := Tf("[VOL: %d%%]", volPct)
 	volLen := uint16(len([]rune(volStr)))
 	pingLen := uint16(len([]rune(pingStr)))
 
@@ -796,7 +800,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			Width:  inner.Width - 2,
 			Height: meterHeight,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, "AUDIO LEVEL")
+		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, T("AUDIO LEVEL"))
 
 		// Stream Preview Card Box
 		bannerY := inner.Y + meterHeight + 1
@@ -817,14 +821,14 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 		if peerFPS <= 0 {
 			peerFPS = 60
 		}
-		bTitle := fmt.Sprintf(" %s Sharing Screen (%d FPS)", peer.Nickname, peerFPS)
+		bTitle := Tf(" %s Sharing Screen (%d FPS)", peer.Nickname, peerFPS)
 		if uint16(len([]rune(bTitle))) > bannerW {
-			bTitle = fmt.Sprintf(" %s LIVE STREAM", peer.Nickname)
+			bTitle = Tf(" %s LIVE STREAM", peer.Nickname)
 		}
 		buf.SetString(inner.X+2, bannerY, bTitle, bannerBg)
 
 		if node.IsWatchingScreen && node.WatchingPeerID == peer.ID {
-			bBtnText := "   [W] Stop Watching (Click)   "
+			bBtnText := T("   [W] Stop Watching (Click)   ")
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Danger,
@@ -832,7 +836,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
 		} else if node.IsWatchingScreen {
-			bBtnText := "   ► Switch to Stream (Click)   "
+			bBtnText := T("   ► Switch to Stream (Click)   ")
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Secondary,
@@ -840,7 +844,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			}
 			buf.SetString(inner.X+2, bannerY+1, bBtnText, bBtnStyle)
 		} else {
-			bBtnText := "   ► [W] WATCH STREAM (Click)   "
+			bBtnText := T("   ► [W] WATCH STREAM (Click)   ")
 			bBtnStyle := cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Accent,
@@ -862,7 +866,7 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 					port = 50100
 				}
 				opts := screenshare.DefaultReceiverOptions(peerFPS)
-				opts.WindowTitle = fmt.Sprintf("Limoni Voice - %s Live Stream (%d FPS)", peer.Nickname, peerFPS)
+				opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", peer.Nickname, peerFPS)
 				r.SetToast("🎬 Starting stream viewer...")
 				go func() {
 					err := node.StartWatchingScreen(peer.ID, port, opts)
@@ -882,14 +886,14 @@ func (r *RoomView) renderPeerSlot(frame *terminal.Frame, area cell.Rect, peer *P
 			Width:  inner.Width - 2,
 			Height: inner.Height - 1,
 		}
-		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, "AUDIO LEVEL")
+		DrawVerticalLevelMeter(buf, meterRect, peer.RMS, peer.Speaking, peer.IsMuted, T("AUDIO LEVEL"))
 	}
 }
 
 func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCode string, slotNum int) {
 	theme := CurrentTheme()
 	block := widgets.Block{
-		Title:         fmt.Sprintf(" [%d] EMPTY SLOT (WAITING) ", slotNum),
+		Title:         Tf(" [%d] EMPTY SLOT (WAITING) ", slotNum),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.Border},
@@ -906,9 +910,9 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 		}
 	}
 
-	txt1 := "Invite Your Friend:"
-	txt2 := fmt.Sprintf("Room Code: %s", roomCode)
-	txt3 := "Press [C] to copy the code"
+	txt1 := T("Invite Your Friend:")
+	txt2 := Tf("Room Code: %s", roomCode)
+	txt3 := T("Press [C] to copy the code")
 
 	frame.RegisterClickHandler(area, func(_ driver.MouseEvent) {
 		CopyToClipboard(roomCode)

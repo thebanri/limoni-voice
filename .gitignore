@@ -20,3 +20,6 @@ screenshare/machelper/limoni-sck
 
 # Large media lives on the orphan "media" branch (see its README)
 *.gif
+
+# Native macOS launcher (produced by CI)
+macos/build/

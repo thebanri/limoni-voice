@@ -89,3 +89,15 @@ func TestPollerEdgesAndReleaseOnClose(t *testing.T) {
 	default:
 	}
 }
+
+// Every key the settings offer has a macOS virtual key code (mouse buttons are read apart).
+func TestMacKeysCoverEveryKey(t *testing.T) {
+	for _, k := range Keys {
+		if k == "Mouse4" || k == "Mouse5" {
+			continue
+		}
+		if _, ok := macKeys[k]; !ok {
+			t.Errorf("no macOS key code for %q", k)
+		}
+	}
+}

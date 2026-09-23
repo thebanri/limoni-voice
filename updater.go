@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -216,6 +217,16 @@ func FindMatchingAsset(release *GitHubRelease, goos, goarch string) *GitHubAsset
 // binary and replaces execPath. Unverifiable updates are refused.
 func DownloadAndApplyUpdate(release *GitHubRelease, execPath string) error {
 	asset := FindMatchingAsset(release, runtime.GOOS, runtime.GOARCH)
+	// Inside Limoni Voice.app the whole bundle is replaced: swapping only the binary would
+	// break the bundle's signature seal, and macOS may then refuse to open the app.
+	bundle, inBundle := macAppBundleRoot(runtime.GOOS, execPath)
+	if inBundle {
+		if appAsset := FindMacAppAsset(release, runtime.GOARCH); appAsset != nil {
+			asset = appAsset
+		} else {
+			inBundle = false
+		}
+	}
 	if asset == nil {
 		return fmt.Errorf("no compatible release asset found for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
@@ -254,6 +265,10 @@ func DownloadAndApplyUpdate(release *GitHubRelease, execPath string) error {
 	}
 	if err := VerifyAssetChecksum(assetData, expected); err != nil {
 		return fmt.Errorf("%s: %w", asset.Name, err)
+	}
+
+	if inBundle {
+		return replaceAppBundle(bundle, assetData)
 	}
 
 	newBinaryData := assetData
@@ -427,6 +442,11 @@ func replaceExecutable(targetPath string, newBytes []byte) error {
 	_ = os.Remove(oldPath)
 
 	if err := os.Rename(targetPath, oldPath); err != nil {
+		if runtime.GOOS == "darwin" {
+			// Rewriting a signed binary in place makes macOS kill it at its next launch
+			// (the kernel caches the old code signature for the file).
+			return fmt.Errorf("failed to replace executable: %w", err)
+		}
 		// If rename fails (e.g. permissions), attempt direct overwrite
 		if errWrite := os.WriteFile(targetPath, newBytes, 0755); errWrite != nil {
 			return fmt.Errorf("failed to replace executable: %w (direct write: %v)", err, errWrite)
@@ -443,4 +463,124 @@ func replaceExecutable(targetPath string, newBytes []byte) error {
 	// Clean up old backup file
 	_ = os.Remove(oldPath)
 	return nil
+}
+
+// macAppBundleRoot returns the .app bundle execPath runs from on macOS.
+func macAppBundleRoot(goos, execPath string) (string, bool) {
+	if goos != "darwin" {
+		return "", false
+	}
+	const marker = ".app/Contents/MacOS/"
+	i := strings.LastIndex(execPath, marker)
+	if i < 0 {
+		return "", false
+	}
+	return execPath[:i+len(".app")], true
+}
+
+// FindMacAppAsset finds the zipped Limoni Voice.app for the architecture.
+func FindMacAppAsset(release *GitHubRelease, goarch string) *GitHubAsset {
+	if release == nil {
+		return nil
+	}
+	suffix := "_macos_" + strings.ToLower(goarch) + ".app.zip"
+	for i := range release.Assets {
+		if strings.HasSuffix(strings.ToLower(release.Assets[i].Name), suffix) {
+			return &release.Assets[i]
+		}
+	}
+	return nil
+}
+
+// replaceAppBundle unpacks a zipped .app next to bundle and swaps it in. The running copy
+// keeps working (open files outlive the rename) and the new one starts next time.
+func replaceAppBundle(bundle string, zipData []byte) error {
+	parent := filepath.Dir(bundle)
+	tmp, err := os.MkdirTemp(parent, ".limoni-update-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+
+	name, err := extractAppZip(zipData, tmp)
+	if err != nil {
+		return fmt.Errorf("extraction error: %w", err)
+	}
+	fresh := filepath.Join(tmp, name)
+	if st, err := os.Stat(filepath.Join(fresh, "Contents", "MacOS", "limoni-voice")); err != nil || st.Size() < 100000 {
+		return errors.New("downloaded app bundle has no Limoni Voice binary")
+	}
+
+	old := bundle + ".old"
+	_ = os.RemoveAll(old)
+	if err := os.Rename(bundle, old); err != nil {
+		return fmt.Errorf("failed to move the current app aside: %w", err)
+	}
+	if err := os.Rename(fresh, bundle); err != nil {
+		_ = os.Rename(old, bundle)
+		return fmt.Errorf("failed to install the new app: %w", err)
+	}
+	_ = os.RemoveAll(old)
+	return nil
+}
+
+// extractAppZip unpacks the single .app directory in data into dir and returns its name.
+// Entries outside that directory, absolute paths and ".." are refused.
+func extractAppZip(data []byte, dir string) (string, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+	app := ""
+	var total int64
+	for _, f := range zr.File {
+		name := filepath.ToSlash(f.Name)
+		if strings.HasPrefix(name, "/") || strings.Contains("/"+name+"/", "/../") {
+			return "", fmt.Errorf("unsafe path %q", f.Name)
+		}
+		top, _, _ := strings.Cut(name, "/")
+		if !strings.HasSuffix(top, ".app") || (app != "" && top != app) {
+			return "", fmt.Errorf("unexpected entry %q", f.Name)
+		}
+		app = top
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		mode := f.Mode()
+		switch {
+		case mode.IsDir():
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return "", err
+			}
+			continue
+		case mode&os.ModeSymlink != 0:
+			return "", fmt.Errorf("symbolic link %q in app bundle", f.Name)
+		}
+		total += int64(f.UncompressedSize64)
+		if total > maxUpdateSize {
+			return "", errors.New("app bundle too large")
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return "", err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return "", err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm()|0o600)
+		if err != nil {
+			rc.Close()
+			return "", err
+		}
+		_, err = io.Copy(out, io.LimitReader(rc, maxUpdateSize))
+		rc.Close()
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	if app == "" {
+		return "", errors.New("no .app in archive")
+	}
+	return app, nil
 }

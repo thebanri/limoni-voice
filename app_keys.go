@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/driver"
 )
@@ -395,7 +396,7 @@ func pttKeyName(e driver.KeyEvent) (rune, string) {
 
 // isPTTKeyEvent reports whether a terminal key event matches the configured PTT key.
 func (a *App) isPTTKeyEvent(e driver.KeyEvent) bool {
-	if a.audio.InputMode != InputModePushToTalk {
+	if a.audio.InputMode != engine.InputModePushToTalk {
 		return false
 	}
 	_, name := pttKeyName(e)
@@ -406,9 +407,9 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 	audio := a.audio
 	if audio.PTTListeningKey {
 		if e.Type == driver.KeyEsc {
-			audio.mu.Lock()
+			audio.Lock()
 			audio.PTTListeningKey = false
-			audio.mu.Unlock()
+			audio.Unlock()
 			return
 		}
 		if key, name := pttKeyName(e); name != "" {
@@ -427,7 +428,7 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 	case driver.KeyEsc:
 		a.closeTestModal()
 	case driver.KeySpace:
-		if audio.InputMode == InputModeVoiceActivity {
+		if audio.InputMode == engine.InputModeVoiceActivity {
 			audio.ToggleLoopback()
 		}
 	case driver.KeyArrowLeft:
@@ -437,10 +438,10 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 	case driver.KeyRune:
 		switch e.Ch {
 		case 'k', 'K':
-			if audio.InputMode == InputModePushToTalk {
-				audio.mu.Lock()
+			if audio.InputMode == engine.InputModePushToTalk {
+				audio.Lock()
 				audio.PTTListeningKey = true
-				audio.mu.Unlock()
+				audio.Unlock()
 			}
 		case 'p', 'P':
 			audio.CycleInputMode()
@@ -457,6 +458,8 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 			audio.ToggleLoopback()
 		case 'b', 'B':
 			a.toggleNotificationsToast()
+		case 'i', 'I':
+			a.cycleLanguage()
 		case 's', 'S':
 			if audio.ToggleVoiceSmoothing() {
 				a.toast("Voice smoothing ON")
@@ -639,6 +642,8 @@ func (a *App) handleLobbyKey(e driver.KeyEvent) {
 			a.openTestModal()
 		case 'r', 'R':
 			a.openRelayModal()
+		case 'l', 'L':
+			a.cycleLanguage()
 		case 'q', 'Q':
 			a.openExitModal()
 		}
@@ -735,7 +740,7 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 		case '/':
 			room.SetChatFocused(true)
 		case 'p', 'P':
-			if audio.CycleInputMode() == InputModePushToTalk {
+			if audio.CycleInputMode() == engine.InputModePushToTalk {
 				room.SetToast(fmt.Sprintf("Mode: Push-to-Talk (Hold %s to talk)", audio.GetPTTKeyName()))
 			} else {
 				room.SetToast("Mode: Voice Activity (Always on / VAD)")

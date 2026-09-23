@@ -37,7 +37,7 @@
 <td width="50%">
 
 ### 🎙️ Sesli Konuşma
-- **Opus 48 kHz**: 32 kbps CBR, bant içi FEC ve paket kaybına göre ayarlanan kodlama
+- **Opus 48 kHz**: Bant içi FEC'li CBR; FEC fazlalığı alıcıların paket kaybını izler, bit hızı da odadaki en kötü bağlantıya göre 12–32 kbps arasında değişir (kayıp veya yüksek gecikmede hızla düşer, 10 sn temiz rapordan sonra geri yükselir)
 - **Uyarlanabilir Jitter Tamponu**: RFC 3550 jitter tahmini, kayıp gizleme (PLC) ve FEC kurtarma
 - **Yankı Giderme (AEC)**: Saf Go Speex MDF portu — kulaklıksız hoparlörle konuşabilirsiniz
 - **Gürültü & Tıkırtı Bastırma**: Çok bantlı filtre veya saf Go RNNoise (KAPALI / AÇIK / YÜKSEK / AI) ve klavye tıkırtısı / alkış için ileriye bakan ani ses bastırıcı
@@ -53,7 +53,7 @@
 - **60 FPS Donanım Hızlandırmalı** ekran yakalama (1080p, ultra düşük gecikme)
 - **Yerel Platform API Desteği**:
   - **🪟 Windows**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Win32 GDI & DWM pencere yakalama / FFmpeg gdigrab ekran yakalama ile pencere ve monitör seçimi)
-  - **🍎 macOS**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Yerel ScreenCaptureKit & CoreMedia API'leri ile donanım hızlandırmalı yakalama)
+  - **🍎 macOS**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Herhangi bir ekranı veya pencereyi yerel ScreenCaptureKit ile yakalama, x264 yedekli VideoToolbox donanım kodlaması ve eksik bir macOS izni olduğunda açık uyarı)
   - **🐧 Linux (GNOME)**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (Doğrudan Mutter PipeWire tam ekran ve Portal pencere seçici)
   - **🐧 Linux (KDE Plasma)**: ✅ **Test Edildi & Sorunsuz Çalışıyor** (XDG Desktop Portal PipeWire ekran & pencere seçimi)
   - **🐧 Diğer Linux Ortamları (Hyprland, Sway, XFCE vb.)**: ⚠️ *Deneysel / Henüz Test Edilmedi* (GPU Screen Recorder / FFmpeg fallback)
@@ -75,7 +75,7 @@
 - **UDP Relay**: Doğrudan yol kurulamazsa (symmetric NAT, CGNAT) düşük gecikmeli şifreli medya aktarımı
 - **Yedekli Ses**: Ses hem relay hem doğrudan yoldan gönderilir, alıcı tekrarları ayıklar
 - **Canlı Tanılama**: Debug panelinde (`F12`) ve `/net` komutunda peer başına yol, RTT, kayıp ve jitter
-- **Relay Sunucusu**: Prometheus `/metrics` ve yapılandırılmış log destekli hafif Go sunucusu
+- **Relay Sunucusu**: Prometheus `/metrics` (boşta oda ve kick/ban sayaçları dahil), yapılandırılmış log ve yeniden başlatmadan değiştirilebilen erişim token'ları olan hafif Go sunucusu
 
 </td>
 <td width="50%">
@@ -87,6 +87,7 @@
 - **Neon & Cyberpunk Paletleri**: Çoklu temalar (Neon, Cyberpunk, Synthwave, Monokai, Dracula)
 - **Canlı VU-Meter**: Gerçek zamanlı ses dalga formu ve seviye görselleştirme
 - **Toast Bildirimleri**: Anlık durum mesajları
+- **English & Türkçe**: Arayüz dili lobide `L`, ses ayarlarında `I`, `--lang tr` veya `LIMONI_LANG=tr` ile değiştirilir
 
 </td>
 </tr>
@@ -105,9 +106,10 @@
 ### 💬 Sohbet & Oda Güvenliği
 - **Terminal İçi Chat**: Çok satırlı metin yazımı, tıklanabilir linkler & slash komutları (`/help`, `/clear`)
 - **Masaüstü Bildirimleri**: Terminal arka plandayken gelen mesaj, katılım ve dosya teklifleri sistem bildirimi olarak gösterilir (ayarlarda `B` ile açılıp kapanır)
-- **Davet Bağlantıları**: `/invite` bir `limoni://join/<anahtar>` bağlantısı kopyalar; Linux ve Windows kurulumlarında bağlantı Limoni Voice'u oda kodu dolu olarak açar (katılmak için Enter). `limoni-voice --join <anahtar veya bağlantı>` doğrudan katılır
+- **Davet Bağlantıları**: `/invite` bir `limoni://join/<anahtar>` bağlantısı kopyalar; Linux, Windows ve macOS (Limoni Voice.app) kurulumlarında bağlantı Limoni Voice'u oda kodu dolu olarak açar (katılmak için Enter). `limoni-voice --join <anahtar veya bağlantı>` doğrudan katılır
 - **Kapı Çalma**: `/knock` açıkken oda anahtarını bilen herkes, host onu içeri alana (`Y`) ya da geri çevirene (`N`) kadar bekler
 - **Oda Kilidi & PIN**: 4 haneli PIN koruması (`/lock <pin>`) ve host kilit yönetimi
+- **Atma & Yasaklama**: Host bir üyeyi `/kick <kullanıcı>` ile çıkarır ya da `/ban <kullanıcı>` ile oda açık kaldıkça dışarıda tutar. Çıkarma host'un anahtarıyla kanıtlanır, üyeler sahte çıkarma yapamaz; grup anahtarı anında yenilenir, çıkarılan üye odayı takip edemez
 - **Bas-Konuş (PTT)**: Ayarlanabilir bas-konuş tuşu ve konuşma algılama
 - **Kişi Bazlı Ses Ayarı**: Katılımcı başına bağımsız ses seviyesi ve AGC güçlendirme
 
@@ -143,21 +145,26 @@
 
 ```
 limoni-voice/
-├── main.go              # Başlatıcı: bayraklar, terminal, düğüm
-├── app*.go              # Uygulama durumu, tuş/fare yönlendirme, render, ayarlar
-├── network*.go          # P2P düğüm: relay, el sıkışma, NAT, medya, dosya, istatistik
-├── audio.go             # Ses motoru: 48 kHz yakalama/oynatma, VAD, AEC, gürültü
-├── ui_lobby.go          # Lobi ekranı: 3D mikrofon, girişler, menü
-├── ui_room.go           # Oda ekranı: katılımcı kartları, VU-meter, sohbet
-├── dialogs.go           # Modallar: ses ayarları, relay, debug/tanılama, paylaşım
+├── main.go              # Başlatıcı: bayraklar, dil, log dosyası, terminal, düğüm
+├── app*.go              # Uygulama durumu, tuş/fare yönlendirme, render, ayarlar, kick/knock arayüzü
+├── ui_*.go              # Lobi ve oda ekranları: kartlar, HUD, sohbet, kontroller
+├── dialogs.go           # Modallar: ses ayarları, relay, debug/tanılama, paylaşım, dosya teklifleri
+├── i18n.go              # internal/i18n üzerinde T / Tf / tr yardımcıları
 ├── internal/
+│   ├── p2p/             # P2P düğüm: relay, el sıkışma, NAT, medya, dosya, ekran paylaşımı, kick/ban, istatistik
+│   ├── engine/          # Ses motoru: 48 kHz yakalama/oynatma, VAD, AEC, gürültü, miksaj, efektler
+│   ├── i18n/            # Arayüz çevirileri (İngilizce kaynak, Türkçe katalog)
+│   ├── applog/          # Kullanıcı durum klasöründe dönen tanılama logu
 │   ├── protocol/        # İkili paket formatı + relay sinyal tipleri
-│   ├── e2ee/            # Oda kodu, CPace PAKE el sıkışma, epoch anahtarlığı
-│   ├── relay/           # Relay sunucusu (WebSocket + UDP) ve metrikler
+│   ├── e2ee/            # Oda kodu, CPace PAKE el sıkışma, epoch anahtarlığı, üye kanıtları
+│   ├── relay/           # Relay sunucusu (WebSocket + UDP), kick/ban, token yenileme, metrikler
 │   ├── nat/             # STUN NAT sınıflandırma, delme stratejileri, IPv6
-│   ├── voice/           # Opus codec, uyarlanabilir jitter tamponu
+│   ├── voice/           # Opus codec, uyarlanabilir bit hızı, jitter tamponu
 │   ├── dsp/             # Speex MDF yankı giderici, RNNoise, FFT
 │   ├── audioio/         # PulseAudio / CoreAudio / winmm / tool fallback
+│   ├── sysaudio/        # Ekran paylaşımı için sistem sesi yakalama
+│   ├── video/           # Ekran paylaşımı video taşıma (sıralama, hız, NACK)
+│   ├── notify/          # Masaüstü bildirimleri
 │   └── ptt/             # Sistem geneli bas-konuş (X11, portal, Win32, macOS)
 ├── screenshare/         # Ekran paylaşımı modülü (GPU Rec, FFmpeg, MPV)
 ├── relay-server/        # Relay binary'si (internal/relay üzerinde ince katman)
@@ -188,7 +195,7 @@ irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install
 > [!IMPORTANT]
 > - **🪟 Windows**: Sesli konuşma tamamen **sıfır bağımlılıkla** doğrudan çalışır (yerel Win32 `winmm` ses API'leri kullanılır). Ekran paylaşımı için **FFmpeg** ve **MPV** gereklidir.
 > - **🐧 Linux**: Standart PulseAudio, PipeWire veya ALSA bulunan Linux dağıtımlarında sesli konuşma doğrudan çalışır. Ekran paylaşımı için **FFmpeg** ve **MPV** gereklidir.
-> - **🍎 macOS**: Sesli konuşma yerel CoreAudio kullanır (bağımlılık gerekmez). Ekran paylaşımı için Homebrew ile **FFmpeg** ve **MPV** kurun:
+> - **🍎 macOS**: macOS 12 Monterey veya sonrası gerekir. Sesli konuşma yerel CoreAudio kullanır (bağımlılık gerekmez). Ekran paylaşımı için Homebrew ile **FFmpeg** ve **MPV** kurun:
 >   ```bash
 >   brew install ffmpeg mpv
 >   ```
@@ -270,7 +277,7 @@ Arkadaşlarınızın komut satırıyla uğraşmaması için doğrudan uygulama i
 - Herhangi bir ekranda **`F5`** kısayoluna basın.
 - Oda içindeyken sohbete **`/relay`** veya **`/server`** yazın.
 
-Açılan animasyonlu pencerede **WebSocket Adresini** (örn. `wss://funny-animal-1234.trycloudflare.com/ws` veya `ws://192.168.1.100:27850/ws`) ve sunucu şifresini yazıp **`[ Kaydet ve Bağlan ]`** deyin. Ayarlar kalıcı olarak kaydedilir (`settings.json`).
+Açılan animasyonlu pencerede **WebSocket Adresini** (örn. `wss://funny-animal-1234.trycloudflare.com/ws` veya `ws://192.168.1.100:27850/ws`) ve sunucu şifresini yazıp **`[ Save & Connect ]`** (Türkçe arayüzde **`[ Kaydet & Bağlan ]`**) deyin. Ayarlar kalıcı olarak kaydedilir (`settings.json`).
 
 ##### 2. Komut Satırı veya Ortam Değişkenleri ile:
 ```bash
@@ -350,7 +357,8 @@ Cloudflare Tunnel yalnızca **TCP/WebSocket** taşır. İki kişi doğrudan bağ
 | `PORT` | `27850` | HTTP/WebSocket TCP portu |
 | `UDP_PORT` | `PORT` ile aynı | UDP relay portu (`0` / `off` kapatır) |
 | `RELAY_UDP_PUBLIC_ADDR` | – | UDP için duyurulan `host:port` (tünel arkasında zorunlu) |
-| `RELAY_AUTH_TOKEN` | – | İstemciler için isteğe bağlı parola |
+| `RELAY_AUTH_TOKEN` | – | İstemciler için isteğe bağlı parola; virgülle birden fazla verilebilir (ör. değiştirirken eski ve yeni) |
+| `RELAY_AUTH_TOKEN_FILE` | – | Her satırda bir kabul edilen parola bulunan dosya (`#` yorum). `SIGHUP` ile (`docker kill -s HUP limoni-relay`) ve dosya değiştiğinde yeniden okunur; parolalar yeniden başlatmadan değişir, açık bağlantılar kopmaz |
 | `TRUST_PROXY` | `false` | `CF-Connecting-IP` / `X-Forwarded-For` başlıklarına her zaman güven (özel ağdaki proxy'lere zaten güvenilir) |
 | `LOG_FORMAT` / `LOG_LEVEL` | `json` / `info` | Log biçimi ve seviyesi |
 
@@ -384,9 +392,25 @@ export LIMONI_LAN_ONLY=1
 | `--connect <ip:port>` | `LIMONI_PEER` | `""` | `--peer` parametresinin takma adı |
 | `--sysaudio-test` | - | - | Sistem sesini 5 sn yakalar, seviyeyi yazdırır ve çıkar (ekran paylaşımı sesi teşhisi) |
 | `--version` | - | - | Sürüm bilgisini gösterir |
+| `--lang <en\|tr>` | `LIMONI_LANG` | kayıtlı ayar, yoksa `en` | Arayüz dili (English / Türkçe) |
+| `--log-file <yol>` | `LIMONI_LOG_FILE` | aşağıya bakın | Tanılama log dosyası |
 | `--help`, `-h` | - | - | Yardım ve kullanım parametrelerini listeler |
 
 ---
+
+### 🌍 Arayüz Dili
+
+Arayüz İngilizce yazılmıştır ve Türkçe çevirisiyle gelir. Lobide `L`, ses ayarlarında (`T`) `I` tuşuyla dil değişir; seçim `settings.json`'a kaydedilir. `--lang` ve `LIMONI_LANG` o çalıştırma için bunu geçersiz kılar. Log dosyaları hata bildirimlerinde paylaşılabilsin diye İngilizce kalır.
+
+### 📝 Tanılama Logu
+
+Log, uygulamanın başlatıldığı klasör yerine kullanıcı durum klasörüne yazılır ve 5 MB'ta döner (bir `.1` yedeği tutulur):
+
+| Platform | Konum |
+|----------|-------|
+| Linux | `$XDG_STATE_HOME/limoni-voice/limoni-voice.log` (`~/.local/state/limoni-voice/`) |
+| macOS | `~/Library/Logs/limoni-voice/limoni-voice.log` |
+| Windows | `%LOCALAPPDATA%\limoni-voice\logs\limoni-voice.log` |
 
 ### 🖥️ Ekran Paylaşımı İpuçları
 
@@ -395,7 +419,22 @@ export LIMONI_LAN_ONLY=1
 - Debug panelinde (**`F12`**) ön ayar, anlık bit hızı, izleyici sayısı, gönderim kuyruğu ve yeniden gönderimler görünür.
 - **Relay sunucusu işletenler:** relay üzerinden kişiye özel gönderim için relay sunucusunu güncelleyin; eski relay'ler de çalışır ama relay'e düşen görüntüyü tüm odaya iletir.
 - **Sistem sesi paylaşılmıyorsa:** `limoni-voice --sysaudio-test` komutunu çalıştırın; yakalama arka ucunu ve siz bir şey çalarken seviye çubuğunu gösterir. Windows'ta varsayılan çıkış aygıtı yakalanır (Ses ayarları → Çıkış); o aygıtta ses çalmıyorsa hiçbir veri gelmez.
-- **macOS:** sürüm paketleri yakalama yardımcısını içerir; kendiniz derlerseniz ilk kullanımda derlenir (`xcode-select --install`). Sistem sesi macOS 13+ ister.
+- **macOS:** sürüm paketleri yakalama yardımcısını içerir; kendiniz derlerseniz ilk kullanımda derlenir (`xcode-select --install`). Sistem sesi macOS 13+ ister. Her ekran ayrı ayrı listelenir, paylaşılan pencere bulunduğu ekrandan yakalanır. FFmpeg'iniz destekliyorsa (Homebrew'unki destekler) video VideoToolbox donanım kodlayıcısıyla, değilse x264 ile kodlanır.
+
+### 🍎 macOS Notları
+
+- **Kurulum:** tek komutluk kurucu `Limoni Voice.app`'i `/Applications` (ya da `~/Applications`) klasörüne koyar ve `limoni-voice` komutunu ona bağlar; böylece güncellenecek tek bir kopya olur. Uygulama Limoni Voice'u Terminal'de açar ve `limoni://` davet bağlantılarını karşılar.
+- **İlk açılış:** sürüm Developer ID ile derlenmediyse uygulamalar ad-hoc imzalıdır. macOS geliştiriciyi doğrulayamadığını söylerse uygulamaya Control-tıklayıp **Aç** deyin (macOS 15'te: Sistem Ayarları → Gizlilik ve Güvenlik → **Yine de Aç**); bu bir kez gerekir.
+- **İzinler terminalinize aittir** (Terminal, iTerm2, …), çünkü Limoni Voice onun içinde çalışır. Sistem Ayarları → Gizlilik ve Güvenlik altında izin verin ve terminali yeniden başlatın:
+
+| Özellik | İzin | İzin yoksa |
+|---------|------|-----------|
+| Konuşma | Mikrofon | Limoni Voice açılışta uyarır: diğerleri sessizlik duyardı |
+| Ekran paylaşımı, sistem sesi | Ekran ve Sistem Sesi Kaydı | Paylaşım penceresi ve oda kaydı neyin açılacağını söyler |
+| Global bas-konuş | Giriş İzleme | Ses ayarları açılması gereken izni gösterir |
+| Uygulamadan açma | Otomasyon → Terminal | Uygulama Terminal'i ilk açtığında bir kez sorulur |
+
+- **Güncellemeler:** `Limoni Voice.app` içinden çalışan kopya bütün uygulama paketini (checksum doğrulamasıyla) günceller, böylece imzası bozulmaz.
 
 ## 🎮 Kullanım ve Kısayollar
 
@@ -419,6 +458,7 @@ export LIMONI_LAN_ONLY=1
 | `C` / `F2` | Oda anahtarını panoya kopyala |
 | `G` / `F3` | Yeni oda anahtarı üret |
 | `T` / `F4` | Ses test modalını aç |
+| `L` | Arayüz dilini değiştir (English / Türkçe) |
 | `Esc` | Çıkış onayı |
 | `Ctrl+V` | Panodan yapıştır |
 | `🖱️ Sürükle` | 3D mikrofonu döndür |
@@ -441,6 +481,8 @@ export LIMONI_LAN_ONLY=1
 | `S` | 🪶 Ses yumuşatmayı aç / kapat (yumuşak tizler, dengeli ses, tepe sınırlayıcı) |
 | `F12` | 🩺 Debug & ağ tanılama paneli |
 | `/net`, `/stats` | 📶 Peer başına yol, RTT, kayıp ve jitter bilgisini sohbete yaz |
+| `/kick <kullanıcı>` | 👢 Üyeyi odadan çıkar (yalnız host; tekrar kapı çalabilir) |
+| `/ban <kullanıcı>` | ⛔ Üyeyi çıkar, oda açık kaldıkça kimliğini ve adresini dışarıda tut (yalnız host) |
 | `Esc` | Odadan ayrıl |
 
 ---
@@ -456,6 +498,7 @@ export LIMONI_LAN_ONLY=1
 | **Şifreleme** | AES-256-GCM | Ses, sohbet, kontrol, video ve dosya paketleri rastgele nonce ile uçtan uca şifrelenir |
 | **Replay Koruması** | Sıra + zaman penceresi | Tazelik penceresi ve kayan tekrar önbelleği |
 | **Host Onayı** | Oda kilidi & PIN | Host odayı kilitleyip host tarafında doğrulanan 4 haneli PIN isteyebilir |
+| **Çıkarma** | Host kanıtlı kick / ban | Çıkarma bildirimi yalnızca host'un hesaplayabileceği eşli etiketler taşır; grup anahtarı çıkarılan üye olmadan anında yenilenir, kaçırılan yenileme host'tan anahtar istenerek telafi edilir |
 | **Güncellemeler** | SHA-256 + ed25519 | Otomatik güncelleme `checksums.txt` eşleşmeyen dosyayı reddeder; açık anahtar gömülüyse imza da doğrulanır |
 | **Transport** | WSS (TLS) / UDP | Sinyalleşme WebSocket üzerinden, medya doğrudan veya relay üzerinden şifreli UDP ile |
 
@@ -495,7 +538,10 @@ export LIMONI_LAN_ONLY=1
 go test -race ./...
 
 # Uçtan uca relay el sıkışma, yanlış kod reddi ve anahtar yenileme
-go test -run 'TestRelay|TestLAN|TestGroupKey' -v .
+go test -run 'TestRelay|TestLAN|TestGroupKey|TestHostKicks' -v ./internal/p2p
+
+# Her arayüz metninin Türkçesi var mı, sabit genişlikli etiketler sığıyor mu
+go test -run 'TestEveryUIMessage|TestFixedColumn' .
 
 # DSP portları (AEC, RNNoise), codec ve jitter tamponu
 go test ./internal/...

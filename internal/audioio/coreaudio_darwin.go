@@ -29,21 +29,21 @@ type audioStreamBasicDescription struct {
 	bytesPerFrame    uint32
 	channelsPerFrame uint32
 	bitsPerChannel   uint32
-	reserved         uint32
+	_                uint32 // reserved
 }
 
 // audioQueueBuffer mirrors struct AudioQueueBuffer (LP64 layout).
 type audioQueueBuffer struct {
-	audioDataBytesCapacity    uint32
-	_                         uint32
-	audioData                 unsafe.Pointer
-	audioDataByteSize         uint32
-	_                         uint32
-	userData                  unsafe.Pointer
-	packetDescriptionCapacity uint32
-	_                         uint32
-	packetDescriptions        unsafe.Pointer
-	packetDescriptionCount    uint32
+	audioDataBytesCapacity uint32
+	_                      uint32
+	audioData              unsafe.Pointer
+	audioDataByteSize      uint32
+	_                      uint32
+	_                      unsafe.Pointer // userData
+	_                      uint32         // packetDescriptionCapacity
+	_                      uint32
+	_                      unsafe.Pointer // packetDescriptions
+	_                      uint32         // packetDescriptionCount
 }
 
 const (
@@ -128,7 +128,6 @@ type coreAudioStream struct {
 	render  *renderAdapter
 	mu      sync.Mutex
 	closed  bool
-	samples []int16
 }
 
 func (s *coreAudioStream) Backend() string { return "coreaudio" }

@@ -462,3 +462,84 @@ func TestTargetedFramesReachOnlyTheTarget(t *testing.T) {
 	}
 	b.expectNoFrame(150 * time.Millisecond)
 }
+
+func TestHostKicksAndBansMembers(t *testing.T) {
+	_, url := newTestServer(t, Config{})
+	h, created := host(t, url, "8181", "host_1")
+	if !created.HasFeature(protocol.FeatureKick) {
+		t.Fatal("relay does not advertise kick")
+	}
+	j1, _ := admitJoiner(t, url, h, "8181", "host_1", "joiner_1")
+	j2, _ := admitJoiner(t, url, h, "8181", "host_1", "joiner_2")
+	j1.expect(protocol.SigPeerJoined)
+
+	// Only the host may kick.
+	j2.send(protocol.Signal{Type: protocol.SigKick, Target: "joiner_1"})
+	h.sendFrame(protocol.FrameRealtime, []byte("still-here"))
+	if f := j1.expectFrame(); string(f[1:]) != "still-here" {
+		t.Fatalf("member kicked by a non-host: %q", f)
+	}
+
+	h.send(protocol.Signal{Type: protocol.SigKick, Target: "joiner_1"})
+	if k := j1.expect(protocol.SigKicked); k.Ban {
+		t.Fatalf("plain kick reported as ban: %+v", k)
+	}
+	if left := j2.expect(protocol.SigPeerLeft); left.SenderID != "joiner_1" {
+		t.Fatalf("unexpected peer_left: %+v", left)
+	}
+	h.sendFrame(protocol.FrameRealtime, []byte("after-kick"))
+	j1.expectNoFrame(150 * time.Millisecond)
+	j1.sendFrame(protocol.FrameRealtime, []byte("from-kicked"))
+	h.expectNoFrame(150 * time.Millisecond)
+
+	// A kicked member may knock again; a banned one may not.
+	again := dial(t, url)
+	again.send(protocol.Signal{Type: protocol.SigJoinRoom, Proto: protocol.SignalVersion, RoomCode: "8181", SenderID: "joiner_1b"})
+	again.expect(protocol.SigJoinPending)
+
+	h.send(protocol.Signal{Type: protocol.SigKick, Target: "joiner_2", Ban: true})
+	if k := j2.expect(protocol.SigKicked); !k.Ban {
+		t.Fatalf("ban not reported: %+v", k)
+	}
+	banned := dial(t, url)
+	banned.send(protocol.Signal{Type: protocol.SigJoinRoom, Proto: protocol.SignalVersion, RoomCode: "8181", SenderID: "new_identity"})
+	if rej := banned.expect(protocol.SigRejected); !strings.HasPrefix(rej.Message, "BANNED") {
+		t.Fatalf("banned address let back in: %+v", rej)
+	}
+}
+
+func TestAuthTokensRotateWithoutRestart(t *testing.T) {
+	s, url := newTestServer(t, Config{AuthToken: "old"})
+	dial(t, url+"?token=old")
+
+	s.SetAuthTokens("old", "new") // overlap while clients move over
+	dial(t, url+"?token=new")
+	dial(t, url+"?token=old")
+
+	s.SetAuthTokens("new")
+	if _, resp, err := websocket.DefaultDialer.Dial(url+"?token=old", nil); err == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("retired token still accepted: %v", err)
+	}
+	dial(t, url+"?token=new")
+
+	s.SetAuthTokens() // public again
+	dial(t, url)
+}
+
+func TestIdleRoomMetrics(t *testing.T) {
+	s, url := newTestServer(t, Config{})
+	host(t, url, "9191", "host_1")
+	s.mu.Lock()
+	s.rooms["9191"].lastActive.Store(time.Now().Add(-2 * idleRoomAfter).UnixNano())
+	s.mu.Unlock()
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "limoni_relay_rooms_idle 1\n") {
+		t.Fatalf("idle room not counted:\n%s", body)
+	}
+	if !strings.Contains(body, "limoni_relay_room_idle_max_seconds 600\n") {
+		t.Fatalf("idle age missing:\n%s", body)
+	}
+}

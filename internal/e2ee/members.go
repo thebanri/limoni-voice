@@ -193,6 +193,7 @@ func unmarshalGrant(b []byte) (KeyGrant, error) {
 const (
 	vouchLabel = "limoni-voice vouch v1"
 	leaveLabel = "limoni-voice leave v1"
+	kickLabel  = "limoni-voice kick v1"
 )
 
 // TagSize is the length of a pairwise MAC tag.
@@ -359,10 +360,14 @@ func leaveMessage(senderID string, timestamp int64) []byte {
 // and the recipient can compute the recipient's tag, so no member can make another one
 // appear to leave.
 func (id *Identity) LeaveProof(roomID, selfID string, timestamp int64, peers []MemberKey) ([]byte, error) {
-	msg := leaveMessage(selfID, timestamp)
+	return id.proof(roomID, selfID, leaveLabel, leaveMessage(selfID, timestamp), peers)
+}
+
+// proof tags msg for each of peers with the pairwise key between selfID and that peer.
+func (id *Identity) proof(roomID, selfID, label string, msg []byte, peers []MemberKey) ([]byte, error) {
 	tags := make([]MemberTag, 0, len(peers))
 	for _, p := range peers {
-		mac, err := id.pairMAC(roomID, selfID, p.ID, p.Key, leaveLabel, msg)
+		mac, err := id.pairMAC(roomID, selfID, p.ID, p.Key, label, msg)
 		if err != nil {
 			return nil, err
 		}
@@ -373,9 +378,8 @@ func (id *Identity) LeaveProof(roomID, selfID string, timestamp int64, peers []M
 	return appendTags(nil, tags)
 }
 
-// CheckLeave reports whether proof shows that senderID (identity key sender) announced
-// its leave at timestamp to this member (selfID).
-func (id *Identity) CheckLeave(roomID, selfID, senderID string, sender PublicKey, timestamp int64, proof []byte) bool {
+// checkProof reports whether proof carries, for selfID, senderID's tag over msg.
+func (id *Identity) checkProof(roomID, selfID, senderID string, sender PublicKey, label string, msg, proof []byte) bool {
 	tags, rest, err := readTags(proof)
 	if err != nil || len(rest) != 0 {
 		return false
@@ -384,6 +388,34 @@ func (id *Identity) CheckLeave(roomID, selfID, senderID string, sender PublicKey
 	if !ok {
 		return false
 	}
-	mac, err := id.pairMAC(roomID, selfID, senderID, sender, leaveLabel, leaveMessage(senderID, timestamp))
+	mac, err := id.pairMAC(roomID, selfID, senderID, sender, label, msg)
 	return err == nil && hmac.Equal(mac, tag)
+}
+
+// CheckLeave reports whether proof shows that senderID (identity key sender) announced
+// its leave at timestamp to this member (selfID).
+func (id *Identity) CheckLeave(roomID, selfID, senderID string, sender PublicKey, timestamp int64, proof []byte) bool {
+	return id.checkProof(roomID, selfID, senderID, sender, leaveLabel, leaveMessage(senderID, timestamp), proof)
+}
+
+func kickMessage(hostID, targetID string, ban bool, timestamp int64) []byte {
+	b := appendLV(appendLV(nil, []byte(hostID)), []byte(targetID))
+	flag := byte(0)
+	if ban {
+		flag = 1
+	}
+	return binary.BigEndian.AppendUint64(append(b, flag), uint64(timestamp))
+}
+
+// KickProof authenticates the host's removal of targetID to each of members (the target
+// included, so it knows the notice is real). Only the host and the recipient can compute
+// the recipient's tag, so a member holding the group key cannot remove anyone.
+func (id *Identity) KickProof(roomID, hostID, targetID string, ban bool, timestamp int64, members []MemberKey) ([]byte, error) {
+	return id.proof(roomID, hostID, kickLabel, kickMessage(hostID, targetID, ban, timestamp), members)
+}
+
+// CheckKick reports whether proof shows, to this member (selfID), that the host whose
+// identity key is host removed targetID (and banned it when ban) at timestamp.
+func (id *Identity) CheckKick(roomID, selfID, hostID, targetID string, host PublicKey, ban bool, timestamp int64, proof []byte) bool {
+	return id.checkProof(roomID, selfID, hostID, host, kickLabel, kickMessage(hostID, targetID, ban, timestamp), proof)
 }

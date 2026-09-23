@@ -69,7 +69,9 @@ if [ -z "${LATEST_TAG}" ]; then
 fi
 
 if [ -z "${LATEST_TAG}" ]; then
-    LATEST_TAG="v1.4.5"
+    echo -e "${RED}[x] Could not determine the latest release (GitHub unreachable or rate-limited).${NC}"
+    echo -e "    Download it from: https://github.com/${REPO}/releases"
+    exit 1
 fi
 
 echo -e "${GREEN}[+] Target version:${NC} ${BOLD}${LATEST_TAG}${NC}"
@@ -85,11 +87,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# verify_download FILE NAME checks FILE against NAME's line in the release's checksums.txt.
+CHECKSUMS="${TMP_DIR}/checksums.txt"
+curl -fsSL "https://github.com/${REPO}/releases/download/${LATEST_TAG}/checksums.txt" -o "${CHECKSUMS}" 2>/dev/null || rm -f "${CHECKSUMS}"
+verify_download() {
+    local file=$1 name=$2 expected actual
+    if [ ! -s "${CHECKSUMS}" ]; then
+        echo -e "${YELLOW}[!] This release has no checksums.txt; ${name} is not verified.${NC}"
+        return 0
+    fi
+    expected=$(awk -v n="${name}" '$2 == n || $2 == "*"n { print $1; exit }' "${CHECKSUMS}")
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "${file}" | awk '{print $1}')
+    else
+        actual=$(shasum -a 256 "${file}" | awk '{print $1}')
+    fi
+    if [ -z "${expected}" ] || [ "${expected}" != "${actual}" ]; then
+        echo -e "${RED}[x] Checksum mismatch for ${name}: refusing to install it.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}[+] Checksum verified:${NC} ${name}"
+}
+
 echo -e "${CYAN}[*] Downloading ${TARBALL_NAME}...${NC}"
 if ! curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${TARBALL_NAME}"; then
     echo -e "${RED}[x] Failed to download package from: ${DOWNLOAD_URL}${NC}"
     exit 1
 fi
+verify_download "${TMP_DIR}/${TARBALL_NAME}" "${TARBALL_NAME}"
 
 echo -e "${CYAN}[*] Extracting package...${NC}"
 tar -xzf "${TMP_DIR}/${TARBALL_NAME}" -C "${TMP_DIR}"
@@ -101,8 +126,41 @@ fi
 
 # 7. Install Binary
 echo -e "${CYAN}[*] Installing ${APP_NAME} to ${INSTALL_DIR}...${NC}"
+rm -f "${INSTALL_DIR}/${APP_NAME}" # may be a link into a previously installed app
 mv "${TMP_DIR}/${APP_NAME}" "${INSTALL_DIR}/${APP_NAME}"
 chmod +x "${INSTALL_DIR}/${APP_NAME}"
+
+# 7b. macOS: install Limoni Voice.app, which opens limoni:// invite links and carries the icon.
+# The command in INSTALL_DIR then points into the app, so there is one copy to update.
+if [ "${OS_TYPE}" = "darwin" ]; then
+    APP_ZIP="Limoni-Voice_${LATEST_TAG}_macOS_${ARCH_TYPE}.app.zip"
+    if [ -w "/Applications" ]; then
+        APP_PARENT="/Applications"
+    else
+        APP_PARENT="${HOME}/Applications"
+        mkdir -p "${APP_PARENT}"
+    fi
+    APP_PATH="${APP_PARENT}/Limoni Voice.app"
+    echo -e "${CYAN}[*] Downloading ${APP_ZIP}...${NC}"
+    if curl -fsSL "https://github.com/${REPO}/releases/download/${LATEST_TAG}/${APP_ZIP}" -o "${TMP_DIR}/${APP_ZIP}"; then
+        verify_download "${TMP_DIR}/${APP_ZIP}" "${APP_ZIP}"
+        mkdir -p "${TMP_DIR}/app"
+        ditto -x -k "${TMP_DIR}/${APP_ZIP}" "${TMP_DIR}/app"
+        if [ -x "${TMP_DIR}/app/Limoni Voice.app/Contents/MacOS/limoni-voice" ]; then
+            rm -rf "${APP_PATH}"
+            mv "${TMP_DIR}/app/Limoni Voice.app" "${APP_PATH}"
+            # Register the app so macOS routes limoni:// links to it.
+            LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+            [ -x "${LSREGISTER}" ] && "${LSREGISTER}" -f "${APP_PATH}" >/dev/null 2>&1 || true
+            ln -sf "${APP_PATH}/Contents/MacOS/limoni-voice" "${INSTALL_DIR}/${APP_NAME}"
+            echo -e "${GREEN}[+] Installed ${APP_PATH} (limoni:// invite links open it)${NC}"
+        else
+            echo -e "${YELLOW}[!] ${APP_ZIP} did not contain the app; only the command was installed.${NC}"
+        fi
+    else
+        echo -e "${YELLOW}[!] No app bundle in this release; only the command was installed.${NC}"
+    fi
+fi
 
 # 8. Create Desktop Entry & Icon on Linux
 if [ "${OS_TYPE}" = "linux" ]; then
@@ -184,4 +242,9 @@ if [ "${SHELL_UPDATED}" = true ]; then
 fi
 if [ -n "${DEPS_HINT}" ]; then
     echo -e "${DEPS_HINT}"
+fi
+if [ "${OS_TYPE}" = "darwin" ]; then
+    echo -e "${YELLOW}🍎 macOS permissions:${NC} the first time you talk, share your screen or use global"
+    echo -e "   push-to-talk, allow your terminal app under System Settings → Privacy & Security"
+    echo -e "   (Microphone, Screen & System Audio Recording, Input Monitoring), then restart the terminal."
 fi
