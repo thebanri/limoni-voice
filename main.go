@@ -129,6 +129,13 @@ func main() {
 	defer applog.Close()
 	applog.Printf("Limoni Voice %s starting on %s/%s", AppVersion, runtime.GOOS, runtime.GOARCH)
 
+	// macOS Terminal.app sets TERM=xterm-256color but does not implement REP (repeat the
+	// previous character), which Limoni enables for xterm-like terminals: runs of one glyph
+	// such as border lines and the blanks that erase a closed dialog were never drawn.
+	if os.Getenv("TERM_PROGRAM") == "Apple_Terminal" && os.Getenv("LIMONI_REP") == "" {
+		_ = os.Setenv("LIMONI_REP", "0")
+	}
+
 	setupConsole()
 	defer restoreConsole()
 
