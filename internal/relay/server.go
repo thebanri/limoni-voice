@@ -24,6 +24,7 @@ import (
 // Config configures a relay Server.
 type Config struct {
 	AuthToken      string        // optional shared secret required from clients
+	AuthTokens     []string      // more accepted secrets, e.g. the old and new one while rotating
 	UDPPublicAddr  string        // advertised host:port for the UDP relay (optional)
 	UDPPort        int           // advertised UDP port on the WebSocket host when UDPPublicAddr is empty
 	MaxRoomMembers int           // default 4
@@ -39,6 +40,9 @@ const (
 	maxPakeSize       = 512
 	maxPendingPerRoom = 8
 	maxConnsPerIP     = 16
+	// idleRoomAfter is how long a room may go without relayed traffic or signalling before
+	// it counts as idle in the metrics. Rooms on direct paths are idle on the relay by design.
+	idleRoomAfter = 5 * time.Minute
 )
 
 // Server is a relay instance. Create with New, serve Handler() over HTTP and
@@ -54,7 +58,8 @@ type Server struct {
 	udpTokens map[[protocol.UDPTokenSize]byte]*client
 	ips       map[string]*ipState
 
-	udpConn atomic.Pointer[net.UDPConn]
+	udpConn    atomic.Pointer[net.UDPConn]
+	authTokens atomic.Pointer[[]string]
 }
 
 type room struct {
@@ -69,6 +74,9 @@ type room struct {
 	members map[string]*member
 	order   []string // join order, used for host migration
 	pending map[string]*client
+	banned  map[string]bool // addresses the host banned; refused for the life of the room
+
+	lastActive atomic.Int64 // unix nanoseconds of the last relayed frame or signal
 
 	// connected member snapshot for lock-free forwarding
 	snapshot atomic.Pointer[[]*client]
@@ -80,6 +88,7 @@ type member struct {
 	token       string
 	endpoint    protocol.Endpoint
 	client      *client // nil while disconnected within the grace period
+	ip          string  // address of the last connection, for bans
 	graceTimer  *time.Timer
 	joinedOrder int
 }
@@ -104,12 +113,11 @@ func New(cfg Config) *Server {
 	if cfg.PendingTimeout <= 0 {
 		cfg.PendingTimeout = 30 * time.Second
 	}
-	cfg.AuthToken = strings.TrimSpace(cfg.AuthToken)
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{
+	s := &Server{
 		cfg:     cfg,
 		log:     logger,
 		metrics: newMetrics(),
@@ -122,6 +130,24 @@ func New(cfg Config) *Server {
 		udpTokens: make(map[[protocol.UDPTokenSize]byte]*client),
 		ips:       make(map[string]*ipState),
 	}
+	s.SetAuthTokens(append([]string{cfg.AuthToken}, cfg.AuthTokens...)...)
+	return s
+}
+
+// SetAuthTokens replaces the accepted relay secrets without a restart. Blank entries are
+// ignored; no tokens at all leaves the relay public. Connections already open stay open.
+func (s *Server) SetAuthTokens(tokens ...string) {
+	var list []string
+	for _, t := range tokens {
+		if t = strings.TrimSpace(t); t != "" {
+			list = append(list, t)
+		}
+	}
+	s.authTokens.Store(&list)
+}
+
+func (s *Server) authRequired() bool {
+	return len(*s.authTokens.Load()) > 0
 }
 
 // Metrics returns the server metrics.
@@ -148,7 +174,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":        "ok",
 		"rooms":         roomCount,
-		"auth_required": s.cfg.AuthToken != "",
+		"auth_required": s.authRequired(),
 		"proto":         protocol.SignalVersion,
 		"udp":           s.udpConn.Load() != nil,
 	})
@@ -179,7 +205,8 @@ func (s *Server) clientIP(r *http.Request) string {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	if s.cfg.AuthToken == "" {
+	tokens := *s.authTokens.Load()
+	if len(tokens) == 0 {
 		return true
 	}
 	token := r.URL.Query().Get("token")
@@ -191,7 +218,14 @@ func (s *Server) authorized(r *http.Request) bool {
 			token = strings.TrimSpace(auth[7:])
 		}
 	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AuthToken)) == 1
+	ok := false
+	for _, t := range tokens {
+		// Compare against every token so the timing does not reveal which one matched.
+		if subtle.ConstantTimeCompare([]byte(token), []byte(t)) == 1 {
+			ok = true
+		}
+	}
+	return ok
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -356,6 +390,8 @@ func (s *Server) handleSignal(c *client, msg protocol.Signal) {
 		s.admit(c, msg.Target)
 	case protocol.SigReject:
 		s.reject(c, msg.Target, msg.Message)
+	case protocol.SigKick:
+		s.kick(c, msg.Target, msg.Ban)
 	case protocol.SigLockRoom, protocol.SigUnlockRoom:
 		s.setLock(c, msg.Type == protocol.SigLockRoom, msg.PinRequired)
 	case protocol.SigPortUpdate:
@@ -441,7 +477,7 @@ func (s *Server) hostRoom(c *client, msg protocol.Signal) {
 			m.graceTimer.Stop()
 			m.graceTimer = nil
 		}
-		m.client, m.nickname, m.endpoint = c, msg.Nickname, endpoint
+		m.client, m.nickname, m.endpoint, m.ip = c, msg.Nickname, endpoint, c.ip
 		rm.hostID = msg.SenderID
 		rm.locked = msg.IsLocked
 		rm.pinRequired = msg.PinRequired
@@ -471,8 +507,10 @@ func (s *Server) hostRoom(c *client, msg protocol.Signal) {
 		created:     time.Now(),
 		members:     make(map[string]*member),
 		pending:     make(map[string]*client),
+		banned:      make(map[string]bool),
 	}
-	m := &member{id: msg.SenderID, nickname: msg.Nickname, token: randomHex(16), endpoint: endpoint, client: c}
+	rm.touch()
+	m := &member{id: msg.SenderID, nickname: msg.Nickname, token: randomHex(16), endpoint: endpoint, client: c, ip: c.ip}
 	rm.members[m.id] = m
 	rm.order = []string{m.id}
 	s.rooms[rm.code] = rm
@@ -530,6 +568,13 @@ func (s *Server) joinRoom(c *client, msg protocol.Signal) {
 		return
 	}
 
+	rm.touch()
+	if rm.banned[c.ip] {
+		s.mu.Unlock()
+		c.sendSignal(protocol.Signal{Type: protocol.SigRejected, Message: "BANNED: the host removed you from this room"})
+		return
+	}
+
 	endpoint := msg.Endpoint
 	if endpoint.PublicIP == "" {
 		endpoint.PublicIP = c.ip
@@ -552,7 +597,7 @@ func (s *Server) joinRoom(c *client, msg protocol.Signal) {
 			m.graceTimer.Stop()
 			m.graceTimer = nil
 		}
-		m.client, m.nickname, m.endpoint = c, msg.Nickname, endpoint
+		m.client, m.nickname, m.endpoint, m.ip = c, msg.Nickname, endpoint, c.ip
 		c.roomCode = rm.code
 		s.assignUDPTokenLocked(c)
 		s.refreshSnapshotLocked(rm)
@@ -678,7 +723,7 @@ func (s *Server) admit(c *client, target string) {
 		joiner.sendSignal(protocol.Signal{Type: protocol.SigRoomFull, Message: "Room is full (Max 4 members)"})
 		return
 	}
-	m := &member{id: joiner.id, nickname: joiner.nickname, token: randomHex(16), endpoint: joiner.endpoint, client: joiner, joinedOrder: len(rm.order)}
+	m := &member{id: joiner.id, nickname: joiner.nickname, token: randomHex(16), endpoint: joiner.endpoint, client: joiner, ip: joiner.ip, joinedOrder: len(rm.order)}
 	rm.members[m.id] = m
 	rm.order = append(rm.order, m.id)
 	joiner.roomCode = rm.code
@@ -748,6 +793,42 @@ func (s *Server) reject(c *client, target, message string) {
 	}
 	s.metrics.rejected.Add(1)
 	joiner.sendSignal(protocol.Signal{Type: protocol.SigRejected, Message: message})
+}
+
+// kick removes a member at the host's request. The kicked connection stays open but leaves
+// the room, and with ban its address may not join this room again.
+func (s *Server) kick(c *client, target string, ban bool) {
+	s.mu.Lock()
+	rm := s.rooms[c.roomCode]
+	if rm == nil || rm.hostID != c.id || target == c.id {
+		s.mu.Unlock()
+		return
+	}
+	m := rm.members[target]
+	if m == nil {
+		s.mu.Unlock()
+		return
+	}
+	if ban && m.ip != "" {
+		rm.banned[m.ip] = true
+	}
+	kicked := m.client
+	if kicked != nil {
+		s.releaseUDPTokenLocked(kicked)
+		kicked.roomCode = ""
+	}
+	ns := s.removeMemberLocked(rm, m)
+	s.mu.Unlock()
+
+	s.metrics.kicked.Add(1)
+	if ban {
+		s.metrics.banned.Add(1)
+	}
+	s.log.Info("member removed by host", "room", rm.code, "ban", ban)
+	if kicked != nil {
+		kicked.sendSignal(protocol.Signal{Type: protocol.SigKicked, RoomCode: rm.code, Ban: ban})
+	}
+	ns.send()
 }
 
 func (s *Server) setLock(c *client, locked, pinRequired bool) {
@@ -888,6 +969,7 @@ func (s *Server) removeMemberLocked(rm *room, m *member) notices {
 			defer s.mu.Unlock()
 			if r := s.rooms[code]; r == rm && len(r.members) == 0 {
 				delete(s.rooms, code)
+				s.metrics.roomsExpired.Add(1)
 				s.log.Info("room closed", "room", code)
 			}
 		})
@@ -949,7 +1031,7 @@ func (s *Server) refreshSnapshotLocked(rm *room) {
 
 // forward relays an encrypted frame from sender to every other connected member.
 // relayFeatures lists optional capabilities advertised to clients.
-var relayFeatures = []string{protocol.FeatureTargeted}
+var relayFeatures = []string{protocol.FeatureTargeted, protocol.FeatureKick}
 
 // forwardTo delivers a frame to one member of the sender's room (screen share video, NACKs).
 func (s *Server) forwardTo(sender *client, class byte, target string, payload []byte, viaUDP bool) {
@@ -968,6 +1050,7 @@ func (s *Server) forwardTo(sender *client, class byte, target string, payload []
 	if dst == nil {
 		return
 	}
+	rm.touch()
 	s.deliver(dst, class, payload)
 	s.metrics.targetedForwarded.Add(1)
 	if viaUDP {
@@ -1004,6 +1087,7 @@ func (s *Server) forward(sender *client, class byte, payload []byte, viaUDP bool
 	if rm == nil {
 		return
 	}
+	rm.touch()
 	snap := rm.snapshot.Load()
 	if snap == nil {
 		return
@@ -1019,4 +1103,14 @@ func (s *Server) forward(sender *client, class byte, payload []byte, viaUDP bool
 	} else {
 		s.metrics.wsForwarded.Add(1)
 	}
+}
+
+// touch records relay activity in the room.
+func (rm *room) touch() {
+	rm.lastActive.Store(time.Now().UnixNano())
+}
+
+// idleFor reports how long the room has gone without relayed traffic or signalling.
+func (rm *room) idleFor(now time.Time) time.Duration {
+	return now.Sub(time.Unix(0, rm.lastActive.Load()))
 }
