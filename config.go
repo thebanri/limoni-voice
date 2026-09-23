@@ -95,7 +95,7 @@ func SaveAppConfig(cfg AppConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writePrivateFile(path, data)
 }
 
 // ResetAppConfig clears custom relay settings from disk
@@ -109,7 +109,7 @@ func ResetAppConfig() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writePrivateFile(path, data)
 }
 
 // IsCustomRelayActive returns whether the configured URL is different from default public relay
@@ -225,4 +225,13 @@ func ProbeRelayServer(relayURL, token string, timeout time.Duration) (bool, stri
 	case <-time.After(timeout):
 		return false, "Offline"
 	}
+}
+
+// writePrivateFile writes the settings readable by the user only: they can hold the relay
+// password. os.WriteFile keeps the mode of an existing file, so older 0644 files are fixed too.
+func writePrivateFile(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
