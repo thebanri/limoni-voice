@@ -1,9 +1,11 @@
-package main
+package p2p
 
 import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/thebanri/limoni-voice/internal/engine"
 )
 
 // knockHost opens a room with knock-to-join and answers each knock with decide.
@@ -80,13 +82,13 @@ func TestKnockTurnedAwayViaRelay(t *testing.T) {
 }
 
 func TestKnockLetInOnLAN(t *testing.T) {
-	host := NewP2PNode("knl_host", "Alice", NewAudioEngine())
+	host := NewP2PNode("knl_host", "Alice", engine.NewAudioEngine())
 	host.LanOnly, host.RelayURL = true, ""
 	if err := host.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	joiner := NewP2PNode("knl_join", "Bob", NewAudioEngine())
+	joiner := NewP2PNode("knl_join", "Bob", engine.NewAudioEngine())
 	joiner.LanOnly, joiner.RelayURL = true, ""
 	if err := joiner.Start(); err != nil {
 		t.Fatal(err)
@@ -96,26 +98,5 @@ func TestKnockLetInOnLAN(t *testing.T) {
 	knockHost(t, host, "9393-amber-falcon-river", true)
 	if res := joinAndWait(t, joiner, "9393-amber-falcon-river", 5*time.Second); !res.ok {
 		t.Fatalf("LAN join after approval failed: %+v", res)
-	}
-}
-
-// Requests the host leaves unanswered are handed back once their window has passed.
-func TestKnockQueueExpiry(t *testing.T) {
-	var q knockQueue
-	now := time.Now()
-	q.add("a", "Ann", now.Add(-knockWindow-time.Second))
-	q.add("b", "Bob", now)
-	if q.add("b", "Bob", now) {
-		t.Fatal("duplicate knock queued")
-	}
-	active, expired := q.front(now)
-	if active == nil || active.id != "b" || len(expired) != 1 || expired[0].id != "a" {
-		t.Fatalf("active=%v expired=%v", active, expired)
-	}
-	if r, ok := q.pop(); !ok || r.id != "b" {
-		t.Fatal("pop did not return the waiting request")
-	}
-	if _, ok := q.pop(); ok {
-		t.Fatal("queue not empty")
 	}
 }

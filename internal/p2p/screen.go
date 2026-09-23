@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"bufio"
@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/protocol"
 	"github.com/thebanri/limoni-voice/internal/sysaudio"
 	"github.com/thebanri/limoni-voice/internal/video"
@@ -317,7 +318,7 @@ func pacerRate(kbps, recipients int) float64 {
 }
 
 func newScreenAudioEncoder() (*voice.Encoder, error) {
-	return voice.NewMusicEncoder(AudioSampleRate, AudioFrameSamples, screenAudioBitrate)
+	return voice.NewMusicEncoder(engine.AudioSampleRate, engine.AudioFrameSamples, screenAudioBitrate)
 }
 
 func (n *P2PNode) announceScreenShare(sharing bool) {

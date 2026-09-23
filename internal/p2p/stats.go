@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"fmt"
@@ -34,6 +34,7 @@ type NetDiagnostics struct {
 	UDPRelay     string
 	GroupEpoch   uint32
 	EncoderLoss  int
+	VoiceBitrate int
 	Screen       ScreenStats
 	Peers        []PeerDiagnostics
 }
@@ -79,6 +80,7 @@ func (n *P2PNode) Diagnostics() NetDiagnostics {
 	}
 	if n.voiceEnc != nil {
 		d.EncoderLoss = n.voiceEnc.PacketLoss()
+		d.VoiceBitrate = n.voiceEnc.Bitrate()
 	}
 	for _, p := range n.Peers {
 		pd := PeerDiagnostics{
@@ -131,7 +133,7 @@ func (d NetDiagnostics) Lines() []string {
 		}
 	}
 	lines := []string{
-		fmt.Sprintf("Local UDP :%d  Public %s  NAT %s", d.LocalPort, orDash(d.PublicAddr), d.NATType),
+		fmt.Sprintf("Local UDP :%d  Public %s  NAT %s", d.LocalPort, OrDash(d.PublicAddr), d.NATType),
 	}
 	if len(d.IPv6) > 0 {
 		lines = append(lines, "IPv6: "+strings.Join(d.IPv6, ", "))
@@ -145,8 +147,8 @@ func (d NetDiagnostics) Lines() []string {
 	if d.RelayRTT > 0 {
 		rtt = fmt.Sprintf("%dms", d.RelayRTT.Milliseconds())
 	}
-	lines = append(lines, fmt.Sprintf("Relay: %s (%s) RTT %s  UDP relay: %s", d.RelayStatus, orDash(d.RelayURL), rtt, d.UDPRelay))
-	lines = append(lines, fmt.Sprintf("E2EE group key epoch %d  Opus FEC loss hint %d%%", d.GroupEpoch, d.EncoderLoss))
+	lines = append(lines, fmt.Sprintf("Relay: %s (%s) RTT %s  UDP relay: %s", d.RelayStatus, OrDash(d.RelayURL), rtt, d.UDPRelay))
+	lines = append(lines, fmt.Sprintf("E2EE group key epoch %d  Opus %d kbps, FEC loss hint %d%%", d.GroupEpoch, d.VoiceBitrate/1000, d.EncoderLoss))
 	if sc := d.Screen; sc.Sharing {
 		audio := ""
 		if sc.Audio {
@@ -181,12 +183,13 @@ func (d NetDiagnostics) Lines() []string {
 			}
 		}
 		lines = append(lines, fmt.Sprintf("• %s via %s%s  ping %dms  rx loss %.1f%%  jitter %.0fms  tx loss %.0f%%  NAT %s  addr %s  last direct %s",
-			p.Nickname, p.Path, why, p.PingMs, p.LossPct, p.JitterMs, p.RemoteLossPct, natDesc(p.NAT), orDash(p.RemoteAddr), direct))
+			p.Nickname, p.Path, why, p.PingMs, p.LossPct, p.JitterMs, p.RemoteLossPct, natDesc(p.NAT), OrDash(p.RemoteAddr), direct))
 	}
 	return lines
 }
 
-func orDash(s string) string {
+// OrDash returns s, or "-" when it is empty.
+func OrDash(s string) string {
 	if s == "" {
 		return "-"
 	}

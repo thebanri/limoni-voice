@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
@@ -13,7 +15,7 @@ import (
 
 // Knock-to-join, host side: with P2PNode.KnockToJoin on, every joiner that proved the room
 // key waits here until the host lets it in or turns it away. Requests the host leaves
-// unanswered are declined when the joiner would have given up anyway (knockWindow).
+// unanswered are declined when the joiner would have given up anyway (p2p.KnockWindow).
 
 type knockRequest struct {
 	id, nickname string
@@ -43,7 +45,7 @@ func (q *knockQueue) front(now time.Time) (active *knockRequest, expired []knock
 	defer q.mu.Unlock()
 	kept := q.requests[:0]
 	for _, r := range q.requests {
-		if now.Sub(r.at) >= knockWindow {
+		if now.Sub(r.at) >= p2p.KnockWindow {
 			expired = append(expired, r)
 		} else {
 			kept = append(kept, r)
@@ -82,9 +84,9 @@ func (a *App) onKnock(joinerID, nickname string) {
 	if !a.knocks.add(joinerID, nickname, time.Now()) {
 		return
 	}
-	a.audio.PlaySound(SoundJoin)
+	a.audio.PlaySound(engine.SoundJoin)
 	a.room.AddLog(fmt.Sprintf("[ROOM] %s is knocking: [Y] let in, [N] turn away", nickname))
-	a.notifier.NotifyNow(notifyTitle, nickname+" wants to join the room")
+	a.notifier.NotifyNow(notifyTitle, Tf("%s wants to join the room", nickname))
 }
 
 // activeKnock returns the request to show, declining the ones that ran out of time.
@@ -128,10 +130,7 @@ func (a *App) toggleKnock() {
 		a.room.SetToast("Only the room host can change who gets in")
 		return
 	}
-	a.node.mu.Lock()
-	a.node.KnockToJoin = !a.node.KnockToJoin
-	on := a.node.KnockToJoin
-	a.node.mu.Unlock()
+	on := a.node.ToggleKnockToJoin()
 	if on {
 		a.room.SetToast("Knock to join ON: you let each new member in")
 		a.room.AddLog("[ROOM] Knock to join ON: people with the room key wait until you let them in")

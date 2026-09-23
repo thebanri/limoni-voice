@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"errors"
@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/thebanri/limoni-voice/internal/applog"
 	"github.com/thebanri/limoni-voice/internal/e2ee"
+	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/nat"
 	"github.com/thebanri/limoni-voice/internal/protocol"
 	"github.com/thebanri/limoni-voice/internal/voice"
@@ -46,7 +48,7 @@ type P2PNode struct {
 	connectCancel     chan struct{}
 	OnJoinSuccess     func(hostNick string)
 	OnJoinFailed      func(reason string)
-	audio             *AudioEngine
+	audio             *engine.AudioEngine
 	seqCounter        uint32
 	audioSeq          uint32
 	pingSeq           uint32
@@ -89,6 +91,7 @@ type P2PNode struct {
 	KnockToJoin      bool                            // host: every verified joiner waits for ApproveJoin
 	OnKnock          func(joinerID, nickname string) // host: a joiner is waiting for a decision
 	OnJoinWaiting    func()                          // joiner: the host has to let us in
+	OnKicked         func(hostNick string, ban bool) // the host removed us; called after we left
 	joinWaitUntil    time.Time                       // joiner: how long the host's decision may take
 	joinClient       *e2ee.JoinClient
 	joinHostID       string
@@ -110,6 +113,10 @@ type P2PNode struct {
 	prevHostKey   e2ee.PublicKey
 	prevHostUntil time.Time
 	departed      map[string]time.Time // members that left: their stale vouches are refused
+	removed       map[string]bool      // members the host removed: ignored until admitted again
+	bannedIDs     map[string]bool      // host: members banned for the life of the room
+	bannedIPs     map[string]bool      // host: addresses of banned members
+	kickedHandled bool                 // our own removal was already acted on
 	rekeyAcks     map[string]bool
 	rekeyEpoch    uint32
 	rekeyKey      e2ee.GroupKey
@@ -130,6 +137,8 @@ type P2PNode struct {
 	// Voice codec
 	voiceEnc     *voice.Encoder
 	voiceEncOnce sync.Once
+	voiceRate    voice.BitrateController // guarded by voiceRateMu
+	voiceRateMu  sync.Mutex
 
 	// Screen Sharing State (see network_screen.go)
 	IsSharingScreen      bool
@@ -167,7 +176,7 @@ type P2PNode struct {
 	OnFileOfferReceived    func(offer *FileOffer)
 }
 
-func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
+func NewP2PNode(localID, nickname string, audio *engine.AudioEngine) *P2PNode {
 	relayURL := os.Getenv("LIMONI_RELAY_URL")
 	if relayURL == "" {
 		if testing.Testing() {
@@ -198,7 +207,7 @@ func NewP2PNode(localID, nickname string, audio *AudioEngine) *P2PNode {
 	}
 
 	if audio == nil {
-		audio = NewAudioEngine()
+		audio = engine.NewAudioEngine()
 	}
 
 	// Create a dedicated UDP socket for sending broadcasts (avoids SO_BROADCAST issues on Windows)
@@ -279,7 +288,7 @@ func (n *P2PNode) Start() error {
 		}
 	}
 
-	screenshare.LogCallback = n.log
+	screenshare.SetLogCallback(n.log)
 
 	go n.listenLoopOnConn(conn)
 	go n.heartbeatLoop()
@@ -339,7 +348,7 @@ func (n *P2PNode) HostRoom(roomCode string) {
 	n.IsHost = true
 	n.HostID = n.LocalID
 	n.HostNick = n.Nickname
-	n.RoomCode = NormalizeCode(roomCode)
+	n.RoomCode = e2ee.NormalizeCode(roomCode)
 	n.roomID, n.roomSecret = e2ee.SplitRoomCode(n.RoomCode)
 	n.keyring, _ = e2ee.NewKeyring(1, e2ee.NewGroupKey())
 	n.identity = e2ee.NewIdentity()
@@ -401,7 +410,7 @@ func (n *P2PNode) RequestJoinRoom(roomCode string, timeout time.Duration, onSucc
 		customPIN = strings.TrimSpace(parts[1])
 	}
 
-	cleanCode := NormalizeCode(roomCode)
+	cleanCode := e2ee.NormalizeCode(roomCode)
 	if cleanCode == "" {
 		if onFailed != nil {
 			onFailed("Invalid room key")
@@ -703,9 +712,7 @@ func (n *P2PNode) audioState() (muted, deafened bool) {
 	if n.audio == nil {
 		return false, false
 	}
-	n.audio.mu.RLock()
-	defer n.audio.mu.RUnlock()
-	return n.audio.Muted, n.audio.Deafened
+	return n.audio.MuteState()
 }
 
 // sealPacket encodes and encrypts a packet with the room keyring: [nonce][ciphertext+tag].
@@ -1065,10 +1072,7 @@ func (n *P2PNode) sendPingToPeer(peerID string) {
 }
 
 func (n *P2PNode) writeToFileLog(msg string) {
-	if f, err := os.OpenFile("limoni-voice.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		_, _ = f.WriteString(time.Now().Format("15:04:05.000 ") + msg + "\n")
-		_ = f.Close()
-	}
+	applog.Print(msg)
 }
 
 func (n *P2PNode) debugLog(msg string) {
@@ -1306,10 +1310,13 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	if n.roomID == "" || !strings.EqualFold(pkt.RoomCode, n.roomID) || (!n.IsConnected && !n.Connecting) {
 		return
 	}
+	if n.removed[pkt.SenderID] {
+		return // removed by the host; it may still hold the previous group key
+	}
 
 	// Verify packet timestamp freshness and deduplication for state control packets to prevent Replay Attacks
 	switch pkt.Type {
-	case PacketLeave, PacketRoomLocked, PacketRoomFull, PacketScreenShareStart, PacketScreenShareStop, PacketPortHop, PacketJoinRequest, PacketMuteState, PacketRekey:
+	case PacketLeave, PacketKick, PacketRoomLocked, PacketRoomFull, PacketScreenShareStart, PacketScreenShareStop, PacketPortHop, PacketJoinRequest, PacketMuteState, PacketRekey:
 		if pkt.Timestamp > 0 {
 			nowMs := time.Now().UnixMilli()
 			diff := nowMs - pkt.Timestamp
@@ -1318,8 +1325,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			}
 		}
 		// Rekeys are idempotent (epoch checked) and must be re-acknowledged on retransmission.
-		// Leaves are deduplicated once their proof verified, so forgeries cannot pre-empt them.
-		if pkt.Type != PacketRekey && pkt.Type != PacketLeave && !n.ctrlDedup.ShouldProcess(pkt.SenderID, pkt.Type, pkt.Seq, pkt.Timestamp) {
+		// Leaves and kicks are deduplicated once their proof verified, so forgeries cannot
+		// pre-empt them.
+		if pkt.Type != PacketRekey && pkt.Type != PacketLeave && pkt.Type != PacketKick && !n.ctrlDedup.ShouldProcess(pkt.SenderID, pkt.Type, pkt.Seq, pkt.Timestamp) {
 			return // Drop duplicate replayed packet!
 		}
 	}
@@ -1338,7 +1346,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 	}
 
 	// Auto-register or refresh peer on any valid authenticated packet from this room
-	if pkt.Type != PacketJoinRequest && pkt.Type != PacketRoomFull && pkt.Type != PacketLeave && pkt.Type != PacketRoomLocked {
+	if pkt.Type != PacketJoinRequest && pkt.Type != PacketRoomFull && pkt.Type != PacketLeave && pkt.Type != PacketRoomLocked && pkt.Type != PacketKick {
 		if n.IsConnected {
 			peer, exists := n.Peers[pkt.SenderID]
 			if !exists {
@@ -1865,6 +1873,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 
 	case PacketRekey:
 		n.handleRekeyLocked(pkt, raddr)
+
+	case PacketKick:
+		n.handleKickLocked(pkt)
 
 	case PacketRekeyAck:
 		n.handleRekeyAckLocked(pkt)

@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 
+	"github.com/thebanri/limoni-voice/internal/audioio"
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/i18n"
 	"github.com/thebanri/limoni-voice/internal/ptt"
 	"github.com/thebanri/limoni-voice/screenshare"
 )
@@ -30,10 +33,10 @@ func (a *App) applySettings(cfg AppConfig) {
 	}
 	audio := a.audio
 	audio.SetSuppressionMode(s.SuppressionMode)
-	audio.mu.Lock()
+	audio.Lock()
 	audio.EchoCancellation = s.EchoCancellation
 	if s.PushToTalk {
-		audio.InputMode = InputModePushToTalk
+		audio.InputMode = engine.InputModePushToTalk
 	}
 	audio.GlobalPTT = s.GlobalPTT
 	if s.VoiceSmoothing != nil {
@@ -45,7 +48,7 @@ func (a *App) applySettings(cfg AppConfig) {
 	if s.OutputVolume > 0 {
 		audio.OutputVolume = min(s.OutputVolume, 2.0)
 	}
-	audio.mu.Unlock()
+	audio.Unlock()
 	if s.VADSensitivity > 0 {
 		audio.SetVADSensitivity(s.VADSensitivity)
 	}
@@ -64,12 +67,12 @@ func (a *App) applySettings(cfg AppConfig) {
 // saveAudioSettings persists the current audio preferences.
 func (a *App) saveAudioSettings() {
 	audio := a.audio
-	audio.mu.RLock()
+	audio.RLock()
 	smoothing := audio.VoiceSmoothing
 	s := &AudioSettings{
 		SuppressionMode:  audio.SuppressionMode,
 		EchoCancellation: audio.EchoCancellation,
-		PushToTalk:       audio.InputMode == InputModePushToTalk,
+		PushToTalk:       audio.InputMode == engine.InputModePushToTalk,
 		PTTKey:           audio.PTTKeyName,
 		GlobalPTT:        audio.GlobalPTT,
 		Gain:             audio.Gain,
@@ -77,18 +80,18 @@ func (a *App) saveAudioSettings() {
 		VADSensitivity:   audio.VADSensitivity,
 		VoiceSmoothing:   &smoothing,
 	}
-	audio.mu.RUnlock()
+	audio.RUnlock()
 	_ = UpdateAppConfig(func(c *AppConfig) { c.Audio = s })
 }
 
 func (a *App) toggleGlobalPTT() {
-	a.audio.mu.Lock()
+	a.audio.Lock()
 	a.audio.GlobalPTT = !a.audio.GlobalPTT
 	enabled := a.audio.GlobalPTT
-	if enabled && a.audio.InputMode != InputModePushToTalk {
-		a.audio.InputMode = InputModePushToTalk
+	if enabled && a.audio.InputMode != engine.InputModePushToTalk {
+		a.audio.InputMode = engine.InputModePushToTalk
 	}
-	a.audio.mu.Unlock()
+	a.audio.Unlock()
 	a.syncGlobalPTT()
 	a.saveAudioSettings()
 	if enabled {
@@ -105,10 +108,10 @@ func (a *App) toggleGlobalPTT() {
 // syncGlobalPTT starts, restarts or stops the system-wide PTT watcher to match settings.
 func (a *App) syncGlobalPTT() {
 	audio := a.audio
-	audio.mu.RLock()
-	want := audio.GlobalPTT && audio.InputMode == InputModePushToTalk
+	audio.RLock()
+	want := audio.GlobalPTT && audio.InputMode == engine.InputModePushToTalk
 	key := audio.PTTKeyName
-	audio.mu.RUnlock()
+	audio.RUnlock()
 
 	a.pttMu.Lock()
 	defer a.pttMu.Unlock()
@@ -117,26 +120,26 @@ func (a *App) syncGlobalPTT() {
 		a.pttWatcher = nil
 	}
 	if !want {
-		audio.mu.Lock()
+		audio.Lock()
 		if !audio.GlobalPTT {
 			audio.GlobalPTTStatus = ""
 		}
-		audio.mu.Unlock()
+		audio.Unlock()
 		return
 	}
 	if a.pttWatcher != nil {
 		return
 	}
 	a.pttKey = key
-	audio.mu.Lock()
+	audio.Lock()
 	audio.GlobalPTTStatus = "starting..."
-	audio.mu.Unlock()
+	audio.Unlock()
 	go func() {
 		w, err := ptt.Start(key, audio.SetPTT)
 		a.pttMu.Lock()
 		defer a.pttMu.Unlock()
-		audio.mu.Lock()
-		defer audio.mu.Unlock()
+		audio.Lock()
+		defer audio.Unlock()
 		if err != nil {
 			audio.GlobalPTTStatus = "unavailable: " + err.Error()
 			AddDebugLog("[PTT] " + audio.GlobalPTTStatus)
@@ -158,5 +161,30 @@ func (a *App) stopGlobalPTT() {
 	if a.pttWatcher != nil {
 		_ = a.pttWatcher.Close()
 		a.pttWatcher = nil
+	}
+}
+
+// setLanguage switches the user interface language and remembers it.
+func (a *App) setLanguage(l i18n.Lang) {
+	i18n.Set(l)
+	_ = UpdateAppConfig(func(c *AppConfig) { c.Language = string(l) })
+	a.term.ForceFullRedraw()
+}
+
+// cycleLanguage moves to the next interface language (lobby [L], settings [I]).
+func (a *App) cycleLanguage() {
+	a.setLanguage(i18n.Next(i18n.Current()))
+	a.toast(Tf("Language: %s", i18n.Current().Name()))
+}
+
+// warnIfMicBlocked says so when the system blocks the microphone: capture then delivers
+// silence and nobody would hear the user, with nothing else pointing at the cause.
+func (a *App) warnIfMicBlocked() {
+	switch audioio.MicrophonePermission() {
+	case audioio.MicPermissionDenied, audioio.MicPermissionRestricted:
+		AddDebugLog("[AUDIO] " + audioio.MicPermissionHint)
+		a.room.AddLog("[WARN] " + audioio.MicPermissionHint)
+		a.lobby.SetToast(audioio.MicPermissionHint)
+		a.lobby.ToastTimer = 450 // ~15 s: this one needs reading
 	}
 }

@@ -4,10 +4,11 @@ import ScreenCaptureKit
 import CoreMedia
 import CoreVideo
 import CoreAudio
+import CoreGraphics
 
 _ = Darwin.signal(SIGPIPE, SIG_IGN)
 
-let logFilePath = "/tmp/limoni_mac_sckit.log"
+let logFilePath = (NSTemporaryDirectory() as NSString).appendingPathComponent("limoni_mac_sckit.log")
 func logToFile(_ msg: String) {
     let line = "[\(Date())] \(msg)\n"
     if let data = line.data(using: .utf8) {
@@ -33,6 +34,42 @@ func writeAll(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Bool {
         written += n
     }
     return true
+}
+
+// checkScreenPermission reports a missing Screen Recording permission on a line Limoni Voice
+// recognizes, and asks macOS to show its permission prompt.
+func checkScreenPermission(_ out: UnsafeMutablePointer<FILE>) {
+    if !CGPreflightScreenCaptureAccess() {
+        fputs("PERMISSION|screen\n", out)
+        fflush(out)
+        _ = CGRequestScreenCaptureAccess()
+    }
+}
+
+// pickDisplay returns the display to capture: the one asked for, else the one showing most of
+// the shared window, else the main display.
+@available(macOS 12.3, *)
+func pickDisplay(_ displays: [SCDisplay], displayID: CGDirectDisplayID?, window: SCWindow?) -> SCDisplay? {
+    if let id = displayID, let d = displays.first(where: { $0.displayID == id }) {
+        return d
+    }
+    if let w = window {
+        var best: SCDisplay? = nil
+        var bestArea: CGFloat = 0
+        for d in displays {
+            let overlap = d.frame.intersection(w.frame)
+            let area: CGFloat = overlap.isNull ? 0 : overlap.width * overlap.height
+            if area > bestArea {
+                best = d
+                bestArea = area
+            }
+        }
+        if let b = best {
+            return b
+        }
+    }
+    let mainID = CGMainDisplayID()
+    return displays.first(where: { $0.displayID == mainID }) ?? displays.first
 }
 
 @available(macOS 12.3, *)
@@ -99,11 +136,12 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil, captureAudio: Bool = false) async {
+    func start(fps: Int = 60, width: Int = 1920, height: Int = 1080, targetWindowID: CGWindowID? = nil, targetDisplayID: CGDirectDisplayID? = nil, captureAudio: Bool = false) async {
         logToFile("[START] Initializing ScreenCaptureKit capture: \(width)x\(height) @ \(fps) FPS, targetWindowID=\(String(describing: targetWindowID))")
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-            guard let display = content.displays.first else {
+            let windowTarget = targetWindowID.flatMap { id in content.windows.first(where: { $0.windowID == id }) }
+            guard let display = pickDisplay(content.displays, displayID: targetDisplayID, window: windowTarget) else {
                 logToFile("[ERR] No display found in SCShareableContent")
                 exit(1)
             }
@@ -113,8 +151,8 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // Sharing one window shares only its application's sound, captured by a second
             // stream filtered to that application; the video stream then carries no audio.
             var audioApp: SCRunningApplication? = nil
-            if let winID = targetWindowID, let targetWin = content.windows.first(where: { $0.windowID == winID }) {
-                logToFile("[INFO] Target window found: '\(targetWin.title ?? "")' (app: '\(targetWin.owningApplication?.applicationName ?? "")', id: \(winID), frame: \(targetWin.frame))")
+            if let targetWin = windowTarget {
+                logToFile("[INFO] Target window found: '\(targetWin.title ?? "")' (app: '\(targetWin.owningApplication?.applicationName ?? "")', id: \(targetWin.windowID), frame: \(targetWin.frame), display: \(display.displayID))")
                 // Use display-including window filter: guarantees exact fixed canvas dimensions for FFmpeg
                 filter = SCContentFilter(display: display, including: [targetWin])
                 if captureAudio {
@@ -174,6 +212,9 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 }
             }
         } catch {
+            if (error as NSError).code == -3801 {
+                fputs("PERMISSION|screen\n", stderr)
+            }
             logToFile("[FATAL] Error initializing ScreenCaptureKit: \(error)")
             exit(1)
         }
@@ -263,6 +304,7 @@ var globalRecorder: AnyObject?
 
 if #available(macOS 12.3, *) {
     if CommandLine.arguments.contains("--list") {
+        checkScreenPermission(stdout)
         let sem = DispatchSemaphore(value: 0)
         Task {
             do {
@@ -282,6 +324,9 @@ if #available(macOS 12.3, *) {
                     }
                 }
             } catch {
+                if (error as NSError).code == -3801 {
+                    print("PERMISSION|screen")
+                }
                 print("SCREEN|desktop|Primary Display")
             }
             sem.signal()
@@ -297,18 +342,23 @@ if #available(macOS 12.3, *) {
         if CommandLine.arguments.count >= 2, let w = Int(CommandLine.arguments[1]) { width = w }
         if CommandLine.arguments.count >= 3, let h = Int(CommandLine.arguments[2]) { height = h }
         if CommandLine.arguments.count >= 4, let f = Int(CommandLine.arguments[3]) { fps = f }
-        if CommandLine.arguments.count >= 5, let winStr = CommandLine.arguments[4] as String?, !winStr.isEmpty && winStr != "desktop" && winStr != "portal" {
-            if let winNum = UInt32(winStr) {
+        var targetDisplayID: CGDirectDisplayID? = nil
+        if CommandLine.arguments.count >= 5 {
+            let target = CommandLine.arguments[4]
+            if target.hasPrefix("display:"), let id = UInt32(target.dropFirst("display:".count)) {
+                targetDisplayID = CGDirectDisplayID(id)
+            } else if let winNum = UInt32(target) {
                 targetWinID = CGWindowID(winNum)
             }
         }
 
         let captureAudio = CommandLine.arguments.count >= 6 && CommandLine.arguments[5] == "audio"
 
+        checkScreenPermission(stderr)
         let recorder = ScreenRecorder()
         globalRecorder = recorder
         Task {
-            await recorder.start(fps: fps, width: width, height: height, targetWindowID: targetWinID, captureAudio: captureAudio)
+            await recorder.start(fps: fps, width: width, height: height, targetWindowID: targetWinID, targetDisplayID: targetDisplayID, captureAudio: captureAudio)
         }
         dispatchMain()
     }

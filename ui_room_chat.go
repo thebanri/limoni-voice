@@ -372,7 +372,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 			var senderBadge string
 			var senderStyle cell.Style
 			if msg.IsSelf {
-				senderBadge = "You: "
+				senderBadge = T("You: ")
 				senderStyle = cell.Style{
 					Fg:       theme.Success,
 					Bg:       theme.SurfaceBg,
@@ -462,7 +462,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 				availFirst = 10
 			}
 
-			logLines := wrapWordsToLines(msg.Text, availFirst)
+			logLines := wrapWordsToLines(tr(msg.Text), availFirst)
 			indentSpaces := strings.Repeat(" ", tsLen)
 
 			for idx, lText := range logLines {

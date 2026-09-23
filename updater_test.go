@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"crypto/ed25519"
@@ -172,5 +173,108 @@ func TestUpdateSignatureVerification(t *testing.T) {
 	}
 	if err := VerifyChecksumsSignature(pubB64, []byte("abc  evil\n"), sig); err == nil {
 		t.Fatal("signature over different content accepted")
+	}
+}
+
+func TestMacAppBundleRoot(t *testing.T) {
+	if b, ok := macAppBundleRoot("darwin", "/Applications/Limoni Voice.app/Contents/MacOS/limoni-voice"); !ok || b != "/Applications/Limoni Voice.app" {
+		t.Fatalf("got %q %v", b, ok)
+	}
+	for _, c := range []struct{ goos, path string }{
+		{"darwin", "/usr/local/bin/limoni-voice"},
+		{"linux", "/opt/Limoni Voice.app/Contents/MacOS/limoni-voice"},
+	} {
+		if _, ok := macAppBundleRoot(c.goos, c.path); ok {
+			t.Fatalf("%s %s taken for an app bundle", c.goos, c.path)
+		}
+	}
+}
+
+func TestFindMacAppAsset(t *testing.T) {
+	rel := &GitHubRelease{Assets: []GitHubAsset{
+		{Name: "limoni-voice_v2.0.0_darwin_arm64.tar.gz"},
+		{Name: "Limoni-Voice_v2.0.0_macOS_amd64.app.zip"},
+		{Name: "Limoni-Voice_v2.0.0_macOS_arm64.app.tar.gz"},
+		{Name: "Limoni-Voice_v2.0.0_macOS_arm64.app.zip"},
+	}}
+	if a := FindMacAppAsset(rel, "arm64"); a == nil || a.Name != "Limoni-Voice_v2.0.0_macOS_arm64.app.zip" {
+		t.Fatalf("got %+v", a)
+	}
+	if a := FindMacAppAsset(&GitHubRelease{}, "arm64"); a != nil {
+		t.Fatal("found an asset in an empty release")
+	}
+}
+
+func appZip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		h := &zip.FileHeader{Name: name, Method: zip.Deflate}
+		h.SetMode(0o755)
+		w, err := zw.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte(body))
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestReplaceAppBundle(t *testing.T) {
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "Limoni Voice.app")
+	if err := os.MkdirAll(filepath.Join(bundle, "Contents", "MacOS"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(bundle, "Contents", "MacOS", "limoni-voice"), []byte("old"), 0o755)
+	os.WriteFile(filepath.Join(bundle, "Contents", "stale.txt"), []byte("gone after update"), 0o644)
+
+	binary := strings.Repeat("x", 200000)
+	data := appZip(t, map[string]string{
+		"Limoni Voice.app/Contents/MacOS/limoni-voice":           binary,
+		"Limoni Voice.app/Contents/Info.plist":                   "<plist/>",
+		"Limoni Voice.app/Contents/_CodeSignature/CodeResources": "seal",
+		"Limoni Voice.app/Contents/MacOS/limoni-voice-launcher":  "launcher",
+		"Limoni Voice.app/Contents/Resources/LimoniVoice.icns":   "icns",
+	})
+	if err := replaceAppBundle(bundle, data); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(bundle, "Contents", "MacOS", "limoni-voice"))
+	if err != nil || string(got) != binary {
+		t.Fatalf("binary not replaced: %v", err)
+	}
+	if st, _ := os.Stat(filepath.Join(bundle, "Contents", "MacOS", "limoni-voice")); st.Mode().Perm()&0o100 == 0 {
+		t.Fatal("binary lost its executable bit")
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "Contents", "stale.txt")); !os.IsNotExist(err) {
+		t.Fatal("old bundle contents survived the update")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("leftovers next to the bundle: %v", entries)
+	}
+}
+
+func TestReplaceAppBundleRefusesBadArchives(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"traversal":   {"Limoni Voice.app/../../evil": "x"},
+		"outside app": {"evil.sh": "x"},
+		"two apps":    {"A.app/Contents/x": "x", "B.app/Contents/x": "x"},
+		"no binary":   {"Limoni Voice.app/Contents/Info.plist": "x"},
+	} {
+		dir := t.TempDir()
+		bundle := filepath.Join(dir, "Limoni Voice.app")
+		os.MkdirAll(filepath.Join(bundle, "Contents", "MacOS"), 0o755)
+		os.WriteFile(filepath.Join(bundle, "Contents", "MacOS", "limoni-voice"), []byte("old"), 0o755)
+		if err := replaceAppBundle(bundle, appZip(t, files)); err == nil {
+			t.Errorf("%s: archive accepted", name)
+		}
+		if got, _ := os.ReadFile(filepath.Join(bundle, "Contents", "MacOS", "limoni-voice")); string(got) != "old" {
+			t.Errorf("%s: installed app damaged by a refused update", name)
+		}
 	}
 }

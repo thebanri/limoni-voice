@@ -6,7 +6,7 @@ import (
 )
 
 // inviteScheme is the URL scheme registered by the installers (Linux desktop entry, Windows
-// registry): limoni://join/<room code>.
+// registry, the macOS app's Info.plist): limoni://join/<room code>.
 const inviteScheme = "limoni"
 
 // inviteLink returns the invite link for a room code. The code is the room's secret, so the

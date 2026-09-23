@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"bufio"
@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/video"
 	"github.com/thebanri/limoni-voice/screenshare"
 )
@@ -245,16 +246,16 @@ func TestScreenShareAdaptsBitrateAndCarriesSystemAudio(t *testing.T) {
 	tx.mu.Lock()
 	tx.audioEnc, tx.audioOn = enc, true
 	tx.mu.Unlock()
-	tone := make([]int16, AudioFrameSamples)
-	out := make([]int16, AudioFrameSamples)
+	tone := make([]int16, engine.AudioFrameSamples)
+	out := make([]int16, engine.AudioFrameSamples)
 	var peak int16
 	for f := 0; f < 60; f++ {
 		for i := range tone {
-			tone[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(f*AudioFrameSamples+i)/AudioSampleRate))
+			tone[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(f*engine.AudioFrameSamples+i)/engine.AudioSampleRate))
 		}
 		tx.onSystemAudio(tone)
 		time.Sleep(20 * time.Millisecond)
-		viewer.audio.renderFrame(out)
+		viewer.audio.RenderFrame(out)
 		for _, v := range out {
 			peak = max(peak, v)
 		}

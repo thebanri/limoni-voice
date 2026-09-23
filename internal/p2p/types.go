@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"fmt"
@@ -49,6 +49,7 @@ const (
 	PacketScreenUnwatch    = protocol.PacketScreenUnwatch
 	PacketScreenNack       = protocol.PacketScreenNack
 	PacketScreenAudio      = protocol.PacketScreenAudio
+	PacketKick             = protocol.PacketKick
 	PacketChatMessage      = protocol.PacketChatMessage
 	PacketPortHop          = protocol.PacketPortHop
 	PacketRoomLocked       = protocol.PacketRoomLocked

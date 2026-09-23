@@ -44,11 +44,12 @@ type Session struct {
 
 // generation is one run of the encoder / player process (and its helper).
 type generation struct {
-	cmd    *exec.Cmd
-	extra  *exec.Cmd // macOS ScreenCaptureKit helper feeding cmd
-	cancel context.CancelFunc
-	exited chan struct{}
-	stderr *logBuffer
+	cmd      *exec.Cmd
+	extra    *exec.Cmd  // macOS ScreenCaptureKit helper feeding cmd
+	extraLog *logBuffer // the helper's stderr
+	cancel   context.CancelFunc
+	exited   chan struct{}
+	stderr   *logBuffer
 }
 
 // logBuffer keeps the tail of a process's stderr (safe for concurrent use).
@@ -164,6 +165,12 @@ func (s *Session) wait(g *generation) {
 		}
 		if len(errLines) > 0 {
 			err = fmt.Errorf("%w: %s", err, strings.Join(errLines, " | "))
+		}
+	}
+	if g.extraLog != nil && strings.Contains(g.extraLog.String(), "PERMISSION|screen") {
+		setMacScreenPermissionMissing(true)
+		if err != nil {
+			err = fmt.Errorf("%s (%w)", MacScreenPermissionHint, err)
 		}
 	}
 	s.finish(err)

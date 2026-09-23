@@ -5,15 +5,24 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync/atomic"
 )
 
-// LogCallback is optional hook to receive internal screenshare logs
-var LogCallback func(string)
+// logCallback receives the package's log lines; sessions log from their own goroutines.
+var logCallback atomic.Pointer[func(string)]
+
+// SetLogCallback sets the hook that receives screen share log lines (nil drops them).
+func SetLogCallback(fn func(string)) {
+	if fn == nil {
+		logCallback.Store(nil)
+		return
+	}
+	logCallback.Store(&fn)
+}
 
 func logMsg(format string, a ...interface{}) {
-	msg := fmt.Sprintf(format, a...)
-	if LogCallback != nil {
-		LogCallback(msg)
+	if fn := logCallback.Load(); fn != nil {
+		(*fn)(fmt.Sprintf(format, a...))
 	}
 }
 
@@ -25,7 +34,8 @@ type DependencyStatus struct {
 	CanShare             bool   `json:"can_share"`
 	CanWatch             bool   `json:"can_watch"`
 	MissingRecommended   string `json:"missing_recommended,omitempty"`
-	InstallHint          string `json:"install_hint,omitempty"` // shell command that installs what is missing
+	InstallHint          string `json:"install_hint,omitempty"`    // shell command that installs what is missing
+	PermissionHint       string `json:"permission_hint,omitempty"` // a system permission sharing still needs
 }
 
 // BroadcastOptions defines configuration for the video stream
@@ -217,6 +227,7 @@ func CheckDependencies() DependencyStatus {
 		status.MissingRecommended = strings.Join(missing, ", ")
 		status.InstallHint = installHint(packages)
 	}
+	status.PermissionHint = PermissionHint()
 	return status
 }
 

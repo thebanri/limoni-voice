@@ -1,17 +1,18 @@
-package main
+package p2p
 
 import (
 	"fmt"
 	"net"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/protocol"
 	"github.com/thebanri/limoni-voice/internal/voice"
 )
 
 func (n *P2PNode) encoder() *voice.Encoder {
 	n.voiceEncOnce.Do(func() {
-		enc, err := voice.NewEncoder(AudioSampleRate, AudioFrameSamples)
+		enc, err := voice.NewEncoder(engine.AudioSampleRate, engine.AudioFrameSamples)
 		if err != nil {
 			n.log(fmt.Sprintf("[ERROR] Opus encoder unavailable: %v", err))
 			return
@@ -138,7 +139,9 @@ func (n *P2PNode) sendRedundant(pkt *P2PPacket, relayClass byte) {
 	}
 }
 
-// adaptEncoderToLoss raises Opus in-band FEC redundancy when receivers report packet loss.
+// adaptEncoderToLoss follows the receivers' reports: it raises Opus in-band FEC redundancy
+// when they lose packets, and lowers the voice bitrate while the worst link in the room is
+// lossy or slow, raising it again once the link has been clean for a while.
 func (n *P2PNode) adaptEncoderToLoss() {
 	enc := n.voiceEnc
 	if enc == nil {
@@ -146,13 +149,29 @@ func (n *P2PNode) adaptEncoderToLoss() {
 	}
 	n.mu.RLock()
 	worst := 0.0
+	var worstRTT time.Duration
 	for _, p := range n.Peers {
 		worst = max(worst, p.RemoteLossPct)
+		worstRTT = max(worstRTT, time.Duration(p.PingMs)*time.Millisecond)
 	}
+	peers := len(n.Peers)
 	n.mu.RUnlock()
 	hint := voice.DefaultLossHint
 	if worst > 1 {
 		hint = int(worst*1.5) + 2
 	}
 	enc.SetPacketLoss(hint)
+
+	n.voiceRateMu.Lock()
+	if peers == 0 {
+		n.voiceRate.Reset()
+	}
+	bitrate, changed := n.voiceRate.Update(worst, worstRTT, time.Now())
+	n.voiceRateMu.Unlock()
+	if changed || peers == 0 {
+		enc.SetBitrate(bitrate)
+	}
+	if changed {
+		n.debugLog(fmt.Sprintf("[VOICE] Bitrate %d kbps (worst loss %.1f%%, RTT %s)", bitrate/1000, worst, worstRTT))
+	}
 }

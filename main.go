@@ -13,6 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/applog"
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/i18n"
+	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni-voice/internal/sysaudio"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
@@ -42,6 +46,8 @@ Flags:
   --join <key|link>     Join a room right away (a limoni://join/... link works too)
   --peer, --connect     Direct target peer IP/host for cross-subnet or VPN LAN P2P
                         Example: --peer 192.168.1.50:50000
+  --lang <en|tr>        Interface language (English, Türkçe); remembered from the settings otherwise
+  --log-file <path>     Write the diagnostic log here instead of the default location
   --version             Show version information
   --help, -h            Show this help message
 
@@ -52,6 +58,8 @@ Environment Variables:
   LIMONI_OFFLINE        Set to 1 / true to enable offline mode
   LIMONI_PEER           Set direct target peer IP/host
   LIMONI_AUDIO_BACKEND  Set to "exec" to force external audio tools instead of native APIs
+  LIMONI_LANG           Interface language: en or tr
+  LIMONI_LOG_FILE       Diagnostic log file (default: ` + applog.DefaultPath() + `)
 
 Examples:
   # Standard launch (connects to default public relay + LAN auto-discovery):
@@ -81,6 +89,8 @@ func main() {
 		flagPeer       = flag.String("peer", "", "Direct target peer IP / host for LAN / VPN P2P (e.g. 192.168.1.50)")
 		flagConnect    = flag.String("connect", "", "Alias for -peer")
 		flagJoin       = flag.String("join", "", "Join a room right away: room key or limoni:// invite link")
+		flagLang       = flag.String("lang", "", "Interface language: en (English) or tr (Türkçe); also LIMONI_LANG")
+		flagLogFile    = flag.String("log-file", "", "Diagnostic log file (default: per-user state directory, or LIMONI_LOG_FILE)")
 		flagHelp       = flag.Bool("help", false, "Show help and usage instructions")
 		flagVersion    = flag.Bool("version", false, "Show version information")
 		flagSysAudio   = flag.Bool("sysaudio-test", false, "Capture system (desktop) audio for 5 seconds and print the level, then exit")
@@ -108,6 +118,16 @@ func main() {
 		os.Exit(0)
 	}
 
+	logPath := *flagLogFile
+	if logPath == "" {
+		logPath = applog.DefaultPath()
+	}
+	if err := applog.Open(logPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: cannot write the log to %s: %v\n", logPath, err)
+	}
+	defer applog.Close()
+	applog.Printf("Limoni Voice %s starting on %s/%s", AppVersion, runtime.GOOS, runtime.GOARCH)
+
 	setupConsole()
 	defer restoreConsole()
 
@@ -132,11 +152,26 @@ func main() {
 	randNum, _ := rand.Int(rand.Reader, big.NewInt(100000))
 	localID := fmt.Sprintf("peer_%d_%d", time.Now().Unix()%10000, randNum.Int64())
 
-	audio := NewAudioEngine()
-	node := NewP2PNode(localID, "User", audio)
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode(localID, "User", audio)
 
 	// Load persistent configuration from settings.json
 	cfg := LoadAppConfig()
+
+	// Interface language: --lang, then LIMONI_LANG, then the saved setting.
+	lang, _ := i18n.Parse(cfg.Language)
+	if l, ok := i18n.Parse(os.Getenv("LIMONI_LANG")); ok {
+		lang = l
+	}
+	if *flagLang != "" {
+		l, ok := i18n.Parse(*flagLang)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Unknown language %q (use en or tr)\n", *flagLang)
+			os.Exit(2)
+		}
+		lang = l
+	}
+	i18n.Set(lang)
 
 	if *flagLAN || *flagLANOnly || *flagOffline {
 		node.LanOnly = true
@@ -146,14 +181,14 @@ func main() {
 			node.LanOnly = true
 			node.RelayURL = ""
 		} else {
-			node.RelayURL = NormalizeRelayURL(*flagRelay)
+			node.RelayURL = p2p.NormalizeRelayURL(*flagRelay)
 		}
 	} else if cfg.RelayURL != "" {
 		if strings.EqualFold(cfg.RelayURL, "none") || strings.EqualFold(cfg.RelayURL, "off") {
 			node.LanOnly = true
 			node.RelayURL = ""
 		} else {
-			node.RelayURL = NormalizeRelayURL(cfg.RelayURL)
+			node.RelayURL = p2p.NormalizeRelayURL(cfg.RelayURL)
 		}
 	}
 

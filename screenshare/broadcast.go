@@ -90,23 +90,14 @@ func buildBroadcastPlan(opt BroadcastOptions, targetURL string, src *pipewireSou
 		}
 		width, height := parseResolution(opt.Resolution, 1920, 1080)
 		bitrate := opt.bitrateString("2500k")
-		encoder := []string{
-			"-c:v", "libx264",
-			"-preset", "ultrafast",
-			"-tune", "zerolatency",
-			"-x264-params", fmt.Sprintf("keyint=%d:min-keyint=%d:qpmin=18:qpmax=38:scenecut=0:no-scenecut=1:sync-lookahead=0:rc-lookahead=0:sliced-threads=0:repeat-headers=1:me=hex:subme=2:merange=16:aq-mode=1", fps, fps),
-			"-b:v", bitrate,
-			"-maxrate", bitrate,
-			"-bufsize", bitrate,
+		encoder := append(buildMacEncoderArgs(bestMacEncoder(p), bitrate, fps),
 			"-pix_fmt", "yuv420p",
-			"-g", strconv.Itoa(fps),
-			"-bf", "0",
 			"-f", "mpegts",
 			"-mpegts_flags", "+pat_pmt_at_frames",
 			"-pcr_period", "20",
 			"-flush_packets", "1",
 			targetURL,
-		}
+		)
 		if helper, sckitErr := getOrBuildMacCaptureBinary(); sckitErr == nil {
 			logMsg("[DARWIN] Using native Apple ScreenCaptureKit -> FFmpeg rawvideo pipe")
 			plan.args = append([]string{
@@ -253,7 +244,7 @@ func (s *Session) launchBroadcast(opt BroadcastOptions) error {
 			return fmt.Errorf("failed to open ScreenCaptureKit pipe: %w", err)
 		}
 		g.cmd.Stdin = helperOut
-		captureStderr(g.extra, "SCKIT-LIVE")
+		g.extraLog = captureStderr(g.extra, "SCKIT-LIVE")
 		if err := g.extra.Start(); err != nil {
 			genCancel()
 			closeExtra()

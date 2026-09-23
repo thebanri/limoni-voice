@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/i18n"
+	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
@@ -15,6 +18,10 @@ import (
 	"github.com/thebanri/limoni/core/terminal"
 	"github.com/thebanri/limoni/widgets"
 )
+
+// settingsSliders keep the settings dialog's slider widgets between frames; their values
+// are taken from the audio engine each time the dialog is drawn.
+var settingsSliders struct{ gain, output, vad *widgets.SliderState }
 
 // openModal registers a modal layer and makes it the active layer, so the
 // click handlers the dialog registers next belong to it. Since Limoni v0.8.0
@@ -58,7 +65,7 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 	var badgeStyle cell.Style
 
 	if isMuted {
-		badgeText = "[ MUTED ]"
+		badgeText = T("[ MUTED ]")
 		badgeStyle = cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	} else if isSpeaking {
 		topStyle = cell.Style{
@@ -66,10 +73,10 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 			Bg:       theme.SurfaceBg,
 			Modifier: cell.ModifierBold,
 		}
-		badgeText = "[ ● VOICE ACTIVE (GATE OPEN) ]"
+		badgeText = T("[ ● VOICE ACTIVE (GATE OPEN) ]")
 		badgeStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	} else {
-		badgeText = "[ ○ NOISE GATED (GATE CLOSED) ]"
+		badgeText = T("[ ○ NOISE GATED (GATE CLOSED) ]")
 		badgeStyle = cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg}
 	}
 
@@ -167,8 +174,8 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 }
 
 // DrawTestModal renders the interactive Microphone & Audio Device Settings panel without any icons or emojis.
-func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngine, node *P2PNode, onToggleGlobalPTT func(), notificationsOn bool, onToggleNotifications func(), onClose func()) {
-	modalW, modalH := uint16(68), uint16(28)
+func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *engine.AudioEngine, node *p2p.P2PNode, onToggleGlobalPTT func(), notificationsOn bool, onToggleNotifications func(), onCycleLanguage func(), onClose func()) {
+	modalW, modalH := uint16(68), uint16(30)
 	if screenArea.Width < modalW+2 {
 		modalW = screenArea.Width - 2
 	}
@@ -184,7 +191,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	theme := CurrentTheme()
 	mainBlock := widgets.Block{
-		Title:          " MICROPHONE & AUDIO SETTINGS ",
+		Title:          T(" MICROPHONE & AUDIO SETTINGS "),
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
@@ -203,26 +210,27 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 
 	// 1. Status Indicator
-	statusText := "[IDLE (SILENT)]"
+	statusText := T("[IDLE (SILENT)]")
 	statusStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.Muted {
-		statusText = "[MIC OFF (MUTED)]"
+		statusText = T("[MIC OFF (MUTED)]")
 		statusStyle = cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
-	} else if audio.InputMode == InputModePushToTalk {
+	} else if audio.InputMode == engine.InputModePushToTalk {
 		if audio.IsTransmitting() {
-			statusText = "[PTT ACTIVE (TRANSMITTING...)]"
+			statusText = T("[PTT ACTIVE (TRANSMITTING...)]")
 			statusStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 		} else {
-			statusText = fmt.Sprintf("[PTT IDLE (HOLD %s TO TALK)]", strings.ToUpper(audio.PTTKeyName))
+			statusText = Tf("[PTT IDLE (HOLD %s TO TALK)]", strings.ToUpper(audio.PTTKeyName))
 			statusStyle = cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg}
 		}
 	} else if audio.IsSpeaking {
-		statusText = "[SPEAKING (AUDIO ACTIVE...)]"
+		statusText = T("[SPEAKING (AUDIO ACTIVE...)]")
 		statusStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	}
 
-	buf.SetString(inner.X+1, inner.Y, "Status: ", cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
-	buf.SetString(inner.X+8, inner.Y, statusText, statusStyle)
+	statusLabel := T("Status: ")
+	buf.SetString(inner.X+1, inner.Y, statusLabel, cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
+	buf.SetString(inner.X+1+uint16(len([]rune(statusLabel))), inner.Y, statusText, statusStyle)
 
 	// 2. Vertical VU Level Meter
 	meterRect := cell.Rect{
@@ -231,11 +239,11 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Width:  inner.Width - 2,
 		Height: 3,
 	}
-	DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, "MIC INPUT LEVEL")
+	DrawVerticalLevelMeter(buf, meterRect, audio.LocalRMS, audio.IsSpeaking, audio.Muted, T("MIC INPUT LEVEL"))
 
 	// 3. Microphone Input Device Selection Row
 	micDevY := inner.Y + 4
-	buf.SetString(inner.X+1, micDevY, "Microphone [1]:", cell.Style{
+	buf.SetString(inner.X+1, micDevY, T("Microphone [1]:"), cell.Style{
 		Fg:       theme.Accent,
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
@@ -296,7 +304,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 4. Output (Speaker/Headphone) Device Selection Row
 	outDevY := inner.Y + 6
-	buf.SetString(inner.X+1, outDevY, "Output Dev [2]:", cell.Style{
+	buf.SetString(inner.X+1, outDevY, T("Output Dev [2]:"), cell.Style{
 		Fg:       theme.Secondary,
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
@@ -347,17 +355,17 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 5. Mic Volume Slider
 	gainY := inner.Y + 8
 	gainPct := int(math.Round(audio.Gain * 100))
-	gainLabel := fmt.Sprintf("Mic Volume:    [ %3d%% ]", gainPct)
+	gainLabel := Tf("Mic Volume:    [ %3d%% ]", gainPct)
 	buf.SetString(inner.X+1, gainY, gainLabel, cell.Style{
 		Fg:       theme.Warning,
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
-	if audio.GainSliderState == nil {
-		audio.GainSliderState = widgets.NewSliderState(gainPct)
+	if settingsSliders.gain == nil {
+		settingsSliders.gain = widgets.NewSliderState(gainPct)
 	} else {
-		audio.GainSliderState.Set(gainPct, 0, 300)
+		settingsSliders.gain.Set(gainPct, 0, 300)
 	}
 
 	sliderWidth := uint16(26)
@@ -372,7 +380,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	gainSlider := widgets.Slider{
 		ID:    "mic_gain_slider",
-		State: audio.GainSliderState,
+		State: settingsSliders.gain,
 		Min:   0,
 		Max:   300,
 		TrackStyle: cell.Style{
@@ -394,9 +402,9 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			Bg: theme.SurfaceBg,
 		},
 		OnChange: func(value int) {
-			audio.mu.Lock()
+			audio.Lock()
 			audio.Gain = float64(value) / 100.0
-			audio.mu.Unlock()
+			audio.Unlock()
 		},
 	}
 	frame.RenderWidget(gainSlider, gainSliderArea)
@@ -404,17 +412,17 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 6. Speaker Output Volume Slider
 	outVolY := inner.Y + 10
 	outPct := int(math.Round(audio.OutputVolume * 100))
-	outVolLabel := fmt.Sprintf("Speaker Vol:   [ %3d%% ]", outPct)
+	outVolLabel := Tf("Speaker Vol:   [ %3d%% ]", outPct)
 	buf.SetString(inner.X+1, outVolY, outVolLabel, cell.Style{
 		Fg:       theme.Secondary,
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
-	if audio.OutputSliderState == nil {
-		audio.OutputSliderState = widgets.NewSliderState(outPct)
+	if settingsSliders.output == nil {
+		settingsSliders.output = widgets.NewSliderState(outPct)
 	} else {
-		audio.OutputSliderState.Set(outPct, 0, 200)
+		settingsSliders.output.Set(outPct, 0, 200)
 	}
 
 	outSliderArea := cell.Rect{
@@ -425,7 +433,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	outSlider := widgets.Slider{
 		ID:    "speaker_vol_slider",
-		State: audio.OutputSliderState,
+		State: settingsSliders.output,
 		Min:   0,
 		Max:   200,
 		TrackStyle: cell.Style{
@@ -447,24 +455,24 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 			Bg: theme.SurfaceBg,
 		},
 		OnChange: func(value int) {
-			audio.mu.Lock()
+			audio.Lock()
 			audio.OutputVolume = float64(value) / 100.0
-			audio.mu.Unlock()
+			audio.Unlock()
 		},
 	}
 	frame.RenderWidget(outSlider, outSliderArea)
 
 	// 7. Suppression Mode Toggle Buttons [N]
 	noiseY := inner.Y + 12
-	buf.SetString(inner.X+1, noiseY, "Noise Filter [N]:", cell.Style{
+	buf.SetString(inner.X+1, noiseY, T("Noise Filter [N]:"), cell.Style{
 		Fg: theme.Success,
 		Bg: theme.SurfaceBg,
 	})
 
-	optOff := " [ OFF ] "
-	optStd := " [ ON ] "
-	optHi := " [ HIGH ] "
-	optAI := " [ AI ] "
+	optOff := T(" [ OFF ] ")
+	optStd := T(" [ ON ] ")
+	optHi := T(" [ HIGH ] ")
+	optAI := T(" [ AI ] ")
 
 	curMode := audio.SuppressionMode
 	styleOff := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
@@ -479,13 +487,13 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 
 	switch curMode {
-	case SuppressionOff:
+	case engine.SuppressionOff:
 		styleOff = activeStyle
-	case SuppressionStandard:
+	case engine.SuppressionStandard:
 		styleStd = activeStyle
-	case SuppressionHigh:
+	case engine.SuppressionHigh:
 		styleHi = activeStyle
-	case SuppressionAI:
+	case engine.SuppressionAI:
 		styleAI = activeStyle
 	}
 
@@ -512,20 +520,20 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	if optAIX+uint16(len([]rune(optAI))) <= inner.X+inner.Width {
 		buf.SetString(optAIX, noiseY, optAI, styleAI)
 		frame.RegisterClickHandler(cell.NewRect(optAIX, noiseY, uint16(len([]rune(optAI))), 1), func(_ driver.MouseEvent) {
-			audio.SetSuppressionMode(SuppressionAI)
+			audio.SetSuppressionMode(engine.SuppressionAI)
 		})
 	}
 
 	// 8. Input Mode Selection Row [P]
 	inputModeY := inner.Y + 14
-	buf.SetString(inner.X+1, inputModeY, "Input Mode [P]:", cell.Style{
+	buf.SetString(inner.X+1, inputModeY, T("Input Mode [P]:"), cell.Style{
 		Fg:       theme.Warning,
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
-	modeVa := " [ Voice ] "
-	modePtt := " [ PTT ] "
+	modeVa := T(" [ Voice ] ")
+	modePtt := T(" [ PTT ] ")
 
 	styleVa := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
 	stylePtt := cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg}
@@ -535,7 +543,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		Modifier: cell.ModifierBold,
 	}
 
-	if audio.InputMode == InputModePushToTalk {
+	if audio.InputMode == engine.InputModePushToTalk {
 		stylePtt = activeModeStyle
 	} else {
 		styleVa = activeModeStyle
@@ -544,24 +552,24 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	modeVaX := inner.X + 18
 	buf.SetString(modeVaX, inputModeY, modeVa, styleVa)
 	frame.RegisterClickHandler(cell.NewRect(modeVaX, inputModeY, uint16(len([]rune(modeVa))), 1), func(_ driver.MouseEvent) {
-		audio.SetInputMode(InputModeVoiceActivity)
+		audio.SetInputMode(engine.InputModeVoiceActivity)
 	})
 
 	modePttX := modeVaX + uint16(len([]rune(modeVa))) + 1
 	buf.SetString(modePttX, inputModeY, modePtt, stylePtt)
 	frame.RegisterClickHandler(cell.NewRect(modePttX, inputModeY, uint16(len([]rune(modePtt))), 1), func(_ driver.MouseEvent) {
-		audio.SetInputMode(InputModePushToTalk)
+		audio.SetInputMode(engine.InputModePushToTalk)
 	})
 
-	if audio.InputMode == InputModePushToTalk {
-		keyLabel := fmt.Sprintf(" [ Key [K]: %s ] ", audio.GetPTTKeyName())
+	if audio.InputMode == engine.InputModePushToTalk {
+		keyLabel := Tf(" [ Key [K]: %s ] ", audio.GetPTTKeyName())
 		keyStyle := cell.Style{
 			Fg:       theme.Accent,
 			Bg:       theme.InputBg,
 			Modifier: cell.ModifierBold,
 		}
 		if audio.PTTListeningKey {
-			keyLabel = " [ Press Key... ] "
+			keyLabel = T(" [ Press Key... ] ")
 			keyStyle = cell.Style{
 				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 				Bg:       theme.Warning,
@@ -572,9 +580,9 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		if keyX+uint16(len([]rune(keyLabel))) <= inner.X+inner.Width {
 			buf.SetString(keyX, inputModeY, keyLabel, keyStyle)
 			frame.RegisterClickHandler(cell.NewRect(keyX, inputModeY, uint16(len([]rune(keyLabel))), 1), func(_ driver.MouseEvent) {
-				audio.mu.Lock()
+				audio.Lock()
 				audio.PTTListeningKey = !audio.PTTListeningKey
-				audio.mu.Unlock()
+				audio.Unlock()
 			})
 		}
 	}
@@ -582,17 +590,17 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// 9. Sensitivity / VAD Threshold Slider
 	vadY := inner.Y + 16
 	vadSens := audio.GetVADSensitivity()
-	vadLabel := fmt.Sprintf("Sensitivity:   [ %3d%% ]", vadSens)
+	vadLabel := Tf("Sensitivity:   [ %3d%% ]", vadSens)
 	buf.SetString(inner.X+1, vadY, vadLabel, cell.Style{
 		Fg:       theme.Secondary,
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
 	})
 
-	if audio.VADSliderState == nil {
-		audio.VADSliderState = widgets.NewSliderState(vadSens)
+	if settingsSliders.vad == nil {
+		settingsSliders.vad = widgets.NewSliderState(vadSens)
 	} else {
-		audio.VADSliderState.Set(vadSens, 1, 100)
+		settingsSliders.vad.Set(vadSens, 1, 100)
 	}
 
 	vadSliderArea := cell.Rect{
@@ -603,7 +611,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	}
 	vadSlider := widgets.Slider{
 		ID:    "mic_vad_slider",
-		State: audio.VADSliderState,
+		State: settingsSliders.vad,
 		Min:   1,
 		Max:   100,
 		TrackStyle: cell.Style{
@@ -632,10 +640,10 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 10. Loopback / Echo test toggle
 	loopbackY := inner.Y + 18
-	loopBox := "[ ] Hear Myself [L]"
+	loopBox := T("[ ] Hear Myself [L]")
 	loopStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.Loopback {
-		loopBox = "[X] Hear Myself [L]"
+		loopBox = T("[X] Hear Myself [L]")
 		loopStyle = cell.Style{
 			Fg:       theme.Accent,
 			Bg:       theme.SurfaceBg,
@@ -647,10 +655,10 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.ToggleLoopback()
 	})
 
-	notifyBox := "[ ] Notifications [B]"
+	notifyBox := T("[ ] Notifications [B]")
 	notifyStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if notificationsOn {
-		notifyBox = "[X] Notifications [B]"
+		notifyBox = T("[X] Notifications [B]")
 		notifyStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	}
 	notifyX := inner.X + uint16(len([]rune(loopBox))) + 3
@@ -666,10 +674,10 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		notifyEnd = inner.X + uint16(len([]rune(loopBox))) + 1
 	}
 
-	smoothBox := "[ ] Smoothing [S]"
+	smoothBox := T("[ ] Smoothing [S]")
 	smoothStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.VoiceSmoothing {
-		smoothBox = "[X] Smoothing [S]"
+		smoothBox = T("[X] Smoothing [S]")
 		smoothStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	}
 	if smoothX := inner.X + inner.Width - uint16(len([]rune(smoothBox))) - 1; smoothX > notifyEnd+1 {
@@ -681,10 +689,10 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 11. Echo cancellation & system-wide push-to-talk
 	aecY := inner.Y + 20
-	aecBox := "[ ] Echo Cancellation [E]"
+	aecBox := T("[ ] Echo Cancellation [E]")
 	aecStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.EchoCancellation {
-		aecBox = "[X] Echo Cancellation [E]"
+		aecBox = T("[X] Echo Cancellation [E]")
 		aecStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 	}
 	buf.SetString(inner.X+1, aecY, aecBox, aecStyle)
@@ -692,10 +700,10 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		audio.ToggleEchoCancellation()
 	})
 
-	gpttBox := "[ ] Global PTT [G]"
+	gpttBox := T("[ ] Global PTT [G]")
 	gpttStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 	if audio.GlobalPTT {
-		gpttBox = "[X] Global PTT [G]"
+		gpttBox = T("[X] Global PTT [G]")
 		if audio.GlobalPTTStatus != "" {
 			gpttBox += ": " + audio.GlobalPTTStatus
 		}
@@ -720,7 +728,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 
 	// 12. Theme & Mini HUD Options
 	themeY := inner.Y + 22
-	buf.SetString(inner.X+1, themeY, "Theme [T]:", cell.Style{
+	buf.SetString(inner.X+1, themeY, T("Theme [T]:"), cell.Style{
 		Fg:       theme.Accent,
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierBold,
@@ -760,10 +768,10 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 	// Compact HUD mode toggle
 	hudOptX := themeNextX + uint16(len([]rune(nextBtn))) + 2
 	if hudOptX+16 <= inner.X+inner.Width {
-		hudLabel := "[ ] Mini HUD [H]"
+		hudLabel := T("[ ] Mini HUD [H]")
 		hudStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 		if GetCompactHUD() {
-			hudLabel = "[X] Mini HUD ON"
+			hudLabel = T("[X] Mini HUD ON")
 			hudStyle = cell.Style{
 				Fg:       theme.Accent,
 				Bg:       theme.SurfaceBg,
@@ -776,16 +784,42 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		})
 	}
 
-	// 13. Action Buttons (Mute, Deafen, Close)
-	btnY := inner.Y + 24
-	muteBtn := "[M] Mute Mic"
+	// 13. Interface language
+	langY := inner.Y + 24
+	langLabel := T("Language [I]:")
+	buf.SetString(inner.X+1, langY, langLabel, cell.Style{
+		Fg:       theme.Accent,
+		Bg:       theme.SurfaceBg,
+		Modifier: cell.ModifierBold,
+	})
+	langPrevX := themePrevX
+	if w := inner.X + 2 + uint16(len([]rune(langLabel))); w > langPrevX {
+		langPrevX = w
+	}
+	buf.SetString(langPrevX, langY, prevBtn, themeBtnStyle)
+	langNameX := langPrevX + uint16(len([]rune(prevBtn))) + 1
+	for x := langNameX; x < langNameX+themeBoxW; x++ {
+		buf.SetCell(x, langY, cell.Cell{Content: ' ', Style: nameStyle})
+	}
+	buf.SetString(langNameX, langY, i18n.Current().Name(), nameStyle)
+	langNextX := langNameX + themeBoxW + 1
+	buf.SetString(langNextX, langY, nextBtn, themeBtnStyle)
+	if onCycleLanguage != nil {
+		frame.RegisterClickHandler(cell.NewRect(langPrevX, langY, langNextX+uint16(len([]rune(nextBtn)))-langPrevX, 1), func(_ driver.MouseEvent) {
+			onCycleLanguage()
+		})
+	}
+
+	// 14. Action Buttons (Mute, Deafen, Close)
+	btnY := inner.Y + 26
+	muteBtn := T("[M] Mute Mic")
 	muteBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 		Bg:       theme.Success,
 		Modifier: cell.ModifierBold,
 	}
 	if audio.Muted {
-		muteBtn = "[M] Unmute Mic"
+		muteBtn = T("[M] Unmute Mic")
 		muteBtnStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Danger,
@@ -800,14 +834,14 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		}
 	})
 
-	deafBtn := "[D] Deafen"
+	deafBtn := T("[D] Deafen")
 	deafBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 		Bg:       theme.Secondary,
 		Modifier: cell.ModifierBold,
 	}
 	if audio.Deafened {
-		deafBtn = "[D] Undeafen"
+		deafBtn = T("[D] Undeafen")
 		deafBtnStyle = cell.Style{
 			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 			Bg:       theme.Warning,
@@ -824,7 +858,7 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		}
 	})
 
-	closeBtn := "[ Close (Esc) ]"
+	closeBtn := T("[ Close (Esc) ]")
 	closeBtnStyle := cell.Style{
 		Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
 		Bg:       theme.BorderFocused,
@@ -838,12 +872,12 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *AudioEngi
 		}
 	})
 
-	if inner.Height > 25 {
-		backendLine := fmt.Sprintf("Audio I/O: capture %s · playback %s · Opus 48 kHz", orDash(audio.CaptureBackend), orDash(audio.PlaybackBackend))
+	if inner.Height > 27 {
+		backendLine := Tf("Audio I/O: capture %s · playback %s · Opus 48 kHz", p2p.OrDash(audio.CaptureBackend), p2p.OrDash(audio.PlaybackBackend))
 		if r := []rune(backendLine); len(r) > int(inner.Width)-2 {
 			backendLine = string(r[:inner.Width-3]) + "…"
 		}
-		buf.SetString(inner.X+1, inner.Y+25, backendLine, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
+		buf.SetString(inner.X+1, inner.Y+27, backendLine, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 	}
 }
 
@@ -867,9 +901,9 @@ func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float6
 	theme := CurrentTheme()
 	leaveDialog := widgets.Dialog{
 		ID:          "leave_room_dialog",
-		Title:       " LEAVE ROOM ",
-		Message:     "Do you want to leave the current voice room?",
-		SubMessage:  "Your voice connection with other participants will be terminated.",
+		Title:       T(" LEAVE ROOM "),
+		Message:     T("Do you want to leave the current voice room?"),
+		SubMessage:  T("Your voice connection with other participants will be terminated."),
 		Style:       cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg},
 		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: theme.Danger},
 		BorderStyle: cell.Style{Fg: theme.Danger},
@@ -882,11 +916,11 @@ func DrawLeaveModal(frame *terminal.Frame, screenArea cell.Rect, progress float6
 		Shadow: true,
 		Buttons: []widgets.DialogButton{
 			{
-				Text:    "Yes, Leave",
+				Text:    T("Yes, Leave"),
 				Handler: onConfirm,
 			},
 			{
-				Text:    "No, Stay",
+				Text:    T("No, Stay"),
 				Handler: onCancel,
 			},
 		},
@@ -916,9 +950,9 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 	theme := CurrentTheme()
 	exitDialog := widgets.Dialog{
 		ID:          "exit_app_dialog",
-		Title:       " EXIT APPLICATION ",
-		Message:     "Do you want to exit Limoni Voice?",
-		SubMessage:  "Your current session and voice connection will be terminated.",
+		Title:       T(" EXIT APPLICATION "),
+		Message:     T("Do you want to exit Limoni Voice?"),
+		SubMessage:  T("Your current session and voice connection will be terminated."),
 		Style:       cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg},
 		HeaderStyle: cell.Style{Fg: cell.NewColorRGB(255, 255, 255), Bg: theme.Danger},
 		BorderStyle: cell.Style{Fg: theme.Danger},
@@ -931,11 +965,11 @@ func DrawExitModal(frame *terminal.Frame, screenArea cell.Rect, progress float64
 		Shadow: true,
 		Buttons: []widgets.DialogButton{
 			{
-				Text:    "Yes, Exit",
+				Text:    T("Yes, Exit"),
 				Handler: onConfirm,
 			},
 			{
-				Text:    "No, Continue",
+				Text:    T("No, Continue"),
 				Handler: onCancel,
 			},
 		},
@@ -1014,7 +1048,7 @@ func DrawRelayModal(
 
 	// 3. Render Block with rounded borders
 	block := widgets.Block{
-		Title:          " RELAY SERVER & SECURITY SETTINGS ",
+		Title:          T(" RELAY SERVER & SECURITY SETTINGS "),
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
@@ -1033,7 +1067,7 @@ func DrawRelayModal(
 
 	// 4. Status Row
 	isCustom := IsCustomRelayActive(currentURL)
-	statusPrefix := "Active Server: "
+	statusPrefix := T("Active Server: ")
 	drawBoundedString(buf, inner.X+1, inner.Y, statusPrefix, cell.Style{Fg: theme.TextMuted, Bg: dialogBg}, maxX)
 	statusX := inner.X + 1 + uint16(len([]rune(statusPrefix)))
 
@@ -1043,19 +1077,19 @@ func DrawRelayModal(
 	}
 
 	if isCustom {
-		label := "[CUSTOM RELAY SERVER ACTIVE]"
+		label := T("[CUSTOM RELAY SERVER ACTIVE]")
 		color := theme.Success
 		if statusStr == "Offline" {
-			label = "[CUSTOM RELAY: OFFLINE (LAN FALLBACK)]"
+			label = T("[CUSTOM RELAY: OFFLINE (LAN FALLBACK)]")
 			color = theme.Danger
 		} else if statusStr == "Online" {
-			label = "[CUSTOM RELAY: ONLINE]"
+			label = T("[CUSTOM RELAY: ONLINE]")
 			color = theme.Success
 		} else if statusStr == "Connecting..." || statusStr == "Checking..." {
-			label = "[CUSTOM RELAY: CONNECTING...]"
+			label = T("[CUSTOM RELAY: CONNECTING...]")
 			color = theme.Warning
 		} else if statusStr != "" {
-			label = fmt.Sprintf("[CUSTOM RELAY: %s]", strings.ToUpper(statusStr))
+			label = Tf("[CUSTOM RELAY: %s]", strings.ToUpper(tr(statusStr)))
 			color = theme.Warning
 		}
 		drawBoundedString(buf, statusX, inner.Y, label, cell.Style{
@@ -1064,19 +1098,19 @@ func DrawRelayModal(
 			Modifier: cell.ModifierBold,
 		}, maxX)
 	} else {
-		label := "[OFFICIAL PUBLIC RELAY (Railway)]"
+		label := T("[OFFICIAL PUBLIC RELAY (Railway)]")
 		color := theme.Accent
 		if statusStr == "Offline" {
-			label = "[OFFICIAL RELAY: OFFLINE (LAN ONLY)]"
+			label = T("[OFFICIAL RELAY: OFFLINE (LAN ONLY)]")
 			color = theme.Danger
 		} else if statusStr == "Online" {
-			label = "[OFFICIAL RELAY: ONLINE]"
+			label = T("[OFFICIAL RELAY: ONLINE]")
 			color = theme.Success
 		} else if statusStr == "Connecting..." || statusStr == "Checking..." {
-			label = "[OFFICIAL RELAY: CONNECTING...]"
+			label = T("[OFFICIAL RELAY: CONNECTING...]")
 			color = theme.Warning
 		} else if statusStr == "LAN Mode" {
-			label = "[RELAY: LAN MODE]"
+			label = T("[RELAY: LAN MODE]")
 			color = theme.Secondary
 		}
 		drawBoundedString(buf, statusX, inner.Y, label, cell.Style{
@@ -1092,7 +1126,7 @@ func DrawRelayModal(
 	if activeField == 0 {
 		urlLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
 	}
-	urlLabelText := "Server WebSocket URL or Domain / Web Link:"
+	urlLabelText := T("Server WebSocket URL or Domain / Web Link:")
 	drawBoundedString(buf, inner.X+1, urlLabelY, urlLabelText, urlLabelStyle, maxX)
 
 	urlInputY := urlLabelY + 1
@@ -1107,7 +1141,7 @@ func DrawRelayModal(
 	urlInput := widgets.TextInput{
 		ID:               "relay_url_input",
 		State:            urlState,
-		Placeholder:      "e.g. voice.domain.com, https://voice.domain.com or 192.168.1.3:27850",
+		Placeholder:      T("e.g. voice.domain.com, https://voice.domain.com or 192.168.1.3:27850"),
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
@@ -1163,7 +1197,7 @@ func DrawRelayModal(
 	if activeField == 1 {
 		tokenLabelStyle = cell.Style{Fg: theme.BorderFocused, Bg: dialogBg, Modifier: cell.ModifierBold}
 	}
-	tokenLabelText := "Server Password / Token (RELAY_AUTH_TOKEN):"
+	tokenLabelText := T("Server Password / Token (RELAY_AUTH_TOKEN):")
 	drawBoundedString(buf, inner.X+1, tokenLabelY, tokenLabelText, tokenLabelStyle, maxX)
 
 	tokenInputY := tokenLabelY + 1
@@ -1177,7 +1211,7 @@ func DrawRelayModal(
 	tokenInput := widgets.TextInput{
 		ID:               "relay_token_input",
 		State:            tokenState,
-		Placeholder:      "Optional (leave empty if your server does not require a password)",
+		Placeholder:      T("Optional (leave empty if your server does not require a password)"),
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
@@ -1228,13 +1262,13 @@ func DrawRelayModal(
 
 	// 7. Buttons Row
 	btnY := inner.Y + 8
-	saveBtnText := "[ Save & Connect ]"
+	saveBtnText := T("[ Save & Connect ]")
 	isLan := statusStr == "LAN Mode" || strings.EqualFold(currentURL, "lan") || strings.EqualFold(currentURL, "none") || currentURL == ""
-	modeBtnText := "[ Switch to LAN Mode ]"
+	modeBtnText := T("[ Switch to LAN Mode ]")
 	if isLan {
-		modeBtnText = "[ Switch to Relay ]"
+		modeBtnText = T("[ Switch to Relay ]")
 	}
-	cancelBtnText := "[ Cancel ]"
+	cancelBtnText := T("[ Cancel ]")
 
 	saveBtnStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
 	if activeField == 2 {
@@ -1291,12 +1325,12 @@ func DrawRelayModal(
 	// 8. Info & Keyboard Shortcuts
 	helpY1 := inner.Y + 10
 	if helpY1 < inner.Y+inner.Height {
-		helpText1 := "• [Ctrl+V] Paste   • [Ctrl+C] Copy   • [Ctrl+A] Select All"
+		helpText1 := T("• [Ctrl+V] Paste   • [Ctrl+C] Copy   • [Ctrl+A] Select All")
 		drawBoundedString(buf, inner.X+1, helpY1, helpText1, cell.Style{Fg: theme.BorderFocused, Bg: dialogBg}, maxX)
 	}
 	helpY2 := inner.Y + 11
 	if helpY2 < inner.Y+inner.Height {
-		helpText2 := "• [Tab] Switch Field   • [Enter] Save & Connect   • [Esc] Close"
+		helpText2 := T("• [Tab] Switch Field   • [Enter] Save & Connect   • [Esc] Close")
 		drawBoundedString(buf, inner.X+1, helpY2, helpText2, cell.Style{Fg: theme.TextMuted, Bg: dialogBg}, maxX)
 	}
 }
@@ -1360,7 +1394,7 @@ func DrawScreenShareModal(
 	}
 
 	block := widgets.Block{
-		Title:          " SHARE SCREEN OR WINDOW ",
+		Title:          T(" SHARE SCREEN OR WINDOW "),
 		TitleAlignment: widgets.AlignCenter,
 		Borders:        widgets.BorderAll,
 		BorderSymbols:  widgets.SymbolsRounded,
@@ -1383,10 +1417,10 @@ func DrawScreenShareModal(
 
 	// 1. Quality preset pills
 	startX := inner.X + 1
-	label := "Quality:"
+	label := T("Quality:")
 	if inner.Width >= 45 {
 		buf.SetString(startX, row, label, cell.Style{Fg: theme.TextMuted, Bg: dialogBg, Modifier: cell.ModifierBold})
-		startX += uint16(len(label)) + 1
+		startX += uint16(len([]rune(label))) + 1
 	}
 	availW := int(inner.X+inner.Width) - int(startX) - 1
 	var pills []string
@@ -1395,7 +1429,7 @@ func DrawScreenShareModal(
 		pills = pills[:0]
 		for i, p := range screenshare.Presets {
 			res := fmt.Sprintf("%dp%d", p.Height, p.FPS)
-			txt := fmt.Sprintf(" %d %s ", i+1, p.Name)
+			txt := fmt.Sprintf(" %d %s ", i+1, T(p.Name))
 			switch tier {
 			case 1:
 				txt = " " + res + " "
@@ -1433,39 +1467,43 @@ func DrawScreenShareModal(
 
 	// 2. Preset details + system audio toggle
 	p := screenshare.Presets[presetIdx]
-	detail := fmt.Sprintf("%s · up to %.1f Mbps, lowers itself on weak connections", p.Name, float64(p.Kbps)/1000)
+	detail := Tf("%s · up to %.1f Mbps, lowers itself on weak connections", T(p.Name), float64(p.Kbps)/1000)
 	buf.SetString(inner.X+1, row, clip(detail, int(inner.Width)-2), cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
 	row++
-	audioText := " [A] System audio: OFF "
+	audioText := T(" [A] System audio: OFF ")
 	audioStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
 	if st.SystemAudio {
-		audioText = " [A] System audio: ON "
+		audioText = T(" [A] System audio: ON ")
 		audioStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Success, Modifier: cell.ModifierBold}
 	}
 	buf.SetString(inner.X+1, row, audioText, audioStyle)
 	if onToggleAudio != nil {
 		frame.RegisterClickHandler(cell.NewRect(inner.X+1, row, uint16(len([]rune(audioText))), 1), func(_ driver.MouseEvent) { onToggleAudio() })
 	}
-	hint := "shares what your computer plays (your voice chat is left out)"
+	hint := T("shares what your computer plays (your voice chat is left out)")
 	hx := inner.X + 2 + uint16(len([]rune(audioText)))
 	if int(inner.X+inner.Width)-int(hx)-1 > 10 {
 		buf.SetString(hx, row, clip(hint, int(inner.X+inner.Width)-int(hx)-1), cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
 	}
 	row++
 
-	// 3. Missing tools
+	// 3. Missing permission and tools
+	if st.Deps.PermissionHint != "" {
+		buf.SetString(inner.X+1, row, clip(T(st.Deps.PermissionHint), int(inner.Width)-2), cell.Style{Fg: theme.Danger, Bg: dialogBg, Modifier: cell.ModifierBold})
+		row++
+	}
 	if st.Deps.MissingRecommended != "" && !st.Deps.CanShare {
-		warn := "Missing: " + st.Deps.MissingRecommended
+		warn := T("Missing: ") + st.Deps.MissingRecommended
 		buf.SetString(inner.X+1, row, clip(warn, int(inner.Width)-2), cell.Style{Fg: theme.Danger, Bg: dialogBg, Modifier: cell.ModifierBold})
 		row++
 		if st.Deps.InstallHint != "" {
-			buf.SetString(inner.X+1, row, clip("Install: "+st.Deps.InstallHint, int(inner.Width)-2), cell.Style{Fg: theme.Warning, Bg: dialogBg})
+			buf.SetString(inner.X+1, row, clip(T("Install: ")+st.Deps.InstallHint, int(inner.Width)-2), cell.Style{Fg: theme.Warning, Bg: dialogBg})
 			row++
 		}
 	}
 
 	// 4. Targets
-	headerText := fmt.Sprintf("Select what to share (%d available):", len(targets))
+	headerText := Tf("Select what to share (%d available):", len(targets))
 	buf.SetString(inner.X+1, row, clip(headerText, int(inner.Width)-2), cell.Style{Fg: theme.Accent, Bg: dialogBg, Modifier: cell.ModifierBold})
 	row++
 
@@ -1493,7 +1531,7 @@ func DrawScreenShareModal(
 			itemStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
 			prefix = "▶ "
 		}
-		itemText := prefix + t.Title
+		itemText := prefix + tr(t.Title)
 		if runes := []rune(itemText); len(runes) > int(listWidth) {
 			if listWidth > 3 {
 				itemText = string(runes[:listWidth-3]) + "..."
@@ -1532,7 +1570,7 @@ func DrawScreenShareModal(
 	}
 
 	// 5. Guide
-	guideText := "[1-5/Q] Quality   [A] Audio   [↑/↓] Target   [ENTER] Share   [ESC] Cancel"
+	guideText := T("[1-5/Q] Quality   [A] Audio   [↑/↓] Target   [ENTER] Share   [ESC] Cancel")
 	if len(targets) > maxDisplay {
 		guideText = fmt.Sprintf("[%d/%d]  %s", selectedIdx+1, len(targets), guideText)
 	}
@@ -1596,7 +1634,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 	theme := CurrentTheme()
 	dialogBg := theme.SurfaceBg
 	block := widgets.Block{
-		Title:         " DEBUG & SYSTEM LOGS ",
+		Title:         T(" DEBUG & SYSTEM LOGS "),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused, Modifier: cell.ModifierBold},
@@ -1616,7 +1654,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 
 	// 1. Top Action Bar
 	// [Esc] Close button
-	closeBtn := "[Esc] Close"
+	closeBtn := T("[Esc] Close")
 	closeLen := uint16(len([]rune(closeBtn)))
 	buf.SetString(inner.X+1, inner.Y, closeBtn, cell.Style{
 		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
@@ -1630,7 +1668,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 	})
 
 	// [C] Copy All button
-	copyBtn := "[C] Copy All"
+	copyBtn := T("[C] Copy All")
 	copyLen := uint16(len([]rune(copyBtn)))
 	copyX := inner.X + closeLen + 3
 	buf.SetString(copyX, inner.Y, copyBtn, cell.Style{
@@ -1645,7 +1683,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 	})
 
 	// [Del] Clear button
-	clearBtn := "[Del] Clear"
+	clearBtn := T("[Del] Clear")
 	clearLen := uint16(len([]rune(clearBtn)))
 	clearX := copyX + copyLen + 2
 	buf.SetString(clearX, inner.Y, clearBtn, cell.Style{
@@ -1660,7 +1698,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 	})
 
 	// Log Count info on the right
-	countInfo := fmt.Sprintf("Total: %d logs", len(logs))
+	countInfo := Tf("Total: %d logs", len(logs))
 	countLen := uint16(len([]rune(countInfo)))
 	if inner.Width > countLen+2 {
 		buf.SetString(inner.X+inner.Width-countLen-1, inner.Y, countInfo, cell.Style{
@@ -1712,7 +1750,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 	}
 
 	if len(logs) == 0 {
-		buf.SetString(inner.X+2, listY, "No debug logs recorded yet.", cell.Style{
+		buf.SetString(inner.X+2, listY, T("No debug logs recorded yet."), cell.Style{
 			Fg: theme.TextMuted,
 			Bg: dialogBg,
 		})
@@ -1788,9 +1826,9 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 
 	// 5. Bottom Hint
 	bottomY := inner.Y + inner.Height - 1
-	guide := "[ESC/F12] Close   [↑/↓ / PgUp/PgDn] Scroll   [C] Copy   [Del] Clear"
+	guide := T("[ESC/F12] Close   [↑/↓ / PgUp/PgDn] Scroll   [C] Copy   [Del] Clear")
 	if scrollOffset > 0 {
-		guide = fmt.Sprintf("↑ +%d earlier logs   %s", scrollOffset, guide)
+		guide = Tf("↑ +%d earlier logs   %s", scrollOffset, guide)
 	}
 	if maxG := int(inner.Width - 2); len([]rune(guide)) > maxG {
 		guide = string([]rune(guide)[:maxG])
@@ -1802,7 +1840,7 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 }
 
 // DrawFileOfferModal renders an interactive confirmation modal for incoming P2P file transfers and code snippets
-func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, offer *FileOffer, onAccept func(), onDecline func(), onOpenEditor func()) {
+func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress float64, offer *p2p.FileOffer, onAccept func(), onDecline func(), onOpenEditor func()) {
 	if progress <= 0.001 || offer == nil {
 		return
 	}
@@ -1843,9 +1881,9 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 	}
 
 	// 3. Dialog block
-	title := " 📥 INCOMING FILE TRANSFER "
+	title := T(" 📥 INCOMING FILE TRANSFER ")
 	if offer.IsCode {
-		title = " 📥 INCOMING CODE SNIPPET "
+		title = T(" 📥 INCOMING CODE SNIPPET ")
 	}
 	block := widgets.Block{
 		Title:          title,
@@ -1864,7 +1902,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 
 	// 4. Content lines
 	// Sender
-	senderText := fmt.Sprintf("From: %s", offer.SenderNick)
+	senderText := Tf("From: %s", offer.SenderNick)
 	buf.SetString(inner.X+1, inner.Y, senderText, cell.Style{
 		Fg:       theme.Accent,
 		Bg:       dialogBg,
@@ -1872,7 +1910,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 	})
 
 	// File name and size
-	fileInfo := fmt.Sprintf("File: %s  (%s)", offer.FileName, formatBytes(offer.FileSize))
+	fileInfo := Tf("File: %s  (%s)", offer.FileName, formatBytes(offer.FileSize))
 	if maxW := int(inner.Width - 2); len([]rune(fileInfo)) > maxW {
 		fileInfo = string([]rune(fileInfo)[:maxW])
 	}
@@ -1895,11 +1933,11 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 
 	// Warning or Preview
 	ext := strings.ToLower(filepath.Ext(offer.FileName))
-	isDangerous := DangerousFileExtensions[ext]
+	isDangerous := p2p.DangerousFileExtensions[ext]
 
 	curRow := inner.Y + 3
 	if isDangerous {
-		warnText := "⚠️ Caution: Executable file. Accept only if you trust the sender."
+		warnText := T("⚠️ Caution: Executable file. Accept only if you trust the sender.")
 		if maxW := int(inner.Width - 2); len([]rune(warnText)) > maxW {
 			warnText = string([]rune(warnText)[:maxW])
 		}
@@ -1923,14 +1961,14 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 		if maxW := int(inner.Width - 6); len([]rune(previewLine)) > maxW {
 			previewLine = string([]rune(previewLine)[:maxW]) + "..."
 		}
-		previewStr := fmt.Sprintf("Code: %s", previewLine)
+		previewStr := Tf("Code: %s", previewLine)
 		buf.SetString(inner.X+1, curRow, previewStr, cell.Style{
 			Fg: theme.Secondary,
 			Bg: dialogBg,
 		})
 		curRow++
 	} else {
-		saveLoc := fmt.Sprintf("Save to: %s", GetLimoniTransfersDir())
+		saveLoc := Tf("Save to: %s", p2p.GetLimoniTransfersDir())
 		if maxW := int(inner.Width - 2); len([]rune(saveLoc)) > maxW {
 			saveLoc = string([]rune(saveLoc)[:maxW])
 		}
@@ -1948,7 +1986,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 	}
 
 	// Accept Button
-	acceptLabel := " [Y] Accept & Save "
+	acceptLabel := T(" [Y] Accept & Save ")
 	acceptLen := uint16(len([]rune(acceptLabel)))
 	acceptX := inner.X + 1
 	buf.SetString(acceptX, btnRow, acceptLabel, cell.Style{
@@ -1963,7 +2001,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 	})
 
 	// Decline Button
-	declineLabel := " [N] Decline "
+	declineLabel := T(" [N] Decline ")
 	declineLen := uint16(len([]rune(declineLabel)))
 	declineX := acceptX + acceptLen + 2
 	if declineX+declineLen <= inner.X+inner.Width {
@@ -1981,7 +2019,7 @@ func DrawFileOfferModal(frame *terminal.Frame, screenArea cell.Rect, progress fl
 
 	// Optional Open in Editor button for code
 	if offer.IsCode {
-		editorLabel := " [O] Open Editor "
+		editorLabel := T(" [O] Open Editor ")
 		editorLen := uint16(len([]rune(editorLabel)))
 		editorX := declineX + declineLen + 2
 		if editorX+editorLen <= inner.X+inner.Width {

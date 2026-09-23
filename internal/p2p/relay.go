@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"encoding/hex"
@@ -715,6 +715,9 @@ func (n *P2PNode) handleRelaySignal(msg protocol.Signal) {
 			}
 			n.log(fmt.Sprintf("[HOST] New room HOST: %s", msg.Nickname))
 		}
+
+	case protocol.SigKicked:
+		n.kickedLocked(msg.Ban)
 
 	case protocol.SigRoomLocked:
 		reason := "Room is locked by host"

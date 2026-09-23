@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"encoding/binary"
@@ -11,7 +11,6 @@ import (
 	"github.com/thebanri/limoni-voice/internal/dsp"
 	"github.com/thebanri/limoni-voice/internal/dsp/rnnoise"
 	"github.com/thebanri/limoni-voice/internal/voice"
-	"github.com/thebanri/limoni/widgets"
 )
 
 const (
@@ -171,21 +170,18 @@ type AudioEngine struct {
 	GlobalPTTStatus string // backend in use or reason unavailable
 
 	// Suppression mode: 0 = OFF (Bypass), 1 = ON (Standard Clean), 2 = HIGH, 3 = AI (RNNoise)
-	SuppressionMode   int
-	EchoCancellation  bool
-	VoiceSmoothing    bool    // soften highs, even out loudness and limit peaks on the sent voice
-	Gain              float64 // Mic Gain: 0.0 to 3.0 (1.0 = 100%, up to 300%)
-	OutputVolume      float64 // Output Volume: 0.0 to 2.0 (1.0 = 100%, up to 200%)
-	GainSliderState   *widgets.SliderState
-	OutputSliderState *widgets.SliderState
-	VADSliderState    *widgets.SliderState
-	VADSensitivity    int // 1 to 100% (default 65%)
-	IsSpeaking        bool
-	LocalRMS          float64
-	LocalWave         []float64 // Last 40 samples for visualizer
-	PeerWaves         map[string][]float64
-	PeerVolumes       map[string]float64 // Per-user volume scaling (0.0 to 2.0, default 1.0)
-	VADThreshold      float64
+	SuppressionMode  int
+	EchoCancellation bool
+	VoiceSmoothing   bool    // soften highs, even out loudness and limit peaks on the sent voice
+	Gain             float64 // Mic Gain: 0.0 to 3.0 (1.0 = 100%, up to 300%)
+	OutputVolume     float64 // Output Volume: 0.0 to 2.0 (1.0 = 100%, up to 200%)
+	VADSensitivity   int     // 1 to 100% (default 65%)
+	IsSpeaking       bool
+	LocalRMS         float64
+	LocalWave        []float64 // Last 40 samples for visualizer
+	PeerWaves        map[string][]float64
+	PeerVolumes      map[string]float64 // Per-user volume scaling (0.0 to 2.0, default 1.0)
+	VADThreshold     float64
 
 	// Devices
 	InputDevices      []AudioDevice
@@ -407,10 +403,7 @@ func NewAudioEngine() *AudioEngine {
 		ScreenAudioVolume: 1.0,
 		Gain:              1.0,
 		OutputVolume:      1.0,
-		GainSliderState:   widgets.NewSliderState(100),
-		OutputSliderState: widgets.NewSliderState(100),
 		VADSensitivity:    65,
-		VADSliderState:    widgets.NewSliderState(65),
 		VADThreshold:      0.0031, // Natural default voice detection threshold (~65% sensitivity, -50dB)
 		LocalWave:         make([]float64, 40),
 		PeerWaves:         make(map[string][]float64),
@@ -1642,9 +1635,6 @@ func (a *AudioEngine) AdjustGain(delta float64) float64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.Gain = math.Max(0, math.Min(a.Gain+delta, 3.0))
-	if a.GainSliderState != nil {
-		a.GainSliderState.Set(int(math.Round(a.Gain*100)), 0, 300)
-	}
 	return a.Gain
 }
 
@@ -1652,9 +1642,6 @@ func (a *AudioEngine) AdjustOutputVolume(delta float64) float64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.OutputVolume = math.Max(0, math.Min(a.OutputVolume+delta, 2.0))
-	if a.OutputSliderState != nil {
-		a.OutputSliderState.Set(int(math.Round(a.OutputVolume*100)), 0, 200)
-	}
 	return a.OutputVolume
 }
 
@@ -1680,9 +1667,6 @@ func (a *AudioEngine) SetVADSensitivity(pct int) int {
 	norm := float64(100-pct) / 99.0
 	// Sensitivity mapping: 100% -> 0.001 (-60dB), 65% -> 0.0031 (-50dB), 1% -> 0.050 (-26dB)
 	a.VADThreshold = 0.001 + 0.049*math.Pow(norm, 3.0)
-	if a.VADSliderState != nil {
-		a.VADSliderState.Set(pct, 1, 100)
-	}
 	return a.VADSensitivity
 }
 
@@ -1691,9 +1675,6 @@ func (a *AudioEngine) AdjustThreshold(delta float64) float64 {
 	defer a.mu.Unlock()
 	a.VADThreshold = math.Max(0.001, math.Min(a.VADThreshold+delta, 0.050))
 	a.VADSensitivity = thresholdToSensitivity(a.VADThreshold)
-	if a.VADSliderState != nil {
-		a.VADSliderState.Set(a.VADSensitivity, 1, 100)
-	}
 	return a.VADThreshold
 }
 

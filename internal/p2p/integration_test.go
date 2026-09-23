@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"io"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/relay"
 )
 
@@ -36,7 +37,7 @@ func startTestRelay(t *testing.T) (string, *relay.Server) {
 
 func newRelayNode(t *testing.T, id, nick, relayURL string) *P2PNode {
 	t.Helper()
-	n := NewP2PNode(id, nick, NewAudioEngine())
+	n := NewP2PNode(id, nick, engine.NewAudioEngine())
 	n.LanOnly = false
 	n.RelayURL = relayURL
 	n.stunServers = nil // no internet access from tests
@@ -139,9 +140,12 @@ func TestRelayJoinHandshakeAndChat(t *testing.T) {
 	waitFor(t, "UDP relay active", 3*time.Second, func() bool {
 		return strings.Contains(joiner.Diagnostics().UDPRelay, "active")
 	})
-	if p := joiner.GetPeersList(); len(p) != 1 || joiner.PeerPath(p[0]) != PathRelayUDP {
-		t.Fatalf("expected relay UDP path, got %+v", p)
-	}
+	// The path moves to the UDP relay once a datagram from the peer arrives over it, which
+	// can be a moment after the relay itself reports active.
+	waitFor(t, "relay UDP path", 3*time.Second, func() bool {
+		p := joiner.GetPeersList()
+		return len(p) == 1 && joiner.PeerPath(p[0]) == PathRelayUDP
+	})
 }
 
 func TestRelayJoinWrongCodeRejected(t *testing.T) {
@@ -198,13 +202,13 @@ func TestRelayPINCheckedByHost(t *testing.T) {
 }
 
 func TestLANWrongCodeRejected(t *testing.T) {
-	host := NewP2PNode("lan_wrong_host", "Alice", NewAudioEngine())
+	host := NewP2PNode("lan_wrong_host", "Alice", engine.NewAudioEngine())
 	host.LanOnly, host.RelayURL = true, ""
 	if err := host.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	joiner := NewP2PNode("lan_wrong_joiner", "Mallory", NewAudioEngine())
+	joiner := NewP2PNode("lan_wrong_joiner", "Mallory", engine.NewAudioEngine())
 	joiner.LanOnly, joiner.RelayURL = true, ""
 	if err := joiner.Start(); err != nil {
 		t.Fatal(err)

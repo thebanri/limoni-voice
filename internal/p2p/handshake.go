@@ -1,4 +1,4 @@
-package main
+package p2p
 
 import (
 	"bytes"
@@ -47,9 +47,9 @@ type joinSession struct {
 	identity e2ee.PublicKey
 }
 
-// knockWindow is how long the host has to let a knocking joiner in. The public relay drops
+// KnockWindow is how long the host has to let a knocking joiner in. The public relay drops
 // joiners it has not seen admitted after 30 s, so the decision has to come before that.
-const knockWindow = 25 * time.Second
+const KnockWindow = 25 * time.Second
 
 func lanHandshakeTag(roomID string) []byte {
 	m := hmac.New(sha256.New, []byte("limoni-lan-handshake-v2"))
@@ -178,7 +178,7 @@ func (n *P2PNode) processResult(hostID string, result []byte, lanAddr *net.UDPAd
 		n.mu.Lock()
 		first := n.Connecting && !n.IsConnected && n.joinWaitUntil.IsZero()
 		if first {
-			n.joinWaitUntil = time.Now().Add(knockWindow + 5*time.Second)
+			n.joinWaitUntil = time.Now().Add(KnockWindow + 5*time.Second)
 		}
 		cb := n.OnJoinWaiting
 		n.mu.Unlock()
@@ -295,6 +295,9 @@ func (n *P2PNode) acceptHello(joinerID, nickname string, hello []byte, lanAddr *
 		}
 		return hsChallenge, s.server.Challenge(), true
 	}
+	if n.isBannedLocked(joinerID, lanAddr) {
+		return hsResult, []byte{e2ee.StatusDenied}, true
+	}
 	if time.Now().Before(n.handshakePauseTo) {
 		return hsResult, []byte{e2ee.StatusBusy}, true
 	}
@@ -367,6 +370,7 @@ func (n *P2PNode) finishAdmissionLocked(joinerID string, s *joinSession, status 
 	grant := e2ee.KeyGrant{}
 	if status == e2ee.StatusOK {
 		n.memberKeys[joinerID] = s.identity
+		delete(n.removed, joinerID)
 		grant.Epoch, grant.Key = n.keyring.Current()
 		if staged, ok := n.keyring.StagedEpoch(); ok && n.rekeyEpoch == staged {
 			grant.Epoch, grant.Key = staged, n.rekeyKey
@@ -536,6 +540,10 @@ func (n *P2PNode) handleLANHandshake(data []byte, raddr *net.UDPAddr) bool {
 		return false
 	}
 	kind := data[lanTagSize]
+	if kind < hsHello || kind > hsResult {
+		// Key requests and grants share the envelope; handleKeyFrame takes those.
+		return false
+	}
 	id, body, ok := readShort(data[lanTagSize+1:])
 	if !ok || id == n.LocalID {
 		return true
@@ -645,6 +653,7 @@ func (n *P2PNode) setMemberKeysLocked(members []e2ee.MemberKey) {
 		if m.ID != n.LocalID {
 			n.memberKeys[m.ID] = m.Key
 			delete(n.departed, m.ID) // re-admitted by the host
+			delete(n.removed, m.ID)
 		}
 	}
 }
@@ -661,6 +670,10 @@ func (n *P2PNode) resetMemberTrackingLocked() {
 	n.prevHostKey = e2ee.PublicKey{}
 	n.prevHostUntil = time.Time{}
 	n.departed = make(map[string]time.Time)
+	n.removed = make(map[string]bool)
+	n.bannedIDs = make(map[string]bool)
+	n.bannedIPs = make(map[string]bool)
+	n.kickedHandled = false
 }
 
 // rememberHostLocked keeps the key of a host that is being replaced, so members it admitted
