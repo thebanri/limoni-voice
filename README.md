@@ -184,10 +184,25 @@ Install Limoni Voice with a single command in your terminal:
 curl -fsSL https://raw.githubusercontent.com/thebanri/limoni-voice/main/install.sh | bash
 ```
 
+Or with [Homebrew](https://brew.sh) (macOS and Linux, updates with `brew upgrade`):
+
+```bash
+brew install thebanri/tap/limoni-voice              # the command
+brew install --cask thebanri/tap/limoni-voice-app   # macOS: Limoni Voice.app, opens invite links
+```
+
+Use one or the other: the cask includes the command.
+
 ### 🪟 Windows 1-Line Install (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
+```
+
+Or with [Scoop](https://scoop.sh) (updates with `scoop update limoni-voice`):
+
+```powershell
+scoop install https://github.com/thebanri/limoni-voice/releases/latest/download/limoni-voice.json
 ```
 
 ### Prerequisites (Audio & Screen Sharing)
@@ -340,6 +355,16 @@ docker compose down --remove-orphans
 > [!TIP]
 > **Network / UDP QUIC Issues:** `docker-compose.yml` is pre-configured with `--protocol http2` and public DNS to route tunnel traffic over standard HTTPS (TCP 443) instead of UDP port 7844 (QUIC), preventing "sendmsg: network is unreachable" errors caused by ISP UDP drops.
 
+#### 🔁 Backup Relays
+
+Give several relays separated by commas, in the relay dialog (`R`), in `--relay` or in `LIMONI_RELAY_URL`:
+
+```bash
+./limoni-voice --relay "my.relay.com, backup.relay.com:27850"
+```
+
+The first one is the primary. A host whose primary is unreachable opens the room on the next one; a joiner that cannot reach a relay, or does not find the room there, asks the next one. Once a room is open it stays on its relay. Everyone in a room should list the same relays in the same order. A relay with its own password takes it in the URL: `wss://backup.relay.com/ws?token=secret`.
+
 #### ⚡ Low Latency: UDP Relay (Important for Cloudflare Tunnel users)
 
 Cloudflare Tunnel only carries **TCP/WebSocket**. When two peers cannot connect directly (e.g. symmetric NAT or CGNAT), audio falls back to the WebSocket relay inside the tunnel, which typically adds **~100+ ms**. For the lowest latency:
@@ -382,7 +407,7 @@ export LIMONI_LAN_ONLY=1
 
 | Flag | Env Variable | Default | Description |
 |------|--------------|---------|-------------|
-| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://relay.thebanri.dpdns.org/ws` | Custom WebSocket relay URL for self-hosted servers |
+| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://relay.thebanri.dpdns.org/ws` | Custom WebSocket relay URL for self-hosted servers; backups after commas (see below) |
 | `--relay-token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Authentication token for password-protected relay servers |
 | `--token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Alias for `--relay-token` |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Force LAN-only offline mode (disables internet relay) |

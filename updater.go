@@ -81,6 +81,12 @@ func CheckAndUpdateAsync(notify func(msg string)) {
 		execPath = rawExecPath
 	}
 
+	// A package manager owns its copy: replacing the file would break its bookkeeping.
+	if how, managed := packageManagerUpdate(runtime.GOOS, execPath); managed {
+		notify(fmt.Sprintf("New version %s available: %s", latestRelease.TagName, how))
+		return
+	}
+
 	// Do not attempt to self-update if running from a temporary go-build directory (e.g. `go run`)
 	if isTemporaryBuild(execPath) {
 		notify(fmt.Sprintf("New version %s available at github.com/%s", latestRelease.TagName, GitHubRepo))
@@ -583,4 +589,29 @@ func extractAppZip(data []byte, dir string) (string, error) {
 		return "", errors.New("no .app in archive")
 	}
 	return app, nil
+}
+
+// packageManagerUpdate reports whether execPath was installed by a package manager, and the
+// command that updates it. Limoni Voice.app from the Homebrew cask updates itself (the cask
+// is marked auto_updates), so only the formula's copy counts here.
+func packageManagerUpdate(goos, execPath string) (string, bool) {
+	p := filepath.ToSlash(execPath)
+	switch goos {
+	case "windows":
+		lower := strings.ToLower(strings.ReplaceAll(execPath, `\`, "/"))
+		switch {
+		case strings.Contains(lower, "/scoop/apps/"):
+			return "scoop update limoni-voice", true
+		case strings.Contains(lower, "/microsoft/winget/"):
+			return "winget upgrade Thebanri.LimoniVoice", true
+		}
+	case "darwin", "linux":
+		switch {
+		case strings.Contains(p, "/Cellar/"):
+			return "brew upgrade limoni-voice", true
+		case strings.HasPrefix(p, "/usr/bin/"):
+			return "update it with your system package manager", true
+		}
+	}
+	return "", false
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,9 +23,10 @@ import (
 // reconnecting to the new relay server if a room session is currently active.
 func (n *P2PNode) UpdateRelaySettings(newURL, newToken string) {
 	n.mu.Lock()
-	n.RelayURL = NormalizeRelayURL(newURL)
+	n.setRelaysLocked(ParseRelayList(newURL))
 	n.RelayToken = strings.TrimSpace(newToken)
 	n.LanOnly = n.RelayURL == ""
+	n.activeRelay = ""
 	isActiveRoom := n.RoomCode != ""
 	currentRoom := n.RoomCode
 	isHost := n.IsHost
@@ -39,14 +41,76 @@ func (n *P2PNode) UpdateRelaySettings(newURL, newToken string) {
 	}
 }
 
-// connectRelay connects to the relay in the background and sends the initial host/join message.
-// If the connection drops while the room is active, it automatically reconnects.
-func (n *P2PNode) connectRelay(action string, roomCode string) {
+// SetRelays sets the relays to use, primary first. An empty list means LAN only.
+func (n *P2PNode) SetRelays(list []string) {
 	n.mu.Lock()
-	relayURL := n.RelayURL
-	if n.LanOnly || relayURL == "" || strings.EqualFold(relayURL, "none") || strings.EqualFold(relayURL, "off") {
+	defer n.mu.Unlock()
+	n.setRelaysLocked(list)
+}
+
+func (n *P2PNode) setRelaysLocked(list []string) {
+	n.RelayURL, n.RelayFallbacks = "", nil
+	if len(list) > 0 {
+		n.RelayURL = list[0]
+		n.RelayFallbacks = append([]string(nil), list[1:]...)
+	}
+}
+
+// RelayList returns the configured relays, primary first.
+func (n *P2PNode) RelayList() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.relayCandidatesLocked()
+}
+
+func (n *P2PNode) relayCandidatesLocked() []string {
+	if n.RelayURL == "" {
+		return nil
+	}
+	list := []string{n.RelayURL}
+	for _, u := range n.RelayFallbacks {
+		if u != "" && !slices.Contains(list, u) {
+			list = append(list, u)
+		}
+	}
+	return list
+}
+
+// ActiveRelayURL returns the relay the room lives on, or the primary before connecting.
+func (n *P2PNode) ActiveRelayURL() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.activeRelayLocked()
+}
+
+func (n *P2PNode) activeRelayLocked() string {
+	if n.activeRelay != "" {
+		return n.activeRelay
+	}
+	return n.RelayURL
+}
+
+// connectRelay connects to the relay in the background and sends the initial host/join message.
+// Until a relay accepts the connection the configured relays are tried in turn; after that the
+// room stays on that relay (member tokens only work there) and a dropped connection returns to it.
+func (n *P2PNode) connectRelay(action string, roomCode string) {
+	n.mu.RLock()
+	start := max(0, slices.Index(n.relayCandidatesLocked(), n.activeRelay))
+	n.mu.RUnlock()
+	n.connectRelayAt(action, start)
+}
+
+// connectRelayAt connects starting from the start-th configured relay.
+func (n *P2PNode) connectRelayAt(action string, start int) {
+	n.mu.Lock()
+	candidates := n.relayCandidatesLocked()
+	if n.LanOnly || len(candidates) == 0 {
 		n.mu.Unlock()
 		return
+	}
+	if n.activeRelay != "" && slices.Contains(candidates, n.activeRelay) && candidates[start%len(candidates)] == n.activeRelay {
+		candidates = []string{n.activeRelay} // an established room never moves
+		start = 0
 	}
 	if n.wsCancel != nil {
 		close(n.wsCancel)
@@ -61,7 +125,7 @@ func (n *P2PNode) connectRelay(action string, roomCode string) {
 	n.wsCancel = wsCancel
 	n.mu.Unlock()
 
-	go n.relayConnectionSupervisor(relayURL, action, wsCancel)
+	go n.relayConnectionSupervisor(candidates, start%len(candidates), action, wsCancel)
 }
 
 func relayDialURL(relayURL, token string) (string, http.Header) {
@@ -80,14 +144,16 @@ func relayDialURL(relayURL, token string) (string, http.Header) {
 	return target, headers
 }
 
-func (n *P2PNode) relayConnectionSupervisor(relayURL, action string, cancel chan struct{}) {
+func (n *P2PNode) relayConnectionSupervisor(candidates []string, idx int, action string, cancel chan struct{}) {
 	firstConnect := true
+	reported := map[string]bool{}
 	for {
 		select {
 		case <-cancel:
 			return
 		default:
 		}
+		relayURL := candidates[idx]
 
 		priorityCh := make(chan []byte, 256)
 		reliableCh := make(chan []byte, 512)
@@ -98,6 +164,21 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action string, cancel chan
 		dialer := websocket.Dialer{HandshakeTimeout: 8 * time.Second}
 		conn, resp, err := dialer.Dial(targetURL, headers)
 		if err != nil {
+			if firstConnect && len(candidates) > 1 {
+				// Not connected yet: move on to the next relay.
+				next := candidates[(idx+1)%len(candidates)]
+				if !reported[relayURL] {
+					reported[relayURL] = true
+					n.log(fmt.Sprintf("[RELAY] %s unreachable (%v), trying %s", relayURL, err, next))
+				}
+				idx = (idx + 1) % len(candidates)
+				select {
+				case <-cancel:
+					return
+				case <-time.After(300 * time.Millisecond):
+					continue
+				}
+			}
 			if firstConnect {
 				if resp != nil && resp.StatusCode == http.StatusUnauthorized {
 					n.log("[RELAY] ⛔ Relay connection rejected (401 Unauthorized): Invalid or missing token. Check --relay-token or LIMONI_RELAY_TOKEN.")
@@ -123,6 +204,7 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action string, cancel chan
 		default:
 		}
 		n.wsConn = conn
+		n.activeRelay = relayURL
 		n.wsPriorityCh = priorityCh
 		n.wsReliableCh = reliableCh
 		n.wsVideoCh = videoCh
@@ -138,6 +220,8 @@ func (n *P2PNode) relayConnectionSupervisor(relayURL, action string, cancel chan
 		if firstConnect {
 			n.log(fmt.Sprintf("[RELAY] Connected to relay server (%s | Internet Active)", relayURL))
 			firstConnect = false
+			// From here on the room lives on this relay.
+			candidates, idx = []string{relayURL}, 0
 		} else {
 			n.log("[RELAY] Relay connection automatically re-established.")
 		}
@@ -730,6 +814,13 @@ func (n *P2PNode) handleRelaySignal(msg protocol.Signal) {
 		go n.failJoin("This room is full! (Maximum 4 people)")
 
 	case protocol.SigRoomNotFound:
+		if next, ok := n.nextJoinRelayLocked(); ok {
+			cur := n.activeRelayLocked()
+			n.activeRelay = ""
+			n.log(fmt.Sprintf("[RELAY] Room not found on %s, trying %s", cur, n.relayCandidatesLocked()[next]))
+			go n.connectRelayAt("join", next)
+			return
+		}
 		msgText := msg.Message
 		if msgText == "" {
 			msgText = "This room is not currently open! Make sure your friend has opened the room."
@@ -884,7 +975,7 @@ func (n *P2PNode) startUDPRelayLocked(msg protocol.Signal) {
 	}
 	hostPort := msg.UDPAddr
 	if hostPort == "" && msg.UDPPort > 0 {
-		u, err := url.Parse(n.RelayURL)
+		u, err := url.Parse(n.activeRelayLocked())
 		if err != nil || u.Hostname() == "" {
 			return
 		}
@@ -918,4 +1009,20 @@ func (n *P2PNode) startUDPRelayLocked(msg protocol.Signal) {
 		ur.addr.Store(addr)
 		ur.keepaliveLoop()
 	}()
+}
+
+// nextJoinRelayLocked picks the relay to ask next when a joiner's relay does not have the room:
+// the host may be on a backup relay it fell back to. It reports false once every configured
+// relay was asked.
+func (n *P2PNode) nextJoinRelayLocked() (int, bool) {
+	if !n.Connecting || n.IsConnected || n.IsHost {
+		return 0, false
+	}
+	candidates := n.relayCandidatesLocked()
+	n.relayTried++
+	if len(candidates) < 2 || n.relayTried >= len(candidates) {
+		return 0, false
+	}
+	cur := max(0, slices.Index(candidates, n.activeRelayLocked()))
+	return (cur + 1) % len(candidates), true
 }

@@ -268,7 +268,7 @@ func (a *App) probeRelayStatus(u, tok string) {
 
 func (a *App) openRelayModal() {
 	a.showRelayModal = true
-	currURL := a.node.RelayURL
+	currURL := p2p.FormatRelayList(a.node.RelayList())
 	if currURL == "" && !a.node.LanOnly {
 		currURL = p2p.DefaultRelayURL
 	}
@@ -396,23 +396,24 @@ func isLanKeyword(raw string) bool {
 
 // saveRelaySettings applies the relay URL / token from the modal and persists them.
 func (a *App) saveRelaySettings(rawURL, rawToken string) {
-	if isLanKeyword(rawURL) {
+	relays := p2p.ParseRelayList(rawURL)
+	if isLanKeyword(rawURL) || len(relays) == 0 {
 		a.switchToLAN()
 		return
 	}
-	newURL := p2p.NormalizeRelayURL(rawURL)
+	newURL := p2p.FormatRelayList(relays)
 	newToken := strings.TrimSpace(rawToken)
 	a.node.UpdateRelaySettings(newURL, newToken)
 	_ = UpdateAppConfig(func(c *AppConfig) {
-		if newURL == p2p.DefaultRelayURL && newToken == "" {
+		if newURL == p2p.FormatRelayList(p2p.ParseRelayList("")) && newToken == "" {
 			c.RelayURL, c.RelayToken = "", ""
 		} else {
 			c.RelayURL, c.RelayToken = newURL, newToken
 		}
 	})
-	a.probeRelayStatus(newURL, newToken)
+	a.probeRelayStatus(relays[0], newToken)
 	a.relayURLInput.SetValue(newURL)
-	a.lobby.RelayURL = newURL
+	a.lobby.RelayURL = relays[0]
 	a.toast("Relay server settings saved!")
 	a.closeRelayModal()
 }

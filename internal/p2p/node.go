@@ -71,7 +71,10 @@ type P2PNode struct {
 	lastPunchAt map[string]time.Time
 
 	// WebSocket / UDP relay
-	RelayURL         string
+	RelayURL         string   // primary relay
+	RelayFallbacks   []string // tried in order when the primary is unreachable or lacks the room
+	activeRelay      string   // the relay this room lives on, once connected
+	relayTried       int      // relays asked for the room while joining
 	RelayToken       string
 	LanOnly          bool
 	wsConn           *websocket.Conn
@@ -215,7 +218,6 @@ func NewP2PNode(localID, nickname string, audio *engine.AudioEngine) *P2PNode {
 	node := &P2PNode{
 		LocalID:             localID,
 		Nickname:            nickname,
-		RelayURL:            relayURL,
 		RelayToken:          strings.TrimSpace(relayToken),
 		LanOnly:             lanOnly,
 		Peers:               make(map[string]*PeerInfo),
@@ -229,6 +231,9 @@ func NewP2PNode(localID, nickname string, audio *engine.AudioEngine) *P2PNode {
 		stunServers:         nat.DefaultSTUNServers,
 		joinSessions:        make(map[string]*joinSession),
 		lastPunchAt:         make(map[string]time.Time),
+	}
+	if relayURL != "" {
+		node.setRelaysLocked(ParseRelayList(relayURL))
 	}
 	if peerEnv := os.Getenv("LIMONI_PEER"); peerEnv != "" {
 		node.SetTargetPeer(peerEnv)

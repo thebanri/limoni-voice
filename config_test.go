@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -342,5 +343,31 @@ func TestDefaultRelayLive(t *testing.T) {
 	online, status := ProbeRelayServer(p2p.DefaultRelayURL, "", 5*time.Second)
 	if !online {
 		t.Fatalf("Expected DefaultRelayURL to probe online, got online=%v status=%s", online, status)
+	}
+}
+
+// The settings can hold the relay password: only the user may read them, also when an older
+// version created the file world readable.
+func TestSettingsFileIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions")
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := getConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateAppConfig(func(c *AppConfig) { c.RelayToken = "secret" }); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("settings file mode %v, want 0600", st.Mode().Perm())
 	}
 }

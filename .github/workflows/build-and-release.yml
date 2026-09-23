@@ -103,6 +103,10 @@ jobs:
     needs: [test, mac-helper]
     permissions:
       contents: write
+    env:
+      # Read by the publish steps' conditions, which cannot see a step's own env.
+      HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
 
     steps:
       - name: Checkout
@@ -160,6 +164,47 @@ jobs:
           name: limoni-voice-packages
           path: release_assets/*
 
+      # Package managers. Each step runs for tagged releases only, and only when its secret is
+      # set: HOMEBREW_TAP_DEPLOY_KEY (write deploy key of thebanri/homebrew-tap) and AUR_SSH_KEY
+      # (the private key of the AUR account that owns limoni-voice-bin).
+      - name: Publish to the Homebrew tap
+        if: startsWith(github.ref, 'refs/tags/') && env.HOMEBREW_TAP_DEPLOY_KEY != ''
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          printf '%s\n' "${HOMEBREW_TAP_DEPLOY_KEY}" > ~/.ssh/tap
+          chmod 600 ~/.ssh/tap
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes"
+          git clone git@github.com:thebanri/homebrew-tap.git /tmp/tap
+          mkdir -p /tmp/tap/Formula /tmp/tap/Casks
+          cp dist/manifests/homebrew/Formula/limoni-voice.rb /tmp/tap/Formula/
+          cp dist/manifests/homebrew/Casks/limoni-voice-app.rb /tmp/tap/Casks/
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "limoni-voice ${GITHUB_REF_NAME}"
+          git push
+
+      - name: Publish to the AUR
+        if: startsWith(github.ref, 'refs/tags/') && env.AUR_SSH_KEY != ''
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          printf '%s\n' "${AUR_SSH_KEY}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+          git clone ssh://aur@aur.archlinux.org/limoni-voice-bin.git /tmp/aur
+          cp dist/manifests/aur/PKGBUILD dist/manifests/aur/.SRCINFO /tmp/aur/
+          cd /tmp/aur
+          git config user.name "thebanri"
+          git config user.email "thebanri@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet || git commit -m "Update to ${GITHUB_REF_NAME#v}"
+          git push origin HEAD:master
+
       - name: Release to GitHub
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -200,4 +245,12 @@ jobs:
           "$bundle/Contents/MacOS/limoni-voice" --version
           "$bundle/Contents/MacOS/limoni-voice" --lang tr --version
           "$bundle/Contents/MacOS/limoni-voice" --help | grep -q -- --lang
+
+      - name: Check the Homebrew formula and cask
+        run: |
+          set -e
+          mkdir manifests
+          tar -xzf packages/limoni-voice_*_package-manifests.tar.gz -C manifests
+          ruby -c manifests/homebrew/Formula/limoni-voice.rb
+          ruby -c manifests/homebrew/Casks/limoni-voice-app.rb
 

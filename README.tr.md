@@ -184,10 +184,25 @@ Terminalinizde tek bir komut çalıştırarak Limoni Voice'u doğrudan kurabilir
 curl -fsSL https://raw.githubusercontent.com/thebanri/limoni-voice/main/install.sh | bash
 ```
 
+Ya da [Homebrew](https://brew.sh) ile (macOS ve Linux, `brew upgrade` ile güncellenir):
+
+```bash
+brew install thebanri/tap/limoni-voice              # komut satırı
+brew install --cask thebanri/tap/limoni-voice-app   # macOS: Limoni Voice.app, davet bağlantılarını açar
+```
+
+İkisinden birini kullanın: cask komutu da içerir.
+
 ### 🪟 Windows Tek Komutla Kurulum (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/thebanri/limoni-voice/main/scripts/install-windows.ps1 | iex
+```
+
+Ya da [Scoop](https://scoop.sh) ile (`scoop update limoni-voice` ile güncellenir):
+
+```powershell
+scoop install https://github.com/thebanri/limoni-voice/releases/latest/download/limoni-voice.json
 ```
 
 ### Ön Gereksinimler (Ses ve Ekran Paylaşımı)
@@ -341,6 +356,16 @@ docker compose down --remove-orphans
 > [!TIP]
 > **Ağ / UDP QUIC Bağlantı Sorunları:** `docker-compose.yml`, tünel trafiğini UDP port 7844 (QUIC) yerine standart HTTPS (TCP 443) üzerinden geçirmek üzere `--protocol http2` ve genel DNS ile yapılandırılmıştır. Bu sayede servis sağlayıcıların UDP engellemelerine ve "sendmsg: network is unreachable" hatalarına takılmaz.
 
+#### 🔁 Yedek Relay'ler
+
+Relay penceresinde (`R`), `--relay` bayrağında ya da `LIMONI_RELAY_URL` içinde birden fazla relay'i virgülle yazın:
+
+```bash
+./limoni-voice --relay "benim.relay.com, yedek.relay.com:27850"
+```
+
+İlki birincil relay'dir. Birincile ulaşamayan host odayı sıradakinde açar; bir relay'e ulaşamayan ya da odayı orada bulamayan katılımcı sıradakine sorar. Oda açıldıktan sonra kendi relay'inde kalır. Aynı odadaki herkes aynı relay'leri aynı sırayla yazmalıdır. Kendi parolası olan relay'in parolası adrese eklenir: `wss://yedek.relay.com/ws?token=parola`.
+
 #### ⚡ Düşük Gecikme: UDP Relay (Cloudflare Tunnel kullananlar için önemli)
 
 Cloudflare Tunnel yalnızca **TCP/WebSocket** taşır. İki kişi doğrudan bağlanamadığında (ör. symmetric NAT veya CGNAT) ses tünel içindeki WebSocket relay'e düşer ve bu genellikle **~100+ ms** ekler. En düşük gecikme için:
@@ -383,7 +408,7 @@ export LIMONI_LAN_ONLY=1
 
 | Parametre | Ortam Değişkeni | Varsayılan | Açıklama |
 |-----------|-----------------|------------|----------|
-| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://relay.thebanri.dpdns.org/ws` | Kendi relay sunucunuzun WebSocket adresi |
+| `--relay <url>` | `LIMONI_RELAY_URL` | `wss://relay.thebanri.dpdns.org/ws` | Kendi relay sunucunuzun WebSocket adresi; yedekler virgülle (aşağıya bakın) |
 | `--relay-token <token>` | `LIMONI_RELAY_TOKEN` | `""` | Parola korumalı relay sunucuları için kimlik doğrulama anahtarı |
 | `--token <token>` | `LIMONI_RELAY_TOKEN` | `""` | `--relay-token` parametresinin takma adı |
 | `--lan`, `--lan-only` | `LIMONI_LAN_ONLY` | `false` | Sadece yerel ağ modunu zorlar (internet relay'i kapatır) |

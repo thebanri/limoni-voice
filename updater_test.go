@@ -278,3 +278,23 @@ func TestReplaceAppBundleRefusesBadArchives(t *testing.T) {
 		}
 	}
 }
+
+func TestPackageManagerUpdate(t *testing.T) {
+	for _, c := range []struct {
+		goos, path string
+		managed    bool
+	}{
+		{"darwin", "/opt/homebrew/Cellar/limoni-voice/1.6.0/bin/limoni-voice", true},
+		{"linux", "/home/linuxbrew/.linuxbrew/Cellar/limoni-voice/1.6.0/bin/limoni-voice", true},
+		{"linux", "/usr/bin/limoni-voice", true},
+		{"windows", `C:\Users\a\scoop\apps\limoni-voice\current\limoni-voice.exe`, true},
+		{"windows", `C:\Users\a\AppData\Local\Microsoft\WinGet\Packages\Thebanri.LimoniVoice_x\limoni-voice.exe`, true},
+		{"linux", "/usr/local/bin/limoni-voice", false},
+		{"darwin", "/Applications/Limoni Voice.app/Contents/MacOS/limoni-voice", false},
+		{"windows", `C:\Program Files\Limoni Voice\limoni-voice.exe`, false},
+	} {
+		if how, managed := packageManagerUpdate(c.goos, c.path); managed != c.managed || (managed && how == "") {
+			t.Errorf("%s %s: managed=%v (%q), want %v", c.goos, c.path, managed, how, c.managed)
+		}
+	}
+}

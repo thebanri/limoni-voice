@@ -50,7 +50,7 @@ func (n *P2PNode) Diagnostics() NetDiagnostics {
 		LocalPort:   n.Port,
 		NATType:     natType.Describe(),
 		IPv6:        append([]string(nil), n.ipv6Addrs...),
-		RelayURL:    n.RelayURL,
+		RelayURL:    n.activeRelayLocked(),
 		RelayStatus: relayStatus,
 		RelayRTT:    n.relayRTT,
 		UDPRelay:    "unavailable",

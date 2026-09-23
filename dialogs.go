@@ -1141,7 +1141,7 @@ func DrawRelayModal(
 	urlInput := widgets.TextInput{
 		ID:               "relay_url_input",
 		State:            urlState,
-		Placeholder:      T("e.g. voice.domain.com, https://voice.domain.com or 192.168.1.3:27850"),
+		Placeholder:      T("e.g. voice.domain.com or 192.168.1.3:27850 — add backups after a comma"),
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
