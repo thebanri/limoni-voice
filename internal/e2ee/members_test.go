@@ -85,3 +85,28 @@ func TestGrantMalformed(t *testing.T) {
 		}
 	}
 }
+
+func TestKickProofOnlyFromTheHost(t *testing.T) {
+	host, bob, carol := NewIdentity(), NewIdentity(), NewIdentity()
+	members := []MemberKey{{ID: "bob", Key: bob.Public()}, {ID: "carol", Key: carol.Public()}}
+	proof, err := host.KickProof("room", "host", "bob", true, 42, members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, who := range map[string]*Identity{"bob": bob, "carol": carol} {
+		if !who.CheckKick("room", name, "host", "bob", host.Public(), true, 42, proof) {
+			t.Fatalf("%s rejected a real kick", name)
+		}
+	}
+	if carol.CheckKick("room", "carol", "host", "bob", host.Public(), false, 42, proof) {
+		t.Fatal("a ban was accepted as a plain kick")
+	}
+	if carol.CheckKick("room", "carol", "host", "carol", host.Public(), true, 42, proof) {
+		t.Fatal("the proof was reused for another target")
+	}
+	// A member holding the group key cannot forge the host's removal of someone else.
+	forged, _ := bob.KickProof("room", "host", "carol", false, 42, members)
+	if carol.CheckKick("room", "carol", "host", "carol", host.Public(), false, 42, forged) {
+		t.Fatal("forged kick accepted")
+	}
+}
