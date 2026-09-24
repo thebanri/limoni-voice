@@ -87,10 +87,10 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="${LDFLAGS}
 ## 5. Package Linux Tarballs (.tar.gz)
 echo "==> Packaging Linux Tarballs..."
 mkdir -p dist/pkg-linux-amd64 dist/pkg-linux-arm64
-cp dist/linux-amd64/limoni-voice README.md LICENSE dist/pkg-linux-amd64/
+cp dist/linux-amd64/limoni-voice README.md LICENSE THIRD_PARTY_NOTICES.md dist/pkg-linux-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_amd64.tar.gz" -C dist/pkg-linux-amd64 .
 
-cp dist/linux-arm64/limoni-voice README.md LICENSE dist/pkg-linux-arm64/
+cp dist/linux-arm64/limoni-voice README.md LICENSE THIRD_PARTY_NOTICES.md dist/pkg-linux-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_linux_arm64.tar.gz" -C dist/pkg-linux-arm64 .
 
 # 6. Package macOS Native Application Bundles (.app.zip & .app.tar.gz)
@@ -148,7 +148,7 @@ build_macos_app() {
   cp "dist/${ARCH}/limoni-voice" "${APP_DIR}/Contents/MacOS/limoni-voice"
   chmod 755 "${APP_DIR}/Contents/MacOS/limoni-voice"
   # Only code belongs in Contents/MacOS; anything else there breaks the bundle signature.
-  cp README.md LICENSE "${APP_DIR}/Contents/Resources/"
+  cp README.md LICENSE THIRD_PARTY_NOTICES.md "${APP_DIR}/Contents/Resources/"
   cp macos/LimoniVoice.icns "${APP_DIR}/Contents/Resources/LimoniVoice.icns"
 
   cat <<PLIST_EOF > "${APP_DIR}/Contents/Info.plist"
@@ -256,10 +256,10 @@ build_macos_app "darwin-amd64" "amd64"
 # 7. Package macOS CLI Tarballs & Zips
 echo "==> Packaging macOS CLI Binaries..."
 mkdir -p dist/pkg-darwin-arm64 dist/pkg-darwin-amd64
-cp dist/darwin-arm64/limoni-voice README.md LICENSE dist/pkg-darwin-arm64/
+cp dist/darwin-arm64/limoni-voice README.md LICENSE THIRD_PARTY_NOTICES.md dist/pkg-darwin-arm64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_arm64.tar.gz" -C dist/pkg-darwin-arm64 .
 
-cp dist/darwin-amd64/limoni-voice README.md LICENSE dist/pkg-darwin-amd64/
+cp dist/darwin-amd64/limoni-voice README.md LICENSE THIRD_PARTY_NOTICES.md dist/pkg-darwin-amd64/
 tar -czf "release_assets/limoni-voice_${VERSION}_darwin_amd64.tar.gz" -C dist/pkg-darwin-amd64 .
 
 # 8. Windows Packaging (Setup Installer Only)

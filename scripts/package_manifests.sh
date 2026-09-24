@@ -47,7 +47,7 @@ class LimoniVoice < Formula
   desc "${DESC}"
   homepage "https://github.com/${REPO}"
   version "${RAW}"
-  license "MIT"
+  license "AGPL-3.0-only"
 
   on_macos do
     on_arm do
@@ -125,7 +125,7 @@ cat > "${OUT}/scoop/limoni-voice.json" <<EOF
     "version": "${RAW}",
     "description": "${DESC}",
     "homepage": "https://github.com/${REPO}",
-    "license": "MIT",
+    "license": "AGPL-3.0-only",
     "suggest": {
         "Screen sharing": ["ffmpeg", "extras/mpv"]
     },
@@ -192,7 +192,7 @@ Publisher: thebanri
 PublisherUrl: https://github.com/thebanri
 PackageName: Limoni Voice
 PackageUrl: https://github.com/${REPO}
-License: MIT
+License: AGPL-3.0
 LicenseUrl: https://github.com/${REPO}/blob/main/LICENSE
 ShortDescription: ${DESC}
 Tags:
@@ -213,7 +213,7 @@ pkgrel=1
 pkgdesc="${DESC}"
 arch=('x86_64' 'aarch64')
 url="https://github.com/${REPO}"
-license=('MIT')
+license=('AGPL-3.0-only')
 provides=('limoni-voice')
 conflicts=('limoni-voice')
 optdepends=('ffmpeg: sharing your screen'
@@ -249,7 +249,7 @@ pkgbase = limoni-voice-bin
 	url = https://github.com/${REPO}
 	arch = x86_64
 	arch = aarch64
-	license = MIT
+	license = AGPL-3.0-only
 	optdepends = ffmpeg: sharing your screen
 	optdepends = mpv: watching shared screens
 	provides = limoni-voice
