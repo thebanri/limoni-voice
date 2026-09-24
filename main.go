@@ -115,7 +115,7 @@ func main() {
 	}
 
 	if *flagVersion {
-		fmt.Printf("Limoni Voice %s (Go 1.25+ | E2EE CPace + AES-256-GCM | Opus 48 kHz | P2P Full-Mesh)\n", AppVersion)
+		fmt.Printf("Limoni Voice %s (%s | E2EE CPace + AES-256-GCM | Opus 48 kHz | P2P Full-Mesh)\n", AppVersion, runtime.Version())
 		os.Exit(0)
 	}
 
