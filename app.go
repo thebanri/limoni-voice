@@ -38,6 +38,7 @@ type App struct {
 	kicked   atomic.Pointer[string] // set when the host removed us; the event loop acts on it
 
 	currentScreen AppScreen
+	windowTitle   string // last title written to the terminal
 	appStartTime  time.Time
 	lastTime      time.Time
 	lastScreen    cell.Rect
@@ -106,6 +107,9 @@ func NewApp(b *driver.Backend, t *terminal.Terminal, node *p2p.P2PNode, audio *e
 		relaySelEnd:           -1,
 		relaySelField:         -1,
 	}
+	// Over SSH a desktop notification would pop up on the remote machine; the terminal's
+	// own notification reaches the user, where the terminal can show one.
+	app.notifier.viaTerminal.Store(remoteSession() && t.Capabilities().Notify != terminal.NotifyNone)
 	app.applySettings(cfg)
 	app.wireNodeCallbacks()
 	app.wireLobbyCallbacks()
@@ -516,6 +520,7 @@ func (a *App) cleanExit() {
 	a.stopGlobalPTT()
 	a.node.Close()
 	a.audio.Stop()
+	a.term.RestoreTitle()
 	a.backend.Close()
 	restoreConsole()
 	os.Exit(0)

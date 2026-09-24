@@ -75,3 +75,28 @@ func TestDesktopNotifierFailureIsLoggedOnce(t *testing.T) {
 		t.Fatalf("warned=%v calls=%d", d.warned, calls)
 	}
 }
+
+// Over SSH notifications wait for the UI goroutine and go out through the terminal, never
+// through the desktop of the machine the app runs on.
+func TestNotifierViaTerminal(t *testing.T) {
+	var desktop sentNotes
+	d := newDesktopNotifier()
+	d.send = desktop.send
+	d.viaTerminal.Store(true)
+	d.SetFocused(false)
+
+	if !d.Notify("Bob", "hi") {
+		t.Fatal("no notification while in the background")
+	}
+	var got []string
+	d.flushToTerminal(func(title, body string) bool { got = append(got, title+": "+body); return true })
+	d.pending.Wait()
+	if len(got) != 1 || got[0] != "Bob: hi" || desktop.count() != 0 {
+		t.Fatalf("terminal got %q and the desktop %d, want one terminal notification", got, desktop.count())
+	}
+	got = nil
+	d.flushToTerminal(func(title, body string) bool { got = append(got, title); return true })
+	if len(got) != 0 {
+		t.Fatalf("a flushed notification was sent again: %q", got)
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1431,5 +1432,69 @@ func TestHandPointerOverControls(t *testing.T) {
 	term.RouteMouseEvent(driver.MouseEvent{X: tx + 1, Y: ty, Button: driver.MouseLeft})
 	if testOpened != 1 {
 		t.Errorf("clicking the Test button under the hand pointer opened the dialog %d times, want 1", testOpened)
+	}
+}
+
+// memTerminal is a terminal writing to memory, with the given capabilities switched on.
+func memTerminal(t *testing.T, w, h uint16, enable func(*terminal.CapabilityProfile)) (*terminal.Terminal, *driver.MemoryTerminalIO) {
+	t.Helper()
+	mem := driver.NewMemoryTerminalIO(nil, w, h)
+	term, err := terminal.New(driver.NewPortableBackend(mem))
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps := term.Capabilities()
+	enable(&caps)
+	term.SetCapabilities(caps)
+	return term, mem
+}
+
+// A link in chat is also an OSC 8 hyperlink, so the terminal can open it on the user's side.
+func TestChatLinkIsTerminalHyperlink(t *testing.T) {
+	term, mem := memTerminal(t, 120, 30, func(c *terminal.CapabilityProfile) { c.Hyperlinks = true })
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("chat_link", "Alice", audio)
+	defer node.Close()
+	node.HostRoom("123456")
+	room := NewRoomView()
+	room.AddChatMessage("Bob", "p1", "see https://example.com/docs", false, time.Time{})
+	_ = term.Draw(func(f *terminal.Frame) { room.Render(f, f.Area(), node, audio) })
+	// ESC ] 8 ; params ; url ST — Limoni puts an id in the params.
+	if !regexp.MustCompile(`\x1b\]8;[^;]*;https://example\.com/docs\x1b\\`).Match(mem.Output()) {
+		t.Fatal("the chat link was not written as an OSC 8 hyperlink")
+	}
+}
+
+// The window title shows the member count and unread messages, and never the room code.
+func TestWindowTitle(t *testing.T) {
+	term, mem := memTerminal(t, 100, 30, func(*terminal.CapabilityProfile) {})
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("window_title", "Alice", audio)
+	defer node.Close()
+	node.HostRoom("123456")
+	node.Peers["p1"] = &p2p.PeerInfo{ID: "p1", Nickname: "Bob"}
+	a := &App{term: term, room: NewRoomView(), node: node, audio: audio, currentScreen: ScreenLobby}
+
+	titles := func() []string {
+		var got []string
+		for _, part := range strings.Split(string(mem.Output()), "\x1b]2;")[1:] {
+			title, _, _ := strings.Cut(part, "\x07")
+			got = append(got, title)
+		}
+		return got
+	}
+	a.updateWindowTitle()
+	a.currentScreen = ScreenRoom
+	a.updateWindowTitle()
+	a.updateWindowTitle() // unchanged: not written again
+	a.room.AddChatMessage("Bob", "p1", "hi", false, time.Time{})
+	a.updateWindowTitle()
+
+	want := []string{"Limoni Voice", "Limoni Voice · 2/4", "(1) Limoni Voice · 2/4"}
+	if got := titles(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("titles %q, want %q", got, want)
+	}
+	if strings.Contains(strings.Join(titles(), ""), node.RoomCode) {
+		t.Fatal("the room code reached the window title")
 	}
 }

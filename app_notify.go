@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,30 @@ type desktopNotifier struct {
 	last    time.Time
 	warned  bool
 	pending sync.WaitGroup
+
+	// viaTerminal routes notifications through the terminal's own escape sequence
+	// instead: over SSH the desktop is on the other end, where the terminal is.
+	// They wait in queued until the UI goroutine writes them between frames.
+	viaTerminal atomic.Bool
+	queued      []terminalNote
+}
+
+// terminalNote is a notification waiting to be written to the terminal.
+type terminalNote struct{ title, body string }
+
+// remoteSession reports whether the app runs in an SSH session.
+func remoteSession() bool { return os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "" }
+
+// flushToTerminal hands the queued notifications to send (Terminal.Notify). It must run
+// on the goroutine that draws, so the sequence never lands in the middle of a frame.
+func (d *desktopNotifier) flushToTerminal(send func(title, body string) bool) {
+	d.mu.Lock()
+	notes := d.queued
+	d.queued = nil
+	d.mu.Unlock()
+	for _, n := range notes {
+		send(n.title, n.body)
+	}
 }
 
 func newDesktopNotifier() *desktopNotifier {
@@ -57,6 +82,11 @@ func (d *desktopNotifier) notify(title, body string, urgent bool) bool {
 		return false
 	}
 	d.last = now
+	if d.viaTerminal.Load() {
+		d.queued = append(d.queued, terminalNote{title, body})
+		d.mu.Unlock()
+		return true
+	}
 	d.mu.Unlock()
 
 	d.pending.Add(1)
