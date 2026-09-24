@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="#-installation"><img src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=for-the-badge" alt="Platform"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue?style=for-the-badge" alt="License"></a>
   <a href="#"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go"></a>
   <a href="#"><img src="https://img.shields.io/badge/Encryption-AES--256--GCM-critical?style=for-the-badge&logo=letsencrypt&logoColor=white" alt="Encryption"></a>
 </p>
@@ -589,12 +589,17 @@ Contributions are always welcome! To get started:
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+Copyright © 2026 TheBanri. Limoni Voice is licensed under the
+[GNU Affero General Public License v3.0](LICENSE).
 
-Third-party dependencies:
-- **FFmpeg** — LGPL 2.1+ / GPL 2+
-- **MPV** — GPL 2+ / LGPL 2.1+
-- **GPU Screen Recorder** — GPL 3
+You may use, study, change and share it. If you distribute it — changed or not — or let
+people use a changed version over a network (a relay server, for example), you must give
+them its complete source code under the same license. It cannot be turned into a closed
+product.
+
+Versions up to v1.7.0 were released under the MIT License, and stay under it.
+The programs and libraries it works with are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 

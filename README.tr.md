@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="#-kurulum"><img src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=for-the-badge" alt="Platform"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue?style=for-the-badge" alt="License"></a>
   <a href="#"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go"></a>
   <a href="#"><img src="https://img.shields.io/badge/Encryption-AES--256--GCM-critical?style=for-the-badge&logo=letsencrypt&logoColor=white" alt="Encryption"></a>
 </p>
@@ -586,7 +586,17 @@ go test ./internal/...
 
 ## 📄 Lisans
 
-Bu proje [MIT Lisansı](LICENSE) altında lisanslanmıştır.
+Telif hakkı © 2026 TheBanri. Limoni Voice,
+[GNU Affero Genel Kamu Lisansı v3.0](LICENSE) ile lisanslanmıştır.
+
+Kullanabilir, inceleyebilir, değiştirebilir ve paylaşabilirsiniz. Değiştirilmiş ya da
+değiştirilmemiş haliyle dağıtırsanız veya değiştirilmiş bir sürümü ağ üzerinden
+kullandırırsanız (örneğin bir relay sunucusu), tüm kaynak kodunu aynı lisansla vermek
+zorundasınız. Kapalı kaynak bir ürüne dönüştürülemez.
+
+v1.7.0 dahil önceki sürümler MIT Lisansı ile yayınlandı ve o lisansla kalır.
+Birlikte çalıştığı programlar ve kütüphaneler
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dosyasında listelenmiştir.
 
 ---
 
