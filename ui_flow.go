@@ -169,7 +169,11 @@ func drawClipped(frame *terminal.Frame, area cell.Rect, draw func()) {
 
 	for y := area.Y; y < area.Y+area.Height; y++ {
 		for x := area.X; x < area.X+area.Width; x++ {
-			screen.SetCellDirect(x, y, scratch.CellAt(x, y))
+			// A wide character writes its own right half; copying that half on its
+			// own would count as overwriting it and blank the character.
+			if c := scratch.CellAt(x, y); c.Content != cell.RuneContinuation {
+				screen.SetCellDirect(x, y, c)
+			}
 		}
 	}
 	kept := frame.ClickRegions[:firstRegion]
