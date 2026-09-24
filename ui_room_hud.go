@@ -1,11 +1,11 @@
-// Room view: the compact HUD bar and its pills.
+// Room view: the mini HUD, a small layout for short terminals or a window kept beside a
+// game or editor.
 
 package main
 
 import (
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/thebanri/limoni-voice/internal/engine"
@@ -18,1114 +18,488 @@ import (
 	"github.com/thebanri/limoni/widgets"
 )
 
-// drawHUDPill draws a styled capsule pill and registers an optional click handler.
-// It returns the advanced X position and true if drawn, or false if it couldn't fit.
-func drawHUDPill(buf *buffer.Buffer, frame *terminal.Frame, x, y, maxX uint16, label string, style cell.Style, onClick func()) (uint16, bool) {
-	pillRunes := []rune(label)
-	pillLen := uint16(len(pillRunes))
-	if pillLen == 0 || x+pillLen > maxX {
-		return x, false
+// hudGap is the column gap between items in the mini HUD.
+const hudGap = 2
+
+// hudVUWidth is the width of a member's level meter in the mini HUD.
+const hudVUWidth = 8
+
+// fitOneRow lays items out on a single row of width columns: full labels if they fit, else
+// short ones, dropping items from the end (a pinned item stays) until the rest fit.
+func fitOneRow(items []flowItem, width, gap int) flowLayout {
+	for _, short := range []bool{false, true} {
+		var keep []int
+		for i := range items {
+			keep = append(keep, i)
+		}
+		for len(keep) > 0 {
+			used := 0
+			for n, i := range keep {
+				if n > 0 {
+					used += gap
+				}
+				used += cell.StringWidth(items[i].text(short))
+			}
+			if used <= width {
+				break
+			}
+			if !short {
+				keep = nil // try the short labels before dropping anything
+				break
+			}
+			drop := len(keep) - 1
+			for drop > 0 && items[keep[drop]].pinRight {
+				drop--
+			}
+			keep = append(keep[:drop], keep[drop+1:]...)
+		}
+		if len(keep) > 0 {
+			return flowLayout{rows: [][]int{keep}, short: short}
+		}
 	}
-	buf.SetString(x, y, label, style)
-	if onClick != nil && frame != nil {
-		frame.RegisterClickHandler(cell.NewRect(x, y, pillLen, 1), func(_ driver.MouseEvent) {
-			onClick()
-		})
-	}
-	return x + pillLen, true
+	return flowLayout{}
 }
 
-// drawMiniVUBar renders a horizontal equalizer level meter bar into the buffer.
-func drawMiniVUBar(buf *buffer.Buffer, x, y, maxX uint16, rms float64, isSpeaking, isMuted bool, width int, theme ThemePalette) uint16 {
-	if x >= maxX {
-		return x
+// hudMeter draws a member's level meter and returns the column after it.
+func hudMeter(buf *buffer.Buffer, x, y uint16, rms float64, speaking, muted bool, theme ThemePalette) uint16 {
+	filled := int(math.Round(rms * hudVUWidth * 2))
+	if muted {
+		filled = 0
 	}
-	buf.SetCell(x, y, cell.Cell{Content: '[', Style: cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}})
-	x++
-
-	filledBars := int(math.Round(rms * float64(width) * 2.0))
-	if filledBars > width {
-		filledBars = width
-	}
-	if isMuted {
-		filledBars = 0
-	}
-
-	for i := 0; i < width; i++ {
-		if x >= maxX {
-			break
-		}
-		ch := '▱'
-		barStyle := cell.Style{Fg: theme.Border, Bg: theme.SurfaceBg}
-		if i < filledBars {
-			ch = '▰'
-			if isSpeaking {
-				barStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
-			} else {
-				barStyle = cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg}
+	for i := 0; i < hudVUWidth; i++ {
+		c := cell.Cell{Content: '▱', Style: cell.Style{Fg: theme.Border, Bg: theme.SurfaceBg}}
+		if i < filled {
+			c.Content = '▰'
+			c.Style.Fg = theme.Accent
+			if speaking {
+				c.Style = cell.Style{Fg: cell.NewColorRGB(0x00, 0xFF, 0x88), Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
 			}
 		}
-		buf.SetCell(x, y, cell.Cell{Content: ch, Style: barStyle})
-		x++
+		buf.SetCell(x+uint16(i), y, c)
 	}
-
-	if x < maxX {
-		buf.SetCell(x, y, cell.Cell{Content: ']', Style: cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}})
-		x++
-	}
-	return x
+	return x + hudVUWidth
 }
 
-func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
-	if area.Height < 1 || area.Width < 8 {
-		return
+// watchPeer opens the viewer for a peer's screen share.
+func (r *RoomView) watchPeer(node *p2p.P2PNode, peer *p2p.PeerInfo) {
+	port := peer.VideoPort
+	if port <= 0 {
+		port = 50100
 	}
+	fps := peer.VideoFPS
+	if fps <= 0 {
+		fps = 60
+	}
+	opts := screenshare.DefaultReceiverOptions(fps)
+	opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", peer.Nickname, fps)
+	r.SetToast(fmt.Sprintf("Opening %s stream...", peer.Nickname))
+	go func() {
+		_ = node.StartWatchingScreen(peer.ID, port, opts)
+	}()
+}
 
+// hudStatusItems is the mini HUD's top line: room, members, role, latency and the way
+// back to the full UI.
+func (r *RoomView) hudStatusItems(node *p2p.P2PNode, peers []*p2p.PeerInfo) []flowItem {
 	theme := CurrentTheme()
-	buf := frame.Buffer
+	black := cell.NewColorRGB(0x00, 0x00, 0x00)
 
-	peers := node.GetPeersList()
-	totalMembers := len(peers) + 1
-
-	// Gather audio & streaming state
-	var streamingPeers []*p2p.PeerInfo
-	for _, p := range peers {
-		if p.IsSharingScreen {
-			streamingPeers = append(streamingPeers, p)
-		}
-	}
-
-	var speakingPeers []string
-	if audio != nil && audio.IsSpeaking && !audio.Muted {
-		speakingPeers = append(speakingPeers, T("You"))
-	}
-	for _, p := range peers {
-		if p.Speaking && !p.IsMuted {
-			speakingPeers = append(speakingPeers, p.Nickname)
-		}
-	}
-
-	// Calculate latency indicator (average of all active peers with measured ping)
-	peerPing := 0
-	allRelayed := false
-	anyRelayed := false
-	hasLANPeer := false
-	hasP2PPeer := false
-	if len(peers) > 0 {
-		var totalPing int64
-		count := 0
-		relayedCount := 0
-		for _, p := range peers {
-			if p.PingMs > 0 {
-				totalPing += p.PingMs
-				count++
-			}
-			if p.ViaRelay {
-				relayedCount++
-				anyRelayed = true
-			} else if p.Addr != nil && (p.Addr.IP.IsLoopback() || p.Addr.IP.IsPrivate()) {
-				hasLANPeer = true
-			} else {
-				hasP2PPeer = true
-			}
-		}
-		if count > 0 {
-			peerPing = int(totalPing / int64(count))
-		}
-		if relayedCount == len(peers) {
-			allRelayed = true
-		}
-	}
-	pingColor := theme.Success
-	if peerPing > 120 {
-		pingColor = theme.Danger
-	} else if peerPing > 50 {
-		pingColor = theme.Warning
-	}
-
-	// Determine container inner area
-	var inner cell.Rect
-	if area.Height >= 4 && area.Width >= 32 {
-		hudTitle := Tf(" 🍋 LIMONI VOICE • MINI HUD [%s] ", formatDuration(time.Since(r.StartTime)))
-		if area.Width < 50 {
-			hudTitle = T(" 🍋 LIMONI MINI HUD ")
-		}
-		block := widgets.Block{
-			Title:         hudTitle,
-			Borders:       widgets.BorderAll,
-			BorderSymbols: widgets.SymbolsRounded,
-			BorderStyle:   cell.Style{Fg: theme.BorderFocused},
-			Style:         cell.Style{Bg: theme.SurfaceBg},
-		}
-		inner = block.Inner(area)
-		frame.RenderWidget(block, area)
-	} else {
-		inner = area
-	}
-
-	// Fill background
-	for y := inner.Y; y < inner.Y+inner.Height; y++ {
-		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
-		}
-	}
-
-	if inner.Height < 1 || inner.Width < 6 {
-		return
-	}
-
-	maxX := inner.X + inner.Width
-
-	// =========================================================================
-	// CASE A: ULTRA-COMPACT 1-LINE RIBBON (inner.Height == 1)
-	// =========================================================================
-	if inner.Height == 1 {
-		rowY := inner.Y
-		curX := inner.X
-
-		// 1. Brand / Room pill
-		roomPill := fmt.Sprintf(" 🍋 #%s ", node.RoomCode)
-		curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, roomPill, cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Warning,
-			Modifier: cell.ModifierBold,
-		}, func() {
+	items := []flowItem{{
+		label: Tf(" ROOM #%s ", node.RoomCode),
+		short: fmt.Sprintf(" #%s ", node.RoomCode),
+		style: cell.Style{Fg: black, Bg: theme.Warning, Modifier: cell.ModifierBold},
+		onClick: func(_ driver.MouseEvent) {
 			CopyToClipboard(node.RoomCode)
 			r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
-		})
-		curX++
-
-		// 2. Mic pill
-		var micLabel string
-		var micStyle cell.Style
-		if audio != nil && audio.Muted {
-			micLabel = T(" 🔴 MUTED [M] ")
-			micStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold}
-		} else if audio != nil && audio.IsSpeaking {
-			micLabel = T(" 🟢 TALK [M] ")
-			micStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
-		} else {
-			micLabel = T(" 🎙️ MIC [M] ")
-			micStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Success, Modifier: cell.ModifierBold}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, micLabel, micStyle, func() {
-			if audio != nil {
-				isMuted := audio.ToggleMute()
-				node.SendMuteState(isMuted)
-				if isMuted {
-					r.SetToast("Microphone Muted")
-				} else {
-					r.SetToast("Microphone Active")
-				}
-			}
-		})
-		curX++
-
-		// 3. Deafen pill
-		var deafLabel string
-		var deafStyle cell.Style
-		if audio != nil && audio.Deafened {
-			deafLabel = T(" 🔇 DEAF [D] ")
-			deafStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Warning, Modifier: cell.ModifierBold}
-		} else {
-			deafLabel = T(" 🔊 SPK [D] ")
-			deafStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, deafLabel, deafStyle, func() {
-			if audio != nil {
-				isDeaf := audio.ToggleDeafen()
-				node.SendDeafenState(isDeaf)
-				node.SendMuteState(audio.Muted)
-			}
-		})
-		curX++
-
-		// 4. Screen Share pill
-		var shareLabel string
-		var shareStyle cell.Style
-		var shareAction func()
-		if node.IsSharingScreen {
-			shareLabel = T(" 📺 SHARING [V] ")
-			shareStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				_ = node.StopScreenShare()
-				r.SetToast("Screen share stopped")
-			}
-		} else if node.IsWatchingScreen {
-			shareLabel = T(" 📺 WATCHING [W] ")
-			shareStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				_ = node.StopWatchingScreen()
-				r.SetToast("Stream viewer closed")
-			}
-		} else if len(streamingPeers) > 0 {
-			target := streamingPeers[0]
-			shareLabel = Tf(" 🔴 WATCH %s [W] ", target.Nickname)
-			shareStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				port := target.VideoPort
-				if port <= 0 {
-					port = 50100
-				}
-				fps := target.VideoFPS
-				if fps <= 0 {
-					fps = 60
-				}
-				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", target.Nickname, fps)
-				r.SetToast(fmt.Sprintf("Opening %s stream...", target.Nickname))
-				go func() {
-					_ = node.StartWatchingScreen(target.ID, port, opts)
-				}()
-			}
-		} else {
-			shareLabel = T(" 📺 SHARE [V] ")
-			shareStyle = cell.Style{Fg: theme.Text, Bg: theme.CardBg, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				if r.OnOpenScreenShareModal != nil {
-					r.OnOpenScreenShareModal()
-				}
-			}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, shareLabel, shareStyle, shareAction)
-		curX++
-
-		// 5. Speaker or Member count
-		if len(speakingPeers) > 0 {
-			spkPill := fmt.Sprintf(" 🔊 %s ", strings.Join(speakingPeers, ", "))
-			curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, spkPill, cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Accent,
-				Modifier: cell.ModifierBold,
-			}, nil)
-			curX++
-		} else {
-			memPill := fmt.Sprintf(" 👥 %d/4 ", totalMembers)
-			curX, _ = drawHUDPill(buf, frame, curX, rowY, maxX, memPill, cell.Style{
-				Fg: theme.Success,
-				Bg: theme.CardBg,
-			}, nil)
-			curX++
-		}
-
-		// 6. Ping pill
-		pingPill := " ⚡ -- "
-		if peerPing > 0 {
-			modeTag := "P2P"
-			if allRelayed {
-				modeTag = "Relay"
-			} else if anyRelayed {
-				modeTag = "Mesh"
-			} else if hasLANPeer && !hasP2PPeer {
-				modeTag = "LAN"
-			}
-			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
-		}
-		drawHUDPill(buf, frame, curX, rowY, maxX, pingPill, cell.Style{
-			Fg: pingColor,
-			Bg: theme.CardBg,
-		}, nil)
-
-		// 7. Full UI expand button pinned on right
-		expandLabel := T(" [▲ FULL UI [H]] ")
-		expandLen := uint16(len([]rune(expandLabel)))
-		if maxX > expandLen {
-			expandX := maxX - expandLen
-			drawHUDPill(buf, frame, expandX, rowY, maxX, expandLabel, cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Accent,
-				Modifier: cell.ModifierBold,
-			}, func() {
-				ToggleCompactHUD()
-				r.IsCompactMode = false
-			})
-		}
-		return
-	}
-
-	// =========================================================================
-	// CASE B: 2-LINE COMPACT HUD (inner.Height == 2)
-	// =========================================================================
-	if inner.Height == 2 {
-		row1Y := inner.Y
-		row2Y := inner.Y + 1
-
-		// Row 1: Header / Connectivity Strip
-		curX := inner.X
-
-		// Brand
-		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, " 🍋 LIMONI ", cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Accent,
-			Modifier: cell.ModifierBold,
-		}, nil)
-		curX++
-
-		// Room Code
-		roomPill := fmt.Sprintf(" 🔑 #%s ", node.RoomCode)
-		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, roomPill, cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Warning,
-			Modifier: cell.ModifierBold,
-		}, func() {
-			CopyToClipboard(node.RoomCode)
-			r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
-		})
-		curX++
-
-		// Lock pill
-		if node.IsLocked {
-			lockPill := T(" 🔒 LOCKED ")
-			if node.RoomPIN != "" && node.IsHost {
-				lockPill = Tf(" 🔒 PIN: %s ", node.RoomPIN)
-			}
-			curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, lockPill, cell.Style{
-				Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-				Bg:       theme.Danger,
-				Modifier: cell.ModifierBold,
-			}, nil)
-			curX++
-		}
-
-		// Members
-		memPill := fmt.Sprintf(" 👥 %d/4 ", totalMembers)
-		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, memPill, cell.Style{
-			Fg: theme.Success,
-			Bg: theme.CardBg,
-		}, nil)
-		curX++
-
-		// Role
-		if node.IsHost {
-			curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, T(" 👑 HOST "), cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Warning,
-				Modifier: cell.ModifierBold,
-			}, nil)
-			curX++
-		}
-
-		// Latency
-		pingPill := " ⚡ -- "
-		if peerPing > 0 {
-			modeTag := "P2P"
-			if allRelayed {
-				modeTag = "Relay"
-			} else if anyRelayed {
-				modeTag = "Mesh"
-			} else if hasLANPeer && !hasP2PPeer {
-				modeTag = "LAN"
-			}
-			pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
-		}
-		drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
-			Fg: pingColor,
-			Bg: theme.CardBg,
-		}, nil)
-
-		// Expand button right aligned
-		expandLabel := T(" [▲ FULL UI [H]] ")
-		expandLen := uint16(len([]rune(expandLabel)))
-		if maxX > expandLen {
-			drawHUDPill(buf, frame, maxX-expandLen, row1Y, maxX, expandLabel, cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Accent,
-				Modifier: cell.ModifierBold,
-			}, func() {
-				ToggleCompactHUD()
-				r.IsCompactMode = false
-			})
-		}
-
-		// Row 2: Controls & Speaker Strip
-		curX = inner.X
-
-		// Mic button
-		var micLabel string
-		var micStyle cell.Style
-		if audio != nil && audio.Muted {
-			micLabel = T(" 🔴 🎙️ MUTED [M] ")
-			micStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold}
-		} else if audio != nil && audio.IsSpeaking {
-			micLabel = T(" 🟢 🎙️ SPEAKING [M] ")
-			micStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
-		} else {
-			micLabel = T(" 🎙️ MIC ON [M] ")
-			micStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Success, Modifier: cell.ModifierBold}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, micLabel, micStyle, func() {
-			if audio != nil {
-				isMuted := audio.ToggleMute()
-				node.SendMuteState(isMuted)
-			}
-		})
-		curX++
-
-		// Deafen button
-		var deafLabel string
-		var deafStyle cell.Style
-		if audio != nil && audio.Deafened {
-			deafLabel = T(" 🔇 DEAFENED [D] ")
-			deafStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Warning, Modifier: cell.ModifierBold}
-		} else {
-			deafLabel = T(" 🔊 AUDIO ON [D] ")
-			deafStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, deafLabel, deafStyle, func() {
-			if audio != nil {
-				isDeaf := audio.ToggleDeafen()
-				node.SendDeafenState(isDeaf)
-				node.SendMuteState(audio.Muted)
-			}
-		})
-		curX++
-
-		// Screen Share button
-		var shareLabel string
-		var shareStyle cell.Style
-		var shareAction func()
-		if node.IsSharingScreen {
-			shareLabel = T(" 📺 SHARING [V] ")
-			shareStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				_ = node.StopScreenShare()
-				r.SetToast("Screen share stopped")
-			}
-		} else if node.IsWatchingScreen {
-			shareLabel = T(" 📺 WATCHING [W] ")
-			shareStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				_ = node.StopWatchingScreen()
-				r.SetToast("Stream viewer closed")
-			}
-		} else if len(streamingPeers) > 0 {
-			target := streamingPeers[0]
-			shareLabel = Tf(" 🔴 WATCH %s [W] ", target.Nickname)
-			shareStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				port := target.VideoPort
-				if port <= 0 {
-					port = 50100
-				}
-				fps := target.VideoFPS
-				if fps <= 0 {
-					fps = 60
-				}
-				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", target.Nickname, fps)
-				r.SetToast(fmt.Sprintf("Opening %s stream...", target.Nickname))
-				go func() {
-					_ = node.StartWatchingScreen(target.ID, port, opts)
-				}()
-			}
-		} else {
-			shareLabel = T(" 📺 SHARE [V] ")
-			shareStyle = cell.Style{Fg: theme.Text, Bg: theme.CardBg, Modifier: cell.ModifierBold}
-			shareAction = func() {
-				if r.OnOpenScreenShareModal != nil {
-					r.OnOpenScreenShareModal()
-				}
-			}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, shareLabel, shareStyle, shareAction)
-		curX++
-
-		// Live Voice Status / Speakers
-		if curX < maxX {
-			if len(speakingPeers) > 0 {
-				spkText := Tf("🔊 Talking: ● %s", strings.Join(speakingPeers, ", "))
-				buf.SetString(curX, row2Y, spkText, cell.Style{
-					Fg:       theme.Accent,
-					Bg:       theme.SurfaceBg,
-					Modifier: cell.ModifierBold,
-				})
-			} else {
-				buf.SetString(curX, row2Y, T("💤 Voice: Idle"), cell.Style{
-					Fg: theme.TextMuted,
-					Bg: theme.SurfaceBg,
-				})
-			}
-		}
-		return
-	}
-
-	// =========================================================================
-	// CASE C: MULTI-ROW FULL MINI HUD (inner.Height >= 3)
-	// =========================================================================
-	row1Y := inner.Y
-	row2Y := inner.Y + 1
-
-	// --- ROW 1: Header / Connectivity Strip ---
-	curX := inner.X
-
-	// Brand
-	curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, " 🍋 LIMONI VOICE ", cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       theme.Accent,
-		Modifier: cell.ModifierBold,
-	}, nil)
-	curX++
-
-	// Room Code Pill
-	roomPill := Tf(" 🔑 ROOM #%s ", node.RoomCode)
-	curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, roomPill, cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       theme.Warning,
-		Modifier: cell.ModifierBold,
-	}, func() {
-		CopyToClipboard(node.RoomCode)
-		r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
-	})
-	curX++
-
-	// Lock Status Pill
+		},
+	}}
 	if node.IsLocked {
-		lockPill := T(" 🔒 LOCKED ")
-		if node.RoomPIN != "" && node.IsHost {
-			lockPill = Tf(" 🔒 PIN: %s ", node.RoomPIN)
+		lock := flowItem{label: T(" LOCKED "), style: cell.Style{Fg: black, Bg: theme.Danger, Modifier: cell.ModifierBold}}
+		if node.IsHost && node.RoomPIN != "" {
+			lock.label = Tf(" PIN: %s ", node.RoomPIN)
 		}
-		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, lockPill, cell.Style{
-			Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-			Bg:       theme.Danger,
-			Modifier: cell.ModifierBold,
-		}, nil)
-		curX++
+		items = append(items, lock)
 	}
-
-	// Member Count
-	memPill := Tf(" 👥 %d/4 Members ", totalMembers)
-	curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, memPill, cell.Style{
-		Fg:       theme.Success,
-		Bg:       theme.CardBg,
-		Modifier: cell.ModifierBold,
-	}, nil)
-	curX++
-
-	// Role
+	items = append(items, flowItem{
+		label: Tf("%d/4 members", len(peers)+1),
+		short: fmt.Sprintf("%d/4", len(peers)+1),
+		style: cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold},
+	})
 	if node.IsHost {
-		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, T(" 👑 Host (You) "), cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Warning,
-			Modifier: cell.ModifierBold,
-		}, nil)
-		curX++
+		items = append(items, flowItem{label: T("Host (you)"), short: T("Host"), style: cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg}})
 	} else {
 		hostNick := node.HostNick
 		if hostNick == "" {
 			hostNick = T("Host")
 		}
-		curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, Tf(" 👤 Host: %s ", hostNick), cell.Style{
-			Fg: theme.Secondary,
-			Bg: theme.CardBg,
-		}, nil)
-		curX++
+		items = append(items, flowItem{label: Tf("Host: %s", hostNick), style: cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg}})
 	}
 
-	// Latency
-	pingPill := " ⚡ -- "
-	if peerPing > 0 {
-		modeTag := "P2P"
-		if allRelayed {
-			modeTag = "Relay"
-		} else if anyRelayed {
-			modeTag = "Mesh"
-		} else if hasLANPeer && !hasP2PPeer {
-			modeTag = "LAN"
+	// Average latency over the peers that have a measured ping.
+	var total int64
+	count := 0
+	for _, p := range peers {
+		if p.PingMs > 0 {
+			total += p.PingMs
+			count++
 		}
-		pingPill = fmt.Sprintf(" ⚡ %dms (%s) ", peerPing, modeTag)
 	}
-	curX, _ = drawHUDPill(buf, frame, curX, row1Y, maxX, pingPill, cell.Style{
-		Fg:       pingColor,
-		Bg:       theme.CardBg,
-		Modifier: cell.ModifierBold,
-	}, nil)
-	curX++
-
-	// Port Hopping
-	remHop := node.NextHopRemaining()
-	var hopMin int
-	if remHop > 0 {
-		hopMin = int(remHop.Minutes())
+	if count > 0 {
+		ping := total / int64(count)
+		pingColor := theme.Success
+		if ping > 120 {
+			pingColor = theme.Danger
+		} else if ping > 50 {
+			pingColor = theme.Warning
+		}
+		items = append(items, flowItem{label: fmt.Sprintf("%d ms", ping), style: cell.Style{Fg: pingColor, Bg: theme.SurfaceBg}})
 	}
-	portPill := fmt.Sprintf(" 🛡️ :%d (%dm) ", node.Port, hopMin)
-	drawHUDPill(buf, frame, curX, row1Y, maxX, portPill, cell.Style{
-		Fg: theme.Accent,
-		Bg: theme.CardBg,
-	}, func() {
-		r.SetToast(fmt.Sprintf("Port Hopping: :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.HopEpoch()))
-	})
 
-	// Right-aligned Full UI expand button
-	expandLabel := T(" [▲ FULL UI [H]] ")
-	expandLen := uint16(len([]rune(expandLabel)))
-	if maxX > expandLen {
-		drawHUDPill(buf, frame, maxX-expandLen, row1Y, maxX, expandLabel, cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Accent,
-			Modifier: cell.ModifierBold,
-		}, func() {
+	return append(items, flowItem{
+		label:    T(" FULL UI [H] "),
+		short:    " [H] ",
+		style:    cell.Style{Fg: black, Bg: theme.Accent, Modifier: cell.ModifierBold},
+		pinRight: true,
+		onClick: func(_ driver.MouseEvent) {
 			ToggleCompactHUD()
 			r.IsCompactMode = false
-		})
-	}
-
-	// --- ROW 2: Audio & Quick Action Capsules ---
-	curX = inner.X
-
-	// Mic button
-	var micLabel string
-	var micStyle cell.Style
-	if audio != nil && audio.Muted {
-		micLabel = T(" 🔴 🎙️ MIC MUTED [M] ")
-		micStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold}
-	} else if audio != nil && audio.IsSpeaking {
-		micLabel = T(" 🟢 🎙️ SPEAKING [M] ")
-		micStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
-	} else if audio != nil && audio.InputMode == engine.InputModePushToTalk {
-		micLabel = T(" 🎙️ PTT READY [SPACE] ")
-		micStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Warning, Modifier: cell.ModifierBold}
-	} else {
-		micLabel = T(" 🎙️ MIC ON [M] ")
-		micStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Success, Modifier: cell.ModifierBold}
-	}
-	curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, micLabel, micStyle, func() {
-		if audio != nil {
-			isMuted := audio.ToggleMute()
-			node.SendMuteState(isMuted)
-			if isMuted {
-				r.SetToast("Microphone Off (Muted)")
-			} else {
-				r.SetToast("Microphone Active")
-			}
-		}
+		},
 	})
-	curX++
+}
 
-	// Deafen button
-	var deafLabel string
-	var deafStyle cell.Style
-	if audio != nil && audio.Deafened {
-		deafLabel = T(" 🔇 DEAFENED [D] ")
-		deafStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Warning, Modifier: cell.ModifierBold}
-	} else {
-		deafLabel = T(" 🔊 AUDIO ON [D] ")
-		deafStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
+// hudControlItems are the mini HUD's buttons, most important first.
+func (r *RoomView) hudControlItems(node *p2p.P2PNode, audio *engine.AudioEngine, peers []*p2p.PeerInfo) []flowItem {
+	theme := CurrentTheme()
+	black := cell.NewColorRGB(0x00, 0x00, 0x00)
+	white := cell.NewColorRGB(0xFF, 0xFF, 0xFF)
+	pill := func(fg, bg cell.Color) cell.Style {
+		return cell.Style{Fg: fg, Bg: bg, Modifier: cell.ModifierBold}
 	}
-	curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, deafLabel, deafStyle, func() {
-		if audio != nil {
-			isDeaf := audio.ToggleDeafen()
-			node.SendDeafenState(isDeaf)
-			node.SendMuteState(audio.Muted)
-			if isDeaf {
-				r.SetToast("Audio Deafened (All Sounds Muted)")
-			} else {
-				r.SetToast("Audio Restored")
-			}
-		}
-	})
-	curX++
 
-	// Screen Share / Stream button
-	var shareLabel string
-	var shareStyle cell.Style
-	var shareAction func()
-	if node.IsSharingScreen {
-		shareLabel = T(" 📺 SHARING [V] ")
-		shareStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
-		shareAction = func() {
+	mic := flowItem{label: T(" MIC ON [M] "), short: T(" MIC [M] "), style: pill(black, theme.Success)}
+	switch {
+	case audio.Muted:
+		mic = flowItem{label: T(" MUTED [M] "), style: pill(white, theme.Danger)}
+	case audio.IsSpeaking:
+		mic = flowItem{label: T(" SPEAKING [M] "), short: T(" TALK [M] "), style: pill(black, cell.NewColorRGB(0x00, 0xFF, 0x88))}
+	case audio.InputMode == engine.InputModePushToTalk:
+		mic = flowItem{label: T(" PTT [M] "), style: pill(black, theme.Warning)}
+	}
+	mic.onClick = func(_ driver.MouseEvent) {
+		if isMuted := audio.ToggleMute(); isMuted {
+			node.SendMuteState(true)
+			r.SetToast("Microphone Off (Muted)")
+		} else {
+			node.SendMuteState(false)
+			r.SetToast("Microphone Active")
+		}
+	}
+
+	deafen := flowItem{label: T(" AUDIO ON [D] "), short: T(" SPK [D] "), style: pill(black, theme.Secondary)}
+	if audio.Deafened {
+		deafen = flowItem{label: T(" DEAFENED [D] "), short: T(" DEAF [D] "), style: pill(black, theme.Warning)}
+	}
+	deafen.onClick = func(_ driver.MouseEvent) {
+		isDeaf := audio.ToggleDeafen()
+		node.SendDeafenState(isDeaf)
+		node.SendMuteState(audio.Muted)
+		if isDeaf {
+			r.SetToast("Audio Deafened (All Sounds Muted)")
+		} else {
+			r.SetToast("Audio Restored")
+		}
+	}
+
+	var streaming *p2p.PeerInfo
+	for _, p := range peers {
+		if p.IsSharingScreen {
+			streaming = p
+			break
+		}
+	}
+	var share flowItem
+	switch {
+	case node.IsSharingScreen:
+		share = flowItem{label: T(" SHARING [V] "), style: pill(black, theme.Accent), onClick: func(_ driver.MouseEvent) {
 			_ = node.StopScreenShare()
 			r.SetToast("Screen share stopped")
-		}
-	} else if node.IsWatchingScreen {
-		shareLabel = T(" 📺 WATCHING [W] ")
-		shareStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
-		shareAction = func() {
+		}}
+	case node.IsWatchingScreen:
+		share = flowItem{label: T(" WATCHING [W] "), style: pill(black, theme.Secondary), onClick: func(_ driver.MouseEvent) {
 			_ = node.StopWatchingScreen()
 			r.SetToast("Stream viewer closed")
-		}
-	} else if len(streamingPeers) > 0 {
-		target := streamingPeers[0]
-		shareLabel = Tf(" 🔴 WATCH %s [W] ", target.Nickname)
-		shareStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold}
-		shareAction = func() {
-			port := target.VideoPort
-			if port <= 0 {
-				port = 50100
-			}
-			fps := target.VideoFPS
-			if fps <= 0 {
-				fps = 60
-			}
-			opts := screenshare.DefaultReceiverOptions(fps)
-			opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", target.Nickname, fps)
-			r.SetToast(fmt.Sprintf("Opening %s stream...", target.Nickname))
-			go func() {
-				_ = node.StartWatchingScreen(target.ID, port, opts)
-			}()
-		}
-	} else {
-		shareLabel = T(" 📺 SHARE [V] ")
-		shareStyle = cell.Style{Fg: theme.Text, Bg: theme.CardBg, Modifier: cell.ModifierBold}
-		shareAction = func() {
+		}}
+	case streaming != nil:
+		share = flowItem{label: Tf(" WATCH %s [W] ", streaming.Nickname), short: T(" WATCH [W] "), style: pill(white, theme.Danger), onClick: func(_ driver.MouseEvent) {
+			r.watchPeer(node, streaming)
+		}}
+	default:
+		share = flowItem{label: T(" SHARE [V] "), style: cell.Style{Fg: theme.Text, Bg: theme.CardBg, Modifier: cell.ModifierBold}, onClick: func(_ driver.MouseEvent) {
 			if r.OnOpenScreenShareModal != nil {
 				r.OnOpenScreenShareModal()
 			}
-		}
+		}}
 	}
-	curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, shareLabel, shareStyle, shareAction)
-	curX++
 
-	// Noise Filter Pill
-	if audio != nil {
-		noisePill := fmt.Sprintf(" 🪄 %s [N] ", audio.SuppressionModeString())
-		curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, noisePill, cell.Style{
-			Fg: theme.Accent,
-			Bg: theme.CardBg,
-		}, func() {
+	noise := flowItem{
+		label: Tf(" NOISE: %s [N] ", tr(audio.SuppressionModeString())),
+		style: cell.Style{Fg: theme.Accent, Bg: theme.CardBg},
+		onClick: func(_ driver.MouseEvent) {
 			audio.CycleSuppressionMode()
 			r.SetToast(fmt.Sprintf("Noise Filter: %s", audio.SuppressionModeString()))
-		})
-		curX++
+		},
 	}
-
-	// Soundboard / SFX Pill
-	curX, _ = drawHUDPill(buf, frame, curX, row2Y, maxX, T(" 🔔 SFX [F] "), cell.Style{
-		Fg: theme.Secondary,
-		Bg: theme.CardBg,
-	}, func() {
+	sfx := flowItem{label: T(" SFX [F] "), style: cell.Style{Fg: theme.Secondary, Bg: theme.CardBg}, onClick: func(_ driver.MouseEvent) {
 		if r.OnTriggerSFX != nil {
 			r.OnTriggerSFX()
-		} else {
-			r.SetToast("Soundboard: Press F to play sound effects")
 		}
-	})
-	curX++
-
-	// Leave Button
-	drawHUDPill(buf, frame, curX, row2Y, maxX, T(" 🚪 LEAVE "), cell.Style{
-		Fg: theme.Danger,
-		Bg: theme.CardBg,
-	}, func() {
+	}}
+	leave := flowItem{label: T(" LEAVE [Esc] "), style: cell.Style{Fg: theme.Danger, Bg: theme.CardBg, Modifier: cell.ModifierBold}, onClick: func(_ driver.MouseEvent) {
 		if r.OnLeave != nil {
 			r.OnLeave()
 		}
-	})
+	}}
 
-	// =========================================================================
-	// CASE C1: COMPACT 3-LINE SUMMARY (inner.Height == 3)
-	// =========================================================================
-	if inner.Height == 3 {
-		row3Y := inner.Y + 2
-		curX = inner.X
+	return []flowItem{mic, deafen, share, noise, sfx, leave}
+}
 
-		var rms float64
-		if audio != nil {
-			rms = audio.LocalRMS
+func (r *RoomView) renderCompactHUD(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
+	r.mu.Lock()
+	r.LastLogArea = cell.Rect{} // no chat panel in the HUD
+	toast := tr(r.ToastMsg)
+	var lastMsg RoomMessage
+	if n := len(r.Messages); n > 0 {
+		lastMsg = r.Messages[n-1]
+	}
+	r.mu.Unlock()
+
+	if area.Height < 1 || area.Width < 8 {
+		return
+	}
+	theme := CurrentTheme()
+	buf := frame.Buffer
+	peers := node.GetPeersList()
+
+	for y := area.Y; y < area.Y+area.Height; y++ {
+		for x := area.X; x < area.X+area.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
-		selfSpeaking := audio != nil && audio.IsSpeaking && !audio.Muted
-		selfMuted := audio != nil && audio.Muted
-
-		curX, _ = drawHUDPill(buf, frame, curX, row3Y, maxX, " 🎙️ VU: ", cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}, nil)
-		curX = drawMiniVUBar(buf, curX, row3Y, maxX, rms, selfSpeaking, selfMuted, 10, theme)
-		curX += 2
-
-		if len(speakingPeers) > 0 {
-			spkHeader := T(" 🔊 TALKING: ")
-			buf.SetString(curX, row3Y, spkHeader, cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Success,
-				Modifier: cell.ModifierBold,
-			})
-			curX += uint16(len([]rune(spkHeader))) + 1
-
-			for _, spk := range speakingPeers {
-				spkTag := fmt.Sprintf(" ● %s ", spk)
-				curX, _ = drawHUDPill(buf, frame, curX, row3Y, maxX, spkTag, cell.Style{
-					Fg:       theme.Accent,
-					Bg:       theme.CardBg,
-					Modifier: cell.ModifierBold,
-				}, nil)
-				curX++
-			}
-		} else {
-			idleText := T(" 💤 Voice: Idle ")
-			buf.SetString(curX, row3Y, idleText, cell.Style{
-				Fg: theme.TextMuted,
-				Bg: theme.SurfaceBg,
-			})
+	}
+	inner := area
+	if area.Height >= 4 && area.Width >= 32 {
+		title := Tf(" 🍋 LIMONI · MINI HUD · %s ", formatDuration(time.Since(r.StartTime)))
+		if area.Width < 50 {
+			title = T(" 🍋 MINI HUD ")
 		}
+		block := widgets.Block{
+			Title:         title,
+			Borders:       widgets.BorderAll,
+			BorderSymbols: widgets.SymbolsRounded,
+			BorderStyle:   cell.Style{Fg: theme.BorderFocused},
+			Style:         cell.Style{Bg: theme.SurfaceBg},
+		}
+		frame.RenderWidget(block, area)
+		inner = block.Inner(area)
+		// A column of padding inside the border.
+		if inner.Width > 4 {
+			inner = cell.NewRect(inner.X+1, inner.Y, inner.Width-2, inner.Height)
+		}
+	}
+	if inner.Height < 1 || inner.Width < 6 {
 		return
 	}
 
-	// =========================================================================
-	// CASE C2: STACKED PARTICIPANT ROWS & LIVE VU METERS (inner.Height >= 4)
-	// =========================================================================
-	curRowY := inner.Y + 2
+	status := r.hudStatusItems(node, peers)
+	controls := r.hudControlItems(node, audio, peers)
+	width := int(inner.Width)
+	row := func(y uint16) cell.Rect { return cell.NewRect(inner.X, y, inner.Width, 1) }
 
-	// --- ROW A: Local User (You) ---
-	if curRowY < inner.Y+inner.Height {
-		curX = inner.X
-
-		// Avatar & Nickname
-		var selfAvatar string
-		var selfAvatarStyle cell.Style
-		if audio != nil && audio.IsSpeaking && !audio.Muted {
-			selfAvatar = T(" 🟢 ● You ")
-			selfAvatarStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
-		} else if audio != nil && audio.Muted {
-			selfAvatar = T(" 🔴 ● You ")
-			selfAvatarStyle = cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold}
-		} else {
-			selfAvatar = T(" ⚪ ● You ")
-			selfAvatarStyle = cell.Style{Fg: theme.Accent, Bg: theme.CardBg, Modifier: cell.ModifierBold}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, selfAvatar, selfAvatarStyle, nil)
-		curX++
-
-		// Role badge
-		roleTag := T(" [YOU] ")
-		if node.IsHost {
-			roleTag = T(" [HOST] ")
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, roleTag, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}, nil)
-		curX++
-
-		// Self Live VU Equalizer Bar
-		var selfRMS float64
-		if audio != nil {
-			selfRMS = audio.LocalRMS
-		}
-		selfSpeaking := audio != nil && audio.IsSpeaking && !audio.Muted
-		selfMuted := audio != nil && audio.Muted
-
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, "VU: ", cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}, nil)
-		curX = drawMiniVUBar(buf, curX, curRowY, maxX, selfRMS, selfSpeaking, selfMuted, 8, theme)
-		curX++
-
-		// Status Badge
-		var selfStatus string
-		var selfStatusStyle cell.Style
-		if selfMuted {
-			selfStatus = T(" [🔇 MUTED] ")
-			selfStatusStyle = cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
-		} else if selfSpeaking {
-			selfStatus = T(" [🎙️ SPEAKING] ")
-			selfStatusStyle = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
-		} else {
-			selfStatus = T(" [🎙️ MIC ON] ")
-			selfStatusStyle = cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
-		}
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, selfStatus, selfStatusStyle, nil)
-		curX++
-
-		// Self Screen Share Badge
-		if node.IsSharingScreen {
-			drawHUDPill(buf, frame, curX, curRowY, maxX, T(" [📺 SHARING SCREEN [V]] "), cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Accent,
-				Modifier: cell.ModifierBold,
-			}, func() {
-				_ = node.StopScreenShare()
-				r.SetToast("Screen share stopped")
-			})
-		} else {
-			drawHUDPill(buf, frame, curX, curRowY, maxX, T(" [📺 SHARE [V]] "), cell.Style{
-				Fg: theme.Text,
-				Bg: theme.CardBg,
-			}, func() {
-				if r.OnOpenScreenShareModal != nil {
-					r.OnOpenScreenShareModal()
-				}
-			})
-		}
-
-		curRowY++
+	// One line: the room code, the three main buttons and the way back.
+	if inner.Height == 1 {
+		items := []flowItem{status[0], controls[0], controls[1], controls[2], status[len(status)-1]}
+		drawFlow(frame, row(inner.Y), items, fitOneRow(items, width, 1), 1)
+		return
 	}
 
-	// --- ROW B+: Connected Peers (Stacked Lines with VU, Individual Volume Controls & Stream Watch) ---
+	y := inner.Y
+	bottom := inner.Y + inner.Height
+	drawFlow(frame, row(y), status, fitOneRow(status, width, hudGap), hudGap)
+	y++
+
+	// Buttons keep their full labels, wrapping, while that leaves room for every member;
+	// otherwise they go short to save rows.
+	members := 1 + len(peers)
+	fl := layoutFlow(controls, width, hudGap, 2)
+	if len(fl.rows) > 1 && int(bottom-y)-len(fl.rows) < members {
+		fl = layoutFlow(controls, width, hudGap, 1)
+	}
+	if int(bottom-y) == 1 {
+		fl = fitOneRow(controls, width, hudGap)
+	}
+	ctrlRows := min(len(fl.rows), int(bottom-y))
+	drawFlow(frame, cell.NewRect(inner.X, y, inner.Width, uint16(ctrlRows)), controls, fl, hudGap)
+	y += uint16(ctrlRows)
+
+	// Members, one aligned row each, under a divider when there is room for it.
+	rest := int(bottom - y)
+	footer := toast != "" || lastMsg.Text != ""
+	if rest >= members+1+btoi(footer) {
+		for x := inner.X; x < inner.X+inner.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: '─', Style: cell.Style{Fg: theme.Border, Bg: theme.SurfaceBg}})
+		}
+		y++
+		rest--
+	}
+	shown := min(members, rest)
+	if footer && rest > members {
+		shown = members
+	} else if footer && rest <= members && rest > 1 && members > 1 {
+		shown = rest // members come before the chat line
+	}
+	r.drawHUDMembers(frame, inner, y, shown, node, audio, peers)
+	y += uint16(shown)
+
+	// Last line: a toast, or the latest chat message.
+	if y < bottom && footer {
+		text := toast
+		style := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Warning, Modifier: cell.ModifierBold}
+		if text == "" {
+			sender := lastMsg.Sender
+			if lastMsg.IsSelf {
+				sender = T("You")
+			}
+			text = lastMsg.Text
+			if sender != "" {
+				text = sender + ": " + text
+			}
+			style = cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+		}
+		buf.SetString(inner.X, bottom-1, clipToWidth(" "+text+" ", width), style)
+	}
+}
+
+// drawHUDMembers draws up to n member rows from y: you first, then each peer, with the name,
+// a level meter, state or volume controls, and latency or a watch button.
+func (r *RoomView) drawHUDMembers(frame *terminal.Frame, inner cell.Rect, y uint16, n int, node *p2p.P2PNode, audio *engine.AudioEngine, peers []*p2p.PeerInfo) {
+	if n <= 0 {
+		return
+	}
+	theme := CurrentTheme()
+	buf := frame.Buffer
+	right := inner.X + inner.Width
+	black := cell.NewColorRGB(0x00, 0x00, 0x00)
+	white := cell.NewColorRGB(0xFF, 0xFF, 0xFF)
+
+	selfName := T("You")
+	nameW := cell.StringWidth(selfName)
 	for _, p := range peers {
-		if curRowY >= inner.Y+inner.Height {
-			break
+		nameW = max(nameW, cell.StringWidth(p.Nickname))
+	}
+	nameW = min(nameW, max(6, int(inner.Width)/4))
+
+	// put draws label at x if it fits and returns the column after it plus a gap.
+	put := func(x, y uint16, label string, style cell.Style, onClick func()) uint16 {
+		w := uint16(cell.StringWidth(label))
+		if x+w > right {
+			return right
 		}
-		curX = inner.X
-		targetPeer := p
-
-		// 1. Peer Avatar & Speaking Dot
-		var pAvatar string
-		var pAvatarStyle cell.Style
-		if p.Speaking && !p.IsMuted {
-			pAvatar = fmt.Sprintf(" 🟢 ● %s ", p.Nickname)
-			pAvatarStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: cell.NewColorRGB(0x00, 0xFF, 0x88), Modifier: cell.ModifierBold}
-		} else if p.IsMuted {
-			pAvatar = fmt.Sprintf(" 🔴 ● %s ", p.Nickname)
-			pAvatarStyle = cell.Style{Fg: theme.Danger, Bg: theme.CardBg}
-		} else {
-			pAvatar = fmt.Sprintf(" ⚪ ● %s ", p.Nickname)
-			pAvatarStyle = cell.Style{Fg: theme.Text, Bg: theme.CardBg}
+		buf.SetString(x, y, label, style)
+		if onClick != nil {
+			frame.RegisterClickHandler(cell.NewRect(x, y, w, 1), func(_ driver.MouseEvent) { onClick() })
 		}
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, pAvatar, pAvatarStyle, nil)
-		curX++
-
-		// 2. Peer Live VU Equalizer Bar
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, "VU: ", cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}, nil)
-		curX = drawMiniVUBar(buf, curX, curRowY, maxX, p.RMS, p.Speaking, p.IsMuted, 8, theme)
-		curX++
-
-		// 3. Individual Volume Controls ([-] [VOL%] [+])
-		volVal := 1.0
-		if audio != nil {
-			volVal = audio.GetPeerVolume(targetPeer.ID)
+		return x + w + hudGap
+	}
+	head := func(y uint16, name string, speaking, muted bool, rms float64) uint16 {
+		dot := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
+		nameStyle := cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+		switch {
+		case muted:
+			dot.Fg = theme.Danger
+		case speaking:
+			dot.Fg = cell.NewColorRGB(0x00, 0xFF, 0x88)
+			nameStyle.Fg = dot.Fg
 		}
-		volPct := int(math.Round(volVal * 100))
-
-		// Volume [-] Button
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, " [-] ", cell.Style{
-			Fg:       theme.Secondary,
-			Bg:       theme.CardBg,
-			Modifier: cell.ModifierBold,
-		}, func() {
-			if audio != nil {
-				curV := audio.GetPeerVolume(targetPeer.ID)
-				nextV := curV - 0.25
-				if nextV < 0.0 {
-					nextV = 0.0
-				}
-				audio.SetPeerVolume(targetPeer.ID, nextV)
-				r.SetToast(fmt.Sprintf("Volume for %s: %d%%", targetPeer.Nickname, int(math.Round(nextV*100))))
-			}
-		})
-		curX++
-
-		// Volume Level / Mute Pill
-		volLabel := fmt.Sprintf(" %d%% ", volPct)
-		volStyle := cell.Style{Fg: theme.Text, Bg: theme.CardBg}
-		if targetPeer.IsMuted || volPct == 0 {
-			volLabel = T(" 🔇 MUTED ")
-			volStyle = cell.Style{Fg: theme.Danger, Bg: theme.CardBg, Modifier: cell.ModifierBold}
-		} else if volPct > 100 {
-			volStyle = cell.Style{Fg: theme.Accent, Bg: theme.CardBg, Modifier: cell.ModifierBold}
+		x := inner.X
+		buf.SetString(x, y, "●", dot)
+		x += 2
+		if x+uint16(nameW) >= right {
+			return right
 		}
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, volLabel, volStyle, func() {
-			if audio != nil {
-				curV := int(math.Round(audio.GetPeerVolume(targetPeer.ID) * 100))
-				var nextV float64
-				switch {
-				case curV >= 200:
-					nextV = 0.0
-				case curV == 0:
-					nextV = 0.50
-				case curV < 100:
-					nextV = float64(curV+25) / 100.0
-				default:
-					nextV = float64(curV+25) / 100.0
-					if nextV > 2.0 {
-						nextV = 2.0
-					}
-				}
-				audio.SetPeerVolume(targetPeer.ID, nextV)
-				r.SetToast(fmt.Sprintf("Volume for %s set to %d%%", targetPeer.Nickname, int(math.Round(nextV*100))))
-			}
-		})
-		curX++
-
-		// Volume [+] Button
-		curX, _ = drawHUDPill(buf, frame, curX, curRowY, maxX, " [+] ", cell.Style{
-			Fg:       theme.Success,
-			Bg:       theme.CardBg,
-			Modifier: cell.ModifierBold,
-		}, func() {
-			if audio != nil {
-				curV := audio.GetPeerVolume(targetPeer.ID)
-				nextV := curV + 0.25
-				if nextV > 2.0 {
-					nextV = 2.0
-				}
-				audio.SetPeerVolume(targetPeer.ID, nextV)
-				r.SetToast(fmt.Sprintf("Volume for %s: %d%%", targetPeer.Nickname, int(math.Round(nextV*100))))
-			}
-		})
-		curX++
-
-		// 4. Stream Watch Button or Latency Indicator
-		if targetPeer.IsSharingScreen {
-			if node.IsWatchingScreen && node.WatchingPeerID == targetPeer.ID {
-				drawHUDPill(buf, frame, curX, curRowY, maxX, T(" [📺 WATCHING [W]] "), cell.Style{
-					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-					Bg:       theme.Secondary,
-					Modifier: cell.ModifierBold,
-				}, func() {
-					_ = node.StopWatchingScreen()
-					r.SetToast("Stream viewer closed")
-				})
-			} else {
-				drawHUDPill(buf, frame, curX, curRowY, maxX, T(" [🔴 WATCH LIVE [W]] "), cell.Style{
-					Fg:       cell.NewColorRGB(0xFF, 0xFF, 0xFF),
-					Bg:       theme.Danger,
-					Modifier: cell.ModifierBold,
-				}, func() {
-					port := targetPeer.VideoPort
-					if port <= 0 {
-						port = 50100
-					}
-					fps := targetPeer.VideoFPS
-					if fps <= 0 {
-						fps = 60
-					}
-					opts := screenshare.DefaultReceiverOptions(fps)
-					opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
-					r.SetToast(fmt.Sprintf("Opening %s stream...", targetPeer.Nickname))
-					go func() {
-						_ = node.StartWatchingScreen(targetPeer.ID, port, opts)
-					}()
-				})
-			}
-		} else {
-			pPing := int(targetPeer.PingMs)
-			pPill := " ⚡ -- "
-			if pPing > 0 {
-				trans := "P2P"
-				if targetPeer.ViaRelay {
-					trans = "Relay"
-				} else if targetPeer.Addr != nil && (targetPeer.Addr.IP.IsLoopback() || targetPeer.Addr.IP.IsPrivate()) {
-					trans = "LAN"
-				}
-				pPill = fmt.Sprintf(" ⚡ %dms (%s) ", pPing, trans)
-			}
-			drawHUDPill(buf, frame, curX, curRowY, maxX, pPill, cell.Style{
-				Fg: theme.TextMuted,
-				Bg: theme.SurfaceBg,
-			}, nil)
+		buf.SetString(x, y, clipToWidth(name, nameW), nameStyle)
+		x += uint16(nameW) + hudGap
+		if x+hudVUWidth > right {
+			return right
 		}
-
-		curRowY++
+		return hudMeter(buf, x, y, rms, speaking, muted, theme) + hudGap
 	}
 
-	// --- ROW C: Toast Banner or Recent Chat message (if remaining vertical space) ---
-	if curRowY < inner.Y+inner.Height {
-		if r.ToastMsg != "" {
-			toastText := fmt.Sprintf(" 🔔 %s ", tr(r.ToastMsg))
-			if uint16(len([]rune(toastText))) <= inner.Width {
-				buf.SetString(inner.X+1, curRowY, toastText, cell.Style{
-					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-					Bg:       theme.Warning,
-					Modifier: cell.ModifierBold,
-				})
-			}
-		} else if len(r.Messages) > 0 {
-			lastMsg := r.Messages[len(r.Messages)-1]
-			chatText := fmt.Sprintf(" 💬 %s: %s", lastMsg.Sender, lastMsg.Text)
-			if uint16(len([]rune(chatText))) > inner.Width-2 {
-				chatRunes := []rune(chatText)
-				if int(inner.Width) > 5 {
-					chatText = string(chatRunes[:inner.Width-5]) + "..."
-				}
-			}
-			buf.SetString(inner.X+1, curRowY, chatText, cell.Style{
-				Fg: theme.TextMuted,
-				Bg: theme.SurfaceBg,
+	// You.
+	selfSpeaking := audio.IsSpeaking && !audio.Muted
+	x := head(y, selfName, selfSpeaking, audio.Muted, audio.LocalRMS)
+	switch {
+	case audio.Muted:
+		x = put(x, y, T("MUTED"), cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}, nil)
+	case audio.Deafened:
+		x = put(x, y, T("DEAFENED"), cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}, nil)
+	case selfSpeaking:
+		x = put(x, y, T("SPEAKING"), cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}, nil)
+	default:
+		x = put(x, y, T("mic on"), cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}, nil)
+	}
+	if node.IsSharingScreen {
+		put(x, y, T(" SHARING SCREEN "), cell.Style{Fg: black, Bg: theme.Accent, Modifier: cell.ModifierBold}, nil)
+	}
+
+	for i, p := range peers {
+		if i+1 >= n {
+			return
+		}
+		peer := p
+		py := y + uint16(i+1)
+		x := head(py, peer.Nickname, peer.Speaking && !peer.IsMuted, peer.IsMuted, peer.RMS)
+
+		setVol := func(v float64) {
+			v = max(0, min(2, v))
+			audio.SetPeerVolume(peer.ID, v)
+			r.SetToast(fmt.Sprintf("Volume for %s: %d%%", peer.Nickname, int(math.Round(v*100))))
+		}
+		vol := int(math.Round(audio.GetPeerVolume(peer.ID) * 100))
+		volText := fmt.Sprintf("%3d%%", vol)
+		volStyle := cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg}
+		if peer.IsMuted || vol == 0 {
+			volText, volStyle = T("MUTED"), cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+		}
+		if x+uint16(cell.StringWidth("[-] "+volText+" [+]")) <= right {
+			x = put(x, py, "[-]", cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}, func() {
+				setVol(audio.GetPeerVolume(peer.ID) - 0.25)
+			}) - hudGap + 1
+			x = put(x, py, volText, volStyle, nil) - hudGap + 1
+			x = put(x, py, "[+]", cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}, func() {
+				setVol(audio.GetPeerVolume(peer.ID) + 0.25)
 			})
 		}
+
+		switch {
+		case peer.IsSharingScreen && node.IsWatchingScreen && node.WatchingPeerID == peer.ID:
+			put(x, py, T(" WATCHING [W] "), cell.Style{Fg: black, Bg: theme.Secondary, Modifier: cell.ModifierBold}, func() {
+				_ = node.StopWatchingScreen()
+				r.SetToast("Stream viewer closed")
+			})
+		case peer.IsSharingScreen:
+			put(x, py, T(" WATCH LIVE [W] "), cell.Style{Fg: white, Bg: theme.Danger, Modifier: cell.ModifierBold}, func() {
+				r.watchPeer(node, peer)
+			})
+		case peer.PingMs > 0:
+			put(x, py, fmt.Sprintf("%d ms %s", peer.PingMs, peerTransport(node, peer)), cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}, nil)
+		}
 	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func formatBytes(bytes int64) string {

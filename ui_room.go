@@ -544,30 +544,52 @@ func (r *RoomView) Update() {
 	}
 }
 
+// minGridHeight is the least room the member grid needs before the room falls back to
+// the mini HUD.
+const minGridHeight = 4
+
 func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
 	if r.IsCompactMode || GetCompactHUD() || area.Height <= 6 {
 		r.renderCompactHUD(frame, area, node, audio)
 		return
 	}
 
-	footerHeight := uint16(8)
+	// The controls wrap onto as many rows as the width needs; the footer grows to fit
+	// them, spaced out when there is room and packed when the terminal is short.
+	items := r.controlItems(node, audio)
+	var ctrlWidth int
+	if cols := footerSplit(cell.NewRect(area.X, 0, area.Width, 3)); len(cols) == 2 {
+		ctrlWidth = int(controlsArea(cols[0]).Width)
+	}
+	footerInner, maxRows := 6, 3 // three spaced rows; the chat panel wants the lines too
 	if node.IsWatchingScreen {
-		footerHeight = 4 // Compact footer when watching stream so Stage gets maximum height!
+		footerInner, maxRows = 2, 2 // compact footer so the stream stage gets the height
+	}
+	fl := layoutFlow(items, ctrlWidth, footerGap, maxRows)
+	rows := len(fl.rows)
+	footerInner = max(footerInner, rows+(rows-1)*flowSpacing(rows, footerInner))
+	if int(area.Height)-3-(footerInner+2) < minGridHeight {
+		footerInner = max(rows, 2)
+	}
+	if int(area.Height)-3-(footerInner+2) < minGridHeight {
+		r.renderCompactHUD(frame, area, node, audio)
+		return
 	}
 
-	fl := layout.NewFlexLayout(layout.Vertical, 0,
-		layout.Fixed(3),            // Header
-		layout.Fill(),              // 2x2 Participant Cards or Big Stream Stage
-		layout.Fixed(footerHeight), // Controls & Mini Logs
-	)
-	vSplits := fl.Split(area)
+	vSplits := layout.NewFlexLayout(layout.Vertical, 0,
+		layout.Fixed(3),                     // Header
+		layout.Fill(),                       // 2x2 Participant Cards or Big Stream Stage
+		layout.Fixed(uint16(footerInner+2)), // Controls & Mini Logs
+	).Split(area)
 	if len(vSplits) < 3 {
 		return
 	}
 
 	r.renderHeader(frame, vSplits[0], node)
-	r.renderGrid(frame, vSplits[1], node, audio)
-	r.renderFooter(frame, vSplits[2], node, audio)
+	// The cards and the stream stage are laid out for more height than a short window
+	// leaves them; keep what they draw off their area from spilling over.
+	drawClipped(frame, vSplits[1], func() { r.renderGrid(frame, vSplits[1], node, audio) })
+	r.renderFooter(frame, vSplits[2], node, audio, items, fl)
 }
 
 func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode) {

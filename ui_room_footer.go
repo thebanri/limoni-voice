@@ -15,12 +15,28 @@ import (
 	"github.com/thebanri/limoni/widgets"
 )
 
-func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
-	fl := layout.NewFlexLayout(layout.Horizontal, 0,
+// footerGap is the column gap between control buttons.
+const footerGap = 2
+
+// footerSplit divides the footer into the controls and the chat panel.
+func footerSplit(area cell.Rect) []cell.Rect {
+	return layout.NewFlexLayout(layout.Horizontal, 0,
 		layout.Percentage(52), // controls
 		layout.Percentage(48), // chat & room logs
-	)
-	cols := fl.Split(area)
+	).Split(area)
+}
+
+// controlsArea is where the buttons go inside the controls panel: the block's inner area
+// less a column of padding on each side.
+func controlsArea(panel cell.Rect) cell.Rect {
+	if panel.Width < 5 || panel.Height < 3 {
+		return cell.Rect{}
+	}
+	return cell.NewRect(panel.X+2, panel.Y+1, panel.Width-4, panel.Height-2)
+}
+
+func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine, items []flowItem, fl flowLayout) {
+	cols := footerSplit(area)
 	if len(cols) < 2 {
 		return
 	}
@@ -46,288 +62,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
 		}
 	}
-
-	row1Y := ctrlInner.Y
-	row2Y := ctrlInner.Y + 2
-	if ctrlInner.Height < 3 {
-		row2Y = ctrlInner.Y + 1
-	}
-
-	// --- ROW 1: Audio Toggles & Noise Filter ---
-	// Mute Button
-	muteLabel := T("[M] Mute Mic")
-	muteStyle := cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg}
-	if audio.Muted {
-		muteLabel = T("[M] Unmute Mic")
-		muteStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Danger,
-			Modifier: cell.ModifierBold,
-		}
-	}
-	muteX := ctrlInner.X + 1
-	muteLen := uint16(len([]rune(muteLabel)))
-	buf.SetString(muteX, row1Y, muteLabel, muteStyle)
-	frame.RegisterClickHandler(cell.NewRect(muteX, row1Y, muteLen, 1), func(_ driver.MouseEvent) {
-		isMuted := audio.ToggleMute()
-		node.SendMuteState(isMuted)
-		if isMuted {
-			r.SetToast("Microphone Off (Muted)")
-		} else {
-			r.SetToast("Microphone On")
-		}
-	})
-
-	// Deafen Button
-	deafenLabel := T("[D] Deafen")
-	deafenStyle := cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg}
-	if audio.Deafened {
-		deafenLabel = T("[D] Undeafen")
-		deafenStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Warning,
-			Modifier: cell.ModifierBold,
-		}
-	}
-	deafenX := muteX + muteLen + 2
-	deafenLen := uint16(len([]rune(deafenLabel)))
-	if deafenX+deafenLen <= ctrlInner.X+ctrlInner.Width {
-		buf.SetString(deafenX, row1Y, deafenLabel, deafenStyle)
-		frame.RegisterClickHandler(cell.NewRect(deafenX, row1Y, deafenLen, 1), func(_ driver.MouseEvent) {
-			isDeaf := audio.ToggleDeafen()
-			node.SendDeafenState(isDeaf)
-			node.SendMuteState(audio.Muted)
-			if isDeaf {
-				r.SetToast("Audio Off (Deafened)")
-			} else {
-				r.SetToast("Audio On")
-			}
-		})
-	}
-
-	// Push-to-Talk / Voice Activity Mode Button [P]
-	modeLabel := T("[P] Voice")
-	modeStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
-	if audio.InputMode == engine.InputModePushToTalk {
-		modeLabel = T("[P] PTT")
-		if audio.IsTransmitting() {
-			modeStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Success,
-				Modifier: cell.ModifierBold,
-			}
-		} else {
-			modeStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Warning,
-				Modifier: cell.ModifierBold,
-			}
-		}
-	}
-	modeX := deafenX + deafenLen + 2
-	modeLen := uint16(len([]rune(modeLabel)))
-	if modeX+modeLen <= ctrlInner.X+ctrlInner.Width {
-		buf.SetString(modeX, row1Y, modeLabel, modeStyle)
-		frame.RegisterClickHandler(cell.NewRect(modeX, row1Y, modeLen, 1), func(_ driver.MouseEvent) {
-			m := audio.CycleInputMode()
-			if m == engine.InputModePushToTalk {
-				r.SetToast(fmt.Sprintf("Mode: Push-to-Talk (Hold %s to talk)", audio.GetPTTKeyName()))
-			} else {
-				r.SetToast("Mode: Voice Activity (Always on / VAD)")
-			}
-		})
-	}
-
-	// Noise Suppression Button [N]
-	noiseStr := audio.SuppressionModeString()
-	noiseLabel := Tf("[N] Noise: %s", tr(noiseStr))
-	noiseStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
-	if audio.SuppressionMode > 0 {
-		noiseStyle = cell.Style{
-			Fg:       theme.Success,
-			Bg:       theme.SurfaceBg,
-			Modifier: cell.ModifierBold,
-		}
-	}
-	noiseX := modeX + modeLen + 2
-	noiseLen := uint16(len([]rune(noiseLabel)))
-	if noiseX+noiseLen <= ctrlInner.X+ctrlInner.Width {
-		buf.SetString(noiseX, row1Y, noiseLabel, noiseStyle)
-		frame.RegisterClickHandler(cell.NewRect(noiseX, row1Y, noiseLen, 1), func(_ driver.MouseEvent) {
-			audio.CycleSuppressionMode()
-			r.SetToast(fmt.Sprintf("Noise Filter: %s", audio.SuppressionModeString()))
-		})
-	}
-
-	// Screen Share Button [V]
-	screenLabel := T("[V] Share Screen")
-	screenStyle := cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg}
-	if node.IsSharingScreen {
-		screenLabel = T("[V] Stop Sharing")
-		screenStyle = cell.Style{
-			Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-			Bg:       theme.Danger,
-			Modifier: cell.ModifierBold,
-		}
-	}
-	screenX := noiseX + noiseLen + 2
-	screenLen := uint16(len([]rune(screenLabel)))
-	if screenX+screenLen <= ctrlInner.X+ctrlInner.Width {
-		buf.SetString(screenX, row1Y, screenLabel, screenStyle)
-		frame.RegisterClickHandler(cell.NewRect(screenX, row1Y, screenLen, 1), func(_ driver.MouseEvent) {
-			if node.IsSharingScreen {
-				_ = node.StopScreenShare()
-				r.SetToast("Screen share stopped")
-			} else if r.OnOpenScreenShareModal != nil {
-				r.OnOpenScreenShareModal()
-			} else {
-				go func() {
-					err := node.StartScreenShare("", 50100)
-					if err != nil {
-						r.SetToast(fmt.Sprintf("Error: %v", err))
-					} else {
-						localFPS := node.ActiveScreenShareFPS
-						if localFPS <= 0 {
-							localFPS = 60
-						}
-						r.SetToast(fmt.Sprintf("Screen share started (%d FPS)", localFPS))
-					}
-				}()
-			}
-		})
-	}
-
-	// --- ROW 2: Tools & Room Actions ---
-	if ctrlInner.Height >= 2 {
-		// Watch Stream Button [W] (if any peer is streaming or we are watching)
-		var streamingPeer *p2p.PeerInfo
-		for _, p := range node.Peers {
-			if p.IsSharingScreen {
-				streamingPeer = p
-				break
-			}
-		}
-
-		watchLabel := T("[W] Watch Screen")
-		watchStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
-		if node.IsWatchingScreen {
-			watchLabel = T("[W] Stop Watching")
-			watchStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Warning,
-				Modifier: cell.ModifierBold,
-			}
-		} else if streamingPeer != nil {
-			watchLabel = Tf("[W] Watch %s", streamingPeer.Nickname)
-			watchStyle = cell.Style{
-				Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-				Bg:       theme.Success,
-				Modifier: cell.ModifierBold,
-			}
-		}
-
-		watchX := ctrlInner.X + 1
-		watchLen := uint16(len([]rune(watchLabel)))
-		buf.SetString(watchX, row2Y, watchLabel, watchStyle)
-		frame.RegisterClickHandler(cell.NewRect(watchX, row2Y, watchLen, 1), func(_ driver.MouseEvent) {
-			if node.IsWatchingScreen {
-				go func() {
-					_ = node.StopWatchingScreen()
-					r.SetToast("Screen viewer closed")
-				}()
-			} else if streamingPeer != nil {
-				port := streamingPeer.VideoPort
-				if port <= 0 {
-					port = 50100
-				}
-				fps := streamingPeer.VideoFPS
-				if fps <= 0 {
-					fps = 60
-				}
-				opts := screenshare.DefaultReceiverOptions(fps)
-				opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", streamingPeer.Nickname, fps)
-				r.SetToast("Starting stream viewer...")
-				go func() {
-					err := node.StartWatchingScreen(streamingPeer.ID, port, opts)
-					if err != nil {
-						r.SetToast(fmt.Sprintf("Error: %v", err))
-					} else {
-						r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", streamingPeer.Nickname, fps))
-					}
-				}()
-			} else {
-				r.SetToast("No one is sharing screen in this room")
-			}
-		})
-
-		// Sound Test Panel Button [T]
-		testLabel := T("[T] Test")
-		testStyle := cell.Style{
-			Fg:       theme.Secondary,
-			Bg:       theme.SurfaceBg,
-			Modifier: cell.ModifierBold,
-		}
-		testX := watchX + watchLen + 2
-		testLen := uint16(len([]rune(testLabel)))
-		if testX+testLen <= ctrlInner.X+ctrlInner.Width {
-			buf.SetString(testX, row2Y, testLabel, testStyle)
-			frame.RegisterClickHandler(cell.NewRect(testX, row2Y, testLen, 1), func(_ driver.MouseEvent) {
-				if r.OnOpenTestModal != nil {
-					r.OnOpenTestModal()
-				}
-			})
-		}
-
-		// Volume Controls [+/-]
-		gainText := Tf("[+/-] Vol: %.0f%%", audio.Gain*100)
-		gainX := testX + testLen + 2
-		gainLen := uint16(len([]rune(gainText)))
-		if gainX+gainLen <= ctrlInner.X+ctrlInner.Width {
-			buf.SetString(gainX, row2Y, gainText, cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg})
-			// "[+" raises, "/-]" lowers, clicking the value itself raises (as before).
-			increase := func(_ driver.MouseEvent) {
-				gain := audio.AdjustGain(0.1)
-				if gain > 3.0 {
-					audio.AdjustGain(-2.5) // loop back from 300% to 50%
-				}
-				r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.Gain*100))
-			}
-			decrease := func(_ driver.MouseEvent) {
-				r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.AdjustGain(-0.1)*100))
-			}
-			frame.RegisterClickHandler(cell.NewRect(gainX, row2Y, 2, 1), increase)
-			frame.RegisterClickHandler(cell.NewRect(gainX+2, row2Y, 3, 1), decrease)
-			frame.RegisterClickHandler(cell.NewRect(gainX+5, row2Y, gainLen-5, 1), increase)
-		}
-
-		// Copy Code [C]
-		copyText := T("[C] Copy")
-		copyX := gainX + gainLen + 2
-		copyLen := uint16(len([]rune(copyText)))
-		if copyX+copyLen <= ctrlInner.X+ctrlInner.Width {
-			buf.SetString(copyX, row2Y, copyText, cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg})
-			frame.RegisterClickHandler(cell.NewRect(copyX, row2Y, copyLen, 1), func(_ driver.MouseEvent) {
-				CopyToClipboard(node.RoomCode)
-				r.SetToast(fmt.Sprintf("Room Code Copied: %s", node.RoomCode))
-			})
-		}
-
-		// Leave Room [Esc]
-		leaveText := T("[Esc] Leave")
-		leaveLen := uint16(len([]rune(leaveText)))
-		leaveX := copyX + copyLen + 2
-		if ctrlInner.Width >= leaveX-ctrlInner.X+leaveLen {
-			if ctrlInner.X+ctrlInner.Width-leaveLen-1 > leaveX {
-				leaveX = ctrlInner.X + ctrlInner.Width - leaveLen - 1
-			}
-			buf.SetString(leaveX, row2Y, leaveText, cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-			frame.RegisterClickHandler(cell.NewRect(leaveX, row2Y, leaveLen, 1), func(_ driver.MouseEvent) {
-				if r.OnLeave != nil {
-					r.OnLeave()
-				}
-			})
-		}
-	}
+	drawFlow(frame, controlsArea(ctrlArea), items, fl, footerGap)
 
 	// 2. Chat & Room Logs Area
 	r.mu.Lock()
@@ -561,18 +296,207 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 		} else {
 			if r.UnreadChatCount > 0 {
 				unfocusedPrompt := Tf(" %d New Messages - [Enter] to Chat ", r.UnreadChatCount)
-				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
+				buf.SetString(logInner.X+1, inputY, clipToWidth(unfocusedPrompt, int(logInner.Width)-2), cell.Style{
 					Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
 					Bg:       theme.Warning,
 					Modifier: cell.ModifierBold,
 				})
 			} else {
 				unfocusedPrompt := T("[ Press Enter or / to Chat ]")
-				buf.SetString(logInner.X+1, inputY, unfocusedPrompt, cell.Style{
+				buf.SetString(logInner.X+1, inputY, clipToWidth(unfocusedPrompt, int(logInner.Width)-2), cell.Style{
 					Fg: theme.TextMuted,
 					Bg: theme.SurfaceBg,
 				})
 			}
 		}
 	}
+}
+
+// controlItems lists the room's control buttons in display order.
+func (r *RoomView) controlItems(node *p2p.P2PNode, audio *engine.AudioEngine) []flowItem {
+	theme := CurrentTheme()
+	black := cell.NewColorRGB(0x00, 0x00, 0x00)
+	filled := func(bg cell.Color) cell.Style {
+		return cell.Style{Fg: black, Bg: bg, Modifier: cell.ModifierBold}
+	}
+	plain := func(fg cell.Color) cell.Style {
+		return cell.Style{Fg: fg, Bg: theme.SurfaceBg}
+	}
+
+	mute := flowItem{label: T("[M] Mute Mic"), short: T("[M] Mute"), style: plain(theme.Success)}
+	if audio.Muted {
+		mute = flowItem{label: T("[M] Unmute Mic"), short: T("[M] Unmute"), style: filled(theme.Danger)}
+	}
+	mute.onClick = func(_ driver.MouseEvent) {
+		isMuted := audio.ToggleMute()
+		node.SendMuteState(isMuted)
+		if isMuted {
+			r.SetToast("Microphone Off (Muted)")
+		} else {
+			r.SetToast("Microphone On")
+		}
+	}
+
+	deafen := flowItem{label: T("[D] Deafen"), style: plain(theme.Secondary)}
+	if audio.Deafened {
+		deafen = flowItem{label: T("[D] Undeafen"), style: filled(theme.Warning)}
+	}
+	deafen.onClick = func(_ driver.MouseEvent) {
+		isDeaf := audio.ToggleDeafen()
+		node.SendDeafenState(isDeaf)
+		node.SendMuteState(audio.Muted)
+		if isDeaf {
+			r.SetToast("Audio Off (Deafened)")
+		} else {
+			r.SetToast("Audio On")
+		}
+	}
+
+	mode := flowItem{label: T("[P] Voice"), style: plain(theme.TextMuted)}
+	if audio.InputMode == engine.InputModePushToTalk {
+		mode = flowItem{label: T("[P] PTT"), style: filled(theme.Warning)}
+		if audio.IsTransmitting() {
+			mode.style = filled(theme.Success)
+		}
+	}
+	mode.onClick = func(_ driver.MouseEvent) {
+		if audio.CycleInputMode() == engine.InputModePushToTalk {
+			r.SetToast(fmt.Sprintf("Mode: Push-to-Talk (Hold %s to talk)", audio.GetPTTKeyName()))
+		} else {
+			r.SetToast("Mode: Voice Activity (Always on / VAD)")
+		}
+	}
+
+	noiseStr := tr(audio.SuppressionModeString())
+	noise := flowItem{
+		label: Tf("[N] Noise: %s", noiseStr),
+		style: plain(theme.TextMuted),
+		onClick: func(_ driver.MouseEvent) {
+			audio.CycleSuppressionMode()
+			r.SetToast(fmt.Sprintf("Noise Filter: %s", audio.SuppressionModeString()))
+		},
+	}
+	if audio.SuppressionMode > 0 {
+		noise.style = cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+	}
+
+	share := flowItem{label: T("[V] Share Screen"), short: T("[V] Share"), style: plain(theme.Secondary)}
+	if node.IsSharingScreen {
+		share = flowItem{label: T("[V] Stop Sharing"), short: T("[V] Stop"), style: filled(theme.Danger)}
+	}
+	share.onClick = func(_ driver.MouseEvent) {
+		if node.IsSharingScreen {
+			_ = node.StopScreenShare()
+			r.SetToast("Screen share stopped")
+		} else if r.OnOpenScreenShareModal != nil {
+			r.OnOpenScreenShareModal()
+		} else {
+			go func() {
+				err := node.StartScreenShare("", 50100)
+				if err != nil {
+					r.SetToast(fmt.Sprintf("Error: %v", err))
+				} else {
+					localFPS := node.ActiveScreenShareFPS
+					if localFPS <= 0 {
+						localFPS = 60
+					}
+					r.SetToast(fmt.Sprintf("Screen share started (%d FPS)", localFPS))
+				}
+			}()
+		}
+	}
+
+	var streamingPeer *p2p.PeerInfo
+	for _, p := range node.GetPeersList() {
+		if p.IsSharingScreen {
+			streamingPeer = p
+			break
+		}
+	}
+	watch := flowItem{label: T("[W] Watch Screen"), short: T("[W] Watch"), style: plain(theme.TextMuted)}
+	if node.IsWatchingScreen {
+		watch = flowItem{label: T("[W] Stop Watching"), short: T("[W] Stop"), style: filled(theme.Warning)}
+	} else if streamingPeer != nil {
+		watch = flowItem{label: Tf("[W] Watch %s", streamingPeer.Nickname), short: T("[W] Watch"), style: filled(theme.Success)}
+	}
+	watch.onClick = func(_ driver.MouseEvent) {
+		if node.IsWatchingScreen {
+			go func() {
+				_ = node.StopWatchingScreen()
+				r.SetToast("Screen viewer closed")
+			}()
+		} else if streamingPeer != nil {
+			port := streamingPeer.VideoPort
+			if port <= 0 {
+				port = 50100
+			}
+			fps := streamingPeer.VideoFPS
+			if fps <= 0 {
+				fps = 60
+			}
+			opts := screenshare.DefaultReceiverOptions(fps)
+			opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", streamingPeer.Nickname, fps)
+			r.SetToast("Starting stream viewer...")
+			go func() {
+				err := node.StartWatchingScreen(streamingPeer.ID, port, opts)
+				if err != nil {
+					r.SetToast(fmt.Sprintf("Error: %v", err))
+				} else {
+					r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", streamingPeer.Nickname, fps))
+				}
+			}()
+		} else {
+			r.SetToast("No one is sharing screen in this room")
+		}
+	}
+
+	test := flowItem{
+		label: T("[T] Test"),
+		style: cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold},
+		onClick: func(_ driver.MouseEvent) {
+			if r.OnOpenTestModal != nil {
+				r.OnOpenTestModal()
+			}
+		},
+	}
+
+	// "[+" raises, "/-]" lowers, clicking the value itself raises.
+	increase := func(_ driver.MouseEvent) {
+		gain := audio.AdjustGain(0.1)
+		if gain > 3.0 {
+			audio.AdjustGain(-2.5) // loop back from 300% to 50%
+		}
+		r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.Gain*100))
+	}
+	decrease := func(_ driver.MouseEvent) {
+		r.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.AdjustGain(-0.1)*100))
+	}
+	volume := flowItem{
+		label: Tf("[+/-] Vol: %.0f%%", audio.Gain*100),
+		short: Tf("[+/-] %.0f%%", audio.Gain*100),
+		style: plain(theme.Warning),
+		zones: []flowZone{{0, 2, increase}, {2, 3, decrease}, {5, 64, increase}},
+	}
+
+	copyCode := flowItem{
+		label: T("[C] Copy"),
+		style: plain(theme.Accent),
+		onClick: func(_ driver.MouseEvent) {
+			CopyToClipboard(node.RoomCode)
+			r.SetToast(fmt.Sprintf("Room Code Copied: %s", node.RoomCode))
+		},
+	}
+
+	leave := flowItem{
+		label:    T("[Esc] Leave"),
+		style:    cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold},
+		pinRight: true,
+		onClick: func(_ driver.MouseEvent) {
+			if r.OnLeave != nil {
+				r.OnLeave()
+			}
+		},
+	}
+
+	return []flowItem{mute, deafen, mode, noise, share, watch, test, volume, copyCode, leave}
 }

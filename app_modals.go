@@ -16,6 +16,7 @@ import (
 
 func (a *App) openTestModal() {
 	a.audio.EnterTestMode()
+	testModalScroll = 0
 	a.showTestModal = true
 }
 

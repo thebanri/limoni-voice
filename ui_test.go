@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/i18n"
 	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/buffer"
@@ -469,12 +470,12 @@ func TestRedesignedMiniHUDHeightsAndWidths(t *testing.T) {
 		w, h     uint16
 		expected []string
 	}{
-		{w: 80, h: 1, expected: []string{"123456", "MIC [M]", "FULL UI [H]"}},
-		{w: 80, h: 2, expected: []string{"LIMONI", "123456", "MIC", "FULL UI [H]"}},
+		{w: 80, h: 1, expected: []string{"123456", "MIC ON [M]", "SHARE [V]", "FULL UI [H]"}},
+		{w: 80, h: 2, expected: []string{"123456", "MIC [M]", "LEAVE [Esc]", "FULL UI [H]"}},
 		{w: 100, h: 4, expected: []string{"MINI HUD", "123456", "MIC ON [M]", "FULL UI [H]"}},
-		{w: 100, h: 5, expected: []string{"MINI HUD", "123456", "VU:", "You"}},
-		{w: 120, h: 8, expected: []string{"MINI HUD", "ROOM #123456", "VU:", "You"}},
-		{w: 40, h: 2, expected: []string{"123456"}},
+		{w: 100, h: 5, expected: []string{"MINI HUD", "123456", "LEAVE [Esc]", "You", "mic on"}},
+		{w: 120, h: 8, expected: []string{"MINI HUD", "ROOM #123456", "You", "▱▱▱▱"}},
+		{w: 40, h: 2, expected: []string{"123456", "[H]"}},
 	}
 
 	for _, tc := range testSizes {
@@ -1237,6 +1238,124 @@ func TestPeerCardPillsNeverCoverTheStatus(t *testing.T) {
 		}
 		if !strings.Contains(row.String(), "[SPEAKING...]") {
 			t.Errorf("width %d: status covered: %q", width, row.String())
+		}
+	}
+}
+
+// screenText returns row y of buf as a string.
+func screenText(buf *buffer.Buffer, y uint16) string {
+	var sb strings.Builder
+	for x := uint16(0); x < buf.Area.Width; x++ {
+		if c := buf.CellAt(x, y); c.Content != 0 && c.Content != cell.RuneContinuation {
+			sb.WriteRune(c.Content)
+		}
+	}
+	return sb.String()
+}
+
+// Clicking the chat panel opens the chat input.
+func TestClickingChatPanelOpensInput(t *testing.T) {
+	term, err := terminal.New(driver.NewPortableBackend(driver.NewMemoryTerminalIO(nil, 120, 30)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("chat_click", "Alice", audio)
+	defer node.Close()
+	node.HostRoom("112233")
+	a := &App{term: term, room: NewRoomView(), node: node, audio: audio, currentScreen: ScreenRoom}
+	_ = term.Draw(func(f *terminal.Frame) { a.room.Render(f, f.Area(), node, audio) })
+
+	log := a.room.LastLogArea
+	if log.Width == 0 {
+		t.Fatal("chat panel was not drawn")
+	}
+	a.handleMouse(driver.MouseEvent{X: log.X + log.Width/2, Y: log.Y + log.Height - 2, Button: driver.MouseLeft})
+	if !a.room.IsChatFocused {
+		t.Fatal("clicking the chat panel did not open the chat input")
+	}
+	a.handleMouse(driver.MouseEvent{X: 1, Y: 1, Button: driver.MouseLeft})
+	if a.room.IsChatFocused {
+		t.Fatal("clicking outside the chat panel did not close the chat input")
+	}
+}
+
+// Every room control stays on screen however narrow or short the terminal, in both languages.
+func TestRoomControlsWrapInsteadOfDisappearing(t *testing.T) {
+	t.Cleanup(func() { i18n.Set(i18n.English) })
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("controls_wrap", "Alice", audio)
+	defer node.Close()
+	node.HostRoom("445566")
+	keys := []string{"[M]", "[D]", "[P]", "[N]", "[V]", "[W]", "[T]", "[+/-]", "[C]", "[Esc]"}
+
+	for _, lang := range []i18n.Lang{i18n.English, i18n.Turkish} {
+		i18n.Set(lang)
+		for _, sz := range [][2]uint16{{160, 40}, {120, 30}, {100, 24}, {80, 24}, {64, 20}, {80, 14}, {120, 12}} {
+			buf := buffer.NewBuffer(cell.NewRect(0, 0, sz[0], sz[1]))
+			frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+			NewRoomView().Render(frame, buf.Area, node, audio)
+			var all strings.Builder
+			for y := uint16(0); y < sz[1]; y++ {
+				all.WriteString(screenText(buf, y))
+			}
+			if strings.Contains(all.String(), "MINI HUD") || strings.Contains(all.String(), "MİNİ HUD") {
+				continue // too short for the full layout: the mini HUD has its own test
+			}
+			for _, k := range keys {
+				if !strings.Contains(all.String(), k) {
+					t.Errorf("%s %dx%d: control %s is missing:\n%s", lang.Name(), sz[0], sz[1], k, all.String())
+				}
+			}
+		}
+	}
+}
+
+// The settings dialog keeps its buttons on screen, and working, however short the window.
+func TestSettingsDialogFitsShortWindows(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	for h := uint16(8); h <= 40; h++ {
+		term, err := terminal.New(driver.NewPortableBackend(driver.NewMemoryTerminalIO(nil, 90, h)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := 0
+		closeX, closeY := -1, -1
+		_ = term.Draw(func(f *terminal.Frame) {
+			DrawTestModal(f, f.Area(), audio, nil, nil, true, nil, nil, func() { closed++ })
+			for y := uint16(0); y < h; y++ {
+				if x := strings.Index(screenText(f.Buffer, y), "Close (Esc)"); x >= 0 {
+					closeX, closeY = len([]rune(screenText(f.Buffer, y)[:x])), int(y)
+				}
+			}
+		})
+		if closeY < 0 {
+			t.Fatalf("height %d: the Close button is not on screen", h)
+		}
+		term.RouteMouseEvent(driver.MouseEvent{X: uint16(closeX + 2), Y: uint16(closeY), Button: driver.MouseLeft})
+		if closed != 1 {
+			t.Fatalf("height %d: clicking Close fired %d times, want 1", h, closed)
+		}
+	}
+}
+
+// When the settings dialog has to scroll, every setting can be reached.
+func TestSettingsDialogScrollsToEveryRow(t *testing.T) {
+	for h := 3; h < testModalRows; h++ { // at full height the backend line comes last
+		seen := map[int]bool{}
+		for scroll := 0; scroll < 20; scroll++ {
+			rows, _, _, _ := testModalRowMap(h, scroll)
+			if len(rows) != h || rows[h-1] != testRowButtons {
+				t.Fatalf("height %d: rows %v, want %d with the buttons last", h, rows, h)
+			}
+			for _, v := range rows {
+				seen[v] = true
+			}
+		}
+		for v := testRowFirst; v <= testRowLast; v += 2 {
+			if !seen[v] {
+				t.Errorf("height %d: setting row %d can never be shown", h, v)
+			}
 		}
 	}
 }
