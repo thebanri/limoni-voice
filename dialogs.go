@@ -1295,6 +1295,7 @@ func DrawRelayModal(
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
+		Focused:          activeField == 0,
 	}
 	if activeField == 0 {
 		urlInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}
@@ -1365,6 +1366,7 @@ func DrawRelayModal(
 		PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
 		Style:            cell.Style{Fg: theme.Text, Bg: theme.InputBg},
 		FocusedStyle:     cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold},
+		Focused:          activeField == 1,
 	}
 	if activeField == 1 {
 		tokenInput.Style = cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold}

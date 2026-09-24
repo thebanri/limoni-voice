@@ -432,6 +432,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		ID:          "nickname_input",
 		State:       l.NickState,
 		Placeholder: T("Enter your nickname..."),
+		Focused:     isNickFocused,
 	}
 	renderTextInput(frame, nickInput, nickInner)
 
@@ -544,6 +545,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			ID:          "host_pin_input",
 			State:       l.PinState,
 			Placeholder: "1234",
+			Focused:     l.ActiveInput == 3,
 		}
 		renderTextInput(frame, pinInput, pinInputRect)
 		clickable(frame, pinInputRect, func(_ driver.MouseEvent) {
@@ -663,6 +665,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		ID:          "roomcode_input",
 		State:       l.CodeState,
 		Placeholder: T("e.g. 7492-neon-falcon (or 7492-neon-falcon:1234)"),
+		Focused:     isJoinFocused,
 	}
 	renderTextInput(frame, codeInput, joinInputRect)
 
