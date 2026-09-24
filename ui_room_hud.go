@@ -405,7 +405,7 @@ func (r *RoomView) drawHUDMembers(frame *terminal.Frame, inner cell.Rect, y uint
 		}
 		buf.SetString(x, y, label, style)
 		if onClick != nil {
-			frame.RegisterClickHandler(cell.NewRect(x, y, w, 1), func(_ driver.MouseEvent) { onClick() })
+			clickable(frame, cell.NewRect(x, y, w, 1), func(_ driver.MouseEvent) { onClick() })
 		}
 		return x + w + hudGap
 	}

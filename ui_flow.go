@@ -107,11 +107,11 @@ func drawFlow(frame *terminal.Frame, area cell.Rect, items []flowItem, fl flowLa
 			if len(it.zones) > 0 {
 				for _, z := range it.zones {
 					if zw := min(int(z.width), w-int(z.off)); zw > 0 {
-						frame.RegisterClickHandler(cell.NewRect(uint16(x)+z.off, uint16(y), uint16(zw), 1), z.onClick)
+						clickable(frame, cell.NewRect(uint16(x)+z.off, uint16(y), uint16(zw), 1), z.onClick)
 					}
 				}
 			} else if it.onClick != nil {
-				frame.RegisterClickHandler(cell.NewRect(uint16(x), uint16(y), uint16(w), 1), it.onClick)
+				clickable(frame, cell.NewRect(uint16(x), uint16(y), uint16(w), 1), it.onClick)
 			}
 			x += w + gap
 		}

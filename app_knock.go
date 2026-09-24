@@ -191,6 +191,6 @@ func DrawKnockModal(frame *terminal.Frame, screenArea cell.Rect, r *knockRequest
 	denyX := allowX + uint16(len([]rune(allow))) + 2
 	buf.SetString(allowX, inner.Y+4, allow, cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: theme.Success, Modifier: cell.ModifierBold})
 	buf.SetString(denyX, inner.Y+4, deny, cell.Style{Fg: cell.NewColorRGB(0xFF, 0xFF, 0xFF), Bg: theme.Danger, Modifier: cell.ModifierBold})
-	frame.RegisterClickHandler(cell.NewRect(allowX, inner.Y+4, uint16(len([]rune(allow))), 1), func(_ driver.MouseEvent) { onAllow() })
-	frame.RegisterClickHandler(cell.NewRect(denyX, inner.Y+4, uint16(len([]rune(deny))), 1), func(_ driver.MouseEvent) { onDeny() })
+	clickable(frame, cell.NewRect(allowX, inner.Y+4, uint16(len([]rune(allow))), 1), func(_ driver.MouseEvent) { onAllow() })
+	clickable(frame, cell.NewRect(denyX, inner.Y+4, uint16(len([]rune(deny))), 1), func(_ driver.MouseEvent) { onDeny() })
 }

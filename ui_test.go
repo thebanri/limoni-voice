@@ -1380,3 +1380,56 @@ func TestWideNicknameSurvivesClippedCards(t *testing.T) {
 		}
 	}
 }
+
+// The mouse pointer turns into a hand over a room control, and the control still clicks.
+func TestHandPointerOverControls(t *testing.T) {
+	mem := driver.NewMemoryTerminalIO(nil, 120, 30)
+	term, err := terminal.New(driver.NewPortableBackend(mem))
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps := term.Capabilities()
+	caps.PointerShape = true
+	term.SetCapabilities(caps)
+
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("hand_pointer", "Alice", audio)
+	defer node.Close()
+	node.HostRoom("123456")
+	room := NewRoomView()
+	testOpened := 0
+	room.OnOpenTestModal = func() { testOpened++ }
+
+	var tx, ty uint16
+	_ = term.Draw(func(f *terminal.Frame) {
+		room.Render(f, f.Area(), node, audio)
+		for y := uint16(0); y < 30; y++ {
+			if i := strings.Index(screenText(f.Buffer, y), "[T] Test"); i >= 0 {
+				tx, ty = uint16(len([]rune(screenText(f.Buffer, y)[:i]))), y
+			}
+		}
+	})
+	if ty == 0 {
+		t.Fatal("the Test button was not drawn")
+	}
+
+	shapes := func(out []byte) []string {
+		var got []string
+		for _, part := range strings.Split(string(out), "\x1b]22;")[1:] {
+			shape, _, _ := strings.Cut(part, "\x1b\\")
+			got = append(got, shape)
+		}
+		return got
+	}
+	before := len(mem.Output())
+	term.RouteMouseEvent(driver.MouseEvent{X: 0, Y: ty, Button: driver.MouseNone})
+	term.RouteMouseEvent(driver.MouseEvent{X: tx + 1, Y: ty, Button: driver.MouseNone})
+	term.RouteMouseEvent(driver.MouseEvent{X: 0, Y: ty, Button: driver.MouseNone})
+	if got := strings.Join(shapes(mem.Output()[before:]), ","); got != "pointer," {
+		t.Errorf("OSC 22 writes %q, want the hand over the button and the default off it", got)
+	}
+	term.RouteMouseEvent(driver.MouseEvent{X: tx + 1, Y: ty, Button: driver.MouseLeft})
+	if testOpened != 1 {
+		t.Errorf("clicking the Test button under the hand pointer opened the dialog %d times, want 1", testOpened)
+	}
+}
