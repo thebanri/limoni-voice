@@ -155,6 +155,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	t.SaveTitle() // put back on exit by cleanExit
+
 	b.StartEventLoop()
 
 	randNum, _ := rand.Int(rand.Reader, big.NewInt(100000))

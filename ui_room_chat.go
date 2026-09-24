@@ -534,7 +534,9 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 		if span.IsCopy {
 			buf.SetString(curX, rowY, string(sRunes), copyStyle)
 		} else if span.IsLink {
-			buf.SetString(curX, rowY, string(sRunes), linkStyle)
+			// Also an OSC 8 hyperlink where the terminal supports them: it opens the
+			// address on the user's own machine, even through SSH.
+			buf.SetString(curX, rowY, string(sRunes), linkStyle.WithLink(span.ClickURL))
 		} else {
 			buf.SetString(curX, rowY, string(sRunes), plainStyle)
 		}

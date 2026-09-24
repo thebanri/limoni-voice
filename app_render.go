@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/thebanri/limoni-voice/internal/p2p"
@@ -9,7 +10,30 @@ import (
 	"github.com/thebanri/limoni/core/terminal"
 )
 
+// updateWindowTitle names the terminal window after what is going on: the member count in
+// a room, with unread chat messages in front so a window in the background shows them.
+// The room code stays out: it carries the room's secret words, and titles are shown in
+// task bars, window lists and screen shares.
+func (a *App) updateWindowTitle() {
+	title := "Limoni Voice"
+	if a.currentScreen == ScreenRoom {
+		title = fmt.Sprintf("Limoni Voice · %d/4", len(a.node.GetPeersList())+1)
+		a.room.mu.Lock()
+		unread := a.room.UnreadChatCount
+		a.room.mu.Unlock()
+		if unread > 0 {
+			title = fmt.Sprintf("(%d) %s", unread, title)
+		}
+	}
+	if title != a.windowTitle {
+		a.windowTitle = title
+		a.term.SetTitle(title)
+	}
+}
+
 func (a *App) render(now time.Time) {
+	a.updateWindowTitle()
+	a.notifier.flushToTerminal(a.term.Notify)
 	dt := float64(now.Sub(a.lastTime).Milliseconds())
 	a.lastTime = now
 

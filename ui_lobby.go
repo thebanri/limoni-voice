@@ -408,7 +408,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		nickBgStyle = cell.Style{Bg: theme.InputBg}
 	}
 
-	frame.RegisterClickHandler(nickArea, func(_ driver.MouseEvent) {
+	clickable(frame, nickArea, func(_ driver.MouseEvent) {
 		l.ActiveInput = 0
 	})
 
@@ -469,7 +469,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	// Register card container click handler FIRST so child widgets take priority
-	frame.RegisterClickHandler(hostArea, func(_ driver.MouseEvent) {
+	clickable(frame, hostArea, func(_ driver.MouseEvent) {
 		if l.ActiveInput != 3 {
 			l.ActiveInput = 2
 		}
@@ -501,7 +501,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	keyBoxStr := fmt.Sprintf("  [ %s ]  ", l.CurrentCode)
 	buf.SetString(hostInner.X+2, hostInner.Y+1, keyBoxStr, keyStyle)
 
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(len([]rune(keyBoxStr))), 1), func(_ driver.MouseEvent) {
+	clickable(frame, cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(len([]rune(keyBoxStr))), 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
 			l.OnCopyCode(l.CurrentCode)
@@ -520,7 +520,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	}
 	buf.SetString(hostInner.X, hostInner.Y+3, pinCheckStr, pinCheckStyle)
-	frame.RegisterClickHandler(cell.NewRect(hostInner.X, hostInner.Y+3, uint16(len([]rune(pinCheckStr))), 1), func(_ driver.MouseEvent) {
+	clickable(frame, cell.NewRect(hostInner.X, hostInner.Y+3, uint16(len([]rune(pinCheckStr))), 1), func(_ driver.MouseEvent) {
 		l.IsPinProtected = !l.IsPinProtected
 		if l.IsPinProtected {
 			if l.PinState.Value() == "" {
@@ -546,7 +546,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Placeholder: "1234",
 		}
 		renderTextInput(frame, pinInput, pinInputRect)
-		frame.RegisterClickHandler(pinInputRect, func(_ driver.MouseEvent) {
+		clickable(frame, pinInputRect, func(_ driver.MouseEvent) {
 			l.ActiveInput = 3
 		})
 	}
@@ -560,7 +560,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	openX := hostInner.X
 	openW := uint16(len([]rune(openLabel)))
-	frame.RegisterClickHandler(cell.NewRect(openX, hostInner.Y+4, openW, 1), func(_ driver.MouseEvent) {
+	clickable(frame, cell.NewRect(openX, hostInner.Y+4, openW, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnStartHost != nil {
 			l.OnStartHost()
@@ -569,7 +569,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	copyX := openX + openW + uint16(len([]rune(sep)))
 	copyW := uint16(len([]rune(copyLabel)))
-	frame.RegisterClickHandler(cell.NewRect(copyX, hostInner.Y+4, copyW, 1), func(_ driver.MouseEvent) {
+	clickable(frame, cell.NewRect(copyX, hostInner.Y+4, copyW, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
 			l.OnCopyCode(l.CurrentCode)
@@ -578,7 +578,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	newX := copyX + copyW + uint16(len([]rune(sep)))
 	newW := uint16(len([]rune(newLabel)))
-	frame.RegisterClickHandler(cell.NewRect(newX, hostInner.Y+4, newW, 1), func(_ driver.MouseEvent) {
+	clickable(frame, cell.NewRect(newX, hostInner.Y+4, newW, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnNewCode != nil {
 			l.OnNewCode()
@@ -622,7 +622,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 
 	// Register card container click handler FIRST so input and buttons take priority
-	frame.RegisterClickHandler(joinArea, func(_ driver.MouseEvent) {
+	clickable(frame, joinArea, func(_ driver.MouseEvent) {
 		l.ActiveInput = 1
 	})
 
@@ -672,7 +672,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	}
 	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
 
-	frame.RegisterClickHandler(cell.NewRect(joinInner.X, joinInner.Y+3, joinInner.Width, 1), func(_ driver.MouseEvent) {
+	clickable(frame, cell.NewRect(joinInner.X, joinInner.Y+3, joinInner.Width, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 1
 		if l.IsConnecting {
 			if l.OnCancelJoin != nil {
@@ -690,7 +690,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	})
 
-	frame.RegisterClickHandler(joinInputRect, func(_ driver.MouseEvent) {
+	clickable(frame, joinInputRect, func(_ driver.MouseEvent) {
 		l.ActiveInput = 1
 	})
 
@@ -737,7 +737,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 
 		buf.SetString(botInner.X+1, botInner.Y, relayBtn, relayBtnStyle)
-		frame.RegisterClickHandler(cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ driver.MouseEvent) {
+		clickable(frame, cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ driver.MouseEvent) {
 			if l.OnOpenRelayModal != nil {
 				l.OnOpenRelayModal()
 			}
@@ -752,7 +752,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		testBtnX := botInner.X + 1 + uint16(len([]rune(relayBtn))) + 2
 		if testBtnX+uint16(len([]rune(testBtn))) <= botInner.X+botInner.Width {
 			buf.SetString(testBtnX, botInner.Y, testBtn, testBtnStyle)
-			frame.RegisterClickHandler(cell.NewRect(testBtnX, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ driver.MouseEvent) {
+			clickable(frame, cell.NewRect(testBtnX, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ driver.MouseEvent) {
 				if l.OnOpenTestModal != nil {
 					l.OnOpenTestModal()
 				}
@@ -762,7 +762,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			langBtnX := testBtnX + uint16(len([]rune(testBtn))) + 2
 			if langBtnX+uint16(len([]rune(langBtn))) <= botInner.X+botInner.Width {
 				buf.SetString(langBtnX, botInner.Y, langBtn, testBtnStyle)
-				frame.RegisterClickHandler(cell.NewRect(langBtnX, botInner.Y, uint16(len([]rune(langBtn))), 1), func(_ driver.MouseEvent) {
+				clickable(frame, cell.NewRect(langBtnX, botInner.Y, uint16(len([]rune(langBtn))), 1), func(_ driver.MouseEvent) {
 					if l.OnCycleLanguage != nil {
 						l.OnCycleLanguage()
 					}

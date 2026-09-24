@@ -654,7 +654,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *p2p
 			Modifier: cell.ModifierBold,
 		})
 		badgeRect := cell.NewRect(curX, inner.Y, codeLen, 1)
-		frame.RegisterClickHandler(badgeRect, func(_ driver.MouseEvent) {
+		clickable(frame, badgeRect, func(_ driver.MouseEvent) {
 			CopyToClipboard(node.RoomCode)
 			r.SetToast(fmt.Sprintf("Room code copied: %s", node.RoomCode))
 		})
@@ -716,7 +716,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *p2p
 			Modifier: cell.ModifierBold,
 		})
 		pRect := cell.NewRect(curX, inner.Y, portLen, 1)
-		frame.RegisterClickHandler(pRect, func(_ driver.MouseEvent) {
+		clickable(frame, pRect, func(_ driver.MouseEvent) {
 			r.SetToast(fmt.Sprintf("Port Hopping Active: Port :%d (Next in %dm, Epoch %d)", node.Port, hopMin, node.HopEpoch()))
 		})
 		curX += portLen + 2
@@ -738,7 +738,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *p2p
 				Modifier: cell.ModifierBold,
 			})
 			lRect := cell.NewRect(curX, inner.Y, lockLen, 1)
-			frame.RegisterClickHandler(lRect, func(_ driver.MouseEvent) {
+			clickable(frame, lRect, func(_ driver.MouseEvent) {
 				if node.IsHost {
 					node.UnlockRoom()
 					r.SetToast("Room unlocked")
