@@ -290,6 +290,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 						Modifier: cell.ModifierBold,
 					},
 					PlaceholderStyle: cell.Style{Fg: theme.TextMuted, Bg: theme.InputBg},
+					Focused:          true,
 				}
 				renderTextInput(frame, chatInput, inputArea)
 			}
