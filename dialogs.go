@@ -320,7 +320,9 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *engine.Au
 		y := inner.Y + uint16(i)
 		shownAt[uint16(v)] = y
 		for x := inner.X; x < inner.X+inner.Width; x++ {
-			buf.SetCellDirect(x, y, scratch.CellAt(x, inner.Y+uint16(v)))
+			if c := scratch.CellAt(x, inner.Y+uint16(v)); c.Content != cell.RuneContinuation {
+				buf.SetCellDirect(x, y, c) // a wide character writes its own right half
+			}
 		}
 	}
 	kept := frame.ClickRegions[:firstRegion]

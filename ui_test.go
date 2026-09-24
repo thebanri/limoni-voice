@@ -1359,3 +1359,24 @@ func TestSettingsDialogScrollsToEveryRow(t *testing.T) {
 		}
 	}
 }
+
+// Emoji and CJK in a nickname survive the clipping the member cards are drawn through.
+func TestWideNicknameSurvivesClippedCards(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("wide_nick", "Alice", audio)
+	defer node.Close()
+	node.HostRoom("123456")
+	node.Peers["p1"] = &p2p.PeerInfo{ID: "p1", Nickname: "🍋Bob李", PingMs: 25}
+	for _, sharing := range []bool{false, true} {
+		node.Peers["p1"].IsSharingScreen = sharing
+		buf := buffer.NewBuffer(cell.NewRect(0, 0, 100, 30))
+		NewRoomView().Render(terminal.NewFrame(buf, terminal.NewFocusManager()), buf.Area, node, audio)
+		var all strings.Builder
+		for y := uint16(0); y < 30; y++ {
+			all.WriteString(screenText(buf, y) + "\n")
+		}
+		if !strings.Contains(all.String(), "🍋Bob李") {
+			t.Fatalf("sharing=%v: the wide characters of the nickname were blanked:\n%s", sharing, all.String())
+		}
+	}
+}
