@@ -132,7 +132,9 @@ func (a *App) handleRoomMouse(m driver.MouseEvent) {
 				room.HandleMouseDrag(m.X, m.Y)
 			}
 		} else if inChatLog {
-			// Immediate one-click copy on message / copy elements
+			// Clicking anywhere in the chat panel opens the input; a click on a
+			// message still copies it, anything else may start a selection.
+			room.SetChatFocused(true)
 			if !room.HandleChatClick(m.X, m.Y) {
 				room.HandleMousePress(m.X, m.Y)
 			}

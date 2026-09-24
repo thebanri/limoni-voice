@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -174,6 +175,83 @@ func DrawVerticalLevelMeter(buf *buffer.Buffer, area cell.Rect, rms float64, isS
 }
 
 // DrawTestModal renders the interactive Microphone & Audio Device Settings panel without any icons or emojis.
+// testModalRows is the height the settings dialog's content is laid out for; a shorter
+// dialog shows a selection of these rows (see testModalRowMap).
+const testModalRows = 28
+
+// Content rows of the settings dialog.
+const (
+	testRowMeterBars = 2  // the level meter's bars take rows 2 and 3, under its label on 1
+	testRowFirst     = 4  // microphone device, the first of the settings, one every other row
+	testRowLast      = 24 // interface language, the last setting
+	testRowButtons   = 26 // mute, deafen and close
+)
+
+// testModalScroll is how far the settings are scrolled when the dialog is too short to show
+// them all. The mouse wheel and the arrow keys move it.
+var testModalScroll int
+
+// testModalRowMap picks the content rows a settings dialog height rows tall shows, top to
+// bottom; -1 is a blank line. As the height shrinks it drops the backend line, the blank
+// lines between settings and the level meter's bars, then scrolls the settings. The
+// buttons always stay on the last line. It returns the scroll offset clamped to the range.
+func testModalRowMap(height, scroll int) (rows []int, scrolled int, moreAbove, moreBelow bool) {
+	if height >= testModalRows {
+		for v := 0; v < testModalRows; v++ {
+			rows = append(rows, v)
+		}
+		return rows, 0, false, false
+	}
+	if height <= 0 {
+		return nil, 0, false, false
+	}
+	if height >= testRowLast+2 {
+		for v := 0; v <= testRowLast; v++ {
+			rows = append(rows, v)
+		}
+		for len(rows) < height-1 {
+			rows = append(rows, -1)
+		}
+		return append(rows, testRowButtons), 0, false, false
+	}
+
+	var settings []int
+	for v := testRowFirst; v <= testRowLast; v += 2 {
+		settings = append(settings, v)
+	}
+	top := []int{0, 1, testRowMeterBars, testRowMeterBars + 1}
+	if height < len(top)+len(settings)+1 {
+		top = top[:2] // the meter keeps its label line with the level and gate state
+	}
+	if height < len(top)+3+1 {
+		top = top[:max(0, min(len(top), height-2))]
+	}
+	window := max(0, height-len(top)-1)
+	if window >= len(settings) {
+		// Spare lines go between settings, spread evenly, keeping one above the buttons.
+		gaps := make([]bool, len(settings)-1)
+		if g := min(height-2-len(top)-len(settings), len(gaps)); g > 0 {
+			for j := 0; j < g; j++ {
+				gaps[(2*j+1)*len(gaps)/(2*g)] = true
+			}
+		}
+		rows = append(rows, top...)
+		for i, v := range settings {
+			rows = append(rows, v)
+			if i < len(gaps) && gaps[i] {
+				rows = append(rows, -1)
+			}
+		}
+		for len(rows) < height-1 {
+			rows = append(rows, -1)
+		}
+		return append(rows, testRowButtons), 0, false, false
+	}
+	scroll = max(0, min(scroll, len(settings)-window))
+	rows = append(append(rows, top...), settings[scroll:scroll+window]...)
+	return append(rows, testRowButtons), scroll, scroll > 0, scroll+window < len(settings)
+}
+
 func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *engine.AudioEngine, node *p2p.P2PNode, onToggleGlobalPTT func(), notificationsOn bool, onToggleNotifications func(), onCycleLanguage func(), onClose func()) {
 	modalW, modalH := uint16(68), uint16(30)
 	if screenArea.Width < modalW+2 {
@@ -201,6 +279,74 @@ func DrawTestModal(frame *terminal.Frame, screenArea cell.Rect, audio *engine.Au
 	frame.RenderWidget(mainBlock, modalArea)
 
 	inner := mainBlock.Inner(modalArea)
+	buf := frame.Buffer
+	for y := inner.Y; y < inner.Y+inner.Height; y++ {
+		for x := inner.X; x < inner.X+inner.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
+		}
+	}
+
+	// The mouse wheel scrolls the settings. Registered before the content so the sliders'
+	// own regions take precedence.
+	frame.ClickRegions = append(frame.ClickRegions, terminal.ClickRegion{
+		Area:      modalArea,
+		LayerID:   "sound_test_modal",
+		MouseOnly: true,
+		Handler: func(ev driver.MouseEvent) {
+			switch ev.Button {
+			case driver.MouseScrollUp:
+				testModalScroll--
+			case driver.MouseScrollDown:
+				testModalScroll++
+			}
+		},
+	})
+
+	// Draw the content at full height into a scratch buffer, then copy the rows that fit
+	// and move their click regions along with them.
+	rows, scroll, moreAbove, moreBelow := testModalRowMap(int(inner.Height), testModalScroll)
+	testModalScroll = scroll
+	scratch := buffer.NewBuffer(cell.NewRect(0, 0, buf.Area.Width, inner.Y+testModalRows))
+	firstRegion := len(frame.ClickRegions)
+	frame.Buffer = scratch
+	drawTestModalContent(frame, cell.NewRect(inner.X, inner.Y, inner.Width, testModalRows), audio, node, onToggleGlobalPTT, notificationsOn, onToggleNotifications, onCycleLanguage, onClose)
+	frame.Buffer = buf
+
+	shownAt := make(map[uint16]uint16, len(rows)) // content row -> screen row
+	for i, v := range rows {
+		if v < 0 {
+			continue
+		}
+		y := inner.Y + uint16(i)
+		shownAt[uint16(v)] = y
+		for x := inner.X; x < inner.X+inner.Width; x++ {
+			buf.SetCellDirect(x, y, scratch.CellAt(x, inner.Y+uint16(v)))
+		}
+	}
+	kept := frame.ClickRegions[:firstRegion]
+	for _, reg := range frame.ClickRegions[firstRegion:] {
+		if y, ok := shownAt[reg.Area.Y-inner.Y]; ok && reg.Area.Y >= inner.Y && reg.Area.Height == 1 {
+			reg.Area.Y = y
+			kept = append(kept, reg)
+		}
+	}
+	frame.ClickRegions = kept
+
+	// Arrows on the border where settings are scrolled out of view.
+	edgeX := modalArea.X + modalArea.Width - 1
+	arrow := cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+	if moreAbove {
+		buf.SetCell(edgeX, inner.Y+uint16(slices.Index(rows, testRowFirst+2*scroll)), cell.Cell{Content: '▲', Style: arrow})
+	}
+	if moreBelow && len(rows) >= 2 {
+		buf.SetCell(edgeX, inner.Y+uint16(len(rows)-2), cell.Cell{Content: '▼', Style: arrow})
+	}
+}
+
+// drawTestModalContent draws the settings dialog's rows into inner, which is testModalRows
+// tall.
+func drawTestModalContent(frame *terminal.Frame, inner cell.Rect, audio *engine.AudioEngine, node *p2p.P2PNode, onToggleGlobalPTT func(), notificationsOn bool, onToggleNotifications func(), onCycleLanguage func(), onClose func()) {
+	theme := CurrentTheme()
 	buf := frame.Buffer
 
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {

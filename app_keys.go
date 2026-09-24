@@ -435,6 +435,10 @@ func (a *App) handleTestModalKey(e driver.KeyEvent) {
 		audio.CycleInputDevice(-1)
 	case driver.KeyArrowRight:
 		audio.CycleInputDevice(1)
+	case driver.KeyArrowUp, driver.KeyPageUp:
+		testModalScroll-- // only moves anything when the window is too short for every row
+	case driver.KeyArrowDown, driver.KeyPageDown:
+		testModalScroll++
 	case driver.KeyRune:
 		switch e.Ch {
 		case 'k', 'K':
