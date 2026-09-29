@@ -81,6 +81,20 @@ func captureChain(t *testing.T, audio *AudioEngine, frames [][]byte) (speakingFr
 	return speakingFrames, math.Sqrt(sum / float64(max(n, 1)))
 }
 
+// captureOutput runs frames through the capture chain and returns the processed frames.
+func captureOutput(audio *AudioEngine, frames [][]byte) [][]byte {
+	var outs [][]byte
+	audio.onFrame = func(_ float64, _ bool, pcm []byte) { outs = append(outs, append([]byte(nil), pcm...)) }
+	frame := make([]int16, AudioFrameSamples)
+	for _, pcm := range frames {
+		for i := range frame {
+			frame[i] = int16(binary.LittleEndian.Uint16(pcm[2*i:]))
+		}
+		audio.processCaptureFrame(frame)
+	}
+	return outs
+}
+
 func TestCaptureChainRejectsKeyboardTyping(t *testing.T) {
 	keys := keyboardFrames(150, 9000, 7) // 3 s of typing, clicks around −12 dBFS peak
 	for _, mode := range []int{SuppressionStandard, SuppressionHigh} {
@@ -241,5 +255,72 @@ func TestLoopbackExclusionRemovesOwnPlayback(t *testing.T) {
 	t.Logf("own playback suppressed by %.1f dB", erle)
 	if erle < 30 {
 		t.Fatalf("own playback only reduced %.1f dB", erle)
+	}
+}
+
+func TestCaptureChainRemovesRumble(t *testing.T) {
+	// 40 Hz desk / handling rumble under a 140 Hz voice.
+	rumble := make([][]byte, 100)
+	for f := range rumble {
+		pcm := make([]byte, AudioChunkSize)
+		for i := 0; i < AudioFrameSamples; i++ {
+			tv := float64(f*AudioFrameSamples+i) / AudioSampleRate
+			binary.LittleEndian.PutUint16(pcm[2*i:], uint16(int16(6000*math.Sin(2*math.Pi*40*tv))))
+		}
+		rumble[f] = pcm
+	}
+	for _, mode := range []int{SuppressionOff, SuppressionStandard, SuppressionAI} {
+		audio := NewAudioEngine()
+		audio.EchoCancellation = false
+		audio.VoiceSmoothing = false
+		audio.SetSuppressionMode(mode)
+		audio.VADThreshold = 0 // keep the gate open: only the filter may remove the rumble
+		var out []float64
+		for _, pcm := range captureOutput(audio, rumble) {
+			for i := 0; i+1 < len(pcm); i += 2 {
+				out = append(out, float64(int16(binary.LittleEndian.Uint16(pcm[i:]))))
+			}
+		}
+		var p float64
+		for _, v := range out[len(out)/2:] {
+			p += v * v
+		}
+		rms := math.Sqrt(p/float64(len(out)/2)) / 32768
+		t.Logf("mode %d: 40 Hz rumble out %.1f dBFS (in %.1f dBFS)", mode, 20*math.Log10(rms+1e-9), 20*math.Log10(6000.0/32768/math.Sqrt2))
+		if rms > 6000.0/32768/math.Sqrt2*0.3 {
+			t.Errorf("mode %d: rumble only reduced to %.4f", mode, rms)
+		}
+	}
+}
+
+func TestGateOpensWithoutClick(t *testing.T) {
+	audio := NewAudioEngine()
+	audio.EchoCancellation = false
+	audio.VoiceSmoothing = false
+	audio.SetSuppressionMode(SuppressionOff)
+	var frames [][]byte
+	for range 20 {
+		frames = append(frames, make([]byte, AudioChunkSize)) // silence closes the gate
+	}
+	tone := voicedFrames(5, 4000)
+	frames = append(frames, tone...)
+	outs := captureOutput(audio, frames)
+	open := outs[20]
+	sample := func(pcm []byte, i int) float64 {
+		return math.Abs(float64(int16(binary.LittleEndian.Uint16(pcm[2*i:]))))
+	}
+	// The first samples of the opening frame must fade in, not jump to near full level.
+	in := func(i int) float64 { return sample(tone[0], i) + 1 }
+	for _, i := range []int{0, 10, 30} {
+		if r := sample(open, i) / in(i); r > 0.25 {
+			t.Errorf("sample %d of the opening frame at %.0f%% of the input: gate steps open", i, 100*r)
+		}
+	}
+	var late float64
+	for i := AudioFrameSamples / 2; i < AudioFrameSamples; i++ {
+		late = math.Max(late, sample(open, i))
+	}
+	if late < 0.7*4000 {
+		t.Errorf("gate opened too slowly: peak %.0f in the second half of the first frame", late)
 	}
 }

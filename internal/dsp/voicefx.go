@@ -244,7 +244,7 @@ func (band *transientBand) decide(j, look int) {
 }
 
 // VoiceSmoother gently shapes the transmitted voice: it tames harsh highs and sibilance
-// (high shelf −4 dB from 6 kHz), removes the hardly audible but fatiguing air band (12 kHz
+// (high shelf −2 dB from 6 kHz), removes the hardly audible but fatiguing air band (12 kHz
 // low-pass), evens out loudness with a soft compressor and catches peaks with a limiter.
 type VoiceSmoother struct {
 	shelf, lowpass *Biquad
@@ -264,7 +264,7 @@ type VoiceSmoother struct {
 func NewVoiceSmoother(rate int) *VoiceSmoother {
 	fs := float64(rate)
 	return &VoiceSmoother{
-		shelf:     NewHighShelf(fs, 6000, -4),
+		shelf:     NewHighShelf(fs, 6000, -2),
 		lowpass:   NewLowpass(fs, 12000, math.Sqrt2/2),
 		block:     rate / 1000,
 		limGain:   1,

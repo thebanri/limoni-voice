@@ -230,8 +230,9 @@ type AudioEngine struct {
 
 	// Click / clap suppression and voice smoothing (capture goroutine only)
 	transient       *dsp.TransientSuppressor
-	transientActive bool // the current frame contained a suppressed click / clap
-	transientTail   int  // frames left in which reverb of a recent transient cannot open the gate
+	rumble          *dsp.Biquad // 80 Hz high-pass: rumble, proximity boom and plosive thumps
+	transientActive bool        // the current frame contained a suppressed click / clap
+	transientTail   int         // frames left in which reverb of a recent transient cannot open the gate
 	smoother        *dsp.VoiceSmoother
 	fxBuf           []float64
 
@@ -858,7 +859,7 @@ func (a *AudioEngine) processCaptureFrame(frame []int16) {
 		a.IsSpeaking = false
 		a.shiftWave(0)
 	} else {
-		processed := applyGain(buf, gain)
+		processed := applyGain(a.removeRumble(buf), gain)
 		a.transientActive = false
 		if suppressMode != SuppressionOff {
 			// Remove keyboard / mouse clicks and claps before voice detection so they neither
@@ -879,13 +880,14 @@ func (a *AudioEngine) processCaptureFrame(frame []int16) {
 			if speaking {
 				targetGain = 1.0
 			}
+			prevGain := a.gateGain
 			if targetGain > a.gateGain {
 				a.gateGain += (targetGain - a.gateGain) * 0.85
 			} else {
 				a.gateGain += (targetGain - a.gateGain) * 0.15
 			}
-			if a.gateGain < 0.99 && inputMode != InputModePushToTalk {
-				chunk = applyGain(chunk, a.gateGain)
+			if min(prevGain, a.gateGain) < 0.99 && inputMode != InputModePushToTalk {
+				chunk = applyGainRamp(chunk, prevGain, a.gateGain)
 			}
 		case SuppressionAI:
 			speaking, finalRMS, chunk = a.processNeuralSuppression(processed)
@@ -946,6 +948,20 @@ func (a *AudioEngine) suppressTransients(pcm []byte) []byte {
 	a.transientActive = a.transient.MinGain() < 0.5
 	if a.transientActive {
 		a.transientTail = 15 // 300 ms
+	}
+	return fxToPCM(buf)
+}
+
+// removeRumble high-passes the microphone signal at 80 Hz (12 dB/octave). Voices keep their
+// fundamental; desk thumps, handling noise, proximity boom and plosive pops do not ride along.
+// Caller holds a.mu.
+func (a *AudioEngine) removeRumble(pcm []byte) []byte {
+	if a.rumble == nil {
+		a.rumble = dsp.NewHighpass(AudioSampleRate, 80, math.Sqrt2/2)
+	}
+	buf := a.pcmToFx(pcm)
+	for i, x := range buf {
+		buf[i] = a.rumble.Process(x)
 	}
 	return fxToPCM(buf)
 }
@@ -1035,13 +1051,14 @@ func (a *AudioEngine) processNeuralSuppression(pcm []byte) (bool, float64, []byt
 	if speaking {
 		target = 1.0
 	}
+	prevGain := a.gateGain
 	if target > a.gateGain {
 		a.gateGain += (target - a.gateGain) * 0.85
 	} else {
 		a.gateGain += (target - a.gateGain) * 0.12
 	}
-	if a.gateGain < 0.99 {
-		out = applyGain(out, a.gateGain)
+	if min(prevGain, a.gateGain) < 0.99 {
+		out = applyGainRamp(out, prevGain, a.gateGain)
 	}
 	for i := 0; i < AudioFrameSamples; i++ {
 		norm := float64(int16(binary.LittleEndian.Uint16(out[2*i:]))) / 32768.0
@@ -1299,8 +1316,8 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 	if targetGain > a.gateGain {
 		alpha = 0.85 // fast attack (~3ms)
 	}
+	prevGain := a.gateGain
 	a.gateGain += (targetGain - a.gateGain) * alpha
-	g := a.gateGain
 
 	// Reconstruct the fullband signal with the band gains and a soft-knee limiter.
 	outBytes := make([]byte, AudioChunkSize)
@@ -1319,6 +1336,8 @@ func (a *AudioEngine) processNoiseCancellation(pcm []byte, mode int) (bool, floa
 			}
 		}
 		prevOut = hp
+		// Ramp the gate across the frame: a gain step at the frame edge clicks.
+		g := gateRamp(prevGain, a.gateGain, i, AudioFrameSamples)
 		sample := (hp - low*(1.0-lowGain) - high*(1.0-highGain)) * g
 
 		if sample > 28000.0 {
@@ -1752,6 +1771,34 @@ func applyGain(pcm []byte, gain float64) []byte {
 		}
 		amplified = math.Max(-32768, math.Min(32767, amplified))
 		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(int16(amplified)))
+	}
+	return out
+}
+
+// gateAttackSamples is how fast an opening gate fades in (3 ms): short enough to keep the
+// attack of the first syllable, long enough not to click.
+const gateAttackSamples = AudioSampleRate * 3 / 1000
+
+// gateRamp is the gate gain at sample i of an n-sample chunk while it moves from `from` to `to`:
+// opening within gateAttackSamples, closing across the whole chunk. Without the ramp the gain
+// steps at chunk boundaries and clicks.
+func gateRamp(from, to float64, i, n int) float64 {
+	span := n
+	if to > from {
+		span = min(n, gateAttackSamples)
+	}
+	return from + (to-from)*math.Min(1, float64(i+1)/float64(span))
+}
+
+// applyGainRamp scales pcm by the gate gain moving from `from` to `to` (see gateRamp).
+// Gains stay within 0..1.
+func applyGainRamp(pcm []byte, from, to float64) []byte {
+	n := len(pcm) / 2
+	out := make([]byte, len(pcm))
+	for i := 0; i < n; i++ {
+		g := gateRamp(from, to, i, n)
+		v := float64(int16(binary.LittleEndian.Uint16(pcm[2*i:]))) * g
+		binary.LittleEndian.PutUint16(out[2*i:], uint16(int16(math.Round(v))))
 	}
 	return out
 }
