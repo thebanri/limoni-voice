@@ -386,6 +386,16 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				r.SetToast("Screen share stopped")
 			})
 
+			previewText := T("   [O] PREVIEW MY SCREEN (Click)   ")
+			if node.IsPreviewingScreen() {
+				previewText = T("   [O] CLOSE PREVIEW (Click)   ")
+			}
+			previewStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
+			buf.SetString(inner.X+3, inner.Y+7, clipToWidth(previewText, int(inner.Width)-4), previewStyle)
+			clickable(frame, cell.NewRect(inner.X+3, inner.Y+7, uint16(len([]rune(previewText))), 1), func(_ driver.MouseEvent) {
+				go toggleScreenPreview(node, r)
+			})
+
 			// If other peers are ALSO broadcasting, allow watching them too
 			if len(streamingPeers) > 0 {
 				switchY := inner.Y + 9

@@ -154,7 +154,8 @@ type P2PNode struct {
 	ShareSystemAudio     bool // include system audio when sharing
 	screenTx             *screenTx
 	screenRx             *screenRx
-	relayTargeted        bool // relay forwards frames to single members
+	previewRx            *screenRx // local preview of our own share
+	relayTargeted        bool      // relay forwards frames to single members
 	audioDedup           AudioDeduplicator
 	chatDedup            ChatDeduplicator
 	ctrlDedup            ControlDeduplicator

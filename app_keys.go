@@ -800,6 +800,8 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 			a.openScreenShareModal()
 		case 'w', 'W':
 			a.watchFirstStream()
+		case 'o', 'O':
+			go toggleScreenPreview(node, room)
 		case '+', '=':
 			room.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.AdjustGain(0.1)*100))
 		case '-', '_':

@@ -400,3 +400,44 @@ func TestScreenSourceHandoverKeepsRestartKeyframe(t *testing.T) {
 		t.Fatal("restarted encoder lost its lock")
 	}
 }
+
+// The local preview decodes our own share straight from the encoder: nothing goes out on the
+// network while nobody watches, and it closes with the share.
+func TestLocalPreviewOfOwnShare(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams real video for a few seconds")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	host, _ := relayRoom(t, "7120-quiet-mirror-lake")
+	frames, report := useSyntheticScreenPipeline(t, ffmpeg)
+	var sent atomic.Int64
+	setScreenSendFilter(func(data []byte, to string, class byte) bool {
+		sent.Add(1)
+		return true
+	})
+
+	if err := host.StartScreenPreview(); err == nil {
+		t.Fatal("preview started without a share")
+	}
+	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: screenshare.DefaultPreset}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.StartScreenPreview(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the preview decodes frames", 10*time.Second, func() bool { return countFrames(frames) >= 30 })
+	if errs := decodeErrorLines(report); len(errs) > 0 {
+		t.Fatalf("preview decode errors: %v", errs)
+	}
+	if n := sent.Load(); n != 0 {
+		t.Fatalf("%d screen packets sent over the network with no viewers", n)
+	}
+
+	_ = host.StopScreenShare()
+	if host.IsPreviewingScreen() {
+		t.Fatal("the preview outlived the share")
+	}
+}

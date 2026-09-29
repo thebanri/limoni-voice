@@ -114,6 +114,7 @@ type screenTx struct {
 	audioSeq    uint32
 	silentRun   int
 	restarting  atomic.Bool
+	preview     *screenRx // local preview player fed straight from the encoder, if open
 	stop        chan struct{}
 	stopOnce    sync.Once
 
@@ -153,6 +154,7 @@ type screenRx struct {
 
 	stop     chan struct{}
 	stopOnce sync.Once
+	onClosed func() // player window closed; nil: stop watching
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -385,6 +387,7 @@ func (n *P2PNode) StopScreenShare() error {
 	if tx != nil {
 		tx.pacer.Stop()
 	}
+	_ = n.StopScreenPreview()
 	n.announceScreenShare(false)
 	if tx != nil {
 		tx.shutdown()
@@ -470,6 +473,9 @@ func (tx *screenTx) readLoop() {
 		}
 		tx.mu.Lock()
 		tx.chunker.Push(buf[:size], func(chunk []byte, keyframe bool) {
+			if tx.preview != nil {
+				tx.preview.feedLocal(append([]byte(nil), chunk...))
+			}
 			tx.seq++
 			pkt := P2PPacket{Type: PacketScreenShareData, RoomCode: room, SenderID: n.LocalID, Seq: tx.seq, Payload: chunk}
 			sealed, err := sealPacket(&pkt, keyring)
@@ -1199,12 +1205,108 @@ func (rx *screenRx) watchPlayer(session *screenshare.Session, started time.Time)
 	case <-session.Done():
 		n.log("[INFO] Screen viewer window closed.")
 	}
+	if rx.onClosed != nil {
+		rx.onClosed()
+		return
+	}
 	n.mu.RLock()
 	current := n.screenRx == rx
 	n.mu.RUnlock()
 	if current {
 		_ = n.StopWatchingScreen()
 	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Local preview of our own share
+
+// StartScreenPreview opens a player showing our own screen share. The encoder's stream is fed
+// to it directly from the capture socket: nothing is encrypted or sent over the network, and
+// the preview neither counts as a viewer nor affects the bitrate chosen for the room.
+func (n *P2PNode) StartScreenPreview() error {
+	n.mu.RLock()
+	tx := n.screenTx
+	open := n.previewRx != nil
+	n.mu.RUnlock()
+	if tx == nil {
+		return errors.New("you are not sharing your screen")
+	}
+	if open {
+		return nil
+	}
+	opt := screenshare.DefaultReceiverOptions(max(tx.opts.FPS, 1))
+	opt.WindowTitle = fmt.Sprintf("Limoni Voice - Your Screen (local preview, %d FPS)", opt.FPS)
+	rx := &screenRx{
+		n:         n,
+		peerID:    n.LocalID,
+		opt:       opt,
+		reorder:   video.NewReorder(0),
+		playerCh:  make(chan playerChunk, playerQueue),
+		stop:      make(chan struct{}),
+		skipToKey: true, // start the player on a keyframe
+		lastData:  time.Now(),
+	}
+	rx.onClosed = func() { _ = n.StopScreenPreview() }
+	session, err := startPlayerSession(context.Background(), opt)
+	if err != nil {
+		n.logMissingScreenTools(err)
+		return err
+	}
+	rx.session = session
+
+	n.mu.Lock()
+	if n.screenTx != tx || n.previewRx != nil { // the share ended or another preview won
+		n.mu.Unlock()
+		rx.shutdown()
+		return nil
+	}
+	n.previewRx = rx
+	n.mu.Unlock()
+	tx.mu.Lock()
+	tx.preview = rx
+	tx.mu.Unlock()
+
+	go rx.playerPump(session)
+	go rx.watchPlayer(session, time.Now())
+	n.log("[SCREEN] Local preview of your screen opened (not sent over the network).")
+	return nil
+}
+
+// StopScreenPreview closes the local preview player, if open.
+func (n *P2PNode) StopScreenPreview() error {
+	n.mu.Lock()
+	rx, tx := n.previewRx, n.screenTx
+	n.previewRx = nil
+	n.mu.Unlock()
+	if rx == nil {
+		return nil
+	}
+	if tx != nil {
+		tx.mu.Lock()
+		if tx.preview == rx {
+			tx.preview = nil
+		}
+		tx.mu.Unlock()
+	}
+	rx.shutdown()
+	n.log("[SCREEN] Local preview closed.")
+	return nil
+}
+
+// IsPreviewingScreen reports whether the local preview player is open.
+func (n *P2PNode) IsPreviewingScreen() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.previewRx != nil
+}
+
+// feedLocal queues an encoder chunk for the preview player (chunks arrive in order).
+func (rx *screenRx) feedLocal(chunk []byte) {
+	now := time.Now()
+	rx.mu.Lock()
+	rx.lastData, rx.gotData = now, true
+	rx.dispatchLocked([][]byte{chunk}, now)
+	rx.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------------------------

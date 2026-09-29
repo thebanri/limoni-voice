@@ -167,6 +167,24 @@ func (a *App) watchFirstStream() {
 	}()
 }
 
+// toggleScreenPreview opens or closes the local preview of our own screen share.
+func toggleScreenPreview(node *p2p.P2PNode, room *RoomView) {
+	if node.IsPreviewingScreen() {
+		_ = node.StopScreenPreview()
+		room.SetToast("Preview closed")
+		return
+	}
+	if !node.IsSharingScreen {
+		room.SetToast("Share your screen first to preview it")
+		return
+	}
+	if err := node.StartScreenPreview(); err != nil {
+		room.SetToast(fmt.Sprintf("Error: %v", err))
+		return
+	}
+	room.SetToast("Preview opened (local, not sent over the network)")
+}
+
 // --- file offers ---
 
 func (a *App) showNextFileOffer() {
