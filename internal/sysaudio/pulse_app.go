@@ -63,7 +63,7 @@ func (s *pulseAppStream) Close() error {
 }
 
 func openApp(app App, onFrame FrameFunc) (Stream, error) {
-	c, err := pulse.NewClient(pulse.ClientApplicationName("Limoni Voice"), pulse.ClientTimeout(2*time.Second))
+	c, err := pulse.NewClient(pulse.ClientApplicationName(clientName), pulse.ClientTimeout(2*time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("sysaudio: connect to PulseAudio/PipeWire: %w", err)
 	}

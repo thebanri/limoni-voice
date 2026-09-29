@@ -47,6 +47,11 @@ type Backend interface {
 
 var ErrUnavailable = errors.New("audioio: backend unavailable")
 
+// ErrNoMicrophone means the system has no microphone, only sources such as a speaker monitor
+// that carry what the computer plays. Capture must not fall back to another backend, which
+// would record that default source and send the system's sound as the voice.
+var ErrNoMicrophone = errors.New("audioio: no microphone (only speaker monitor sources)")
+
 type registered struct {
 	b        Backend
 	priority int
@@ -92,6 +97,9 @@ func OpenCapture(deviceID string, cb CaptureFunc) (Stream, error) {
 		s, err := b.OpenCapture(deviceID, cb)
 		if err == nil {
 			return s, nil
+		}
+		if errors.Is(err, ErrNoMicrophone) {
+			return nil, err
 		}
 		lastErr = err
 	}

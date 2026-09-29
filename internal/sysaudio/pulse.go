@@ -32,8 +32,13 @@ func (s *pulseStream) Close() error {
 	return nil
 }
 
+// clientName is the PulseAudio application name of the screen share audio streams. It differs
+// from the microphone's "Limoni Voice": session managers remember the device of a stream by
+// application name, and a remembered speaker monitor must never be restored onto the microphone.
+const clientName = "Limoni Voice screen audio"
+
 func open(onFrame FrameFunc) (Stream, error) {
-	c, err := pulse.NewClient(pulse.ClientApplicationName("Limoni Voice"), pulse.ClientTimeout(2*time.Second))
+	c, err := pulse.NewClient(pulse.ClientApplicationName(clientName), pulse.ClientTimeout(2*time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("sysaudio: connect to PulseAudio/PipeWire: %w", err)
 	}
