@@ -2,6 +2,7 @@ package screenshare
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -113,7 +114,7 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 		}
 		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100", nil)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
+			if isMissingTools(err) {
 				t.Skipf("Skipping on CI without screen capture tools: %v", err)
 			}
 			t.Fatalf("buildLinuxBroadcastCommand desktop failed: %v", err)
@@ -139,7 +140,7 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 		}
 		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100", nil)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
+			if isMissingTools(err) {
 				t.Skipf("Skipping on CI without screen capture tools: %v", err)
 			}
 			t.Fatalf("buildLinuxBroadcastCommand monitor failed: %v", err)
@@ -177,7 +178,7 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 		}
 		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100", nil)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required") {
+			if isMissingTools(err) {
 				t.Skipf("Skipping on CI without screen capture tools: %v", err)
 			}
 			t.Fatalf("buildLinuxBroadcastCommand app failed: %v", err)
@@ -467,4 +468,10 @@ func TestBroadcastRestartKeepsSession(t *testing.T) {
 	if err := s.Restart(lower); err == nil {
 		t.Fatal("restart after stop succeeded")
 	}
+}
+
+// isMissingTools reports an error caused by capture tools that are not installed (CI).
+func isMissingTools(err error) bool {
+	var missing *MissingDepsError
+	return errors.As(err, &missing) || strings.Contains(err.Error(), "not found")
 }
