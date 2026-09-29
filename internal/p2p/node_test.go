@@ -18,6 +18,7 @@ import (
 
 	"github.com/thebanri/limoni-voice/internal/e2ee"
 	"github.com/thebanri/limoni-voice/internal/engine"
+	"github.com/thebanri/limoni-voice/internal/nat"
 	"github.com/thebanri/limoni-voice/internal/protocol"
 	"github.com/thebanri/limoni-voice/internal/video"
 )
@@ -1493,5 +1494,39 @@ func TestVideo120FPSKeyframeBurstAndJitter(t *testing.T) {
 	}
 	if string(out[0]) != "data-2" || string(out[26]) != "data-28" {
 		t.Fatalf("Unexpected ordering: first=%s, last=%s", string(out[0]), string(out[26]))
+	}
+}
+
+func TestHopTargetDropsOldMapping(t *testing.T) {
+	old := &net.UDPAddr{IP: net.ParseIP("178.233.157.173"), Port: 50000}
+	cases := []struct {
+		name  string
+		raddr *net.UDPAddr
+		want  string
+	}{
+		{"announcement from the old socket", old, "178.233.157.173:58412"},
+		{"announcement from the new socket", &net.UDPAddr{IP: old.IP, Port: 61234}, "178.233.157.173:61234"},
+		{"relayed announcement", nil, "178.233.157.173:58412"},
+		{"LAN peer", &net.UDPAddr{IP: net.ParseIP("192.168.1.20"), Port: 50000}, "192.168.1.20:58412"},
+	}
+	for _, c := range cases {
+		if got := hopTarget(old, c.raddr, 58412); got == nil || got.String() != c.want {
+			t.Errorf("%s: got %v, want %s", c.name, got, c.want)
+		}
+	}
+	if got := hopTarget(nil, nil, 58412); got != nil {
+		t.Errorf("unknown peer address via relay: got %v, want nil", got)
+	}
+}
+
+func TestScheduledHopPostponedForSymmetricNATPeer(t *testing.T) {
+	node := NewP2PNode("hop_host", "Host", engine.NewAudioEngine())
+	node.Peers["cone"] = &PeerInfo{ID: "cone", Nickname: "Cone", NAT: string(nat.TypeEIM)}
+	if b := node.hopBlockerLocked(); b != "" {
+		t.Fatalf("cone NAT peer blocked the hop (%q)", b)
+	}
+	node.Peers["sym"] = &PeerInfo{ID: "sym", Nickname: "Sym", NAT: string(nat.TypeEDM)}
+	if b := node.hopBlockerLocked(); b != "Sym" {
+		t.Fatalf("symmetric NAT peer: blocker %q, want Sym", b)
 	}
 }

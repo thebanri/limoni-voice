@@ -592,6 +592,22 @@ func (n *P2PNode) RotatePort() error {
 	return nil
 }
 
+// hopBlockerLocked names a peer whose direct path would not survive a scheduled port hop, or
+// returns "". With a symmetric NAT (endpoint-dependent mapping) on either side, the path was
+// found by port spraying or extra sockets and depends on the exact NAT mappings of the
+// current socket; a new socket would drop the call to the relay until punching finds a way
+// again, which can take minutes or fail. A symmetric NAT already randomizes the public port
+// per destination, so skipping the hop costs little privacy. Manual hops still go through.
+func (n *P2PNode) hopBlockerLocked() string {
+	localNAT, _ := n.stun.Result()
+	for _, p := range n.Peers {
+		if localNAT == nat.TypeEDM || nat.Type(p.NAT) == nat.TypeEDM {
+			return p.Nickname
+		}
+	}
+	return ""
+}
+
 func (n *P2PNode) portHopSupervisor(cancel chan struct{}) {
 	n.mu.RLock()
 	interval := n.hopInterval
@@ -610,10 +626,16 @@ func (n *P2PNode) portHopSupervisor(cancel chan struct{}) {
 		case <-ticker.C:
 			n.mu.RLock()
 			active := (n.IsConnected || n.Connecting) && n.AntiTrackingEnabled
+			blocker := n.hopBlockerLocked()
 			n.mu.RUnlock()
-			if active {
-				_ = n.RotatePort()
+			if !active {
+				continue
 			}
+			if blocker != "" {
+				n.log(fmt.Sprintf("[SECURITY] Port rotation postponed: a new port would break the direct path to %s (symmetric NAT).", blocker))
+				continue
+			}
+			_ = n.RotatePort()
 		}
 	}
 }

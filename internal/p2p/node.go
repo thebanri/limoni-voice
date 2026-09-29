@@ -744,6 +744,28 @@ func openPacket(data []byte, pkt *P2PPacket, keyring *e2ee.Keyring) error {
 	return pkt.UnmarshalBinary(plain)
 }
 
+// hopTarget is the address to reach a peer at after it announced a port hop to newPort. The
+// announcement is sent from both its new and its old socket; behind a symmetric NAT only the
+// copy from the old socket gets through, and that socket closes a few seconds later. So when
+// the packet comes from the address we already knew, the old mapping is not kept: the new
+// port is assumed to map to the same public port (most cone NATs preserve ports), and a
+// relayed announcement (raddr nil) is handled the same way.
+func hopTarget(prev, raddr *net.UDPAddr, newPort int) *net.UDPAddr {
+	switch {
+	case raddr == nil:
+		if prev == nil {
+			return nil
+		}
+		return &net.UDPAddr{IP: prev.IP, Port: newPort}
+	case raddr.IP.IsPrivate() || raddr.IP.IsLoopback():
+		return &net.UDPAddr{IP: raddr.IP, Port: newPort}
+	case prev != nil && prev.Port == raddr.Port && prev.IP.Equal(raddr.IP):
+		return &net.UDPAddr{IP: raddr.IP, Port: newPort} // came from the old socket
+	default:
+		return &net.UDPAddr{IP: raddr.IP, Port: raddr.Port} // came from the new socket
+	}
+}
+
 // writeUDP sends a datagram on the socket matching the address family (or a dedicated punch socket).
 func (n *P2PNode) writeUDP(data []byte, addr *net.UDPAddr, via *net.UDPConn) {
 	if addr == nil {
@@ -1767,14 +1789,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			if pkt.LocalPort > 0 {
 				peer.LocalPort = pkt.LocalPort
-				if raddr != nil {
-					pPort := raddr.Port
-					if (raddr.IP.IsPrivate() || raddr.IP.IsLoopback()) && pkt.LocalPort > 0 {
-						pPort = pkt.LocalPort
-					}
-					peer.Addr = &net.UDPAddr{IP: raddr.IP, Port: pPort}
-				} else if peer.Addr != nil && pkt.LocalPort > 0 {
-					peer.Addr = &net.UDPAddr{IP: peer.Addr.IP, Port: pkt.LocalPort}
+				if addr := hopTarget(peer.Addr, raddr, pkt.LocalPort); addr != nil {
+					peer.Addr = addr
 				}
 				peer.conn = nil
 			}
