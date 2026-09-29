@@ -2,7 +2,6 @@ package screenshare
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -60,29 +59,41 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 		strings.HasPrefix(targetID, "win:") ||
 		targetID == "focused"
 
+	// The PipeWire pipeline (portal / Mutter capture) needs gst-launch-1.0 and several
+	// GStreamer plugins; check them once, before any portal dialog is shown.
+	var gstErr error
+	gstChecked := false
+	gstReady := func() bool {
+		if !gstChecked {
+			gstErr, gstChecked = gstPipewireDepsError(), true
+		}
+		return gstErr == nil
+	}
+
 	// 1. If user selected a Window or App on Wayland -> Route to XDG Desktop Portal Window Cast
 	// (GPU Screen Recorder window capture only works in pure X11; Wayland window capture requires XDG Desktop Portal)
 	if wayland && isWindowTarget {
-		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
-			defer cancel()
-			sourceType := uint32(2) // 2 = Window Only
-			if targetID == "portal" {
-				sourceType = 3 // 3 = Monitor or Window
+		if !gstReady() {
+			return "", nil, nil, nil, gstErr
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
+		defer cancel()
+		sourceType := uint32(2) // 2 = Window Only
+		if targetID == "portal" {
+			sourceType = 3 // 3 = Monitor or Window
+		}
+		nodeID, pwFile, reopen, cleanup, errPortal := requestPortalCast(ctx, sourceType, onCancel...)
+		if errPortal == nil && nodeID != 0 {
+			bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
+			if errGst == nil {
+				return bin, args, pwFile, src.own(nodeID, reopen, cleanup), nil
 			}
-			nodeID, pwFile, reopen, cleanup, errPortal := requestPortalCast(ctx, sourceType, onCancel...)
-			if errPortal == nil && nodeID != 0 {
-				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
-				if errGst == nil {
-					return bin, args, pwFile, src.own(nodeID, reopen, cleanup), nil
-				}
-				if cleanup != nil {
-					cleanup()
-				}
-			} else if errPortal != nil {
-				logMsg("[PORTAL] Window selection failed or cancelled: %v", errPortal)
-				return "", nil, nil, nil, errPortal
+			if cleanup != nil {
+				cleanup()
 			}
+		} else if errPortal != nil {
+			logMsg("[PORTAL] Window selection failed or cancelled: %v", errPortal)
+			return "", nil, nil, nil, errPortal
 		}
 	}
 
@@ -164,7 +175,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 
 	// 3. If GNOME Mutter compositor is available (for Screen 1 / Monitors) -> direct popup-less full monitor capture
 	if !isWindowTarget && isMutterAvailable() {
-		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
+		if gstReady() {
 			connector := ""
 			if strings.HasPrefix(targetID, "monitor:") {
 				parts := strings.Split(strings.TrimPrefix(targetID, "monitor:"), ":")
@@ -187,7 +198,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 		}
 	} else if wayland {
 		// 3b. On KDE Plasma / non-GNOME Wayland compositors -> capture Screen via Desktop Portal
-		if _, err := FindExecutable("gst-launch-1.0"); err == nil {
+		if gstReady() {
 			ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 			defer cancel()
 			sourceType := uint32(1) // 1 = Screen only
@@ -233,6 +244,11 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 			)
 			return p, wfArgs, nil, nil, nil
 		}
+	}
+
+	// x11grab below only sees XWayland windows (usually a black screen) on Wayland.
+	if wayland && !gstReady() {
+		return "", nil, nil, nil, gstErr
 	}
 
 	// 5. Universal direct FFmpeg capture across all X11 Linux distributions (GNOME, KDE, XFCE, Cinnamon, MATE, i3, etc.)
@@ -338,5 +354,5 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 		return p, args, nil, nil, nil
 	}
 
-	return "", nil, nil, nil, errors.New("required screen capture tools ('gpu-screen-recorder', 'gst-launch-1.0' or 'ffmpeg') not found on system")
+	return "", nil, nil, nil, newMissingDepsError(false, []string{"ffmpeg"}, []linuxDep{depFFmpeg})
 }

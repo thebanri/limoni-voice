@@ -1,6 +1,7 @@
 package screenshare
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -186,7 +187,6 @@ func CheckDependencies() DependencyStatus {
 	_, errFFplay := FindExecutable("ffplay")
 	_, errFFmpeg := FindExecutable("ffmpeg")
 	_, errGSR := FindExecutable("gpu-screen-recorder")
-	_, errGst := FindExecutable("gst-launch-1.0")
 	_, errWf := FindExecutable("wf-recorder")
 
 	hasReceiver := errMpv == nil || errFFplay == nil
@@ -199,6 +199,7 @@ func CheckDependencies() DependencyStatus {
 	}
 
 	var missing, packages []string
+	var gstInstall string // install command for missing GStreamer pieces (Linux)
 	if !hasReceiver {
 		missing = append(missing, "mpv (to watch streams)")
 		packages = append(packages, "mpv")
@@ -206,15 +207,17 @@ func CheckDependencies() DependencyStatus {
 	switch runtime.GOOS {
 	case "linux":
 		wayland := isWayland()
-		status.CanShare = errGSR == nil || errGst == nil || (!wayland && errFFmpeg == nil) || (wayland && errWf == nil)
-		if !status.CanShare {
-			if wayland {
-				missing = append(missing, "GStreamer with PipeWire (to share on Wayland)")
-				packages = append(packages, "gstreamer")
-			} else {
-				missing = append(missing, "ffmpeg (to share)")
-				packages = append(packages, "ffmpeg")
-			}
+		var gst *MissingDepsError
+		_ = errors.As(gstPipewireDeps(false), &gst) // nil: the PipeWire pipeline can run
+		status.CanShare = errGSR == nil || gst == nil || (!wayland && errFFmpeg == nil) || (wayland && errWf == nil)
+		switch {
+		case wayland && gst != nil:
+			// Windows (and screens without gpu-screen-recorder or wf-recorder) need GStreamer.
+			missing = append(missing, gst.Missing...)
+			gstInstall = gst.Install
+		case !status.CanShare:
+			missing = append(missing, "ffmpeg (to share)")
+			packages = append(packages, "ffmpeg")
 		}
 	case "windows", "darwin":
 		status.CanShare = errFFmpeg == nil
@@ -226,6 +229,12 @@ func CheckDependencies() DependencyStatus {
 	if len(missing) > 0 {
 		status.MissingRecommended = strings.Join(missing, ", ")
 		status.InstallHint = installHint(packages)
+		if gstInstall != "" {
+			status.InstallHint = gstInstall
+			if !hasReceiver {
+				status.InstallHint += " mpv"
+			}
+		}
 	}
 	status.PermissionHint = PermissionHint()
 	return status

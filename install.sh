@@ -206,22 +206,34 @@ if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     done
 fi
 
-# 10. Check Optional Screen Sharing Tools (FFmpeg & MPV)
+# 10. Check Optional Screen Sharing Tools (FFmpeg, MPV and, on Linux, GStreamer + PipeWire)
 DEPS_HINT=""
-HAS_MPV=false
-HAS_FFMPEG=false
-command -v mpv >/dev/null 2>&1 && HAS_MPV=true
-command -v ffmpeg >/dev/null 2>&1 && HAS_FFMPEG=true
+NEED_DEPS=false
+command -v mpv >/dev/null 2>&1 || NEED_DEPS=true
+command -v ffmpeg >/dev/null 2>&1 || NEED_DEPS=true
+if [ "${OS_TYPE}" = "linux" ]; then
+    # Wayland capture runs through a GStreamer PipeWire pipeline.
+    if ! command -v gst-inspect-1.0 >/dev/null 2>&1; then
+        NEED_DEPS=true
+    else
+        for el in pipewiresrc videoconvert udpsink h264parse mpegtsmux x264enc; do
+            gst-inspect-1.0 --exists "${el}" 2>/dev/null || NEED_DEPS=true
+        done
+    fi
+fi
 
-if [ "${HAS_MPV}" = false ] || [ "${HAS_FFMPEG}" = false ]; then
-    DEPS_HINT="${YELLOW}💡 Tip for Screen Sharing:${NC} To broadcast or watch live screen streams, install MPV & FFmpeg:\n"
+if [ "${NEED_DEPS}" = true ]; then
+    DEPS_HINT="${YELLOW}💡 Tip for Screen Sharing:${NC} To broadcast or watch live screen streams, install:\n"
     if [ "${OS_TYPE}" = "linux" ]; then
         if command -v apt >/dev/null 2>&1; then
-            DEPS_HINT+="   ${BOLD}sudo apt install ffmpeg mpv${NC}\n"
+            DEPS_HINT+="   ${BOLD}sudo apt install gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly ffmpeg mpv${NC}\n"
         elif command -v pacman >/dev/null 2>&1; then
-            DEPS_HINT+="   ${BOLD}sudo pacman -S ffmpeg mpv${NC}\n"
+            DEPS_HINT+="   ${BOLD}sudo pacman -S --needed gstreamer gst-plugin-pipewire gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly ffmpeg mpv${NC}\n"
         elif command -v dnf >/dev/null 2>&1; then
-            DEPS_HINT+="   ${BOLD}sudo dnf install ffmpeg mpv${NC}\n"
+            DEPS_HINT+="   ${BOLD}sudo dnf install gstreamer1 pipewire-gstreamer gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-ugly ffmpeg mpv${NC}\n"
+            DEPS_HINT+="   (x264enc and ffmpeg come from RPM Fusion)\n"
+        elif command -v zypper >/dev/null 2>&1; then
+            DEPS_HINT+="   ${BOLD}sudo zypper install gstreamer gstreamer-plugin-pipewire gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-ugly ffmpeg mpv${NC}\n"
         fi
     elif [ "${OS_TYPE}" = "darwin" ]; then
         DEPS_HINT+="   ${BOLD}brew install ffmpeg mpv${NC}\n"

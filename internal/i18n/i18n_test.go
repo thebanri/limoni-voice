@@ -95,3 +95,12 @@ func TestParse(t *testing.T) {
 		t.Error("German has no catalog")
 	}
 }
+
+func TestTranslateMissingScreenTools(t *testing.T) {
+	withLang(t, Turkish)
+	got := Translate("[SCREEN] Missing tools to share your screen: GStreamer pipewiresrc, GStreamer x264enc. Install them with: sudo pacman -S --needed gst-plugin-pipewire gst-plugins-ugly")
+	want := "[SCREEN] Ekran paylaşımı için eksik araçlar: GStreamer pipewiresrc, GStreamer x264enc. Kurmak için: sudo pacman -S --needed gst-plugin-pipewire gst-plugins-ugly"
+	if got != want {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -254,6 +254,7 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 	session, err := startCaptureSession(context.Background(), "127.0.0.1", localPort, opts)
 	if err != nil {
 		_ = captureConn.Close()
+		n.logMissingScreenTools(err)
 		return err
 	}
 	tx.session = session
@@ -887,6 +888,7 @@ func (n *P2PNode) StartWatchingScreen(peerID string, port int, opts ...screensha
 	}
 	session, err := startPlayerSession(context.Background(), opt)
 	if err != nil {
+		n.logMissingScreenTools(err)
 		return err
 	}
 	rx.session = session
@@ -1313,4 +1315,13 @@ func (n *P2PNode) ScreenStats() ScreenStats {
 		rx.mu.Unlock()
 	}
 	return s
+}
+
+// logMissingScreenTools writes the missing tools and their install command to the room log:
+// the error toast is too short-lived to copy a command from.
+func (n *P2PNode) logMissingScreenTools(err error) {
+	var missing *screenshare.MissingDepsError
+	if errors.As(err, &missing) {
+		n.log("[SCREEN] " + missing.Error())
+	}
 }

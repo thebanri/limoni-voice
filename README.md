@@ -230,11 +230,14 @@ scoop install https://github.com/thebanri/limoni-voice/releases/latest/download/
 > - **🐧 Linux (Debian / Ubuntu / Arch / Fedora)**:
 >   ```bash
 >   # Debian / Ubuntu
->   sudo apt install ffmpeg mpv
+>   sudo apt install ffmpeg mpv gstreamer1.0-tools gstreamer1.0-pipewire \
+>     gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
 >   # Arch Linux
->   sudo pacman -S ffmpeg mpv
+>   sudo pacman -S --needed ffmpeg mpv gstreamer gst-plugin-pipewire \
+>     gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
 >   # Fedora
->   sudo dnf install ffmpeg mpv
+>   sudo dnf install ffmpeg mpv gstreamer1 pipewire-gstreamer \
+>     gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-ugly
 >   ```
 
 ### Pre-built Binaries (Manual Download)

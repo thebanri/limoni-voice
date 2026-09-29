@@ -122,7 +122,10 @@ func StartReceiving(ctx context.Context, opts ...ReceiverOptions) (*Session, err
 		if runtime.GOOS == "windows" {
 			return nil, errors.New("'mpv.exe' or 'ffplay.exe' not found to watch stream. Please place 'mpv.exe' next to the application or run 'winget install mpv.mpv' in PowerShell.")
 		}
-		return nil, errors.New("'ffplay' or 'mpv' not found on system to watch stream. Please install ffmpeg or mpv (e.g., sudo pacman -S ffmpeg / sudo apt install ffmpeg).")
+		if runtime.GOOS == "linux" {
+			return nil, newMissingDepsError(true, []string{"mpv (or ffplay)"}, []linuxDep{depMpv})
+		}
+		return nil, errors.New("'ffplay' or 'mpv' not found on system to watch stream. Please install ffmpeg or mpv (e.g., brew install mpv).")
 	}
 
 	logMsg("[RECEIVER] Starting command: %s %s", binPath, strings.Join(args, " "))
