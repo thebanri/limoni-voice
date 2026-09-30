@@ -265,7 +265,7 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 		if n.audio != nil {
 			n.audio.EnableLoopbackExclusion(true)
 		}
-		if s, appOnly, err := n.openShareAudio(opts.WindowID, tx.onSystemAudio); err != nil {
+		if s, appOnly, selfFree, err := n.openShareAudio(opts.WindowID, tx.onSystemAudio); err != nil {
 			tx.audioStatus = "unavailable: " + err.Error()
 			n.log(fmt.Sprintf("[WARN] [SHARE] System audio unavailable: %v", err))
 		} else {
@@ -273,8 +273,8 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 			tx.audioOn = true
 			tx.appAudio = appOnly
 			tx.audioStatus = s.Backend()
-			if appOnly && n.audio != nil {
-				// Our own playback is not in another program's streams: nothing to remove.
+			if selfFree && n.audio != nil {
+				// Our own playback is not in the capture: nothing to remove.
 				n.audio.EnableLoopbackExclusion(false)
 			}
 			n.log("[SCREEN] System audio shared via " + s.Backend())
@@ -396,18 +396,31 @@ func (n *P2PNode) StopScreenShare() error {
 	return nil
 }
 
-// openShareAudio captures only the shared program's sound when the target is one application
-// or window and the platform can isolate it (appOnly), and the whole output otherwise.
-func (n *P2PNode) openShareAudio(targetID string, onFrame sysaudio.FrameFunc) (s sysaudio.Stream, appOnly bool, err error) {
+// openShareAudio captures the shared program's sound when the target is one application or
+// window, and everything else otherwise, leaving Limoni Voice's own playback (the voice chat)
+// out wherever the platform can tell it apart. selfFree reports that it did: then there is
+// nothing to cancel, and nothing to echo back into the room.
+func (n *P2PNode) openShareAudio(targetID string, onFrame sysaudio.FrameFunc) (s sysaudio.Stream, appOnly, selfFree bool, err error) {
 	if pid, name, ok := screenshare.TargetProcess(targetID); ok {
 		s, err := sysaudio.OpenApp(sysaudio.App{PID: pid, Name: name}, onFrame)
-		if err == nil {
-			return s, true, nil
+		switch {
+		case err == nil:
+			return s, true, true, nil
+		case errors.Is(err, sysaudio.ErrIncludesSelf):
+			n.log(fmt.Sprintf("[SHARE] %s runs Limoni Voice: sharing the sound of every program but Limoni Voice", name))
+		default:
+			n.log(fmt.Sprintf("[WARN] [SHARE] Cannot capture the audio of %s (pid %d) alone (%v); sharing the whole output", name, pid, err))
 		}
-		n.log(fmt.Sprintf("[WARN] [SHARE] Cannot capture the audio of %s (pid %d) alone (%v); sharing the whole output", name, pid, err))
+	}
+	s, err = sysaudio.OpenExcludingSelf(onFrame)
+	if err == nil {
+		return s, false, true, nil
+	}
+	if !errors.Is(err, sysaudio.ErrUnsupported) {
+		n.log(fmt.Sprintf("[WARN] [SHARE] Cannot leave Limoni Voice's own sound out (%v); sharing the whole output with echo cancelling", err))
 	}
 	s, err = sysaudio.Open(onFrame)
-	return s, false, err
+	return s, false, false, err
 }
 
 func (tx *screenTx) shutdown() {

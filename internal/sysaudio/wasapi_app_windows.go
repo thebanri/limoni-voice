@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -33,6 +34,7 @@ const (
 
 	activationTypeProcessLoopback = 1
 	loopbackIncludeProcessTree    = 0
+	loopbackExcludeProcessTree    = 1
 	vtBlob                        = 65
 
 	audclntStreamFlagEventCallback     = 0x00040000
@@ -102,24 +104,66 @@ func openApp(app App, onFrame FrameFunc) (Stream, error) {
 	if app.PID <= 0 {
 		return nil, errors.New("sysaudio: no process to capture")
 	}
+	// A process tree is captured whole: that of the terminal Limoni Voice runs in would carry
+	// the voice chat along.
+	if isAncestorOfSelf(app.PID) {
+		return nil, ErrIncludesSelf
+	}
+	return openProcessLoopback(app.PID, loopbackIncludeProcessTree, onFrame)
+}
+
+// openExcludingSelf records everything but this process and the ones it started (players),
+// through the same process loopback with the tree excluded instead of included.
+func openExcludingSelf(onFrame FrameFunc) (Stream, error) {
+	return openProcessLoopback(os.Getpid(), loopbackExcludeProcessTree, onFrame)
+}
+
+func openProcessLoopback(pid int, mode uint32, onFrame FrameFunc) (Stream, error) {
 	if err := procActivateAudioInterfaceAsync.Find(); err != nil {
 		return nil, ErrUnsupported
 	}
 	s := &wasapiStream{stop: make(chan struct{}), done: make(chan struct{})}
 	ready := make(chan error, 1)
-	go s.run(func(started func()) error { return s.captureProcess(app.PID, onFrame, started) }, ready)
+	go s.run(func(started func()) error { return s.captureProcess(pid, mode, onFrame, started) }, ready)
 	if err := <-ready; err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-// activateProcessLoopback returns an IAudioClient that records process pid and its children.
-func (s *wasapiStream) activateProcessLoopback(pid int) (*comObj, error) {
+// isAncestorOfSelf reports whether pid is this process or one of its ancestors.
+func isAncestorOfSelf(pid int) bool {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(snap)
+	parent := map[uint32]uint32{}
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	for err := windows.Process32First(snap, &entry); err == nil; err = windows.Process32Next(snap, &entry) {
+		parent[entry.ProcessID] = entry.ParentProcessID
+	}
+	cur := uint32(os.Getpid())
+	for range 64 {
+		if cur == uint32(pid) {
+			return true
+		}
+		next, ok := parent[cur]
+		if !ok || next == 0 || next == cur {
+			return false
+		}
+		cur = next
+	}
+	return false
+}
+
+// activateProcessLoopback returns an IAudioClient that records process pid and its children
+// (loopbackIncludeProcessTree), or everything else (loopbackExcludeProcessTree).
+func (s *wasapiStream) activateProcessLoopback(pid int, mode uint32) (*comObj, error) {
 	params := audioClientActivationParams{
 		activationType: activationTypeProcessLoopback,
 		targetPID:      uint32(pid),
-		loopbackMode:   loopbackIncludeProcessTree,
+		loopbackMode:   mode,
 	}
 	pv := propVariantBlob{vt: vtBlob, size: uint32(unsafe.Sizeof(params)), data: (*byte)(unsafe.Pointer(&params))}
 	path, _ := windows.UTF16PtrFromString(virtualProcessLoopback)
@@ -157,8 +201,8 @@ func (s *wasapiStream) activateProcessLoopback(pid int) (*comObj, error) {
 }
 
 // captureProcess runs one process loopback session and returns when it ends or fails.
-func (s *wasapiStream) captureProcess(pid int, onFrame FrameFunc, started func()) error {
-	client, err := s.activateProcessLoopback(pid)
+func (s *wasapiStream) captureProcess(pid int, mode uint32, onFrame FrameFunc, started func()) error {
+	client, err := s.activateProcessLoopback(pid, mode)
 	if err != nil {
 		return err
 	}
@@ -198,6 +242,9 @@ func (s *wasapiStream) captureProcess(pid int, onFrame FrameFunc, started func()
 
 	s.mu.Lock()
 	s.backend = fmt.Sprintf("wasapi process loopback (pid %d, %s)", pid, wf)
+	if mode == loopbackExcludeProcessTree {
+		s.backend = fmt.Sprintf("wasapi process loopback (everything but Limoni Voice, %s)", wf)
+	}
 	s.mu.Unlock()
 	started()
 

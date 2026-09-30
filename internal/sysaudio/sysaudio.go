@@ -3,8 +3,9 @@
 // on Windows. On macOS system audio comes from the ScreenCaptureKit capture helper instead.
 // On Linux OpenApp narrows the capture to the streams of one application.
 //
-// Captured audio still contains Limoni Voice's own playback (other participants' voices); the
-// caller removes it with an echo canceller that uses the rendered mix as reference.
+// Open captures the whole output, Limoni Voice's own playback (the other participants' voices)
+// included, which the caller then has to remove with an echo canceller; OpenExcludingSelf
+// leaves it out at the source where the platform allows.
 package sysaudio
 
 import (
@@ -22,6 +23,10 @@ const (
 // ErrUnsupported is returned where system audio is captured by other means (macOS) or not at all.
 var ErrUnsupported = errors.New("sysaudio: system audio capture is not available on this platform")
 
+// ErrIncludesSelf is returned by OpenApp for an application Limoni Voice itself runs in (the
+// terminal) where its sound cannot be captured without Limoni Voice's own.
+var ErrIncludesSelf = errors.New("sysaudio: the application runs Limoni Voice itself")
+
 // Stream is a running system audio capture.
 type Stream interface {
 	Close() error
@@ -37,6 +42,13 @@ type FrameFunc func(frame []int16)
 // Open starts capturing system audio.
 func Open(onFrame FrameFunc) (Stream, error) {
 	return open(onFrame)
+}
+
+// OpenExcludingSelf captures everything the computer plays except Limoni Voice and the
+// processes it started, so the voice chat is never shared, and never echoes back to the
+// room. It returns ErrUnsupported where that cannot be told apart (then Open is left).
+func OpenExcludingSelf(onFrame FrameFunc) (Stream, error) {
+	return openExcludingSelf(onFrame)
 }
 
 // framer turns arbitrary sized sample batches into fixed frames.

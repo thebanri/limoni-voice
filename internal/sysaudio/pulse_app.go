@@ -26,6 +26,7 @@ const appRescan = 500 * time.Millisecond
 type pulseAppStream struct {
 	client *pulse.Client
 	app    App
+	all    bool            // every application's streams but Limoni Voice's (OpenExcludingSelf)
 	names  map[string]bool // executable names of the application, lower case
 	mix    *mixer
 	frames atomic.Uint64
@@ -43,6 +44,9 @@ func (s *pulseAppStream) Backend() string {
 	s.mu.Lock()
 	n := len(s.recs)
 	s.mu.Unlock()
+	if s.all {
+		return fmt.Sprintf("pulse app streams of every program but Limoni Voice (%d playing)", n)
+	}
 	return fmt.Sprintf("pulse app streams of %s (pid %d, %d playing)", s.app.Name, s.app.PID, n)
 }
 
@@ -63,6 +67,16 @@ func (s *pulseAppStream) Close() error {
 }
 
 func openApp(app App, onFrame FrameFunc) (Stream, error) {
+	return openAppStreams(app, false, onFrame)
+}
+
+// openExcludingSelf records every playback stream but Limoni Voice's, each on its own, the
+// way openApp records one application's.
+func openExcludingSelf(onFrame FrameFunc) (Stream, error) {
+	return openAppStreams(App{}, true, onFrame)
+}
+
+func openAppStreams(app App, all bool, onFrame FrameFunc) (Stream, error) {
 	c, err := pulse.NewClient(pulse.ClientApplicationName(clientName), pulse.ClientTimeout(2*time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("sysaudio: connect to PulseAudio/PipeWire: %w", err)
@@ -70,6 +84,7 @@ func openApp(app App, onFrame FrameFunc) (Stream, error) {
 	s := &pulseAppStream{
 		client: c,
 		app:    app,
+		all:    all,
 		names:  appNames(app),
 		mix:    newMixer(onFrame),
 		stop:   make(chan struct{}),
@@ -122,7 +137,10 @@ func (s *pulseAppStream) scan() error {
 
 	live := map[uint32]bool{}
 	for _, in := range inputs {
-		if !s.matches(in.Properties) && !s.matches(clientProps[in.ClientIndex]) {
+		if isSelf(in.Properties) || isSelf(clientProps[in.ClientIndex]) {
+			continue
+		}
+		if !s.all && !s.matches(in.Properties) && !s.matches(clientProps[in.ClientIndex]) {
 			continue
 		}
 		live[in.SinkInputIndex] = true
@@ -182,18 +200,27 @@ func (s *pulseAppStream) record(input, monitorSource uint32) (*pulse.RecordStrea
 	return rec, nil
 }
 
+func propString(props proto.PropList, k string) string {
+	if v, ok := props[k]; ok {
+		return v.String()
+	}
+	return ""
+}
+
+// isSelf reports whether a playback stream is Limoni Voice's: from its own process, from a
+// player it started (the exec audio backend plays through one), or under its name. Its
+// voice chat is never shared, which also keeps it from echoing back into the room.
+func isSelf(props proto.PropList) bool {
+	if pid, err := strconv.Atoi(propString(props, "application.process.id")); err == nil && pid > 1 && descendsFrom(pid, os.Getpid()) {
+		return true
+	}
+	return strings.HasPrefix(propString(props, "application.name"), "Limoni Voice")
+}
+
 // matches reports whether a playback stream belongs to the application.
 func (s *pulseAppStream) matches(props proto.PropList) bool {
-	prop := func(k string) string {
-		if v, ok := props[k]; ok {
-			return v.String()
-		}
-		return ""
-	}
+	prop := func(k string) string { return propString(props, k) }
 	if pid, err := strconv.Atoi(prop("application.process.id")); err == nil && pid > 1 {
-		if pid == os.Getpid() {
-			return false
-		}
 		if s.app.PID > 1 && descendsFrom(pid, s.app.PID) {
 			return true
 		}

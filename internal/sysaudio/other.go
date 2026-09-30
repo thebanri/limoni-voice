@@ -6,3 +6,5 @@ package sysaudio
 func open(FrameFunc) (Stream, error) { return nil, ErrUnsupported }
 
 func openApp(App, FrameFunc) (Stream, error) { return nil, ErrUnsupported }
+
+func openExcludingSelf(FrameFunc) (Stream, error) { return nil, ErrUnsupported }
