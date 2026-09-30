@@ -407,6 +407,7 @@ func TestSettingsPersistAcrossRestart(t *testing.T) {
 	SetThemeByID(ThemeNord.ID)
 	SetCompactHUD(true)
 	a.room.ChatHeight = 14
+	a.room.ChatWidth = 70
 	a.persistSettings() // what the render loop does
 
 	// Restart: the theme falls back to the default, and the USB mic moved down the list.
@@ -422,8 +423,8 @@ func TestSettingsPersistAcrossRestart(t *testing.T) {
 	if !GetCompactHUD() {
 		t.Error("mini HUD not restored")
 	}
-	if b.room.ChatHeight != 14 {
-		t.Errorf("chat height = %d, want 14", b.room.ChatHeight)
+	if b.room.ChatHeight != 14 || b.room.ChatWidth != 70 {
+		t.Errorf("chat size = %d rows, %d%%; want 14 rows, 70%%", b.room.ChatHeight, b.room.ChatWidth)
 	}
 	if got := b.audio.GetSelectedInputName(); got != "USB Mic" {
 		t.Errorf("microphone = %q, want USB Mic", got)

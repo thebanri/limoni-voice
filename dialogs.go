@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/i18n"
@@ -1765,23 +1766,124 @@ func GetAllDebugLogsText() string {
 }
 
 // DrawDebugModal renders a full-featured technical debug log viewer modal
-func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, netLines []string, onClose func(), onClear func(), onCopy func()) {
+// debugFilter narrows the debug log to one kind of message.
+type debugFilter struct {
+	name string
+	tags []string // a line matches when it contains any of them; none = every line
+}
+
+var debugFilters = []debugFilter{
+	{name: "All"},
+	{name: "Problems", tags: []string{"[ERROR]", "[ERR]", "[WARN]", "failed", "error", "⚠️", "❌"}},
+	{name: "Network", tags: []string{"[NET]", "[RELAY]", "[P2P]", "[STUN]", "[E2EE]", "[SECURITY]", "[HOST]", "[CONNECT]", "[DIRECT]", "[JOIN]", "[UDP]", "[TCP]"}},
+	{name: "Screen share", tags: []string{"[SCREEN]", "[SCREENSHARE]", "[SHARE]", "[WATCH]", "[VIEWER]", "[BROADCAST]", "[RECEIVER]", "[SESSION]", "[PORTAL]", "[MUTTER]", "MPV"}},
+	{name: "Audio", tags: []string{"[AUDIO]", "[MIC]", "[PTT]", "[VOICE]", "[SFX]", "[VOL]", "[DEAFENED]", "[NOTIFY]"}},
+}
+
+func (f debugFilter) match(line string) bool {
+	if len(f.tags) == 0 {
+		return true
+	}
+	for _, tag := range f.tags {
+		if strings.Contains(line, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// DebugView is the debug dialog's state: how many rows it is scrolled up from the newest,
+// and which filter is on. DrawDebugModal keeps the scroll within what is shown.
+type DebugView struct {
+	Scroll int
+	Filter int
+
+	maxScroll int // -1 until drawn
+	page      int
+	rows      int // wrapped rows at the last draw, and the width and filter they were for
+	width     int
+	filter    int
+}
+
+func NewDebugView() *DebugView { return &DebugView{maxScroll: -1} }
+
+// ScrollBy moves the view up (delta > 0) or down by rows.
+func (v *DebugView) ScrollBy(delta int) {
+	v.Scroll = max(0, v.Scroll+delta)
+	if v.maxScroll >= 0 {
+		v.Scroll = min(v.Scroll, v.maxScroll)
+	}
+}
+
+// PageBy moves the view by whole pages, one row of context kept.
+func (v *DebugView) PageBy(pages int) { v.ScrollBy(pages * max(1, v.page-1)) }
+
+// Top and Bottom jump to the oldest and the newest lines.
+func (v *DebugView) Top()    { v.Scroll = max(v.maxScroll, 0) }
+func (v *DebugView) Bottom() { v.Scroll = 0 }
+
+// NextFilter shows the next kind of message, from the newest.
+func (v *DebugView) NextFilter() {
+	v.Filter = (v.Filter + 1) % len(debugFilters)
+	v.Scroll = 0
+}
+
+// FilterName is the current filter's label.
+func (v *DebugView) FilterName() string { return T(debugFilters[v.Filter%len(debugFilters)].name) }
+
+// debugRow is one screen row of a wrapped log line.
+type debugRow struct {
+	text  string
+	cont  bool // a wrapped continuation, drawn indented
+	color cell.Color
+}
+
+func debugLogColor(line string, theme ThemePalette) cell.Color {
+	switch {
+	case strings.Contains(line, "[ERROR]") || strings.Contains(line, "[ERR]") || strings.Contains(line, "failed"):
+		return theme.Danger
+	case strings.Contains(line, "[WARN]"):
+		return theme.Warning
+	case strings.Contains(line, "[SCREEN]") || strings.Contains(line, "[SHARE]") || strings.Contains(line, "[WATCH]") || strings.Contains(line, "[VIEWER]"):
+		return theme.Secondary
+	case strings.Contains(line, "[NET]") || strings.Contains(line, "[RELAY]") || strings.Contains(line, "[UDP]") || strings.Contains(line, "[TCP]") || strings.Contains(line, "[SECURITY]") || strings.Contains(line, "[HOST]"):
+		return theme.BorderFocused
+	case strings.Contains(line, "[+]") || strings.Contains(line, "joined"):
+		return theme.Success
+	}
+	return theme.Text
+}
+
+// wrapDebugLine wraps a log line to width cells; continuation rows are two cells narrower,
+// for their indent.
+func wrapDebugLine(line string, width int, color cell.Color) []debugRow {
+	line = strings.ReplaceAll(line, "\t", chatTab)
+	first, _ := wrapWordsToLines(line, width)
+	if len(first) <= 1 {
+		return []debugRow{{text: first[0], color: color}}
+	}
+	rows := []debugRow{{text: first[0], color: color}}
+	rest := strings.TrimLeftFunc(strings.TrimPrefix(line, first[0]), unicode.IsSpace)
+	more, _ := wrapWordsToLines(rest, width-2)
+	for _, r := range more {
+		rows = append(rows, debugRow{text: r, cont: true, color: color})
+	}
+	return rows
+}
+
+// DrawDebugModal draws the debug dialog: the network diagnostics pinned on top and the debug
+// log below, both wrapped rather than cut off, over nearly the whole screen.
+func DrawDebugModal(frame *terminal.Frame, area cell.Rect, view *DebugView, netLines []string, onClose func(), onClear func(), onCopy func()) {
 	if area.Width < 20 || area.Height < 10 {
 		return
 	}
-
-	dialogW := uint16(math.Min(float64(area.Width-4), 110))
-	dialogH := uint16(math.Min(float64(area.Height-4), 32))
-	if dialogW < 30 {
-		dialogW = area.Width
-	}
-	if dialogH < 10 {
-		dialogH = area.Height
+	if view == nil {
+		view = NewDebugView()
 	}
 
-	x := (area.Width - dialogW) / 2
-	y := (area.Height - dialogH) / 2
-	dialogArea := cell.NewRect(area.X+x, area.Y+y, dialogW, dialogH)
+	dialogW := area.Width - min(area.Width-20, 4)
+	dialogH := area.Height - min(area.Height-10, 2)
+	dialogArea := cell.NewRect(area.X+(area.Width-dialogW)/2, area.Y+(area.Height-dialogH)/2, dialogW, dialogH)
 
 	theme := CurrentTheme()
 	dialogBg := theme.SurfaceBg
@@ -1801,194 +1903,134 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, scrollOffset int, net
 			buf.SetCell(dx, dy, cell.Cell{Content: ' ', Style: cell.Style{Bg: dialogBg}})
 		}
 	}
+	right := inner.X + inner.Width
 
-	logs := GetDebugLogs()
-
-	// 1. Top Action Bar
-	// [Esc] Close button
-	closeBtn := T("[Esc] Close")
-	closeLen := uint16(len([]rune(closeBtn)))
-	buf.SetString(inner.X+1, inner.Y, closeBtn, cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       theme.Danger,
-		Modifier: cell.ModifierBold,
-	})
-	clickable(frame, cell.NewRect(inner.X+1, inner.Y, closeLen, 1), func(_ driver.MouseEvent) {
-		if onClose != nil {
-			onClose()
+	// 1. Top action bar
+	x := inner.X + 1
+	button := func(label string, bg cell.Color, onClick func()) {
+		w := uint16(cell.StringWidth(label))
+		if x+w > right {
+			return
 		}
-	})
-
-	// [C] Copy All button
-	copyBtn := T("[C] Copy All")
-	copyLen := uint16(len([]rune(copyBtn)))
-	copyX := inner.X + closeLen + 3
-	buf.SetString(copyX, inner.Y, copyBtn, cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       theme.Secondary,
-		Modifier: cell.ModifierBold,
-	})
-	clickable(frame, cell.NewRect(copyX, inner.Y, copyLen, 1), func(_ driver.MouseEvent) {
-		if onCopy != nil {
-			onCopy()
+		buf.SetString(x, inner.Y, label, cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: bg, Modifier: cell.ModifierBold})
+		if onClick != nil {
+			clickable(frame, cell.NewRect(x, inner.Y, w, 1), func(_ driver.MouseEvent) { onClick() })
 		}
-	})
+		x += w + 2
+	}
+	button(T("[Esc] Close"), theme.Danger, onClose)
+	button(T("[C] Copy All"), theme.Secondary, onCopy)
+	button(Tf("[F] Filter: %s", view.FilterName()), theme.Accent, view.NextFilter) // before Clear: it matters more on a narrow screen
+	button(T("[Del] Clear"), theme.Warning, onClear)
 
-	// [Del] Clear button
-	clearBtn := T("[Del] Clear")
-	clearLen := uint16(len([]rune(clearBtn)))
-	clearX := copyX + copyLen + 2
-	buf.SetString(clearX, inner.Y, clearBtn, cell.Style{
-		Fg:       cell.NewColorRGB(0x00, 0x00, 0x00),
-		Bg:       theme.Warning,
-		Modifier: cell.ModifierBold,
-	})
-	clickable(frame, cell.NewRect(clearX, inner.Y, clearLen, 1), func(_ driver.MouseEvent) {
-		if onClear != nil {
-			onClear()
+	all := GetDebugLogs()
+	filter := debugFilters[view.Filter%len(debugFilters)]
+	var logs []string
+	for _, l := range all {
+		if filter.match(l) {
+			logs = append(logs, l)
 		}
-	})
-
-	// Log Count info on the right
-	countInfo := Tf("Total: %d logs", len(logs))
-	countLen := uint16(len([]rune(countInfo)))
-	if inner.Width > countLen+2 {
-		buf.SetString(inner.X+inner.Width-countLen-1, inner.Y, countInfo, cell.Style{
-			Fg: theme.TextMuted,
-			Bg: dialogBg,
-		})
+	}
+	countInfo := Tf("Total: %d logs", len(all))
+	if len(logs) != len(all) {
+		countInfo = Tf("Shown: %d of %d logs", len(logs), len(all))
+	}
+	if cw := uint16(cell.StringWidth(countInfo)); x+cw < right {
+		buf.SetString(right-cw-1, inner.Y, countInfo, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
 	}
 
-	// 2. Divider line
-	divY := inner.Y + 1
-	for dx := inner.X; dx < inner.X+inner.Width; dx++ {
-		buf.SetCell(dx, divY, cell.Cell{
-			Content: '─',
-			Style:   cell.Style{Fg: theme.Border, Bg: dialogBg},
-		})
+	divider := func(y uint16) {
+		for dx := inner.X; dx < right; dx++ {
+			buf.SetCell(dx, y, cell.Cell{Content: '─', Style: cell.Style{Fg: theme.Border, Bg: dialogBg}})
+		}
 	}
+	divider(inner.Y + 1)
 
-	// 3. Pinned network diagnostics (path, RTT, loss, jitter per peer)
+	// 2. Pinned network diagnostics (path, RTT, loss, jitter per peer), wrapped, at most a
+	// third of the dialog.
 	listY := inner.Y + 2
+	textW := int(inner.Width) - 2
 	if len(netLines) > 0 && inner.Height > 14 {
-		maxNet := min(len(netLines), int(inner.Height)/3)
-		for i, line := range netLines[:maxNet] {
-			if r := []rune(line); len(r) > int(inner.Width)-2 {
-				line = string(r[:inner.Width-3]) + "…"
+		var rows []debugRow
+		for i, line := range netLines {
+			for _, r := range wrapDebugLine(line, textW, theme.Secondary) {
+				if i == 0 {
+					r.color = theme.Accent
+				}
+				rows = append(rows, r)
 			}
-			style := cell.Style{Fg: theme.Secondary, Bg: dialogBg}
-			if i == 0 {
+		}
+		rows = rows[:min(len(rows), int(inner.Height)/3)]
+		for i, r := range rows {
+			rx := inner.X + 1
+			if r.cont {
+				rx += 2
+			}
+			style := cell.Style{Fg: r.color, Bg: dialogBg}
+			if !r.cont && i == 0 {
 				style.Modifier = cell.ModifierBold
 			}
-			buf.SetString(inner.X+1, listY+uint16(i), line, style)
+			buf.SetString(rx, listY+uint16(i), r.text, style)
 		}
-		listY += uint16(maxNet)
-		for dx := inner.X; dx < inner.X+inner.Width; dx++ {
-			buf.SetCell(dx, listY, cell.Cell{Content: '─', Style: cell.Style{Fg: theme.Border, Bg: dialogBg}})
-		}
+		listY += uint16(len(rows))
+		divider(listY)
 		listY++
 	}
 
-	// 4. Log lines display area
-	maxDisplay := int(inner.Y + inner.Height - 1 - listY)
-	if maxDisplay < 1 {
-		maxDisplay = 1
-	}
-
-	listWidth := inner.Width - 2
-	hasScrollbar := len(logs) > maxDisplay && inner.Width > 8
-	if hasScrollbar {
-		listWidth = inner.Width - 4
-	}
-
-	if len(logs) == 0 {
-		buf.SetString(inner.X+2, listY, T("No debug logs recorded yet."), cell.Style{
-			Fg: theme.TextMuted,
-			Bg: dialogBg,
-		})
-	} else {
-		startIdx := 0
-		if len(logs) > maxDisplay {
-			startIdx = len(logs) - maxDisplay - scrollOffset
-			if startIdx < 0 {
-				startIdx = 0
-			}
-		}
-		endIdx := startIdx + maxDisplay
-		if endIdx > len(logs) {
-			endIdx = len(logs)
-		}
-
-		visibleLogs := logs[startIdx:endIdx]
-		for i, line := range visibleLogs {
-			rowY := listY + uint16(i)
-			logColor := theme.Text
-			if strings.Contains(line, "[ERROR]") || strings.Contains(line, "[ERR]") || strings.Contains(line, "failed") {
-				logColor = theme.Danger
-			} else if strings.Contains(line, "[WARN]") {
-				logColor = theme.Warning
-			} else if strings.Contains(line, "[SCREEN]") || strings.Contains(line, "[SHARE]") || strings.Contains(line, "[WATCH]") || strings.Contains(line, "[VIEWER]") {
-				logColor = theme.Secondary
-			} else if strings.Contains(line, "[NET]") || strings.Contains(line, "[RELAY]") || strings.Contains(line, "[UDP]") || strings.Contains(line, "[TCP]") || strings.Contains(line, "[SECURITY]") || strings.Contains(line, "[HOST]") {
-				logColor = theme.BorderFocused
-			} else if strings.Contains(line, "[+]") || strings.Contains(line, "joined") {
-				logColor = theme.Success
-			}
-
-			rLine := []rune(line)
-			if len(rLine) > int(listWidth) {
-				line = string(rLine[:listWidth-1]) + "…"
-			}
-			buf.SetString(inner.X+1, rowY, line, cell.Style{
-				Fg: logColor,
-				Bg: dialogBg,
-			})
-		}
-
-		// Draw Vertical Scrollbar
-		if hasScrollbar {
-			scrollX := inner.X + inner.Width - 2
-			trackHeight := maxDisplay
-			thumbHeight := int(math.Max(1, math.Round(float64(trackHeight*trackHeight)/float64(len(logs)))))
-			if thumbHeight >= trackHeight {
-				thumbHeight = trackHeight - 1
-			}
-			maxScroll := len(logs) - maxDisplay
-			thumbY := 0
-			if maxScroll > 0 {
-				thumbY = int(math.Round(float64(startIdx) / float64(maxScroll) * float64(trackHeight-thumbHeight)))
-			}
-
-			for r := 0; r < trackHeight; r++ {
-				curY := listY + uint16(r)
-				if r >= thumbY && r < thumbY+thumbHeight {
-					buf.SetCell(scrollX, curY, cell.Cell{
-						Content: '█',
-						Style:   cell.Style{Fg: theme.BorderFocused, Bg: dialogBg},
-					})
-				} else {
-					buf.SetCell(scrollX, curY, cell.Cell{
-						Content: '░',
-						Style:   cell.Style{Fg: theme.Border, Bg: dialogBg},
-					})
-				}
-			}
-		}
-	}
-
-	// 5. Bottom Hint
+	// 3. The log, wrapped; scrolled by rows.
 	bottomY := inner.Y + inner.Height - 1
-	guide := T("[ESC/F12] Close   [↑/↓ / PgUp/PgDn] Scroll   [C] Copy   [Del] Clear")
-	if scrollOffset > 0 {
-		guide = Tf("↑ +%d earlier logs   %s", scrollOffset, guide)
+	maxDisplay := max(1, int(bottomY)-int(listY))
+	listW := textW - 2 // room for the scrollbar
+	var rows []debugRow
+	for _, line := range logs {
+		rows = append(rows, wrapDebugLine(line, listW, debugLogColor(line, theme))...)
 	}
-	if maxG := int(inner.Width - 2); len([]rune(guide)) > maxG {
-		guide = string([]rune(guide)[:maxG])
+	// Scrolled up, the lines on screen stay put while new ones arrive below.
+	if view.Scroll > 0 && view.width == listW && view.filter == view.Filter && len(rows) > view.rows {
+		view.Scroll += len(rows) - view.rows
 	}
-	buf.SetString(inner.X+1, bottomY, guide, cell.Style{
-		Fg: theme.TextMuted,
-		Bg: dialogBg,
-	})
+	view.rows, view.width, view.filter = len(rows), listW, view.Filter
+	view.maxScroll = max(0, len(rows)-maxDisplay)
+	view.page = maxDisplay
+	view.Scroll = min(view.Scroll, view.maxScroll)
+
+	if len(rows) == 0 {
+		msg := T("No debug logs recorded yet.")
+		if len(all) > 0 {
+			msg = T("No logs match this filter. Press F for the next one.")
+		}
+		buf.SetString(inner.X+2, listY, msg, cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
+	} else {
+		start := max(0, len(rows)-maxDisplay-view.Scroll)
+		end := min(len(rows), start+maxDisplay)
+		for i, r := range rows[start:end] {
+			rx := inner.X + 1
+			if r.cont {
+				rx += 2
+			}
+			buf.SetString(rx, listY+uint16(i), r.text, cell.Style{Fg: r.color, Bg: dialogBg})
+		}
+
+		if view.maxScroll > 0 && inner.Width > 8 {
+			scrollX := right - 2
+			thumbH := max(1, min(maxDisplay-1, int(math.Round(float64(maxDisplay*maxDisplay)/float64(len(rows))))))
+			thumbY := int(math.Round(float64(start) / float64(view.maxScroll) * float64(maxDisplay-thumbH)))
+			for r := range maxDisplay {
+				ch, fg := '░', theme.Border
+				if r >= thumbY && r < thumbY+thumbH {
+					ch, fg = '█', theme.BorderFocused
+				}
+				buf.SetCell(scrollX, listY+uint16(r), cell.Cell{Content: ch, Style: cell.Style{Fg: fg, Bg: dialogBg}})
+			}
+		}
+	}
+
+	// 4. Bottom hint
+	guide := T("[Esc/F12] Close   [↑↓ PgUp PgDn Home End] Scroll   [F] Filter   [C] Copy   [Del] Clear")
+	if view.Scroll > 0 {
+		guide = Tf("↑ %d more rows above the newest   %s", view.Scroll, guide)
+	}
+	buf.SetString(inner.X+1, bottomY, clipToWidth(guide, textW), cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
 }
 
 // DrawFileOfferModal renders an interactive confirmation modal for incoming P2P file transfers and code snippets

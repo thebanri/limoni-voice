@@ -507,7 +507,7 @@ The log is written to the per-user state directory instead of the folder the app
 | `E` | 🔁 Toggle echo cancellation |
 | `S` | 🪶 Toggle voice smoothing (soft highs, even loudness, peak limiter) |
 | `Ctrl+V` / `🖱️ Right click` | 📋 Paste into the chat (multi-line code keeps its lines) |
-| `🖱️ Drag chat top border` / `[▲][▼]` | ↕️ Make the chat panel taller or shorter |
+| `🖱️ Drag chat top border` / `[▲][▼]` | ↕️ Make the chat panel taller or shorter (its left border drags it wider) |
 | `/send <path>` | 📎 Send a file (quoted paths from Explorer's "Copy as path" work) |
 | `F12` | 🩺 Debug & network diagnostics |
 | `/net`, `/stats` | 📶 Print per-peer path, RTT, loss & jitter to chat |

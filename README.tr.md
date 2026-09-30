@@ -508,7 +508,7 @@ Log, uygulamanın başlatıldığı klasör yerine kullanıcı durum klasörüne
 | `E` | 🔁 Yankı gidermeyi aç / kapat |
 | `S` | 🪶 Ses yumuşatmayı aç / kapat (yumuşak tizler, dengeli ses, tepe sınırlayıcı) |
 | `Ctrl+V` / `🖱️ Sağ tık` | 📋 Sohbete yapıştır (çok satırlı kod satırlarını korur) |
-| `🖱️ Sohbetin üst kenarını sürükle` / `[▲][▼]` | ↕️ Sohbet panelini büyüt / küçült |
+| `🖱️ Sohbetin üst kenarını sürükle` / `[▲][▼]` | ↕️ Sohbet panelini büyüt / küçült (sol kenarı sürüklenince genişler) |
 | `/send <yol>` | 📎 Dosya gönder (Explorer'daki "Yol olarak kopyala" ile gelen tırnaklı yollar da olur) |
 | `F12` | 🩺 Debug & ağ tanılama paneli |
 | `/net`, `/stats` | 📶 Peer başına yol, RTT, kayıp ve jitter bilgisini sohbete yaz |

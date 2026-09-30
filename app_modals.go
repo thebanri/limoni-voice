@@ -55,7 +55,12 @@ func (a *App) closeLeaveModal() {
 
 func (a *App) openDebugModal() {
 	a.showDebugModal = true
-	a.debugScrollOffset = 0
+	filter := 0
+	if a.debugView != nil {
+		filter = a.debugView.Filter // the filter stays; the view starts at the newest lines
+	}
+	a.debugView = NewDebugView()
+	a.debugView.Filter = filter
 }
 
 func (a *App) closeDebugModal() {

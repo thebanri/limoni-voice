@@ -32,10 +32,13 @@ func (a *App) handleMouse(m driver.MouseEvent) {
 
 	switch {
 	case a.showDebugModal:
+		if a.debugView == nil {
+			break
+		}
 		if m.Button == driver.MouseScrollUp {
-			a.debugScrollOffset++
-		} else if m.Button == driver.MouseScrollDown && a.debugScrollOffset > 0 {
-			a.debugScrollOffset--
+			a.debugView.ScrollBy(chatWheelLines)
+		} else if m.Button == driver.MouseScrollDown {
+			a.debugView.ScrollBy(-chatWheelLines)
 		}
 	case a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal:
 		a.handleLobbyMouse(m)
@@ -162,20 +165,23 @@ func (a *App) handleRoomMouse(m driver.MouseEvent) {
 			a.pasteIntoChat(readClipboard())
 		}
 	case driver.MouseScrollUp:
-		room.ScrollChat(1)
+		room.ScrollChat(chatWheelLines)
 	case driver.MouseScrollDown:
-		room.ScrollChat(-1)
+		room.ScrollChat(-chatWheelLines)
 	}
 }
 
-// handleChatResize lets the footer's top border be dragged up or down to make the chat
-// taller or shorter, and reports whether it took the event.
+// chatWheelLines is how far one wheel step scrolls the chat.
+const chatWheelLines = 3
+
+// handleChatResize lets the chat panel's borders be dragged: the top one up or down for its
+// height, the left one sideways for its width. It reports whether it took the event.
 func (a *App) handleChatResize(m driver.MouseEvent) bool {
 	switch {
 	case m.Button == driver.MouseLeft && !m.Drag:
 		return a.room.StartChatResize(m.X, m.Y)
 	case m.Button == driver.MouseLeft:
-		return a.room.DragChatResize(m.Y)
+		return a.room.DragChatResize(m.X, m.Y)
 	case m.Button == driver.MouseRelease || m.Button == driver.MouseNone:
 		return a.room.EndChatResize()
 	}

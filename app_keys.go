@@ -305,6 +305,10 @@ func (a *App) handleRelayModalKey(e driver.KeyEvent) {
 }
 
 func (a *App) handleDebugModalKey(e driver.KeyEvent) {
+	if a.debugView == nil {
+		a.debugView = NewDebugView()
+	}
+	v := a.debugView
 	switch e.Type {
 	case driver.KeyEsc:
 		a.closeDebugModal()
@@ -315,23 +319,23 @@ func (a *App) handleDebugModalKey(e driver.KeyEvent) {
 			a.toast("Copied network diagnostics and debug logs to clipboard")
 		case 'x', 'X':
 			ClearDebugLogs()
+		case 'f', 'F':
+			v.NextFilter()
 		}
 	case driver.KeyDelete:
 		ClearDebugLogs()
 	case driver.KeyArrowUp:
-		a.debugScrollOffset++
+		v.ScrollBy(1)
 	case driver.KeyArrowDown:
-		if a.debugScrollOffset > 0 {
-			a.debugScrollOffset--
-		}
+		v.ScrollBy(-1)
 	case driver.KeyPageUp:
-		a.debugScrollOffset += 10
+		v.PageBy(1)
 	case driver.KeyPageDown:
-		a.debugScrollOffset = max(0, a.debugScrollOffset-10)
+		v.PageBy(-1)
 	case driver.KeyHome:
-		a.debugScrollOffset = len(GetDebugLogs())
+		v.Top()
 	case driver.KeyEnd:
-		a.debugScrollOffset = 0
+		v.Bottom()
 	}
 }
 
@@ -705,9 +709,9 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 				room.HistoryDown()
 			}
 		case driver.KeyPageUp:
-			room.ScrollChat(5)
+			room.ScrollChatPage(1)
 		case driver.KeyPageDown:
-			room.ScrollChat(-5)
+			room.ScrollChatPage(-1)
 		default:
 			room.ChatInputState.HandleKey(e)
 		}
@@ -722,10 +726,14 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 	switch e.Type {
 	case driver.KeyEnter, driver.KeyTab:
 		room.SetChatFocused(true)
-	case driver.KeyPageUp, driver.KeyArrowUp:
+	case driver.KeyArrowUp:
 		room.ScrollChat(1)
-	case driver.KeyPageDown, driver.KeyArrowDown:
+	case driver.KeyArrowDown:
 		room.ScrollChat(-1)
+	case driver.KeyPageUp:
+		room.ScrollChatPage(1)
+	case driver.KeyPageDown:
+		room.ScrollChatPage(-1)
 	case driver.KeyEsc:
 		switch {
 		case node.IsWatchingScreen:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -200,7 +201,7 @@ func TestDebugModalAndLogs(t *testing.T) {
 	cleared := false
 	copied := false
 
-	DrawDebugModal(frame, cell.NewRect(0, 0, 120, 40), 0, []string{"Network: relay"}, func() { closed = true }, func() { cleared = true }, func() { copied = true })
+	DrawDebugModal(frame, cell.NewRect(0, 0, 120, 40), NewDebugView(), []string{"Network: relay"}, func() { closed = true }, func() { cleared = true }, func() { copied = true })
 	_ = closed
 	_ = cleared
 	_ = copied
@@ -1584,8 +1585,8 @@ func TestChatPanelResize(t *testing.T) {
 		return room.LastLogArea
 	}
 
-	if got := render().Height; got != defaultFooterRows+2 {
-		t.Fatalf("chat panel height while watching = %d, want %d", got, defaultFooterRows+2)
+	if got := int(render().Height); got != defaultFooterRowsFor(area)+2 {
+		t.Fatalf("chat panel height while watching = %d, want %d", got, defaultFooterRowsFor(area)+2)
 	}
 
 	// Drag the footer's top border up by 10 rows.
@@ -1593,32 +1594,32 @@ func TestChatPanelResize(t *testing.T) {
 	if !room.StartChatResize(5, top) {
 		t.Fatal("pressing the footer's top border did not start a resize")
 	}
-	if !room.DragChatResize(top - 10) {
+	if !room.DragChatResize(5, top-10) {
 		t.Fatal("drag not taken")
 	}
 	room.EndChatResize()
-	if got := render().Height; got != defaultFooterRows+2+10 {
-		t.Fatalf("chat panel height after dragging up 10 rows = %d, want %d", got, defaultFooterRows+12)
+	if got := int(render().Height); got != defaultFooterRowsFor(area)+2+10 {
+		t.Fatalf("chat panel height after dragging up 10 rows = %d, want %d", got, defaultFooterRowsFor(area)+12)
 	}
-	if room.DragChatResize(3) {
+	if room.DragChatResize(5, 3) {
 		t.Fatal("drag taken after the resize ended")
 	}
 
 	room.ResizeChat(-footerResizeStep) // ▼
-	if got := render().Height; got != defaultFooterRows+2+10-footerResizeStep {
+	if got := int(render().Height); got != defaultFooterRowsFor(area)+2+10-footerResizeStep {
 		t.Fatalf("chat panel height after ▼ = %d", got)
 	}
 
 	// Dragging past the header leaves the member grid its rows; dragging to the bottom keeps
 	// at least the input line and one message.
 	room.StartChatResize(5, room.lastFooterArea.Y)
-	room.DragChatResize(0)
+	room.DragChatResize(5, 0)
 	room.EndChatResize()
 	if got, want := int(render().Height), maxFooterRows(area)+2; got != want {
 		t.Fatalf("tallest chat panel = %d, want %d", got, want)
 	}
 	room.StartChatResize(5, room.lastFooterArea.Y)
-	room.DragChatResize(h - 1)
+	room.DragChatResize(5, h-1)
 	room.EndChatResize()
 	if got := int(render().Height); got < minFooterRows+2 {
 		t.Fatalf("shortest chat panel = %d, want at least %d", got, minFooterRows+2)
@@ -1703,5 +1704,197 @@ func TestCleanFilePath(t *testing.T) {
 		if got := cleanFilePath(in); got != want {
 			t.Errorf("cleanFilePath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// One long message (a pasted log) wraps into many lines; the chat scrolls through all of them,
+// keeps its place while others write, and returns to the bottom when you send.
+func TestChatScrollsThroughLongMessage(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("scroll_test", "Bob", audio)
+	defer node.Close()
+	room := NewRoomView()
+	room.AddChatMessage("Alice", "a", "hi", false, time.Now())
+	var long strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&long, "log line %02d\n", i)
+	}
+	room.AddChatMessage("Alice", "a", long.String(), false, time.Now())
+
+	area := cell.NewRect(0, 0, 120, 30)
+	render := func() string {
+		buf := buffer.NewBuffer(area)
+		room.Render(terminal.NewFrame(buf, terminal.NewFocusManager()), area, node, audio)
+		var sb strings.Builder
+		for y := area.Y; y < area.Height; y++ {
+			for x := area.X; x < area.Width; x++ {
+				if c := buf.Get(x, y); c != nil && c.Content != 0 {
+					sb.WriteRune(c.Content)
+				}
+			}
+			sb.WriteByte('\n')
+		}
+		return sb.String()
+	}
+	render()
+	if room.chatMaxScroll < 50 {
+		t.Fatalf("scroll limit %d for a 60-line message, want it to reach the top", room.chatMaxScroll)
+	}
+
+	for range 40 {
+		room.ScrollChatPage(1)
+	}
+	if screen := render(); !strings.Contains(screen, "log line 00") {
+		t.Fatalf("paging up never reached the start of the long message:\n%s", screen)
+	}
+	top := room.ChatScrollOffset
+	if top != room.chatMaxScroll {
+		t.Fatalf("offset %d after paging up, want the limit %d", top, room.chatMaxScroll)
+	}
+
+	// Someone writes while you read: the view stays where it is.
+	room.AddChatMessage("Alice", "a", "new message", false, time.Now())
+	room.AddLog("[+] Carol joined the room.")
+	if screen := render(); !strings.Contains(screen, "log line 00") {
+		t.Fatalf("an incoming message moved the scrolled view:\n%s", screen)
+	}
+
+	// Sending takes you to the newest lines.
+	room.ChatInputState.SetValue("my reply")
+	room.SendCurrentChat()
+	render()
+	if room.ChatScrollOffset != 0 {
+		t.Fatalf("offset %d after sending, want 0", room.ChatScrollOffset)
+	}
+}
+
+// Selecting a whole message copies it exactly: nothing drawn past the panel's right edge (an
+// emoji takes two cells), tabs kept visible, no space added inside a long URL where it wraps,
+// the whitespace a wrap dropped put back, and code indentation kept.
+func TestChatSelectionCopiesWholeMessage(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("select_test", "Bob", audio)
+	defer node.Close()
+	cases := []string{
+		"[03:10:44.949] [NET] 🎯 [STUN] Public endpoint 82.222.238.140:43280 (local :50000, NAT: Unknown) and 🎯🎯🎯 more words here to wrap around the panel edge ok",
+		"plain words only, a long line of plain ascii text that must wrap across several rows of the chat panel without losing anything at all at the right edge",
+		"tab\tseparated\tvalues\tthat\tgo\ton\tand\ton\tand\ton\tand\ton\tand\ton\tand\ton\tand\ton\tand\ton\tand\ton\tend",
+		"STUN: 162.159.207.0 → 82.222.238.140:43280 | 46.225.95.169 → 82.222.238.140:43280 | 74.125.250.129 → 82.222.238.140:43280 END",
+		"https://example.com/a/very/long/url/without/any/spaces/that/needs/to/be/broken/into/pieces/across/lines/END",
+		"func main() {\n    if ok {\n        fmt.Println(\"indented code keeps its spaces\")\n    }\n}",
+	}
+	for _, msg := range cases {
+		room := NewRoomView()
+		room.ChatHeight = 16
+		room.AddChatMessage("Alice", "a", msg, false, time.Now())
+		area := cell.NewRect(0, 0, 120, 30)
+		room.Render(terminal.NewFrame(buffer.NewBuffer(area), terminal.NewFocusManager()), area, node, audio)
+
+		rl := room.renderedLines
+		right := int(room.LastLogArea.X + room.LastLogArea.Width - 1) // the border column
+		for _, l := range rl {
+			for _, c := range l.Chars {
+				if int(c.X)+cell.RuneWidth(c.R) > right {
+					t.Errorf("%q drawn at column %d, past the panel edge %d", c.R, c.X, right)
+				}
+			}
+		}
+		first, last := rl[0], rl[len(rl)-1]
+		room.HandleMousePress(first.StartX, first.RowY)
+		room.HandleMouseDrag(last.EndX, last.RowY)
+		got := room.HandleMouseRelease(last.EndX, last.RowY)
+		if want := strings.ReplaceAll(msg, "\t", chatTab); !strings.HasSuffix(got, want) {
+			t.Errorf("selecting the whole message copied\n%q\nwant it to end with\n%q", got, want)
+		}
+	}
+}
+
+// The debug dialog wraps long lines instead of cutting them, scrolls by rows up to the oldest
+// line and no further, keeps its place while logs arrive, and filters by kind.
+func TestDebugModalScrollWrapFilter(t *testing.T) {
+	ClearDebugLogs()
+	t.Cleanup(ClearDebugLogs)
+	AddDebugLog("[NET] oldest line with a tail that is long enough to wrap in a narrow dialog END-OLDEST")
+	for i := range 80 {
+		AddDebugLog(fmt.Sprintf("[ROOM] filler %02d", i))
+	}
+	AddDebugLog("[SCREEN] [MPV-LIVE] Error parsing option")
+
+	area := cell.NewRect(0, 0, 60, 24)
+	v := NewDebugView()
+	draw := func() string {
+		buf := buffer.NewBuffer(area)
+		DrawDebugModal(terminal.NewFrame(buf, terminal.NewFocusManager()), area, v, nil, nil, nil, nil)
+		var sb strings.Builder
+		for y := area.Y; y < area.Height; y++ {
+			for x := area.X; x < area.Width; x++ {
+				if c := buf.Get(x, y); c != nil && c.Content != 0 {
+					sb.WriteRune(c.Content)
+				}
+			}
+			sb.WriteByte('\n')
+		}
+		return sb.String()
+	}
+	draw()
+	v.Top()
+	screen := draw()
+	if !strings.Contains(screen, "END-OLDEST") {
+		t.Fatalf("Home did not reach the oldest line, wrapped in full:\n%s", screen)
+	}
+	top := v.Scroll
+	v.ScrollBy(50)
+	if v.Scroll != top {
+		t.Fatalf("scrolled past the oldest line: %d > %d", v.Scroll, top)
+	}
+
+	AddDebugLog("[ROOM] a new line while reading")
+	if screen := draw(); !strings.Contains(screen, "END-OLDEST") {
+		t.Fatalf("a new log moved the view:\n%s", screen)
+	}
+
+	v.Bottom()
+	v.Filter = 3 // screen share
+	screen = draw()
+	if !strings.Contains(screen, "[MPV-LIVE] Error parsing") || strings.Contains(screen, "filler") || !strings.Contains(screen, "[F] Filter") {
+		t.Fatalf("screen share filter shows the wrong lines:\n%s", screen)
+	}
+}
+
+// The line between the controls and the chat drags sideways: the chat gets wider or
+// narrower, within bounds that leave the controls their room.
+func TestChatPanelWidthResize(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("chat_width_test", "Bob", audio)
+	defer node.Close()
+	room := NewRoomView()
+	area := cell.NewRect(0, 0, 140, 40)
+	render := func() cell.Rect {
+		room.Render(terminal.NewFrame(buffer.NewBuffer(area), terminal.NewFocusManager()), area, node, audio)
+		return room.LastLogArea
+	}
+	chat := render()
+	if want := 140 * defaultChatWidth / 100; int(chat.Width) < want-2 || int(chat.Width) > want+2 {
+		t.Fatalf("default chat width %d, want about %d", chat.Width, want)
+	}
+
+	y := room.lastFooterArea.Y + 2
+	if !room.StartChatResize(chat.X, y) {
+		t.Fatal("pressing the chat panel's left border did not start a resize")
+	}
+	room.DragChatResize(chat.X-20, y)
+	room.EndChatResize()
+	if wider := render(); wider.Width < chat.Width+18 {
+		t.Fatalf("dragging the border 20 columns left: width %d, was %d", wider.Width, chat.Width)
+	}
+
+	room.StartChatResize(room.LastLogArea.X, y)
+	room.DragChatResize(0, y)
+	room.EndChatResize()
+	if w := render().Width; int(w) > 140*maxChatWidth/100+1 {
+		t.Fatalf("chat grew to %d columns, past %d%%", w, maxChatWidth)
+	}
+	if room.StartChatResize(room.LastLogArea.X+5, y) {
+		t.Fatal("a press inside the chat started a resize")
 	}
 }

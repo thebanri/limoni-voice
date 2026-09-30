@@ -31,6 +31,8 @@ type AppConfig struct {
 	CompactHUD *bool `json:"compact_hud,omitempty"`
 	// ChatHeight is the room footer's inner height the user resized the chat to (0 = default).
 	ChatHeight int `json:"chat_height,omitempty"`
+	// ChatWidth is the chat's percent of the room footer width (0 = default).
+	ChatWidth int `json:"chat_width,omitempty"`
 }
 
 // ScreenSettings are the persisted screen share preferences.

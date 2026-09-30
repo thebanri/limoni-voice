@@ -37,7 +37,11 @@ type RoomView struct {
 	Messages               []RoomMessage
 	ChatInputState         *widgets.TextInputState
 	IsChatFocused          bool
-	ChatScrollOffset       int
+	ChatScrollOffset       int // screen lines above the newest, not messages
+	chatMaxScroll          int // the most ChatScrollOffset can be, from the last draw (-1: not drawn yet)
+	chatPageRows           int // message rows the chat panel shows
+	chatLineCount          int // screen lines of the chat at the last draw, and their width
+	chatLineWidth          int
 	UnreadChatCount        int
 	chatHistory            []string
 	historyIndex           int
@@ -68,7 +72,8 @@ type RoomView struct {
 	// ChatHeight is the footer's inner height the user chose by dragging its top border or
 	// with the chat panel's ▲/▼ buttons (0 = default). Render keeps it within the window.
 	ChatHeight        int
-	chatResizing      bool
+	ChatWidth         int       // the chat's percent of the footer width, dragged at its left border (0 = default)
+	chatResizing      int       // resizeNone, resizeHeight or resizeWidth
 	lastFooterArea    cell.Rect // the footer as last drawn; empty in the mini HUD
 	lastRoomArea      cell.Rect
 	lastResizeButtons cell.Rect
@@ -94,6 +99,7 @@ type renderedChatLine struct {
 	EndX           uint16
 	Chars          []renderedChatChar
 	IsContinuation bool
+	Glue           string
 	RawMessage     string
 	CopyText       string
 	ClickURL       string
@@ -107,6 +113,7 @@ func NewRoomView() *RoomView {
 		ChatInputState: widgets.NewTextInputState(),
 		chatHistory:    make([]string, 0, 32),
 		renderedLines:  make([]renderedChatLine, 0, 64),
+		chatMaxScroll:  -1,
 	}
 }
 
@@ -154,7 +161,6 @@ func (r *RoomView) AddLog(msg string) {
 	if len(r.Messages) > 300 {
 		r.Messages = r.Messages[len(r.Messages)-200:]
 	}
-	r.ChatScrollOffset = 0
 }
 
 func (r *RoomView) AddChatMessage(nickname string, senderID string, text string, isSelf bool, ts time.Time) {
@@ -186,7 +192,9 @@ func (r *RoomView) AddChatMessage(nickname string, senderID string, text string,
 	if !r.IsChatFocused && !isSelf {
 		r.UnreadChatCount++
 	}
-	r.ChatScrollOffset = 0
+	if isSelf {
+		r.ChatScrollOffset = 0 // what you send shows; others' messages leave a scrolled view alone
+	}
 }
 
 func (r *RoomView) SetChatFocused(focused bool) {
@@ -237,6 +245,7 @@ func (r *RoomView) SendCurrentChat() {
 		return
 	}
 	r.ChatInputState.SetValue("")
+	r.ChatScrollOffset = 0 // sending shows the newest lines
 	r.chatHistory = append(r.chatHistory, text)
 	if len(r.chatHistory) > 100 {
 		r.chatHistory = r.chatHistory[len(r.chatHistory)-50:]
@@ -555,9 +564,22 @@ func (r *RoomView) ScrollChat(delta int) {
 	if r.ChatScrollOffset < 0 {
 		r.ChatScrollOffset = 0
 	}
-	if r.ChatScrollOffset > len(r.Messages) {
-		r.ChatScrollOffset = len(r.Messages)
+	// The limit is in screen lines: one long message (a pasted log) wraps into many, so
+	// capping at the message count stopped the scroll a few lines up.
+	if r.chatMaxScroll >= 0 && r.ChatScrollOffset > r.chatMaxScroll {
+		r.ChatScrollOffset = r.chatMaxScroll
 	}
+}
+
+// ScrollChatPage scrolls the chat by one panel height, pages up for dir > 0.
+func (r *RoomView) ScrollChatPage(dir int) {
+	r.mu.Lock()
+	page := max(1, r.chatPageRows-1) // one line of context stays
+	r.mu.Unlock()
+	if dir < 0 {
+		page = -page
+	}
+	r.ScrollChat(page)
 }
 
 func (r *RoomView) SetToast(msg string) {
@@ -596,14 +618,14 @@ func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNo
 	// shares the footer, so its height is the one the user picked when there is one.
 	items := r.controlItems(node, audio)
 	var ctrlWidth int
-	if cols := footerSplit(cell.NewRect(area.X, 0, area.Width, 3)); len(cols) == 2 {
+	r.mu.Lock()
+	footerInner, chatPct := r.ChatHeight, r.ChatWidth
+	r.mu.Unlock()
+	if cols := footerSplit(cell.NewRect(area.X, 0, area.Width, 3), chatPct); len(cols) == 2 {
 		ctrlWidth = int(controlsArea(cols[0]).Width)
 	}
-	r.mu.Lock()
-	footerInner := r.ChatHeight
-	r.mu.Unlock()
 	if footerInner <= 0 {
-		footerInner = defaultFooterRows
+		footerInner = defaultFooterRowsFor(area)
 	}
 	fl := layoutFlow(items, ctrlWidth, footerGap, 3)
 	rows := len(fl.rows)

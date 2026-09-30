@@ -31,8 +31,12 @@ type roomDisplayLine struct {
 	Spans          []chatSpan
 	IsChat         bool
 	IsContinuation bool
+	Glue           string // whitespace dropped where a continuation was wrapped, put back when copied
 	RawMessage     string
 }
+
+// chatTab is how a tab is shown: a tab cell has no width of its own, so it vanished.
+const chatTab = "    "
 
 var (
 	reChatURL   = regexp.MustCompile(`https?://[^\s<>"]+|www\.[^\s<>"]+`)
@@ -192,169 +196,122 @@ func parseMessageSpans(text string) []chatSpan {
 	return spans
 }
 
-func wrapSpansToLines(spans []chatSpan, availWidth int) [][]chatSpan {
-	if availWidth < 5 {
-		availWidth = 5
-	}
+// wrapSpansToLines breaks one paragraph into lines of at most availWidth cells (an emoji
+// takes two). glue[i] is the whitespace the wrap dropped before line i, which a copy puts
+// back between it and the line before; after a word split for being too long, or a line
+// that kept its space, it is empty. Leading spaces of the paragraph
+// (indented code) are kept; those of a wrapped line are not.
+func wrapSpansToLines(spans []chatSpan, availWidth int) (lines [][]chatSpan, glue []string) {
+	availWidth = max(availWidth, 5)
+	var cur []chatSpan
+	curW := 0
+	curGlue := ""
 
-	var lines [][]chatSpan
-	var currentLine []chatSpan
-	currentWidth := 0
-
-	flushLine := func() {
-		if len(currentLine) > 0 {
-			lines = append(lines, currentLine)
-			currentLine = nil
-			currentWidth = 0
+	flush := func() {
+		if len(cur) > 0 {
+			lines = append(lines, cur)
+			glue = append(glue, curGlue)
 		}
+		cur, curW, curGlue = nil, 0, ""
 	}
-
-	appendSpan := func(span chatSpan, width int) {
-		if len(currentLine) > 0 && !currentLine[len(currentLine)-1].IsLink && !currentLine[len(currentLine)-1].IsCopy && !span.IsLink && !span.IsCopy {
-			currentLine[len(currentLine)-1].Text += span.Text
+	add := func(span chatSpan, w int) {
+		if n := len(cur); n > 0 && !cur[n-1].IsLink && !cur[n-1].IsCopy && !span.IsLink && !span.IsCopy {
+			cur[n-1].Text += span.Text
 		} else {
-			currentLine = append(currentLine, span)
+			cur = append(cur, span)
 		}
-		currentWidth += width
+		curW += w
+	}
+	// place puts a token that has no break inside it, splitting it by width only when it is
+	// wider than a whole line.
+	place := func(span chatSpan) {
+		rs := []rune(span.Text)
+		w := cell.StringWidth(span.Text)
+		if curW+w > availWidth && curW > 0 {
+			flush()
+		}
+		for curW+w > availWidth {
+			n := fitRunes(rs, availWidth-curW)
+			part := span
+			part.Text = string(rs[:n])
+			add(part, cell.StringWidth(part.Text))
+			flush()
+			rs = rs[n:]
+			w = cell.StringWidth(string(rs))
+		}
+		if len(rs) > 0 {
+			part := span
+			part.Text = string(rs)
+			add(part, w)
+		}
 	}
 
 	for _, span := range spans {
-		if !span.IsLink && !span.IsCopy {
-			tokens := splitWordsAndSpaces(span.Text)
-			for _, tok := range tokens {
-				tRunes := []rune(tok)
-				tLen := len(tRunes)
-
-				if unicode.IsSpace(tRunes[0]) && currentWidth == 0 {
-					continue
-				}
-
-				if currentWidth+tLen <= availWidth {
-					appendSpan(chatSpan{Text: tok, IsLink: false, IsCopy: false}, tLen)
-				} else {
-					if currentWidth > 0 {
-						flushLine()
-					}
-					if unicode.IsSpace(tRunes[0]) {
-						continue
-					}
-					if tLen <= availWidth {
-						appendSpan(chatSpan{Text: tok, IsLink: false, IsCopy: false}, tLen)
-					} else {
-						for len(tRunes) > 0 {
-							chunkLen := min(len(tRunes), availWidth)
-							chunkStr := string(tRunes[:chunkLen])
-							if len(tRunes) > availWidth {
-								lines = append(lines, []chatSpan{{Text: chunkStr, IsLink: false, IsCopy: false}})
-								tRunes = tRunes[chunkLen:]
-							} else {
-								appendSpan(chatSpan{Text: chunkStr, IsLink: false, IsCopy: false}, chunkLen)
-								tRunes = tRunes[chunkLen:]
-							}
-						}
-					}
-				}
-			}
-		} else {
-			// Interactive span (Link or Copy)
-			lRunes := []rune(span.Text)
-			lLen := len(lRunes)
-
-			if currentWidth+lLen <= availWidth {
-				appendSpan(span, lLen)
-			} else {
-				if currentWidth > 0 {
-					flushLine()
-				}
-				if lLen <= availWidth {
-					appendSpan(span, lLen)
-				} else {
-					for len(lRunes) > 0 {
-						chunkLen := min(len(lRunes), availWidth)
-						chunkStr := string(lRunes[:chunkLen])
-						newSpan := chatSpan{
-							Text:     chunkStr,
-							IsLink:   span.IsLink,
-							ClickURL: span.ClickURL,
-							IsCopy:   span.IsCopy,
-							CopyText: span.CopyText,
-						}
-						if len(lRunes) > availWidth {
-							lines = append(lines, []chatSpan{newSpan})
-							lRunes = lRunes[chunkLen:]
-						} else {
-							appendSpan(newSpan, chunkLen)
-							lRunes = lRunes[chunkLen:]
-						}
-					}
-				}
-			}
-		}
-	}
-
-	flushLine()
-	if len(lines) == 0 {
-		lines = append(lines, []chatSpan{{Text: "", IsLink: false, IsCopy: false}})
-	}
-	return lines
-}
-
-func wrapWordsToLines(text string, maxW int) []string {
-	if maxW < 5 {
-		maxW = 5
-	}
-	tokens := splitWordsAndSpaces(text)
-	var lines []string
-	var cur strings.Builder
-	curLen := 0
-
-	flush := func() {
-		if cur.Len() > 0 {
-			lines = append(lines, cur.String())
-			cur.Reset()
-			curLen = 0
-		}
-	}
-
-	for _, tok := range tokens {
-		tRunes := []rune(tok)
-		tLen := len(tRunes)
-		if unicode.IsSpace(tRunes[0]) && curLen == 0 {
+		if span.IsLink || span.IsCopy {
+			place(span)
 			continue
 		}
-		if curLen+tLen <= maxW {
-			cur.WriteString(tok)
-			curLen += tLen
-		} else {
-			if curLen > 0 {
-				flush()
-			}
-			if unicode.IsSpace(tRunes[0]) {
+		for _, tok := range splitWordsAndSpaces(span.Text) {
+			if !unicode.IsSpace([]rune(tok)[0]) {
+				place(chatSpan{Text: tok})
 				continue
 			}
-			if tLen <= maxW {
-				cur.WriteString(tok)
-				curLen = tLen
-			} else {
-				for len(tRunes) > 0 {
-					cLen := min(len(tRunes), maxW)
-					if len(tRunes) > maxW {
-						lines = append(lines, string(tRunes[:cLen]))
-						tRunes = tRunes[cLen:]
-					} else {
-						cur.WriteString(string(tRunes[:cLen]))
-						curLen = cLen
-						tRunes = tRunes[cLen:]
-					}
-				}
+			w := cell.StringWidth(tok)
+			switch {
+			case curW == 0 && len(lines) > 0:
+				curGlue += tok // a wrapped line does not start with the space it broke at
+			case curW+w <= availWidth:
+				add(chatSpan{Text: tok}, w)
+			case curW == 0:
+				place(chatSpan{Text: tok}) // indentation wider than the panel
+			default:
+				flush()
+				curGlue = tok
 			}
 		}
 	}
 	flush()
 	if len(lines) == 0 {
-		lines = append(lines, "")
+		lines, glue = [][]chatSpan{{{Text: ""}}}, []string{""}
 	}
-	return lines
+	return lines, glue
+}
+
+// fitRunesWithin returns how many of rs fit in width cells (possibly none).
+func fitRunesWithin(rs []rune, width int) int {
+	w := 0
+	for i, r := range rs {
+		w += cell.RuneWidth(r)
+		if w > width {
+			return i
+		}
+	}
+	return len(rs)
+}
+
+// fitRunes returns how many of rs fit in width cells, at least one so a wrap always advances.
+func fitRunes(rs []rune, width int) int {
+	w := 0
+	for i, r := range rs {
+		w += cell.RuneWidth(r)
+		if w > width {
+			return max(i, 1)
+		}
+	}
+	return len(rs)
+}
+
+// wrapWordsToLines is wrapSpansToLines for plain text.
+func wrapWordsToLines(text string, maxW int) (lines []string, glue []string) {
+	spanLines, glue := wrapSpansToLines([]chatSpan{{Text: text}}, maxW)
+	for _, l := range spanLines {
+		var sb strings.Builder
+		for _, sp := range l {
+			sb.WriteString(sp.Text)
+		}
+		lines = append(lines, sb.String())
+	}
+	return lines, glue
 }
 
 func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDisplayLine {
@@ -366,7 +323,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 
 	for _, msg := range messages {
 		tsStr := fmt.Sprintf("[%s] ", msg.Timestamp.Format("15:04:05"))
-		tsLen := len([]rune(tsStr))
+		tsLen := cell.StringWidth(tsStr)
 
 		if msg.IsChat {
 			var senderBadge string
@@ -387,7 +344,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 				}
 			}
 
-			badgeLen := tsLen + len([]rune(senderBadge))
+			badgeLen := tsLen + cell.StringWidth(senderBadge)
 			availFirst := maxW - badgeLen
 			if availFirst < 10 {
 				availFirst = 10
@@ -399,7 +356,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 			var paragraphs [][]chatSpan
 			var curPara []chatSpan
 			for _, span := range rawSpans {
-				parts := strings.Split(span.Text, "\n")
+				parts := strings.Split(strings.ReplaceAll(span.Text, "\t", chatTab), "\n")
 				for pIdx, part := range parts {
 					if pIdx > 0 {
 						paragraphs = append(paragraphs, curPara)
@@ -422,7 +379,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 
 			firstLineOverall := true
 			for _, para := range paragraphs {
-				wrappedLines := wrapSpansToLines(para, availFirst)
+				wrappedLines, glue := wrapSpansToLines(para, availFirst)
 				for wrapIdx, lSpans := range wrappedLines {
 					isContinuation := (wrapIdx > 0)
 					if firstLineOverall {
@@ -442,6 +399,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 							Spans:          lSpans,
 							IsChat:         true,
 							IsContinuation: isContinuation,
+							Glue:           glue[wrapIdx],
 							RawMessage:     msg.Text,
 						})
 					}
@@ -462,7 +420,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 				availFirst = 10
 			}
 
-			logLines := wrapWordsToLines(tr(msg.Text), availFirst)
+			logLines, glue := wrapWordsToLines(strings.ReplaceAll(tr(msg.Text), "\t", chatTab), availFirst)
 			indentSpaces := strings.Repeat(" ", tsLen)
 
 			for idx, lText := range logLines {
@@ -482,6 +440,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 						TextStyle:      cell.Style{Fg: logColor, Bg: theme.SurfaceBg},
 						IsChat:         false,
 						IsContinuation: true,
+						Glue:           glue[idx],
 						RawMessage:     msg.Text,
 					})
 				}
@@ -492,10 +451,12 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 	return lines
 }
 
-func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, spans []chatSpan, maxW int) []renderedChatChar {
+// renderChatSpans draws spans from startX in at most maxW cells and returns the characters
+// drawn and the column after them.
+func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, spans []chatSpan, maxW int) ([]renderedChatChar, uint16) {
 	var chars []renderedChatChar
 	if maxW <= 0 || len(spans) == 0 {
-		return chars
+		return chars, startX
 	}
 	theme := CurrentTheme()
 	plainStyle := cell.Style{
@@ -521,13 +482,8 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			break
 		}
 		sRunes := []rune(span.Text)
-		rem := int(endX - curX)
-		drawnLen := len(sRunes)
-		if drawnLen > rem {
-			sRunes = sRunes[:rem]
-			drawnLen = rem
-		}
-		if drawnLen <= 0 {
+		sRunes = sRunes[:fitRunesWithin(sRunes, int(endX-curX))]
+		if len(sRunes) == 0 {
 			continue
 		}
 
@@ -541,18 +497,14 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			buf.SetString(curX, rowY, string(sRunes), plainStyle)
 		}
 
-		col := curX
 		for _, ru := range sRunes {
-			w := cell.RuneWidth(ru)
-			if w > 0 {
-				chars = append(chars, renderedChatChar{X: col, Y: rowY, R: ru})
-				col += uint16(w)
+			if w := cell.RuneWidth(ru); w > 0 {
+				chars = append(chars, renderedChatChar{X: curX, Y: rowY, R: ru})
+				curX += uint16(w)
 			}
 		}
-
-		curX += uint16(drawnLen)
 	}
-	return chars
+	return chars, curX
 }
 
 func (r *RoomView) isCellSelected(x, y uint16) bool {
@@ -626,10 +578,8 @@ func (r *RoomView) extractSelectedText() string {
 				firstLine = false
 			} else {
 				if rl.IsContinuation {
-					// Soft wrap line continuation (window resize wrap): do NOT insert fake \n!
-					if !strings.HasSuffix(result.String(), " ") && !strings.HasPrefix(extracted, " ") {
-						result.WriteRune(' ')
-					}
+					// A wrapped line: no line break, and the whitespace the wrap took, if any.
+					result.WriteString(rl.Glue)
 					result.WriteString(extracted)
 				} else {
 					// Actual separate paragraph or message

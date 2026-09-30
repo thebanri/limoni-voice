@@ -91,7 +91,7 @@ func (a *App) render(now time.Time) {
 		)
 	}
 	drawDebug := func(f *terminal.Frame) {
-		DrawDebugModal(f, f.Area(), a.debugScrollOffset, a.node.Diagnostics().Lines(), a.closeDebugModal, ClearDebugLogs, func() {
+		DrawDebugModal(f, f.Area(), a.debugView, a.node.Diagnostics().Lines(), a.closeDebugModal, ClearDebugLogs, func() {
 			CopyToClipboard(a.debugText())
 			a.toast("Copied network diagnostics and debug logs to clipboard")
 		})

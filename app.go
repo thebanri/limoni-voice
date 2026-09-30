@@ -50,7 +50,7 @@ type App struct {
 	showScreenShareModal bool
 	showDebugModal       bool
 	showRelayModal       bool
-	debugScrollOffset    int
+	debugView            *DebugView
 
 	screenShareTargets     []screenshare.WindowInfo
 	selectedScreenShareIdx int

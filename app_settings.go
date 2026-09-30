@@ -34,11 +34,14 @@ func (a *App) applySettings(cfg AppConfig) {
 	if cfg.CompactHUD != nil {
 		SetCompactHUD(*cfg.CompactHUD)
 	}
+	a.room.mu.Lock()
 	if cfg.ChatHeight > 0 {
-		a.room.mu.Lock()
 		a.room.ChatHeight = cfg.ChatHeight
-		a.room.mu.Unlock()
 	}
+	if cfg.ChatWidth > 0 {
+		a.room.ChatWidth = clampChatWidth(cfg.ChatWidth)
+	}
+	a.room.mu.Unlock()
 	// Only changes made from here on are written back: settings left at their defaults stay
 	// out of the file and follow the defaults of later versions.
 	defer func() {
@@ -120,6 +123,7 @@ type settingsSnapshot struct {
 	Theme      string
 	CompactHUD bool
 	ChatHeight int
+	ChatWidth  int
 }
 
 func (a *App) currentSettings() settingsSnapshot {
@@ -145,9 +149,9 @@ func (a *App) currentSettings() settingsSnapshot {
 	}
 	audio.RUnlock()
 	a.room.mu.Lock()
-	chatHeight := a.room.ChatHeight
+	chatHeight, chatWidth := a.room.ChatHeight, a.room.ChatWidth
 	a.room.mu.Unlock()
-	return settingsSnapshot{Audio: s, Theme: CurrentTheme().ID, CompactHUD: GetCompactHUD(), ChatHeight: chatHeight}
+	return settingsSnapshot{Audio: s, Theme: CurrentTheme().ID, CompactHUD: GetCompactHUD(), ChatHeight: chatHeight, ChatWidth: chatWidth}
 }
 
 // persistSettings writes the settings when they differ from what was saved last. The render
@@ -167,6 +171,7 @@ func (a *App) persistSettings() {
 		c.Theme = snap.Theme
 		c.CompactHUD = &hud
 		c.ChatHeight = snap.ChatHeight
+		c.ChatWidth = snap.ChatWidth
 	}); err != nil {
 		AddDebugLog("[CONFIG] Could not save settings: " + err.Error())
 	}

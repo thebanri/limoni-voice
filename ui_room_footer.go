@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/p2p"
@@ -18,11 +19,29 @@ import (
 // footerGap is the column gap between control buttons.
 const footerGap = 2
 
-// The footer's inner height: the default, the least a resize leaves, and a ▲/▼ step.
+// The footer's inner height: the least by default, the least a resize leaves, and a ▲/▼
+// step. The chat's share of the footer width: the default and the bounds of a resize.
 const (
 	defaultFooterRows = 6
 	minFooterRows     = 2
 	footerResizeStep  = 2
+
+	defaultChatWidth = 58
+	minChatWidth     = 30
+	maxChatWidth     = 80
+)
+
+// defaultFooterRowsFor is the footer height before the user resizes it: about two fifths of
+// the room, so a tall window shows more chat, and never less than defaultFooterRows.
+func defaultFooterRowsFor(area cell.Rect) int {
+	return max(defaultFooterRows, (int(area.Height)-3)*2/5-2)
+}
+
+// Resize modes of the footer's borders.
+const (
+	resizeNone = iota
+	resizeHeight
+	resizeWidth
 )
 
 // maxFooterRows is the tallest footer (inner rows) that leaves the header and the member
@@ -49,34 +68,47 @@ func (r *RoomView) ResizeChat(delta int) {
 	if r.lastFooterArea.Height > 2 {
 		cur = int(r.lastFooterArea.Height) - 2 // what is on screen, after any clamping
 	} else if cur <= 0 {
-		cur = defaultFooterRows
+		cur = defaultFooterRowsFor(r.lastRoomArea)
 	}
 	r.ChatHeight = r.clampChatHeight(cur + delta)
 }
 
-// StartChatResize begins a resize when (x, y) is on the footer's top border (not on its
-// ▲/▼ buttons) and reports whether it did.
+// StartChatResize begins a resize when (x, y) is on a border of the chat panel that moves:
+// the footer's top border (not its ▲/▼ buttons) sets the height, the line between the
+// controls and the chat sets the width. It reports whether it began one.
 func (r *RoomView) StartChatResize(x, y uint16) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	f := r.lastFooterArea
-	if f.Height == 0 || y != f.Y || x < f.X || x >= f.X+f.Width || r.lastResizeButtons.Contains(x, y) {
+	f, chat := r.lastFooterArea, r.LastLogArea
+	switch {
+	case f.Height == 0 || x < f.X || x >= f.X+f.Width || y < f.Y || y >= f.Y+f.Height:
+		return false
+	case y == f.Y && !r.lastResizeButtons.Contains(x, y):
+		r.chatResizing = resizeHeight
+	case y > f.Y && chat.Width > 0 && (x == chat.X || x+1 == chat.X):
+		r.chatResizing = resizeWidth
+	default:
 		return false
 	}
-	r.chatResizing = true
 	return true
 }
 
-// DragChatResize moves the footer's top border to row y during a resize; false when no
-// resize is going on.
-func (r *RoomView) DragChatResize(y uint16) bool {
+// DragChatResize moves the border being dragged to (x, y); false when no resize is going on.
+func (r *RoomView) DragChatResize(x, y uint16) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.chatResizing {
+	switch r.chatResizing {
+	case resizeHeight:
+		if bottom := int(r.lastRoomArea.Y) + int(r.lastRoomArea.Height); int(y) < bottom {
+			r.ChatHeight = r.clampChatHeight(bottom - int(y) - 2)
+		}
+	case resizeWidth:
+		if f := r.lastFooterArea; f.Width > 0 {
+			right := int(f.X) + int(f.Width)
+			r.ChatWidth = clampChatWidth((right - int(x)) * 100 / int(f.Width))
+		}
+	default:
 		return false
-	}
-	if bottom := int(r.lastRoomArea.Y) + int(r.lastRoomArea.Height); int(y) < bottom {
-		r.ChatHeight = r.clampChatHeight(bottom - int(y) - 2)
 	}
 	return true
 }
@@ -85,16 +117,25 @@ func (r *RoomView) DragChatResize(y uint16) bool {
 func (r *RoomView) EndChatResize() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	was := r.chatResizing
-	r.chatResizing = false
+	was := r.chatResizing != resizeNone
+	r.chatResizing = resizeNone
 	return was
 }
 
-// footerSplit divides the footer into the controls and the chat panel.
-func footerSplit(area cell.Rect) []cell.Rect {
+func clampChatWidth(pct int) int {
+	if pct <= 0 {
+		return defaultChatWidth
+	}
+	return max(minChatWidth, min(pct, maxChatWidth))
+}
+
+// footerSplit divides the footer into the controls and the chat panel, which takes chatPct
+// percent of the width (0: the default).
+func footerSplit(area cell.Rect, chatPct int) []cell.Rect {
+	chatPct = clampChatWidth(chatPct)
 	return layout.NewFlexLayout(layout.Horizontal, 0,
-		layout.Percentage(52), // controls
-		layout.Percentage(48), // chat & room logs
+		layout.Percentage(uint16(100-chatPct)), // controls
+		layout.Percentage(uint16(chatPct)),     // chat & room logs
 	).Split(area)
 }
 
@@ -108,7 +149,10 @@ func controlsArea(panel cell.Rect) cell.Rect {
 }
 
 func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine, items []flowItem, fl flowLayout) {
-	cols := footerSplit(area)
+	r.mu.Lock()
+	chatPct := r.ChatWidth
+	r.mu.Unlock()
+	cols := footerSplit(area, chatPct)
 	if len(cols) < 2 {
 		return
 	}
@@ -143,7 +187,6 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 	toastMsg := tr(r.ToastMsg)
 	messagesCopy := make([]RoomMessage, len(r.Messages))
 	copy(messagesCopy, r.Messages)
-	scrollOffset := r.ChatScrollOffset
 	r.mu.Unlock()
 
 	blockTitle := T(" CHAT & ROOM LOG ")
@@ -225,6 +268,17 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 	}
 
 	lines := r.buildDisplayLines(messagesCopy, maxW)
+	maxScroll := max(0, len(lines)-max(availRows, 0))
+	r.mu.Lock()
+	// Scrolled up, what is on screen stays put while messages arrive below it.
+	if r.ChatScrollOffset > 0 && maxW == r.chatLineWidth && len(lines) > r.chatLineCount {
+		r.ChatScrollOffset += len(lines) - r.chatLineCount
+	}
+	r.chatLineCount, r.chatLineWidth = len(lines), maxW
+	r.chatMaxScroll, r.chatPageRows = maxScroll, availRows
+	r.ChatScrollOffset = min(r.ChatScrollOffset, maxScroll)
+	scrollOffset := r.ChatScrollOffset
+	r.mu.Unlock()
 
 	if len(lines) > 0 && availRows > 0 {
 		startIdx := 0
@@ -265,10 +319,11 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 			}
 
 			buf.SetString(curX, rowY, line.Timestamp, timeStyle)
-			if !line.IsContinuation {
+			// Later lines of a message are indented under its text; the indent is not copied.
+			if strings.TrimSpace(line.Timestamp) != "" {
 				curX = appendChars(line.Timestamp, curX)
 			} else {
-				curX += uint16(len([]rune(line.Timestamp)))
+				curX += uint16(cell.StringWidth(line.Timestamp))
 			}
 
 			if line.Badge != "" {
@@ -279,7 +334,8 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 			remW := int(logInner.X+logInner.Width) - int(curX) - 1
 			if remW > 0 {
 				if line.IsChat {
-					spanChars := r.renderChatSpans(frame, buf, curX, rowY, line.Spans, remW)
+					var spanChars []renderedChatChar
+					spanChars, curX = r.renderChatSpans(frame, buf, curX, rowY, line.Spans, remW)
 					lineChars = append(lineChars, spanChars...)
 				} else {
 					buf.SetString(curX, rowY, line.Text, line.TextStyle)
@@ -305,6 +361,7 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 				EndX:           curX,
 				Chars:          lineChars,
 				IsContinuation: line.IsContinuation,
+				Glue:           line.Glue,
 				RawMessage:     line.RawMessage,
 				CopyText:       lineCopyText,
 				ClickURL:       lineClickURL,
