@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/thebanri/limoni-voice/internal/clipboard"
 )
 
 var (
@@ -92,6 +94,11 @@ func CopyToClipboard(text string) bool {
 				return true
 			}
 		}
+	}
+
+	// Linux: own the clipboard natively (Wayland data-control, then X11), no tools needed
+	if runtime.GOOS == "linux" && clipboard.Write(text) == nil {
+		return true
 	}
 
 	// 4. Linux: Wayland wl-copy (with UTF-8 text MIME type for browser compatibility)
@@ -185,8 +192,17 @@ func GetClipboardText() string {
 		}
 	}
 
+	// Linux: read it natively (Wayland data-control, then X11); the tools below are only
+	// a fallback for when that can't reach a display.
+	native := false
+	if runtime.GOOS == "linux" {
+		if text, err := clipboard.Read(); err == nil {
+			raw, native = text, true
+		}
+	}
+
 	// 3. Try wl-paste (Wayland)
-	if raw == "" && os.Getenv("WAYLAND_DISPLAY") != "" {
+	if !native && raw == "" && os.Getenv("WAYLAND_DISPLAY") != "" {
 		if path, err := exec.LookPath("wl-paste"); err == nil {
 			cmd := exec.Command(path, "--no-newline")
 			out, err := cmd.Output()
@@ -197,7 +213,7 @@ func GetClipboardText() string {
 	}
 
 	// 4. Try xclip (X11)
-	if raw == "" && os.Getenv("DISPLAY") != "" {
+	if !native && raw == "" && os.Getenv("DISPLAY") != "" {
 		if path, err := exec.LookPath("xclip"); err == nil {
 			cmd := exec.Command(path, "-selection", "clipboard", "-o")
 			out, err := cmd.Output()
@@ -208,7 +224,7 @@ func GetClipboardText() string {
 	}
 
 	// 5. Try xsel (X11)
-	if raw == "" && os.Getenv("DISPLAY") != "" {
+	if !native && raw == "" && os.Getenv("DISPLAY") != "" {
 		if path, err := exec.LookPath("xsel"); err == nil {
 			cmd := exec.Command(path, "--clipboard", "--output")
 			out, err := cmd.Output()
