@@ -1530,3 +1530,41 @@ func TestScheduledHopPostponedForSymmetricNATPeer(t *testing.T) {
 		t.Fatalf("symmetric NAT peer: blocker %q, want Sym", b)
 	}
 }
+
+// A member dropped by the relay (its old session closed on a network change) that is heard
+// again through a packet without a nickname keeps its name instead of turning into
+// "User_peer"; a member never seen gets a placeholder built from its ID.
+func TestPeerHeardAgainKeepsNickname(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := NewP2PNode("peer_1111_22222", "Bob", audio)
+	defer node.Close()
+	node.IsConnected = true
+	node.RoomCode = e2ee.NormalizeCode("NICK-TEST")
+	node.roomID = node.RoomCode
+
+	const tariel = "peer_5565_46427"
+	node.Peers[tariel] = &PeerInfo{ID: tariel, Nickname: "Tariel", LastSeen: time.Now()}
+	node.handleRelaySignal(protocol.Signal{Type: protocol.SigPeerLeft, SenderID: tariel, Nickname: "Tariel"})
+	if _, ok := node.Peers[tariel]; ok {
+		t.Fatal("relay's peer_left did not remove the member")
+	}
+
+	heard := func(id string) string {
+		t.Helper()
+		pkt := P2PPacket{Type: PacketPing, RoomCode: node.roomID, SenderID: id, Timestamp: time.Now().UnixMilli()}
+		node.handlePacket(&pkt, nil)
+		node.mu.RLock()
+		defer node.mu.RUnlock()
+		p, ok := node.Peers[id]
+		if !ok {
+			t.Fatalf("a packet from %s did not register it", id)
+		}
+		return p.Nickname
+	}
+	if got := heard(tariel); got != "Tariel" {
+		t.Errorf("member heard again is named %q, want Tariel", got)
+	}
+	if got := heard("peer_9876_11111"); got != "User_9876" {
+		t.Errorf("unknown member is named %q, want User_9876", got)
+	}
+}

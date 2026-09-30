@@ -39,6 +39,7 @@ type P2PNode struct {
 	PublicIP          string
 	PublicPort        int
 	Peers             map[string]*PeerInfo
+	pastNicks         map[string]string // nicknames of members that left, by ID (rememberNickLocked)
 	IsConnected       bool
 	IsHost            bool
 	HostID            string
@@ -1007,6 +1008,7 @@ func (n *P2PNode) heartbeatLoop() {
 		for id, peer := range n.Peers {
 			if now.Sub(peer.LastSeen) > 45*time.Second {
 				wasSharing := peer.IsSharingScreen
+				n.rememberNickLocked(id, peer.Nickname)
 				delete(n.Peers, id)
 				n.forgetMemberLocked(id)
 				removed = true
@@ -1397,7 +1399,13 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 				if len(n.Peers) < MaxPeers-1 {
 					nick := pkt.Nickname
 					if nick == "" {
-						nick = "User_" + pkt.SenderID[:min(len(pkt.SenderID), 4)]
+						// Voice, video and pings carry no nickname. A member heard again after
+						// being dropped (its old relay session closed on a network change while
+						// it went on sending) keeps its name; a stranger gets a distinct one.
+						nick = n.pastNicks[pkt.SenderID]
+					}
+					if nick == "" {
+						nick = placeholderNick(pkt.SenderID)
 					}
 					isPrivateAddr := (raddr != nil && (raddr.IP.IsPrivate() || raddr.IP.IsLoopback())) ||
 						(peerAddr != nil && (peerAddr.IP.IsPrivate() || peerAddr.IP.IsLoopback()))
@@ -1830,6 +1838,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if peer, exists := n.Peers[pkt.SenderID]; exists {
 			wasSharing := peer.IsSharingScreen
 			isHostLeaving := (pkt.SenderID == n.HostID)
+			n.rememberNickLocked(pkt.SenderID, peer.Nickname)
 			delete(n.Peers, pkt.SenderID)
 			n.forgetMemberLocked(pkt.SenderID)
 			if n.audio != nil {
@@ -1957,3 +1966,22 @@ func (n *P2PNode) introduceWelcomePeersLocked(pkt *P2PPacket, hostAddr *net.UDPA
 }
 
 var errNotInRoom = errors.New("node is not in a room")
+
+// rememberNickLocked keeps the nickname of a member that is dropped, so one that turns out to
+// be still there comes back under its name.
+func (n *P2PNode) rememberNickLocked(id, nick string) {
+	if nick == "" {
+		return
+	}
+	if n.pastNicks == nil || len(n.pastNicks) >= 64 {
+		n.pastNicks = make(map[string]string)
+	}
+	n.pastNicks[id] = nick
+}
+
+// placeholderNick names a member known only by its ID: "User_5565" for "peer_5565_46427"
+// (the first letters of the ID would make every such member "User_peer").
+func placeholderNick(id string) string {
+	short := strings.TrimPrefix(id, "peer_")
+	return "User_" + short[:min(len(short), 4)]
+}

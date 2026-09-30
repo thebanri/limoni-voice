@@ -756,6 +756,7 @@ func (n *P2PNode) handleRelaySignal(msg protocol.Signal) {
 	case protocol.SigPeerLeft:
 		if peer, exists := n.Peers[msg.SenderID]; exists {
 			wasSharing := peer.IsSharingScreen
+			n.rememberNickLocked(msg.SenderID, peer.Nickname)
 			delete(n.Peers, msg.SenderID)
 			n.forgetMemberLocked(msg.SenderID)
 			if n.audio != nil {

@@ -138,6 +138,7 @@ func (n *P2PNode) removeMemberLocked(id string, ban bool) {
 		return
 	}
 	wasSharing := peer.IsSharingScreen
+	n.rememberNickLocked(id, peer.Nickname)
 	delete(n.Peers, id)
 	n.forgetMemberLocked(id)
 	if n.audio != nil {
