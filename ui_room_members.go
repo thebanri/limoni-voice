@@ -253,7 +253,7 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	}
 }
 
-func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeers []*p2p.PeerInfo, node *p2p.P2PNode) {
+func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeers []*p2p.PeerInfo, node *p2p.P2PNode, audio *engine.AudioEngine) {
 	theme := CurrentTheme()
 	stageTitle := T(" LIVE STREAM STAGE ")
 	borderCol := theme.Accent
@@ -317,6 +317,12 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				_ = node.StopWatchingScreen()
 				r.SetToast("Screen viewer closed")
 			})
+			// The stream's own sound, next to the stop button, or below it when narrow.
+			volX, volY := inner.X+3+uint16(cell.StringWidth(btnText))+2, inner.Y+6
+			if int(volX)+streamVolumeWidth() > int(inner.X+inner.Width) {
+				volX, volY = inner.X+3, inner.Y+7
+			}
+			r.drawStreamVolume(frame, volX, volY, inner.X+inner.Width, audio, node.WatchingPeerID, watchedNick)
 
 			// Show other streams in room to switch easily
 			otherPeers := make([]*p2p.PeerInfo, 0)
@@ -341,6 +347,11 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 						fps = 60
 					}
 					swBtnText := Tf("   ► Switch to %s's Stream (%d FPS)   ", p.Nickname, fps)
+					if audio != nil {
+						if v := audio.ScreenAudioVolumeFor(p.ID); v != 1 {
+							swBtnText = strings.TrimRight(swBtnText, " ") + Tf(" · sound %d%%   ", int(math.Round(v*100)))
+						}
+					}
 					swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
 					buf.SetString(inner.X+3, btnRowY, clipToWidth(swBtnText, int(inner.Width)-4), swBtnStyle)
 
@@ -1011,4 +1022,53 @@ func (r *RoomView) renderMemberList(frame *terminal.Frame, area cell.Rect, node 
 	}
 	inner = cell.NewRect(inner.X+1, inner.Y, inner.Width-2, inner.Height)
 	r.drawHUDMembers(frame, inner, inner.Y, int(inner.Height), node, audio, peers)
+}
+
+// streamVolumeLabel is the stream volume control's text before its buttons.
+func streamVolumeLabel() string { return T("Stream sound [,/.]:") }
+
+func streamVolumeWidth() int {
+	return cell.StringWidth(streamVolumeLabel()) + cell.StringWidth(" [-] MUTED [+]")
+}
+
+// drawStreamVolume draws "Stream sound: [-] 100% [+]" at x, y; the buttons change how loud the
+// sound of peerID's stream plays, in 10% steps from 0 to 200%.
+func (r *RoomView) drawStreamVolume(frame *terminal.Frame, x, y, right uint16, audio *engine.AudioEngine, peerID, nick string) {
+	if audio == nil || int(x)+streamVolumeWidth() > int(right) {
+		return
+	}
+	theme := CurrentTheme()
+	buf := frame.Buffer
+	label := streamVolumeLabel()
+	buf.SetString(x, y, label, cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+	x += uint16(cell.StringWidth(label)) + 1
+
+	buf.SetString(x, y, "[-]", cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+	clickable(frame, cell.NewRect(x, y, 3, 1), func(_ driver.MouseEvent) { r.AdjustStreamVolume(audio, peerID, nick, -streamVolumeStep) })
+	x += 4
+	vol := audio.ScreenAudioVolumeFor(peerID)
+	text, style := fmt.Sprintf("%3d%%", int(math.Round(vol*100))), cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg}
+	if vol == 0 {
+		text, style = T("MUTED"), cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+	}
+	buf.SetString(x, y, text, style)
+	x += uint16(cell.StringWidth(text)) + 1
+	buf.SetString(x, y, "[+]", cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+	clickable(frame, cell.NewRect(x, y, 3, 1), func(_ driver.MouseEvent) { r.AdjustStreamVolume(audio, peerID, nick, streamVolumeStep) })
+}
+
+// streamVolumeStep is one click or key press on the stream volume.
+const streamVolumeStep = 0.1
+
+// AdjustStreamVolume changes the sound of peerID's stream by delta and says the new level.
+func (r *RoomView) AdjustStreamVolume(audio *engine.AudioEngine, peerID, nick string, delta float64) {
+	if peerID == "" {
+		return
+	}
+	v := audio.SetScreenAudioVolumeFor(peerID, math.Round((audio.ScreenAudioVolumeFor(peerID)+delta)*10)/10)
+	if v == 0 {
+		r.SetToast(fmt.Sprintf("%s's stream sound muted", nick))
+		return
+	}
+	r.SetToast(fmt.Sprintf("%s's stream sound: %d%%", nick, int(math.Round(v*100))))
 }

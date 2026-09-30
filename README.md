@@ -500,6 +500,7 @@ The log is written to the per-user state directory instead of the folder the app
 | `N` | 🔊 Cycle Noise Suppression mode |
 | `V` | 🖥️ Start / Stop Screen Sharing |
 | `W` | 👁️ Watch Live Stream |
+| `,` / `.` | 🔈 Turn the watched stream's sound down / up (also `[-]`/`[+]` on the stream stage); each sharer keeps its own level |
 | `C` / `F2` | 📋 Copy Room Code |
 | `+` / `-` | 🔉 Adjust Microphone Volume |
 | `T` | 🧪 Microphone Test Dialog |

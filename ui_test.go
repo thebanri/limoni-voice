@@ -1898,3 +1898,79 @@ func TestChatPanelWidthResize(t *testing.T) {
 		t.Fatal("a press inside the chat started a resize")
 	}
 }
+
+// Each sharer's stream sound has its own level: [-]/[+] next to the stop button and , / . in
+// the room change the watched one's, and switching streams brings each level back.
+func TestStreamVolumePerSharer(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("stream_vol_test", "Bob", audio)
+	defer node.Close()
+	node.HostRoom("778899")
+	node.Peers["ali"] = &p2p.PeerInfo{ID: "ali", Nickname: "Ali", LastSeen: time.Now(), IsSharingScreen: true}
+	node.Peers["ayse"] = &p2p.PeerInfo{ID: "ayse", Nickname: "Ayse", LastSeen: time.Now(), IsSharingScreen: true}
+	watch := func(id, nick string) {
+		node.IsWatchingScreen, node.WatchingPeerID, node.WatchingPeerNick = true, id, nick
+	}
+	watch("ali", "Ali")
+
+	room := NewRoomView()
+	area := cell.NewRect(0, 0, 160, 45)
+	buf := buffer.NewBuffer(area)
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, area, node, audio)
+
+	// Click [+] of the stream volume on the stage.
+	row, col := -1, -1
+	for y := area.Y; y < area.Height && row < 0; y++ {
+		var line []rune
+		for x := area.X; x < area.Width; x++ {
+			if c := buf.Get(x, y); c != nil && c.Content != 0 {
+				line = append(line, c.Content)
+			} else {
+				line = append(line, ' ')
+			}
+		}
+		if text := string(line); strings.Contains(text, "Stream sound") {
+			col, row = len([]rune(text[:strings.Index(text, "[+]")])), int(y)
+		}
+	}
+	if row < 0 {
+		t.Fatal("no stream volume control while watching")
+	}
+	for i := len(frame.ClickRegions) - 1; i >= 0; i-- {
+		if reg := frame.ClickRegions[i]; reg.Area.Contains(uint16(col+1), uint16(row)) {
+			reg.Handler(driver.MouseEvent{X: uint16(col + 1), Y: uint16(row), Button: driver.MouseLeft})
+			break
+		}
+	}
+	if v := audio.ScreenAudioVolumeFor("ali"); math.Abs(v-1.1) > 1e-9 {
+		t.Fatalf("Ali's stream after [+] = %v, want 1.1", v)
+	}
+
+	a := &App{audio: audio, node: node, room: room, currentScreen: ScreenRoom}
+	key := func(ch rune, n int) {
+		for range n {
+			a.handleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: ch})
+		}
+	}
+	key(',', 20)
+	if v := audio.ScreenAudioVolumeFor("ali"); v != 0 {
+		t.Fatalf("Ali's stream after many , = %v, want 0", v)
+	}
+	if !strings.Contains(room.ToastMsg, "Ali") || !strings.Contains(room.ToastMsg, "muted") {
+		t.Errorf("toast %q does not say whose stream was muted", room.ToastMsg)
+	}
+	if v := audio.ScreenAudioVolumeFor("ayse"); v != 1 {
+		t.Fatalf("Ayse's stream changed with Ali's: %v", v)
+	}
+
+	watch("ayse", "Ayse")
+	key('.', 3)
+	if v := audio.ScreenAudioVolumeFor("ayse"); math.Abs(v-1.3) > 1e-9 {
+		t.Fatalf("Ayse's stream after 3 . = %v, want 1.3", v)
+	}
+	watch("ali", "Ali")
+	if v := audio.ScreenAudioVolumeFor("ali"); v != 0 {
+		t.Fatalf("back on Ali's stream its level is %v, want the 0 set before", v)
+	}
+}

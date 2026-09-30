@@ -222,11 +222,11 @@ type AudioEngine struct {
 	rnnBuf   []float32
 
 	// Screen share audio (audio_screen.go)
-	ScreenAudioVolume float64
-	screen            *screenAudio
-	sysMu             sync.Mutex
-	sysAEC            *dsp.LoopbackCanceller
-	sysOut            []int16
+	screenVolumes map[string]float64 // stream sound level per sharer, by peer ID (missing = 1)
+	screen        *screenAudio
+	sysMu         sync.Mutex
+	sysAEC        *dsp.LoopbackCanceller
+	sysOut        []int16
 
 	// Click / clap suppression and voice smoothing (capture goroutine only)
 	transient       *dsp.TransientSuppressor
@@ -401,7 +401,6 @@ func NewAudioEngine() *AudioEngine {
 		SuppressionMode:   SuppressionStandard,
 		EchoCancellation:  true,
 		VoiceSmoothing:    true,
-		ScreenAudioVolume: 1.0,
 		Gain:              1.0,
 		OutputVolume:      1.0,
 		VADSensitivity:    65,

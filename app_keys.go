@@ -811,6 +811,15 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 			a.watchFirstStream()
 		case 'o', 'O':
 			go toggleScreenPreview(node, room)
+		case ',', '.':
+			// The watched stream's own sound, apart from the voice chat's.
+			if node.IsWatchingScreen {
+				step := streamVolumeStep
+				if e.Ch == ',' {
+					step = -step
+				}
+				room.AdjustStreamVolume(audio, node.WatchingPeerID, node.WatchingPeerNick, step)
+			}
 		case '+', '=':
 			room.SetToast(fmt.Sprintf("Mic Volume: %.0f%%", audio.AdjustGain(0.1)*100))
 		case '-', '_':

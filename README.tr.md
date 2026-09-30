@@ -501,6 +501,7 @@ Log, uygulamanın başlatıldığı klasör yerine kullanıcı durum klasörüne
 | `N` | 🔊 Gürültü filtresi modunu değiştir |
 | `V` | 🖥️ Ekran paylaşımını başlat / durdur |
 | `W` | 👁️ Ekran yayınını izle |
+| `,` / `.` | 🔈 İzlenen yayının sesini kıs / aç (yayın sahnesinde `[-]`/`[+]` da var); her yayıncının seviyesi ayrı tutulur |
 | `C` / `F2` | 📋 Oda kodunu kopyala |
 | `+` / `-` | 🔉 Mikrofon ses seviyesini ayarla |
 | `T` | 🧪 Ses test modalı |

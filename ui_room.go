@@ -876,7 +876,7 @@ func (r *RoomView) renderGrid(frame *terminal.Frame, area cell.Rect, node *p2p.P
 		splits := fl.Split(area)
 		if len(splits) >= 2 {
 			r.renderSidebarMembers(frame, splits[0], node, audio, peers)
-			r.renderStreamStage(frame, splits[1], streamingPeers, node)
+			r.renderStreamStage(frame, splits[1], streamingPeers, node, audio)
 			return
 		}
 	}

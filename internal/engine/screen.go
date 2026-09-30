@@ -40,6 +40,34 @@ func (a *AudioEngine) SetScreenAudioSource(peerID string) {
 	a.screen = sa
 }
 
+// ScreenAudioVolumeFor returns how loud a sharer's stream sound plays (1 = as sent). Each
+// sharer has its own level, kept while the app runs, so switching streams restores it.
+func (a *AudioEngine) ScreenAudioVolumeFor(peerID string) float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.screenVolumeLocked(peerID)
+}
+
+// SetScreenAudioVolumeFor sets a sharer's stream volume, kept within 0 (silent) and 2, and
+// returns it.
+func (a *AudioEngine) SetScreenAudioVolumeFor(peerID string, v float64) float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	v = max(0, min(v, 2))
+	if a.screenVolumes == nil {
+		a.screenVolumes = make(map[string]float64)
+	}
+	a.screenVolumes[peerID] = v
+	return v
+}
+
+func (a *AudioEngine) screenVolumeLocked(peerID string) float64 {
+	if v, ok := a.screenVolumes[peerID]; ok {
+		return v
+	}
+	return 1
+}
+
 // PlayScreenAudio queues an Opus frame of the watched sharer's system audio.
 func (a *AudioEngine) PlayScreenAudio(peerID string, seq uint32, timestampMs int64, frame []byte) {
 	a.mu.Lock()
@@ -60,7 +88,7 @@ func (a *AudioEngine) mixScreenAudioLocked(accum []float64, audible bool) bool {
 	slot := sa.delay[sa.pos]
 	played := false
 	if audible {
-		vol := a.ScreenAudioVolume
+		vol := a.screenVolumeLocked(sa.peerID)
 		for i, s := range slot {
 			if s != 0 {
 				played = true
