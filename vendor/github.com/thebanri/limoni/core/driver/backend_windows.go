@@ -3,7 +3,9 @@
 package driver
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -154,6 +156,11 @@ func (b *Backend) startEventLoop() {
 	inputChan := make(chan []byte, 32)
 	go func() {
 		buf := make([]byte, 512)
+		// Go reads a console like a text file: a Ctrl+Z at the start of a read comes back as
+		// io.EOF (the 0x1A itself is skipped). A console has no end, so reading goes on;
+		// stopping would end all keyboard and mouse input while the app kept running.
+		var mode uint32
+		console := b.portableIO == nil && b.in != nil && windows.GetConsoleMode(windows.Handle(b.in.Fd()), &mode) == nil
 		for {
 			var n int
 			var err error
@@ -165,6 +172,9 @@ func (b *Backend) startEventLoop() {
 				return
 			}
 			if err != nil {
+				if console && errors.Is(err, io.EOF) {
+					continue
+				}
 				return
 			}
 			if n > 0 {
