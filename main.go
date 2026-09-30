@@ -145,6 +145,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer b.Close()
+	disableQuickEdit()
 
 	// Ensure alternate screen starts completely wiped
 	_, _ = os.Stdout.WriteString("\x1b[2J\x1b[H")

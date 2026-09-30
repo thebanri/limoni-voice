@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"bytes"
 	"unicode/utf8"
 )
 
@@ -9,6 +10,12 @@ import (
 // Eğer tamponda eksik bir ANSI dizisi varsa tüketilen byte sayısı 0 döner; bu durumda daha fazla veri beklenmelidir.
 func ParseEvent(buf []byte) (Event, int) {
 	if len(buf) == 0 {
+		return Event{}, 0
+	}
+	// A bracketed paste whose end has not arrived yet (a long paste comes in several reads):
+	// wait for the rest. Parsed now, its start marker would be dropped and the pasted text
+	// taken for key presses.
+	if bytes.HasPrefix(buf, pasteStart) {
 		return Event{}, 0
 	}
 

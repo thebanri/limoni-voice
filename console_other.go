@@ -5,3 +5,6 @@ package main
 // setupConsole and restoreConsole prepare the console for the TUI; only Windows needs it.
 func setupConsole()   {}
 func restoreConsole() {}
+
+// disableQuickEdit is Windows only.
+func disableQuickEdit() {}

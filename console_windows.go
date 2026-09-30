@@ -35,3 +35,16 @@ func restoreConsole() {
 		_ = windows.SetConsoleOutputCP(savedOutCP)
 	}
 }
+
+// disableQuickEdit turns off the console's QuickEdit mode once Limoni has put it in raw mode.
+// With it on, conhost takes a click, a drag or Ctrl+A for a text selection and holds every
+// write to the console until the selection ends: the app freezes, and mouse input never
+// reaches it. Limoni puts the original mode back on exit.
+func disableQuickEdit() {
+	in := windows.Handle(os.Stdin.Fd())
+	var mode uint32
+	if windows.GetConsoleMode(in, &mode) != nil {
+		return
+	}
+	_ = windows.SetConsoleMode(in, (mode&^windows.ENABLE_QUICK_EDIT_MODE)|windows.ENABLE_EXTENDED_FLAGS)
+}
