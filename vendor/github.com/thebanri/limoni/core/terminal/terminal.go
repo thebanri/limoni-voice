@@ -75,6 +75,21 @@ type Terminal struct {
 	// kittyPushed is set while the kitty keyboard flags pushed by
 	// syncKeyboardMode are on the terminal's stack.
 	kittyPushed bool
+	// keyReleases asks for the kitty protocol's event types as well, so key
+	// repeats and releases are reported (SetKeyReleases).
+	keyReleases bool
+
+	// backdrop is the scene drawn behind the application (SetBackdrop).
+	backdrop Backdrop
+	// bgStart is when the backdrop was set: its clock's zero.
+	bgStart time.Time
+	// bgClock replaces time.Now for the backdrop in tests.
+	bgClock func() time.Time
+	// bgOff is set when the user turned backdrops off (LIMONI_BACKDROP).
+	bgOff bool
+	// bgLayer holds the scene, appLayer the cells the application drew in its
+	// last frame, so DrawBackdrop can compose a frame without it.
+	bgLayer, appLayer *buffer.Buffer
 }
 
 // New, belirtilen Backend'i kullanarak yeni bir Terminal yöneticisi oluşturur ve ilk tamponları tahsis eder.
@@ -103,6 +118,7 @@ func New(b *driver.Backend) (*Terminal, error) {
 		writeBuf: make([]byte, 0, 8192), // Başlangıçta 8 KB'lık yazma tamponu tahsis et
 		caps:     detected,
 		detected: detected,
+		bgOff:    backdropOff(),
 	}, nil
 }
 
@@ -125,8 +141,37 @@ func (t *Terminal) RestoreModes() {
 // give back exactly the flags the shell had.
 func (t *Terminal) syncKeyboardMode() {
 	if t.caps.KittyKeyboard && !t.kittyPushed && t.driver != nil {
-		_, _ = t.driver.Write([]byte("\x1b[>1u"))
+		if t.keyReleases {
+			_, _ = t.driver.Write([]byte("\x1b[>3u"))
+		} else {
+			_, _ = t.driver.Write([]byte("\x1b[>1u"))
+		}
 		t.kittyPushed = true
+	}
+}
+
+// SetKeyReleases asks the terminal to report key repeats and releases as
+// well as presses: KeyEvent.Repeat and KeyEvent.Release. Games want this —
+// a key can be held down for as long as it is, rather than guessed at from
+// auto-repeat. It takes effect in terminals with the kitty keyboard protocol
+// (kitty, Ghostty, WezTerm, foot, recent Konsole); in the rest nothing
+// changes and every key event stays a press.
+//
+// An application that turns it on sees every key twice, and must ignore
+// releases wherever it acts on presses — including widgets it hands key
+// events to, which do not tell the two apart.
+func (t *Terminal) SetKeyReleases(on bool) {
+	if t == nil || t.keyReleases == on {
+		return
+	}
+	t.keyReleases = on
+	if t.kittyPushed && t.driver != nil {
+		// Our entry is on top of the terminal's stack: change it in place.
+		if on {
+			_, _ = t.driver.Write([]byte("\x1b[=3;1u"))
+		} else {
+			_, _ = t.driver.Write([]byte("\x1b[=1;1u"))
+		}
 	}
 }
 
@@ -336,7 +381,16 @@ func (t *Terminal) Draw(fn func(f *Frame)) error {
 	if fn != nil {
 		fn(t.frame)
 	}
+	if t.backdropActive() {
+		t.keepAppLayer()
+		t.composeBackdrop()
+	}
+	return t.present(t0)
+}
 
+// present finishes a frame whose cells are in the front buffer: it applies
+// the transition and the debug overlay, places images, and writes the diff.
+func (t *Terminal) present(t0 time.Time) error {
 	// Eğer dither geçişi aktifse, önce görüntü tamponunu harmanla.
 	// Debug HUD bundan sonra çizilir; böylece debug çizgileri ve etiketleri
 	// geçiş efekti tarafından soluklaştırılmaz veya bozulmaz.
