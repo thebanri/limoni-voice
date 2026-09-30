@@ -41,7 +41,7 @@ func StartReceiving(ctx context.Context, opts ...ReceiverOptions) (*Session, err
 				streamURL,
 				"--no-config",
 				"--ytdl=no",
-				"--really-quiet",
+				"--msg-level=all=error", // quiet, but an exit with an error says why (stderr is shown with it)
 				"--no-audio",
 				"--profile=low-latency",
 				"--vd-lavc-threads=0",
@@ -120,7 +120,7 @@ func StartReceiving(ctx context.Context, opts ...ReceiverOptions) (*Session, err
 		}
 	} else if binPath == "" {
 		if runtime.GOOS == "windows" {
-			return nil, errors.New("'mpv.exe' or 'ffplay.exe' not found to watch stream. Please place 'mpv.exe' next to the application or run 'winget install mpv.mpv' in PowerShell.")
+			return nil, errors.New("'mpv.exe' or 'ffplay.exe' not found to watch stream. Run Limoni-Voice-Setup.exe again, or 'winget install -e --id shinchiro.mpv' in PowerShell.")
 		}
 		if runtime.GOOS == "linux" {
 			return nil, newMissingDepsError(true, []string{"mpv (or ffplay)"}, []linuxDep{depMpv})

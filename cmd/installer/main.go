@@ -1,8 +1,8 @@
 package main
 
 import (
-	"archive/zip"
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
-	REPO_URL   = "https://github.com/thebanri/limoni-voice"
+	REPO_URL = "https://github.com/thebanri/limoni-voice"
 )
 
 func main() {
@@ -100,102 +99,35 @@ func main() {
 		fmt.Println("[!] Warning: limoni-voice.exe could not be verified in target path.")
 	}
 
-	// 3. Install FFmpeg
-	targetFfmpeg := filepath.Join(binDir, "ffmpeg.exe")
-	if !fileExists(targetFfmpeg) && !commandExists("ffmpeg.exe") {
-		fmt.Println("[*] Downloading and installing FFmpeg (for screen sharing)...")
-		tempZip := filepath.Join(os.TempDir(), "ffmpeg_setup.zip")
-		if err := downloadFileWithProgress(FFMPEG_URL, tempZip, "FFmpeg"); err == nil {
-			fmt.Println("[*] Extracting FFmpeg archive...")
-			_ = extractExeFromZip(tempZip, "ffmpeg.exe", targetFfmpeg)
-			_ = os.Remove(tempZip)
-		}
+	// 3. Shortcuts, invite links and PATH come before the FFmpeg and MPV downloads: winget can
+	// take minutes, and a window closed during it must not leave the app without a shortcut.
+	if fileExists(targetVoiceExe) {
+		createShortcuts(targetVoiceExe, installDir, targetIconIco)
 	} else {
-		fmt.Println("[✓] FFmpeg already installed.")
+		fmt.Println("[!] Shortcuts skipped: limoni-voice.exe is missing (an antivirus may have removed it).")
 	}
 
-	// 4. Install MPV
-	targetMpv := filepath.Join(binDir, "mpv.exe")
-	if !fileExists(targetMpv) && !commandExists("mpv.exe") {
-		fmt.Println("[*] Checking MPV Player (for stream viewing)...")
-		cmd := exec.Command("winget", "install", "-e", "--id", "mpv.mpv", "--accept-source-agreements", "--accept-package-agreements")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			// Fallback to shinchiro.mpv or mpv.net
-			_ = exec.Command("winget", "install", "-e", "--id", "shinchiro.mpv", "--accept-source-agreements", "--accept-package-agreements").Run()
-			_ = exec.Command("winget", "install", "-e", "--id", "mpv.net", "--accept-source-agreements", "--accept-package-agreements").Run()
-		}
-
-		// Check if winget placed mpv in packages or programs directory and copy to binDir
-		searchDirs := []string{
-			filepath.Join(localAppData, "Microsoft", "WinGet", "Packages"),
-			filepath.Join(localAppData, "Microsoft", "WinGet", "Links"),
-			filepath.Join(localAppData, "Programs", "mpv"),
-			filepath.Join(localAppData, "Programs", "mpv.net"),
-			filepath.Join(os.Getenv("ProgramFiles"), "mpv"),
-		}
-		for _, sDir := range searchDirs {
-			if _, err := os.Stat(sDir); err == nil {
-				_ = filepath.Walk(sDir, func(path string, info os.FileInfo, err error) error {
-					if err == nil && !info.IsDir() && strings.EqualFold(info.Name(), "mpv.exe") {
-						_ = copyFile(path, targetMpv)
-						return io.EOF // stop walking
-					}
-					return nil
-				})
-			}
-			if fileExists(targetMpv) {
-				break
-			}
-		}
+	if err := registerInviteScheme(targetVoiceExe, targetIconIco); err != nil {
+		fmt.Printf("[-] Could not register limoni:// invite links: %v\n", err)
 	} else {
-		fmt.Println("[✓] MPV Player already installed.")
+		fmt.Println("[+] limoni:// invite links now open Limoni Voice")
 	}
 
-	// 5. Update PATH
-	fmt.Println("[*] Updating system PATH variable...")
+	fmt.Println("[*] Updating user PATH variable...")
 	psPathScript := fmt.Sprintf(`
 		$binDir = '%s'
 		$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 		if ($userPath -notlike "*$binDir*") {
 			[Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
 		}
-	`, binDir)
-	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psPathScript).Run()
+	`, strings.ReplaceAll(binDir, "'", "''"))
+	if out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psPathScript).CombinedOutput(); err != nil {
+		fmt.Printf("[-] Could not update PATH: %v %s\n", err, strings.TrimSpace(string(out)))
+	}
 
-	// 6. Create Desktop and Start Menu Shortcuts with Icon (Supports OneDrive and International Windows)
-	fmt.Println("[*] Creating desktop and start menu shortcuts...")
-	psShortcutScript := fmt.Sprintf(`
-		$wscript = New-Object -ComObject WScript.Shell
-		$desktop = [Environment]::GetFolderPath("Desktop")
-		if ($desktop) {
-			$shortcutPath = Join-Path $desktop "Limoni Voice.lnk"
-			$shortcut = $wscript.CreateShortcut($shortcutPath)
-			$shortcut.TargetPath = '%s'
-			$shortcut.WorkingDirectory = '%s'
-			$shortcut.IconLocation = '%s,0'
-			$shortcut.Description = 'Limoni Voice - P2P Encrypted Voice & Screen Sharing'
-			$shortcut.Save()
-		}
-		$programs = [Environment]::GetFolderPath("Programs")
-		if ($programs) {
-			$smShortcutPath = Join-Path $programs "Limoni Voice.lnk"
-			$smShortcut = $wscript.CreateShortcut($smShortcutPath)
-			$smShortcut.TargetPath = '%s'
-			$smShortcut.WorkingDirectory = '%s'
-			$smShortcut.IconLocation = '%s,0'
-			$smShortcut.Description = 'Limoni Voice - P2P Encrypted Voice & Screen Sharing'
-			$smShortcut.Save()
-		}
-	`, targetVoiceExe, installDir, targetIconIco, targetVoiceExe, installDir, targetIconIco)
-	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psShortcutScript).Run()
-
-	// 7. Open limoni://join/<room key> invite links with Limoni Voice (current user only).
-	if err := registerInviteScheme(targetVoiceExe, targetIconIco); err != nil {
-		fmt.Printf("[-] Could not register limoni:// invite links: %v\n", err)
-	} else {
-		fmt.Println("[+] limoni:// invite links now open Limoni Voice")
+	// 4. Screen share tools: FFmpeg and mpv
+	for _, t := range tools {
+		ensureTool(t, binDir)
 	}
 
 	fmt.Println()
@@ -204,7 +136,6 @@ func main() {
 	fmt.Println("==================================================")
 	fmt.Printf("[✓] Limoni Voice: %s\n", targetVoiceExe)
 	fmt.Printf("[✓] App Icon: %s\n", targetIconIco)
-	fmt.Println("[✓] Desktop & Start Menu Shortcuts created!")
 	fmt.Println()
 	fmt.Println("Press ENTER to launch the application (or close this window)...")
 
@@ -216,6 +147,30 @@ func main() {
 		launchCmd := exec.Command("cmd.exe", "/c", "start", "", targetVoiceExe)
 		launchCmd.Dir = installDir
 		_ = launchCmd.Start()
+	}
+}
+
+// createShortcuts puts a Limoni Voice shortcut on the desktop and in the Start Menu, and
+// says which one failed and why.
+func createShortcuts(exe, dir, icon string) {
+	fmt.Println("[*] Creating desktop and Start Menu shortcuts...")
+	folders := shortcutFolders()
+	if len(folders) == 0 {
+		fmt.Println("[-] Could not find the desktop or Start Menu folder.")
+		return
+	}
+	for _, name := range []string{"desktop", "Start Menu"} {
+		folder, ok := folders[name]
+		if !ok {
+			fmt.Printf("[-] Could not find the %s folder.\n", name)
+			continue
+		}
+		lnk := filepath.Join(folder, "Limoni Voice.lnk")
+		if err := createShortcut(lnk, exe, dir, icon, "Limoni Voice - P2P Encrypted Voice & Screen Sharing"); err != nil {
+			fmt.Printf("[-] Could not create the %s shortcut: %v\n", name, err)
+			continue
+		}
+		fmt.Printf("[+] %s shortcut: %s\n", name, lnk)
 	}
 }
 
@@ -307,11 +262,6 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func commandExists(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
-}
-
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -329,9 +279,25 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-func downloadFileWithProgress(url, targetPath, label string) error {
-	resp, err := http.Get(url)
+// downloadStallTimeout aborts a download that has received nothing for this long, so a stuck
+// connection fails (and is retried) instead of leaving the installer waiting forever.
+const downloadStallTimeout = 45 * time.Second
+
+func downloadFileWithProgress(url, targetPath, label string) (err error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stall := time.AfterFunc(downloadStallTimeout, cancel)
+	defer stall.Stop()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("no response for %v", downloadStallTimeout)
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -344,7 +310,14 @@ func downloadFileWithProgress(url, targetPath, label string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			_ = os.Remove(targetPath)
+		}
+	}()
 
 	total := resp.ContentLength
 	var downloaded int64
@@ -352,11 +325,15 @@ func downloadFileWithProgress(url, targetPath, label string) error {
 	lastPrint := time.Now()
 
 	for {
-		n, err := resp.Body.Read(buf)
+		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
-			_, _ = out.Write(buf[:n])
+			stall.Reset(downloadStallTimeout)
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				fmt.Println()
+				return werr
+			}
 			downloaded += int64(n)
-			if time.Since(lastPrint) > 200*time.Millisecond || err == io.EOF {
+			if time.Since(lastPrint) > 200*time.Millisecond || rerr == io.EOF {
 				lastPrint = time.Now()
 				if total > 0 {
 					pct := float64(downloaded) / float64(total) * 100
@@ -366,43 +343,21 @@ func downloadFileWithProgress(url, targetPath, label string) error {
 				}
 			}
 		}
-		if err != nil {
-			if err == io.EOF {
+		if rerr != nil {
+			fmt.Println()
+			if rerr == io.EOF {
 				break
 			}
-			return err
+			if ctx.Err() != nil {
+				return fmt.Errorf("download stalled: nothing received for %v", downloadStallTimeout)
+			}
+			return rerr
 		}
 	}
-	fmt.Println()
+	if total > 0 && downloaded != total {
+		return fmt.Errorf("download incomplete: %d of %d bytes", downloaded, total)
+	}
 	return nil
-}
-
-func extractExeFromZip(zipPath, targetExeName, destExePath string) error {
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		if strings.EqualFold(filepath.Base(f.Name), targetExeName) {
-			rc, err := f.Open()
-			if err != nil {
-				return err
-			}
-			defer rc.Close()
-
-			out, err := os.Create(destExePath)
-			if err != nil {
-				return err
-			}
-			defer out.Close()
-
-			_, err = io.Copy(out, rc)
-			return err
-		}
-	}
-	return fmt.Errorf("%s not found in zip archive", targetExeName)
 }
 
 func pauseAndExit(code int) {

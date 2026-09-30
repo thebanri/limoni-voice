@@ -7,6 +7,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 draws a progress bar per received chunk, which makes large
+# downloads (FFmpeg, MPV) many times slower.
+$ProgressPreference = "SilentlyContinue"
 
 # Enable TLS 1.2 for legacy Windows PowerShell 5.1 environments
 try {
@@ -89,7 +92,63 @@ try {
     Write-Host "[-] Warning downloading assets: $_" -ForegroundColor DarkYellow
 }
 
-# 3. Check and Download FFmpeg if missing
+# 3. Shortcuts and invite links come before the FFmpeg and MPV downloads: winget can take
+# minutes, and a window closed during it must not leave the app without a shortcut.
+try {
+    Unblock-File -Path $targetExe -ErrorAction SilentlyContinue
+} catch {}
+
+if (Test-Path $targetExe) {
+    $shortcutFolders = [ordered]@{
+        "Desktop"    = [Environment]::GetFolderPath("Desktop")
+        "Start Menu" = [Environment]::GetFolderPath("Programs")
+    }
+    if ([string]::IsNullOrWhiteSpace($shortcutFolders["Desktop"])) {
+        $shortcutFolders["Desktop"] = Join-Path $env:USERPROFILE "Desktop"
+    }
+    foreach ($name in $shortcutFolders.Keys) {
+        $folder = $shortcutFolders[$name]
+        try {
+            if ([string]::IsNullOrWhiteSpace($folder)) {
+                throw "folder not found"
+            }
+            if (!(Test-Path $folder)) {
+                New-Item -ItemType Directory -Force -Path $folder | Out-Null
+            }
+            $shortcutPath = Join-Path $folder "Limoni Voice.lnk"
+            $wscript = New-Object -ComObject WScript.Shell
+            $shortcut = $wscript.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = $targetExe
+            $shortcut.WorkingDirectory = $InstallDir
+            if (Test-Path $iconPath) {
+                $shortcut.IconLocation = "$iconPath,0"
+            }
+            $shortcut.Description = "Limoni Voice - P2P Encrypted Voice & Screen Sharing"
+            $shortcut.Save()
+            Write-Host "[+] $name shortcut created: $shortcutPath" -ForegroundColor Green
+        } catch {
+            Write-Host "[-] Could not create the $name shortcut: $_" -ForegroundColor DarkYellow
+        }
+    }
+} else {
+    Write-Host "[!] Shortcuts skipped: limoni-voice.exe is missing (an antivirus may have removed it)." -ForegroundColor Red
+}
+
+# 4. Open limoni://join/<room key> invite links with Limoni Voice (current user, no admin)
+try {
+    $scheme = "HKCU:\Software\Classes\limoni"
+    New-Item -Path "$scheme\shell\open\command" -Force | Out-Null
+    New-Item -Path "$scheme\DefaultIcon" -Force | Out-Null
+    Set-ItemProperty -Path $scheme -Name "(default)" -Value "URL:Limoni Voice invite"
+    Set-ItemProperty -Path $scheme -Name "URL Protocol" -Value ""
+    Set-ItemProperty -Path "$scheme\DefaultIcon" -Name "(default)" -Value $iconPath
+    Set-ItemProperty -Path "$scheme\shell\open\command" -Name "(default)" -Value "`"$targetExe`" `"%1`""
+    Write-Host "[+] limoni:// invite links now open Limoni Voice" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Could not register limoni:// invite links: $_" -ForegroundColor DarkYellow
+}
+
+# 5. Check and Download FFmpeg if missing
 $ffmpegExe = Join-Path $binDir "ffmpeg.exe"
 if (!(Test-Path $ffmpegExe) -and !(Get-Command "ffmpeg.exe" -ErrorAction SilentlyContinue)) {
     Write-Host "[*] Downloading FFmpeg (required for screen broadcasting)..." -ForegroundColor Yellow
@@ -108,84 +167,65 @@ if (!(Test-Path $ffmpegExe) -and !(Get-Command "ffmpeg.exe" -ErrorAction Silentl
     } catch {
         Write-Host "[-] Automatic download failed, attempting winget..." -ForegroundColor DarkYellow
         try {
-            winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
+            winget install -e --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
         } catch {}
     }
 } else {
     Write-Host "[+] FFmpeg is already installed." -ForegroundColor Green
 }
 
-# 4. Check and Download MPV if missing
+# 6. MPV: the official build, mpv.exe plus the Vulkan loader it needs, checked against its SHA-256.
+# (The winget package needs administrator rights and takes over media file types: last resort.)
 $mpvExe = Join-Path $binDir "mpv.exe"
 if (!(Test-Path $mpvExe) -and !(Get-Command "mpv.exe" -ErrorAction SilentlyContinue)) {
-    Write-Host "[*] Checking MPV Player (required for screen stream viewing)..." -ForegroundColor Yellow
-    $mpvInstalled = $false
-
-    # Try winget first
-    try {
-        winget install --id mpv.mpv -e --accept-source-agreements --accept-package-agreements | Out-Null
-        $mpvInstalled = $true
-    } catch {
-        try {
-            winget install --id shinchiro.mpv -e --accept-source-agreements --accept-package-agreements | Out-Null
-            $mpvInstalled = $true
-        } catch {
-            try {
-                winget install --id mpv.net -e --accept-source-agreements --accept-package-agreements | Out-Null
-                $mpvInstalled = $true
-            } catch {}
-        }
-    }
-
-    # Search for winget extracted packages or existing installations and copy mpv.exe to binDir
-    $searchLocations = @(
-        (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"),
-        (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"),
-        (Join-Path $env:LOCALAPPDATA "Programs\mpv"),
-        (Join-Path $env:LOCALAPPDATA "Programs\mpv.net"),
-        (Join-Path $env:ProgramFiles "mpv"),
-        (Join-Path $env:ProgramFiles "mpv.net"),
-        (Join-Path $env:USERPROFILE "scoop\shims"),
-        (Join-Path $env:USERPROFILE "scoop\apps\mpv\current")
-    )
-
-    foreach ($loc in $searchLocations) {
-        if (Test-Path $loc) {
-            $found = Get-ChildItem -Path $loc -Recurse -Filter "mpv.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found -and (Test-Path $found.FullName)) {
-                Copy-Item $found.FullName $binDir -Force -ErrorAction SilentlyContinue
-                Write-Host "[+] mpv.exe copied from $($found.FullName) to $binDir" -ForegroundColor Green
-                break
-            }
-        }
-    }
-
-    if (Test-Path $mpvExe) {
-        Write-Host "[+] MPV installed successfully into $binDir!" -ForegroundColor Green
+    Write-Host "[*] Downloading MPV Player (required for screen stream viewing)..." -ForegroundColor Yellow
+    if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+        $mpvUrl = "https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-aarch64-pc-windows-msvc.zip"
+        $mpvHash = "a822abeffd0ac88951f4084f3425f949842aa17d616f880637ebe9041e482e97"
     } else {
-        Write-Host "[*] Downloading portable MPV Player directly..." -ForegroundColor Yellow
-        $mpvZip = Join-Path $env:TEMP "mpv_build.zip"
-        $mpvUrls = @(
-            "https://github.com/thebanri/limoni-voice/releases/download/v1.0.0/mpv.exe",
-            "https://sourceforge.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-20240901-git-1beea03.7z/download"
-        )
-        foreach ($url in $mpvUrls) {
-            try {
-                if ($url.EndsWith(".exe")) {
-                    Invoke-WebRequest -Uri $url -OutFile $mpvExe -UseBasicParsing
-                    if (Test-Path $mpvExe) {
-                        Write-Host "[+] mpv.exe downloaded directly to $binDir!" -ForegroundColor Green
-                        break
-                    }
-                }
-            } catch {}
+        $mpvUrl = "https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-x86_64-pc-windows-msvc.zip"
+        $mpvHash = "4e197f729f5071c6772f35fffd96e0f36e3e8a044bd9479b136bb09b7c6a80ff"
+    }
+    $mpvZip = Join-Path $env:TEMP "limoni_mpv_setup.zip"
+    try {
+        Invoke-WebRequest -Uri $mpvUrl -OutFile $mpvZip -UseBasicParsing
+        if ((Get-FileHash -Path $mpvZip -Algorithm SHA256).Hash -ne $mpvHash) {
+            throw "download corrupted (SHA-256 mismatch)"
         }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($mpvZip)
+        try {
+            foreach ($name in @("mpv.exe", "vulkan-1.dll")) {
+                $entry = $zip.Entries | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+                if (!$entry) { throw "$name not found in the archive" }
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $binDir $name), $true)
+            }
+        } finally {
+            $zip.Dispose()
+        }
+        Write-Host "[+] MPV installed into $binDir" -ForegroundColor Green
+    } catch {
+        Write-Host "[-] MPV download failed: $_" -ForegroundColor DarkYellow
+        Write-Host "[*] Trying winget (shinchiro.mpv); Windows may ask for permission..." -ForegroundColor Yellow
+        try {
+            winget install -e --id shinchiro.mpv --accept-source-agreements --accept-package-agreements
+        } catch {
+            Write-Host "[-] winget is not available: $_" -ForegroundColor DarkYellow
+        }
+    } finally {
+        Remove-Item $mpvZip -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Host "[+] MPV is already installed." -ForegroundColor Green
 }
 
-# 5. Add bin directory to User PATH and current session PATH
+# Unblock files so Windows Defender / SmartScreen never interferes
+try {
+    Unblock-File -Path "$InstallDir\*" -ErrorAction SilentlyContinue
+    Unblock-File -Path "$binDir\*" -ErrorAction SilentlyContinue
+} catch {}
+
+# 7. Add bin directory to User PATH and current session PATH
 $env:PATH = "$binDir;$env:PATH"
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ([string]::IsNullOrWhiteSpace($userPath)) {
@@ -194,48 +234,6 @@ if ([string]::IsNullOrWhiteSpace($userPath)) {
     [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
     Write-Host "[+] $binDir added to User PATH environment variable." -ForegroundColor Green
 }
-
-# 6. Create Desktop Shortcut with custom Icon
-$desktop = [Environment]::GetFolderPath("Desktop")
-if (![string]::IsNullOrWhiteSpace($desktop) -and (Test-Path $desktop)) {
-    try {
-        $shortcutPath = Join-Path $desktop "Limoni Voice.lnk"
-        $wscript = New-Object -ComObject WScript.Shell
-        $shortcut = $wscript.CreateShortcut($shortcutPath)
-        if (Test-Path $targetExe) {
-            $shortcut.TargetPath = $targetExe
-            $shortcut.WorkingDirectory = $InstallDir
-            if (Test-Path $iconPath) {
-                $shortcut.IconLocation = "$iconPath,0"
-            }
-            $shortcut.Description = "Limoni Voice - P2P Encrypted Voice & Screen Sharing"
-            $shortcut.Save()
-            Write-Host "[+] Desktop shortcut created (with custom icon)!" -ForegroundColor Green
-        }
-    } catch {
-        Write-Host "[-] Could not create desktop shortcut: $_" -ForegroundColor DarkYellow
-    }
-}
-
-# 7. Open limoni://join/<room key> invite links with Limoni Voice (current user, no admin)
-try {
-    $scheme = "HKCU:\Software\Classes\limoni"
-    New-Item -Path "$scheme\shell\open\command" -Force | Out-Null
-    New-Item -Path "$scheme\DefaultIcon" -Force | Out-Null
-    Set-ItemProperty -Path $scheme -Name "(default)" -Value "URL:Limoni Voice invite"
-    Set-ItemProperty -Path $scheme -Name "URL Protocol" -Value ""
-    Set-ItemProperty -Path "$scheme\DefaultIcon" -Name "(default)" -Value $iconPath
-    Set-ItemProperty -Path "$scheme\shell\open\command" -Name "(default)" -Value "`"$targetExe`" `"%1`""
-    Write-Host "[+] limoni:// invite links now open Limoni Voice" -ForegroundColor Green
-} catch {
-    Write-Host "[-] Could not register limoni:// invite links: $_" -ForegroundColor DarkYellow
-}
-
-# Unblock files so Windows Defender / SmartScreen never interferes
-try {
-    Unblock-File -Path "$InstallDir\*" -ErrorAction SilentlyContinue
-    Unblock-File -Path "$binDir\*" -ErrorAction SilentlyContinue
-} catch {}
 
 Write-Host "`n==========================================" -ForegroundColor Cyan
 Write-Host " [✓] Installation Complete! Limoni Voice is ready." -ForegroundColor Green
