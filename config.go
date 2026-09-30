@@ -25,6 +25,12 @@ type AppConfig struct {
 	Notifications *bool `json:"notifications,omitempty"`
 	// Language is the user interface language ("en", "tr"); empty means English.
 	Language string `json:"language,omitempty"`
+	// Theme is the ID of the color theme; empty means the default one.
+	Theme string `json:"theme,omitempty"`
+	// CompactHUD keeps the room in the mini HUD layout (nil = off).
+	CompactHUD *bool `json:"compact_hud,omitempty"`
+	// ChatHeight is the room footer's inner height the user resized the chat to (0 = default).
+	ChatHeight int `json:"chat_height,omitempty"`
 }
 
 // ScreenSettings are the persisted screen share preferences.
@@ -44,6 +50,12 @@ type AudioSettings struct {
 	OutputVolume     float64 `json:"output_volume"`
 	VADSensitivity   int     `json:"vad_sensitivity"`
 	VoiceSmoothing   *bool   `json:"voice_smoothing,omitempty"` // nil = default (on)
+	// The chosen microphone and speakers. The name is compared too: on some systems the ID is
+	// only a position in the device list, which shifts when a device is plugged in or out.
+	InputDevice      string `json:"input_device,omitempty"`
+	InputDeviceName  string `json:"input_device_name,omitempty"`
+	OutputDevice     string `json:"output_device,omitempty"`
+	OutputDeviceName string `json:"output_device_name,omitempty"`
 }
 
 // UpdateAppConfig loads the settings file, applies mutate and saves it, preserving fields the

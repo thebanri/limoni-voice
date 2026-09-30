@@ -18,6 +18,78 @@ import (
 // footerGap is the column gap between control buttons.
 const footerGap = 2
 
+// The footer's inner height: the default, the least a resize leaves, and a ▲/▼ step.
+const (
+	defaultFooterRows = 6
+	minFooterRows     = 2
+	footerResizeStep  = 2
+)
+
+// maxFooterRows is the tallest footer (inner rows) that leaves the header and the member
+// grid their rows in area.
+func maxFooterRows(area cell.Rect) int {
+	return int(area.Height) - 3 - 2 - minGridHeight
+}
+
+// clampChatHeight keeps a chosen footer height within what the last drawn room allows.
+// Callers hold r.mu.
+func (r *RoomView) clampChatHeight(rows int) int {
+	rows = max(rows, minFooterRows)
+	if r.lastRoomArea.Height > 0 {
+		rows = min(rows, max(maxFooterRows(r.lastRoomArea), minFooterRows))
+	}
+	return rows
+}
+
+// ResizeChat makes the chat panel delta rows taller (or shorter, when negative).
+func (r *RoomView) ResizeChat(delta int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur := r.ChatHeight
+	if r.lastFooterArea.Height > 2 {
+		cur = int(r.lastFooterArea.Height) - 2 // what is on screen, after any clamping
+	} else if cur <= 0 {
+		cur = defaultFooterRows
+	}
+	r.ChatHeight = r.clampChatHeight(cur + delta)
+}
+
+// StartChatResize begins a resize when (x, y) is on the footer's top border (not on its
+// ▲/▼ buttons) and reports whether it did.
+func (r *RoomView) StartChatResize(x, y uint16) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.lastFooterArea
+	if f.Height == 0 || y != f.Y || x < f.X || x >= f.X+f.Width || r.lastResizeButtons.Contains(x, y) {
+		return false
+	}
+	r.chatResizing = true
+	return true
+}
+
+// DragChatResize moves the footer's top border to row y during a resize; false when no
+// resize is going on.
+func (r *RoomView) DragChatResize(y uint16) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.chatResizing {
+		return false
+	}
+	if bottom := int(r.lastRoomArea.Y) + int(r.lastRoomArea.Height); int(y) < bottom {
+		r.ChatHeight = r.clampChatHeight(bottom - int(y) - 2)
+	}
+	return true
+}
+
+// EndChatResize ends a resize and reports whether one was going on.
+func (r *RoomView) EndChatResize() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	was := r.chatResizing
+	r.chatResizing = false
+	return was
+}
+
 // footerSplit divides the footer into the controls and the chat panel.
 func footerSplit(area cell.Rect) []cell.Rect {
 	return layout.NewFlexLayout(layout.Horizontal, 0,
@@ -90,6 +162,19 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 	}
 	frame.RenderWidget(logBlock, logArea)
 	logInner := logBlock.Inner(logArea)
+
+	// ▲/▼ on the top border make the chat taller or shorter; the border itself drags.
+	const resizeBtns = "[▲][▼]"
+	btnX := logArea.X + logArea.Width - 2 - uint16(cell.StringWidth(resizeBtns))
+	if int(btnX) > int(logArea.X)+3+cell.StringWidth(blockTitle) {
+		btnStyle := cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+		buf.SetString(btnX, logArea.Y, resizeBtns, btnStyle)
+		clickable(frame, cell.NewRect(btnX, logArea.Y, 3, 1), func(_ driver.MouseEvent) { r.ResizeChat(footerResizeStep) })
+		clickable(frame, cell.NewRect(btnX+3, logArea.Y, 3, 1), func(_ driver.MouseEvent) { r.ResizeChat(-footerResizeStep) })
+		r.mu.Lock()
+		r.lastResizeButtons = cell.NewRect(btnX, logArea.Y, 6, 1)
+		r.mu.Unlock()
+	}
 
 	for y := logInner.Y; y < logInner.Y+logInner.Height; y++ {
 		for x := logInner.X; x < logInner.X+logInner.Width; x++ {

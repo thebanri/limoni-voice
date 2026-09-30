@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
@@ -369,5 +371,79 @@ func TestSettingsFileIsPrivate(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("settings file mode %v, want 0600", st.Mode().Perm())
+	}
+}
+
+// Settings changed anywhere (dialog slider, keys) reach the settings file without an explicit
+// save and come back on the next start: sensitivity, theme, mini HUD and devices.
+func TestSettingsPersistAcrossRestart(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir()) // macOS keeps its config dir under HOME
+	origTheme, origHUD := CurrentTheme().ID, GetCompactHUD()
+	t.Cleanup(func() { SetThemeByID(origTheme); SetCompactHUD(origHUD) })
+
+	devices := func(names ...string) []engine.AudioDevice {
+		var out []engine.AudioDevice
+		for i, n := range names {
+			out = append(out, engine.AudioDevice{ID: fmt.Sprint(i), Name: n})
+		}
+		return out
+	}
+	newApp := func(in []engine.AudioDevice) *App {
+		a := &App{audio: engine.NewAudioEngine(), room: NewRoomView()}
+		a.audio.InputDevices, a.audio.SelectedInputIdx = in, 0
+		a.applySettings(LoadAppConfig())
+		return a
+	}
+
+	a := newApp(devices("Default", "USB Mic", "Webcam"))
+	a.persistSettings()
+	if cfg := LoadAppConfig(); cfg.Audio != nil || cfg.Theme != "" {
+		t.Fatalf("untouched defaults were written: %+v", cfg)
+	}
+
+	a.audio.SetVADSensitivity(30)
+	a.audio.SetInputDevice(1)
+	SetThemeByID(ThemeNord.ID)
+	SetCompactHUD(true)
+	a.room.ChatHeight = 14
+	a.persistSettings() // what the render loop does
+
+	// Restart: the theme falls back to the default, and the USB mic moved down the list.
+	SetThemeByID(ThemeCyberpunk.ID)
+	SetCompactHUD(false)
+	b := newApp(devices("Default", "Webcam", "USB Mic"))
+	if got := b.audio.GetVADSensitivity(); got != 30 {
+		t.Errorf("sensitivity = %d, want 30", got)
+	}
+	if got := CurrentTheme().ID; got != ThemeNord.ID {
+		t.Errorf("theme = %q, want %q", got, ThemeNord.ID)
+	}
+	if !GetCompactHUD() {
+		t.Error("mini HUD not restored")
+	}
+	if b.room.ChatHeight != 14 {
+		t.Errorf("chat height = %d, want 14", b.room.ChatHeight)
+	}
+	if got := b.audio.GetSelectedInputName(); got != "USB Mic" {
+		t.Errorf("microphone = %q, want USB Mic", got)
+	}
+}
+
+func TestFindDevice(t *testing.T) {
+	devs := []engine.AudioDevice{{ID: "0", Name: "Mic"}, {ID: "1", Name: "Mic"}, {ID: "2", Name: "Other"}}
+	cases := []struct {
+		id, name string
+		want     int
+	}{
+		{"1", "Mic", 1},   // exact match wins over the first with that name
+		{"9", "Mic", 0},   // ID changed: same name
+		{"2", "Gone", -1}, // an ID alone names whatever device now sits there
+		{"", "", -1},
+	}
+	for _, c := range cases {
+		if got := findDevice(devs, c.id, c.name); got != c.want {
+			t.Errorf("findDevice(%q, %q) = %d, want %d", c.id, c.name, got, c.want)
+		}
 	}
 }

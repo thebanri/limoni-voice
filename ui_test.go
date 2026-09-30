@@ -2,6 +2,8 @@ package main
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -960,8 +962,14 @@ func TestDirectChatClickAndNoResizeNewline(t *testing.T) {
 	if !clicked {
 		t.Fatalf("Expected HandleChatClick to succeed on rendered message row")
 	}
-	if room.ToastMsg == "" || !strings.Contains(room.ToastMsg, "reg add") {
-		t.Fatalf("Expected toast message with copied text, got %q", room.ToastMsg)
+	if room.ToastMsg != copiedToast {
+		t.Fatalf("toast after copying = %q, want %q", room.ToastMsg, copiedToast)
+	}
+	// The copied text is not posted to the chat.
+	for _, m := range room.Messages {
+		if strings.Contains(m.Text, "Copied") {
+			t.Fatalf("copying added a chat line: %q", m.Text)
+		}
 	}
 
 	// 2. Drag-selecting across all wrapped lines must NOT insert fake \n due to window resize
@@ -995,9 +1003,9 @@ func TestMultilineCopyCommandAndNoIndentationArtifacts(t *testing.T) {
 	if len(rLines) < 2 {
 		t.Fatalf("Expected at least 2 lines, got %d", len(rLines))
 	}
-	clicked := room.HandleChatClick(10, rLines[1].RowY)
-	if !clicked {
-		t.Fatalf("Expected HandleChatClick on 2nd wrapped line to succeed")
+	// A click on plain text copies nothing: /copy messages and selection do that.
+	if room.HandleChatClick(10, rLines[1].RowY) {
+		t.Fatalf("a click on a plain chat message copied it")
 	}
 
 	ok := CopyToClipboard(rawCmd)
@@ -1496,5 +1504,204 @@ func TestWindowTitle(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(titles(), ""), node.RoomCode) {
 		t.Fatal("the room code reached the window title")
+	}
+}
+
+// While someone shares a screen the members move to a sidebar; its volume buttons must work,
+// also on the sharer's card, whose whole area opens the stream.
+func TestSidebarMemberVolumeWhileStreaming(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("sidebar_vol_test", "Bob", audio)
+	defer node.Close()
+	node.HostRoom("778899")
+	node.Peers["peer_alice"] = &p2p.PeerInfo{ID: "peer_alice", Nickname: "Alice", PingMs: 25, LastSeen: time.Now(), IsSharingScreen: true}
+
+	room := NewRoomView()
+	const w, h = 160, 40
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, w, h))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, w, h), node, audio)
+
+	click := func(label string) {
+		t.Helper()
+		for y := uint16(0); y < h; y++ {
+			var row strings.Builder
+			for x := uint16(0); x < w/2; x++ {
+				if c := buf.Get(x, y); c != nil && c.Content != 0 {
+					row.WriteRune(c.Content)
+				} else {
+					row.WriteRune(' ')
+				}
+			}
+			line := row.String()
+			idx := strings.Index(line, label)
+			if idx < 0 {
+				continue
+			}
+			col := len([]rune(line[:idx])) // cells, not bytes: the border is multi-byte
+			ev := driver.MouseEvent{X: uint16(col + 1), Y: y, Button: driver.MouseLeft}
+			for i := len(frame.ClickRegions) - 1; i >= 0; i-- {
+				if reg := frame.ClickRegions[i]; reg.LayerID == "" && reg.Area.Contains(ev.X, ev.Y) {
+					reg.Handler(ev)
+					return
+				}
+			}
+			t.Fatalf("no click region on %q", label)
+		}
+		t.Fatalf("%q not drawn in the members sidebar", label)
+	}
+
+	click("[+]")
+	if v := audio.GetPeerVolume("peer_alice"); math.Abs(v-1.25) > 1e-9 {
+		t.Fatalf("volume after [+] = %v, want 1.25", v)
+	}
+	room.Render(frame, cell.NewRect(0, 0, w, h), node, audio)
+	click("[-]")
+	click("[-]")
+	if v := audio.GetPeerVolume("peer_alice"); math.Abs(v-0.75) > 1e-9 {
+		t.Fatalf("volume after [-] [-] = %v, want 0.75", v)
+	}
+}
+
+// The chat keeps its rows while a stream is watched, and its top border drags it taller.
+func TestChatPanelResize(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("chat_resize_test", "Bob", audio)
+	defer node.Close()
+	node.HostRoom("778899")
+	node.Peers["peer_alice"] = &p2p.PeerInfo{ID: "peer_alice", Nickname: "Alice", LastSeen: time.Now(), IsSharingScreen: true}
+	node.IsWatchingScreen, node.WatchingPeerID = true, "peer_alice"
+
+	room := NewRoomView()
+	const w, h = 140, 40
+	area := cell.NewRect(0, 0, w, h)
+	render := func() cell.Rect {
+		buf := buffer.NewBuffer(area)
+		frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+		room.Render(frame, area, node, audio)
+		room.mu.Lock()
+		defer room.mu.Unlock()
+		return room.LastLogArea
+	}
+
+	if got := render().Height; got != defaultFooterRows+2 {
+		t.Fatalf("chat panel height while watching = %d, want %d", got, defaultFooterRows+2)
+	}
+
+	// Drag the footer's top border up by 10 rows.
+	top := room.lastFooterArea.Y
+	if !room.StartChatResize(5, top) {
+		t.Fatal("pressing the footer's top border did not start a resize")
+	}
+	if !room.DragChatResize(top - 10) {
+		t.Fatal("drag not taken")
+	}
+	room.EndChatResize()
+	if got := render().Height; got != defaultFooterRows+2+10 {
+		t.Fatalf("chat panel height after dragging up 10 rows = %d, want %d", got, defaultFooterRows+12)
+	}
+	if room.DragChatResize(3) {
+		t.Fatal("drag taken after the resize ended")
+	}
+
+	room.ResizeChat(-footerResizeStep) // ▼
+	if got := render().Height; got != defaultFooterRows+2+10-footerResizeStep {
+		t.Fatalf("chat panel height after ▼ = %d", got)
+	}
+
+	// Dragging past the header leaves the member grid its rows; dragging to the bottom keeps
+	// at least the input line and one message.
+	room.StartChatResize(5, room.lastFooterArea.Y)
+	room.DragChatResize(0)
+	room.EndChatResize()
+	if got, want := int(render().Height), maxFooterRows(area)+2; got != want {
+		t.Fatalf("tallest chat panel = %d, want %d", got, want)
+	}
+	room.StartChatResize(5, room.lastFooterArea.Y)
+	room.DragChatResize(h - 1)
+	room.EndChatResize()
+	if got := int(render().Height); got < minFooterRows+2 {
+		t.Fatalf("shortest chat panel = %d, want at least %d", got, minFooterRows+2)
+	}
+}
+
+// A right click pastes like the terminal would without mouse reporting: code into the chat
+// input with its lines kept, a room key into the lobby's key field.
+func TestRightClickPaste(t *testing.T) {
+	clip := "func main() {\r\n\tfmt.Println(\"hi\")\r\n}"
+	orig := readClipboard
+	readClipboard = func() string { return clip }
+	t.Cleanup(func() { readClipboard = orig })
+
+	a := &App{room: NewRoomView(), lobby: NewLobbyView()}
+	a.handleRoomMouse(driver.MouseEvent{X: 5, Y: 5, Button: driver.MouseRight})
+	if got, want := a.room.ChatInputState.Value(), "func main() {\n\tfmt.Println(\"hi\")\n}"; got != want {
+		t.Fatalf("chat input after right click = %q, want %q", got, want)
+	}
+	if !a.room.IsChatFocused {
+		t.Error("chat not focused after pasting into it")
+	}
+	a.handleRoomMouse(driver.MouseEvent{X: 6, Y: 5, Button: driver.MouseRight, Drag: true})
+	if strings.Count(a.room.ChatInputState.Value(), "main") != 1 {
+		t.Error("a right-button drag pasted again")
+	}
+
+	clip = "  " + a.lobby.CurrentCode + "\n"
+	a.lobby.ActiveInput = 1
+	a.handleLobbyMouse(driver.MouseEvent{X: 5, Y: 5, Button: driver.MouseRight})
+	if got := a.lobby.CodeState.Value(); got != NormalizeCode(a.lobby.CurrentCode) || got == "" {
+		t.Errorf("room key field after right click = %q, want %q", got, NormalizeCode(a.lobby.CurrentCode))
+	}
+
+	clip = ""
+	before := a.room.ChatInputState.Value()
+	a.handleRoomMouse(driver.MouseEvent{X: 5, Y: 5, Button: driver.MouseRight})
+	if a.room.ChatInputState.Value() != before || a.room.ToastMsg != "Clipboard empty or unreadable" {
+		t.Errorf("empty clipboard: input %q, toast %q", a.room.ChatInputState.Value(), a.room.ToastMsg)
+	}
+}
+
+// /send takes a path the way Windows hands it out: Explorer's "Copy as path" and a file dragged
+// into Windows Terminal quote it, and it may hold non-ASCII letters (Uğur, İQistan).
+func TestSendFileQuotedPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Uğur", "Desktop", "Meme", "İQistan")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "abaducabbar.png")
+	if err := os.WriteFile(file, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, typed := range []string{`"` + file + `"`, `'` + file + `'`, "  " + file + " ", "file://" + filepath.ToSlash(file)} {
+		room := NewRoomView()
+		got := make(chan string, 1)
+		room.OnSendFile = func(p string) { got <- p }
+		room.ChatInputState.SetValue("/send " + typed)
+		room.SendCurrentChat()
+		select {
+		case p := <-got:
+			if _, err := os.Stat(p); err != nil {
+				t.Errorf("/send %s passed %q, which does not open: %v", typed, p, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("/send %s did not send", typed)
+		}
+	}
+}
+
+func TestCleanFilePath(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := map[string]string{
+		`"C:\Users\Uğur\Desktop\Meme\İQistan\abaducabbar.png"`: `C:\Users\Uğur\Desktop\Meme\İQistan\abaducabbar.png`,
+		`'/tmp/a b.txt'`:    "/tmp/a b.txt",
+		`"unbalanced`:       `"unbalanced`,
+		"~/notes.txt":       filepath.Join(home, "notes.txt"),
+		"file:///tmp/a%20b": "/tmp/a b",
+	}
+	for in, want := range cases {
+		if got := cleanFilePath(in); got != want {
+			t.Errorf("cleanFilePath(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

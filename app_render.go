@@ -53,6 +53,11 @@ func (a *App) render(now time.Time) {
 	if screenShareProg <= 0.001 && !a.screenShareDialogAnim.IsAnimating() {
 		a.showScreenShareModal = false
 	}
+	a.refreshScreenShareDeps(now)
+	if now.Sub(a.settingsCheckedAt) >= 500*time.Millisecond {
+		a.settingsCheckedAt = now
+		a.persistSettings()
+	}
 	relayProg := a.relayDialogAnim.Value()
 	if relayProg <= 0.001 && !a.relayDialogAnim.IsAnimating() {
 		a.showRelayModal = false

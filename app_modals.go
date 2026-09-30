@@ -23,7 +23,7 @@ func (a *App) openTestModal() {
 func (a *App) closeTestModal() {
 	a.audio.LeaveTestMode()
 	a.showTestModal = false
-	a.saveAudioSettings()
+	a.persistSettings()
 	a.term.ForceFullRedraw()
 }
 
@@ -126,8 +126,29 @@ func (a *App) openScreenShareModal() {
 	}
 	a.selectedScreenShareIdx = 0
 	a.screenShareDeps = screenshare.CheckDependencies()
+	a.screenShareDepsChecked = time.Now()
 	a.showScreenShareModal = true
 	a.screenShareDialogAnim.AnimateTo(1.0, 200*time.Millisecond, animation.EaseOutCubic)
+}
+
+// refreshScreenShareDeps checks missing screen share tools again every two seconds while the
+// dialog is open, so FFmpeg or MPV installed meanwhile clears the warning without reopening it.
+func (a *App) refreshScreenShareDeps(now time.Time) {
+	if fresh := a.screenShareDepsFresh.Swap(nil); fresh != nil {
+		a.screenShareDeps = *fresh
+	}
+	if !a.showScreenShareModal || a.screenShareDeps.MissingRecommended == "" || now.Sub(a.screenShareDepsChecked) < 2*time.Second {
+		return
+	}
+	if !a.screenShareDepsBusy.CompareAndSwap(false, true) {
+		return
+	}
+	a.screenShareDepsChecked = now
+	go func() {
+		defer a.screenShareDepsBusy.Store(false)
+		deps := screenshare.CheckDependencies()
+		a.screenShareDepsFresh.Store(&deps)
+	}()
 }
 
 func (a *App) watchFirstStream() {

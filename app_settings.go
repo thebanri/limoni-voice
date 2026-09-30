@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/thebanri/limoni-voice/internal/audioio"
 	"github.com/thebanri/limoni-voice/internal/engine"
@@ -27,6 +28,24 @@ func (a *App) applySettings(cfg AppConfig) {
 		a.node.ScreenPreset = a.screenPreset
 		a.node.ShareSystemAudio = a.shareSystemAudio
 	}
+	if cfg.Theme != "" {
+		SetThemeByID(cfg.Theme)
+	}
+	if cfg.CompactHUD != nil {
+		SetCompactHUD(*cfg.CompactHUD)
+	}
+	if cfg.ChatHeight > 0 {
+		a.room.mu.Lock()
+		a.room.ChatHeight = cfg.ChatHeight
+		a.room.mu.Unlock()
+	}
+	// Only changes made from here on are written back: settings left at their defaults stay
+	// out of the file and follow the defaults of later versions.
+	defer func() {
+		snap := a.currentSettings()
+		a.savedSettings = &snap
+	}()
+
 	s := cfg.Audio
 	if s == nil {
 		return
@@ -62,14 +81,52 @@ func (a *App) applySettings(cfg AppConfig) {
 		}
 		audio.SetPTTKey(r, key)
 	}
+	audio.RLock()
+	in := findDevice(audio.InputDevices, s.InputDevice, s.InputDeviceName)
+	out := findDevice(audio.OutputDevices, s.OutputDevice, s.OutputDeviceName)
+	audio.RUnlock()
+	if in >= 0 {
+		audio.SetInputDevice(in)
+	}
+	if out >= 0 {
+		audio.SetOutputDevice(out)
+	}
 }
 
-// saveAudioSettings persists the current audio preferences.
-func (a *App) saveAudioSettings() {
+// findDevice returns the index of the saved device in devices, or -1. The ID alone is not
+// enough: where it is a position in the list, it names another device after a change.
+func findDevice(devices []engine.AudioDevice, id, name string) int {
+	if name == "" {
+		return -1
+	}
+	match := -1
+	for i, d := range devices {
+		if d.Name != name {
+			continue
+		}
+		if d.ID == id {
+			return i
+		}
+		if match < 0 {
+			match = i
+		}
+	}
+	return match
+}
+
+// settingsSnapshot is what persistSettings keeps on disk: the audio preferences and the layout.
+type settingsSnapshot struct {
+	Audio      AudioSettings
+	Theme      string
+	CompactHUD bool
+	ChatHeight int
+}
+
+func (a *App) currentSettings() settingsSnapshot {
 	audio := a.audio
 	audio.RLock()
 	smoothing := audio.VoiceSmoothing
-	s := &AudioSettings{
+	s := AudioSettings{
 		SuppressionMode:  audio.SuppressionMode,
 		EchoCancellation: audio.EchoCancellation,
 		PushToTalk:       audio.InputMode == engine.InputModePushToTalk,
@@ -80,8 +137,39 @@ func (a *App) saveAudioSettings() {
 		VADSensitivity:   audio.VADSensitivity,
 		VoiceSmoothing:   &smoothing,
 	}
+	if i := audio.SelectedInputIdx; i >= 0 && i < len(audio.InputDevices) {
+		s.InputDevice, s.InputDeviceName = audio.InputDevices[i].ID, audio.InputDevices[i].Name
+	}
+	if i := audio.SelectedOutputIdx; i >= 0 && i < len(audio.OutputDevices) {
+		s.OutputDevice, s.OutputDeviceName = audio.OutputDevices[i].ID, audio.OutputDevices[i].Name
+	}
 	audio.RUnlock()
-	_ = UpdateAppConfig(func(c *AppConfig) { c.Audio = s })
+	a.room.mu.Lock()
+	chatHeight := a.room.ChatHeight
+	a.room.mu.Unlock()
+	return settingsSnapshot{Audio: s, Theme: CurrentTheme().ID, CompactHUD: GetCompactHUD(), ChatHeight: chatHeight}
+}
+
+// persistSettings writes the settings when they differ from what was saved last. The render
+// loop calls it twice a second, so a change is kept whichever control made it, also when the
+// app is closed with the settings dialog still open.
+func (a *App) persistSettings() {
+	snap := a.currentSettings()
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	if a.savedSettings != nil && reflect.DeepEqual(*a.savedSettings, snap) {
+		return
+	}
+	a.savedSettings = &snap
+	hud := snap.CompactHUD
+	if err := UpdateAppConfig(func(c *AppConfig) {
+		c.Audio = &snap.Audio
+		c.Theme = snap.Theme
+		c.CompactHUD = &hud
+		c.ChatHeight = snap.ChatHeight
+	}); err != nil {
+		AddDebugLog("[CONFIG] Could not save settings: " + err.Error())
+	}
 }
 
 func (a *App) toggleGlobalPTT() {
@@ -93,7 +181,7 @@ func (a *App) toggleGlobalPTT() {
 	}
 	a.audio.Unlock()
 	a.syncGlobalPTT()
-	a.saveAudioSettings()
+	a.persistSettings()
 	if enabled {
 		if ptt.IsTypingKey(a.audio.GetPTTKeyName()) {
 			a.toast(fmt.Sprintf("Global PTT on %s also fires while typing in other apps — press K and pick e.g. F9", a.audio.GetPTTKeyName()))

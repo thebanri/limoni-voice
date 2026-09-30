@@ -146,6 +146,14 @@ func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, n
 					}()
 				})
 			}
+			// Volume below the level meter, or at the end of the status line on a 3-row card.
+			// Drawn after the card's watch click so the buttons take the click.
+			volY, volX := peerCard.Y+3, peerCard.X+2
+			if peerCard.Height < 4 {
+				volY = peerCard.Y + 1
+				volX = peerCard.X + peerCard.Width - uint16(min(int(peerCard.Width), peerVolumeWidth(peer, audio)+1))
+			}
+			r.drawPeerVolume(frame, volX, volY, peerCard.X+peerCard.Width, peer, audio)
 			currY += uint16(slotHeight)
 		}
 	})

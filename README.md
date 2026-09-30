@@ -427,7 +427,7 @@ export LIMONI_LAN_ONLY=1
 
 ### 🌍 Interface Language
 
-The interface is written in English and ships with a Turkish translation. Press `L` in the lobby or `I` in the audio settings (`T`) to switch; the choice is saved in `settings.json`. `--lang` and `LIMONI_LANG` override it for one run. Log files stay in English so they can be shared in bug reports.
+The interface is written in English and ships with a Turkish translation. Press `L` in the lobby or `I` in the audio settings (`T`) to switch; the choice is saved in `settings.json`, like the audio settings, microphone and speakers, theme, mini HUD and chat height. `--lang` and `LIMONI_LANG` override it for one run. Log files stay in English so they can be shared in bug reports.
 
 ### 📝 Diagnostic Log
 
@@ -487,7 +487,7 @@ The log is written to the per-user state directory instead of the folder the app
 | `T` / `F4` | Open microphone sound test panel |
 | `L` | Switch interface language (English / Türkçe) |
 | `Esc` | Exit confirmation |
-| `Ctrl+V` | Paste key from clipboard |
+| `Ctrl+V` / `🖱️ Right click` | Paste into the selected field (username or room key) |
 | `🖱️ Drag` | Rotate 3D microphone model |
 | `🖱️ Scroll` | Zoom in / out |
 
@@ -506,6 +506,9 @@ The log is written to the per-user state directory instead of the folder the app
 | `P` | 🎚️ Toggle Voice Activity / Push-to-Talk |
 | `E` | 🔁 Toggle echo cancellation |
 | `S` | 🪶 Toggle voice smoothing (soft highs, even loudness, peak limiter) |
+| `Ctrl+V` / `🖱️ Right click` | 📋 Paste into the chat (multi-line code keeps its lines) |
+| `🖱️ Drag chat top border` / `[▲][▼]` | ↕️ Make the chat panel taller or shorter |
+| `/send <path>` | 📎 Send a file (quoted paths from Explorer's "Copy as path" work) |
 | `F12` | 🩺 Debug & network diagnostics |
 | `/net`, `/stats` | 📶 Print per-peer path, RTT, loss & jitter to chat |
 | `/kick <user>` | 👢 Remove a member (host only; they may knock again) |

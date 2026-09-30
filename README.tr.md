@@ -428,7 +428,7 @@ export LIMONI_LAN_ONLY=1
 
 ### 🌍 Arayüz Dili
 
-Arayüz İngilizce yazılmıştır ve Türkçe çevirisiyle gelir. Lobide `L`, ses ayarlarında (`T`) `I` tuşuyla dil değişir; seçim `settings.json`'a kaydedilir. `--lang` ve `LIMONI_LANG` o çalıştırma için bunu geçersiz kılar. Log dosyaları hata bildirimlerinde paylaşılabilsin diye İngilizce kalır.
+Arayüz İngilizce yazılmıştır ve Türkçe çevirisiyle gelir. Lobide `L`, ses ayarlarında (`T`) `I` tuşuyla dil değişir; seçim ses ayarları, mikrofon ve hoparlör, tema, mini HUD ve sohbet yüksekliği gibi `settings.json`'a kaydedilir. `--lang` ve `LIMONI_LANG` o çalıştırma için bunu geçersiz kılar. Log dosyaları hata bildirimlerinde paylaşılabilsin diye İngilizce kalır.
 
 ### 📝 Tanılama Logu
 
@@ -488,7 +488,7 @@ Log, uygulamanın başlatıldığı klasör yerine kullanıcı durum klasörüne
 | `T` / `F4` | Ses test modalını aç |
 | `L` | Arayüz dilini değiştir (English / Türkçe) |
 | `Esc` | Çıkış onayı |
-| `Ctrl+V` | Panodan yapıştır |
+| `Ctrl+V` / `🖱️ Sağ tık` | Seçili alana yapıştır (kullanıcı adı veya oda anahtarı) |
 | `🖱️ Sürükle` | 3D mikrofonu döndür |
 | `🖱️ Scroll` | Yakınlaştır / Uzaklaştır |
 
@@ -507,6 +507,9 @@ Log, uygulamanın başlatıldığı klasör yerine kullanıcı durum klasörüne
 | `P` | 🎚️ Ses algılama / Bas-konuş modunu değiştir |
 | `E` | 🔁 Yankı gidermeyi aç / kapat |
 | `S` | 🪶 Ses yumuşatmayı aç / kapat (yumuşak tizler, dengeli ses, tepe sınırlayıcı) |
+| `Ctrl+V` / `🖱️ Sağ tık` | 📋 Sohbete yapıştır (çok satırlı kod satırlarını korur) |
+| `🖱️ Sohbetin üst kenarını sürükle` / `[▲][▼]` | ↕️ Sohbet panelini büyüt / küçült |
+| `/send <yol>` | 📎 Dosya gönder (Explorer'daki "Yol olarak kopyala" ile gelen tırnaklı yollar da olur) |
 | `F12` | 🩺 Debug & ağ tanılama paneli |
 | `/net`, `/stats` | 📶 Peer başına yol, RTT, kayıp ve jitter bilgisini sohbete yaz |
 | `/kick <kullanıcı>` | 👢 Üyeyi odadan çıkar (yalnız host; tekrar kapı çalabilir) |

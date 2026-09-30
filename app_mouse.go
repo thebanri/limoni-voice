@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/thebanri/limoni/core/cell"
@@ -23,6 +22,10 @@ func (a *App) handleMouse(m driver.MouseEvent) {
 		a.room.mu.Unlock()
 	}
 
+	// Before the click regions: a drag passing over a button would press it.
+	if roomInteractive && a.handleChatResize(m) {
+		return
+	}
 	if a.term.RouteMouseEvent(m) {
 		return
 	}
@@ -106,6 +109,10 @@ func (a *App) handleLobbyMouse(m driver.MouseEvent) {
 		}
 	case driver.MouseNone:
 		lobby.DragActive = false
+	case driver.MouseRight:
+		if !m.Drag {
+			a.pasteIntoLobby(readClipboard())
+		}
 	case driver.MouseScrollUp:
 		if lobby.Scale < 12.0 {
 			lobby.Scale += 0.3
@@ -133,7 +140,8 @@ func (a *App) handleRoomMouse(m driver.MouseEvent) {
 			}
 		} else if inChatLog {
 			// Clicking anywhere in the chat panel opens the input; a click on a
-			// message still copies it, anything else may start a selection.
+			// [Copy: …] message copies it and one on a link opens it, anything else
+			// may start a selection.
 			room.SetChatFocused(true)
 			if !room.HandleChatClick(m.X, m.Y) {
 				room.HandleMousePress(m.X, m.Y)
@@ -145,12 +153,31 @@ func (a *App) handleRoomMouse(m driver.MouseEvent) {
 		if isDragging {
 			if copied := room.HandleMouseRelease(m.X, m.Y); copied != "" {
 				CopyToClipboard(copied)
-				room.SetToast(fmt.Sprintf("✓ Copied: %s", preview(copied)))
+				room.SetToast(copiedToast)
 			}
+		}
+	case driver.MouseRight:
+		// With mouse reporting on, the terminal hands its right-click paste to us.
+		if !m.Drag {
+			a.pasteIntoChat(readClipboard())
 		}
 	case driver.MouseScrollUp:
 		room.ScrollChat(1)
 	case driver.MouseScrollDown:
 		room.ScrollChat(-1)
 	}
+}
+
+// handleChatResize lets the footer's top border be dragged up or down to make the chat
+// taller or shorter, and reports whether it took the event.
+func (a *App) handleChatResize(m driver.MouseEvent) bool {
+	switch {
+	case m.Button == driver.MouseLeft && !m.Drag:
+		return a.room.StartChatResize(m.X, m.Y)
+	case m.Button == driver.MouseLeft:
+		return a.room.DragChatResize(m.Y)
+	case m.Button == driver.MouseRelease || m.Button == driver.MouseNone:
+		return a.room.EndChatResize()
+	}
+	return false
 }

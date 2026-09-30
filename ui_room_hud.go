@@ -458,25 +458,8 @@ func (r *RoomView) drawHUDMembers(frame *terminal.Frame, inner cell.Rect, y uint
 		py := y + uint16(i+1)
 		x := head(py, peer.Nickname, peer.Speaking && !peer.IsMuted, peer.IsMuted, peer.RMS)
 
-		setVol := func(v float64) {
-			v = max(0, min(2, v))
-			audio.SetPeerVolume(peer.ID, v)
-			r.SetToast(fmt.Sprintf("Volume for %s: %d%%", peer.Nickname, int(math.Round(v*100))))
-		}
-		vol := int(math.Round(audio.GetPeerVolume(peer.ID) * 100))
-		volText := fmt.Sprintf("%3d%%", vol)
-		volStyle := cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg}
-		if peer.IsMuted || vol == 0 {
-			volText, volStyle = T("MUTED"), cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
-		}
-		if x+uint16(cell.StringWidth("[-] "+volText+" [+]")) <= right {
-			x = put(x, py, "[-]", cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}, func() {
-				setVol(audio.GetPeerVolume(peer.ID) - 0.25)
-			}) - hudGap + 1
-			x = put(x, py, volText, volStyle, nil) - hudGap + 1
-			x = put(x, py, "[+]", cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}, func() {
-				setVol(audio.GetPeerVolume(peer.ID) + 0.25)
-			})
+		if end := r.drawPeerVolume(frame, x, py, right, peer, audio); end > x {
+			x = end + hudGap
 		}
 
 		switch {
@@ -493,6 +476,49 @@ func (r *RoomView) drawHUDMembers(frame *terminal.Frame, inner cell.Rect, y uint
 			put(x, py, fmt.Sprintf("%d ms %s", peer.PingMs, peerTransport(node, peer)), cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}, nil)
 		}
 	}
+}
+
+// peerVolumeWidth is the width drawPeerVolume needs.
+func peerVolumeWidth(peer *p2p.PeerInfo, audio *engine.AudioEngine) int {
+	text, _ := peerVolumeText(peer, audio)
+	return cell.StringWidth("[-] " + text + " [+]")
+}
+
+func peerVolumeText(peer *p2p.PeerInfo, audio *engine.AudioEngine) (string, bool) {
+	vol := int(math.Round(audio.GetPeerVolume(peer.ID) * 100))
+	if peer.IsMuted || vol == 0 {
+		return T("MUTED"), true
+	}
+	return fmt.Sprintf("%3d%%", vol), false
+}
+
+// drawPeerVolume draws "[-] 100% [+]" at x, y; the buttons change how loud peer plays here in
+// 25% steps from 0 to 200%. It returns the column after the controls, or x when they do not
+// fit before right. Register it after any click area it sits on: the last one registered wins.
+func (r *RoomView) drawPeerVolume(frame *terminal.Frame, x, y, right uint16, peer *p2p.PeerInfo, audio *engine.AudioEngine) uint16 {
+	if audio == nil || int(x)+peerVolumeWidth(peer, audio) > int(right) {
+		return x
+	}
+	theme := CurrentTheme()
+	setVol := func(v float64) {
+		v = max(0, min(2, v))
+		audio.SetPeerVolume(peer.ID, v)
+		r.SetToast(fmt.Sprintf("Volume for %s: %d%%", peer.Nickname, int(math.Round(v*100))))
+	}
+	text, muted := peerVolumeText(peer, audio)
+	textStyle := cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg}
+	if muted {
+		textStyle = cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
+	}
+	buf := frame.Buffer
+	buf.SetString(x, y, "[-]", cell.Style{Fg: theme.Secondary, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+	clickable(frame, cell.NewRect(x, y, 3, 1), func(_ driver.MouseEvent) { setVol(audio.GetPeerVolume(peer.ID) - 0.25) })
+	x += 4
+	buf.SetString(x, y, text, textStyle)
+	x += uint16(cell.StringWidth(text)) + 1
+	buf.SetString(x, y, "[+]", cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+	clickable(frame, cell.NewRect(x, y, 3, 1), func(_ driver.MouseEvent) { setVol(audio.GetPeerVolume(peer.ID) + 0.25) })
+	return x + 3
 }
 
 func btoi(b bool) int {

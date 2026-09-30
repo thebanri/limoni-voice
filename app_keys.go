@@ -28,23 +28,46 @@ func (a *App) handlePaste(pasted string) {
 		return
 	}
 	if a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal {
-		cleanPasted := strings.TrimSpace(pasted)
-		switch a.lobby.ActiveInput {
-		case 0:
-			a.lobby.NickState.SetValue(cleanPasted)
-			a.lobby.SetToast("Username pasted")
-		case 1:
-			if cleanCode := NormalizeCode(cleanPasted); cleanCode != "" {
-				a.lobby.CodeState.SetValue(cleanCode)
-				a.lobby.SetToast(fmt.Sprintf("Room key pasted: %s", cleanCode))
-			}
-		}
+		a.pasteIntoLobby(pasted)
 	} else if a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal {
-		a.room.SetChatFocused(true)
-		for _, r := range pasted {
-			if r != '\r' {
-				a.room.ChatInputState.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: r})
-			}
+		a.pasteIntoChat(pasted)
+	}
+}
+
+// readClipboard reads the system clipboard; tests replace it.
+var readClipboard = GetClipboardText
+
+// pasteIntoChat inserts text at the chat input's cursor, line breaks and all, so code keeps
+// its lines (Ctrl+V, right click, the terminal's own paste).
+func (a *App) pasteIntoChat(text string) {
+	if text == "" {
+		a.room.SetToast("Clipboard empty or unreadable")
+		return
+	}
+	a.room.SetChatFocused(true)
+	for _, r := range text {
+		if r != '\r' {
+			a.room.ChatInputState.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: r})
+		}
+	}
+}
+
+// pasteIntoLobby puts text into the lobby's selected field: the username or the room key.
+func (a *App) pasteIntoLobby(text string) {
+	lobby := a.lobby
+	text = strings.TrimSpace(text)
+	if text == "" {
+		lobby.SetToast("Clipboard empty or unreadable")
+		return
+	}
+	switch lobby.ActiveInput {
+	case 0:
+		lobby.NickState.SetValue(text)
+		lobby.SetToast("Username pasted")
+	case 1:
+		if code := NormalizeCode(text); code != "" {
+			lobby.CodeState.SetValue(code)
+			lobby.SetToast(fmt.Sprintf("Room key pasted: %s", code))
 		}
 	}
 }
@@ -64,7 +87,7 @@ func (a *App) handleKey(e driver.KeyEvent) {
 			a.room.mu.Unlock()
 			if selActive && selText != "" {
 				CopyToClipboard(selText)
-				a.room.SetToast(fmt.Sprintf("✓ Copied: %s", preview(selText)))
+				a.room.SetToast(copiedToast)
 				return
 			}
 		}
@@ -82,12 +105,7 @@ func (a *App) handleKey(e driver.KeyEvent) {
 	// Ctrl+V in active room chat
 	if e.Ctrl && (e.Ch == 'v' || e.Ch == 'V') && a.currentScreen == ScreenRoom &&
 		!a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && !a.showDebugModal {
-		a.room.SetChatFocused(true)
-		for _, r := range GetClipboardText() {
-			if r != '\r' {
-				a.room.ChatInputState.HandleKey(driver.KeyEvent{Type: driver.KeyRune, Ch: r})
-			}
-		}
+		a.pasteIntoChat(readClipboard())
 		return
 	}
 
@@ -141,12 +159,8 @@ func (a *App) handleKey(e driver.KeyEvent) {
 	}
 }
 
-func preview(s string) string {
-	if r := []rune(s); len(r) > 30 {
-		return string(r[:30]) + "…"
-	}
-	return s
-}
+// copiedToast confirms a copy without repeating the copied text in the chat panel.
+const copiedToast = "✓ Copied to clipboard"
 
 func (a *App) handleRelayModalKey(e driver.KeyEvent) {
 	field := a.relayModalActiveField
@@ -541,20 +555,7 @@ func (a *App) handleLobbyKey(e driver.KeyEvent) {
 	}
 
 	if e.Ctrl && (e.Ch == 'v' || e.Ch == 'V') {
-		clipText := GetClipboardText()
-		if clipText == "" {
-			lobby.SetToast("Clipboard empty or unreadable")
-			return
-		}
-		switch lobby.ActiveInput {
-		case 0:
-			lobby.NickState.SetValue(clipText)
-			lobby.SetToast("Username pasted")
-		case 1:
-			cleanCode := NormalizeCode(clipText)
-			lobby.CodeState.SetValue(cleanCode)
-			lobby.SetToast(fmt.Sprintf("Room key pasted: %s", cleanCode))
-		}
+		a.pasteIntoLobby(readClipboard())
 		return
 	}
 
@@ -750,7 +751,7 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 				room.SetToast("Mode: Voice Activity (Always on / VAD)")
 			}
 			a.syncGlobalPTT()
-			a.saveAudioSettings()
+			a.persistSettings()
 		case 't', 'T':
 			a.openTestModal()
 		case 'h', 'H':
@@ -764,21 +765,21 @@ func (a *App) handleRoomKey(e driver.KeyEvent) {
 		case 'n', 'N':
 			audio.CycleSuppressionMode()
 			room.SetToast(fmt.Sprintf("Noise Filter: %s", audio.SuppressionModeString()))
-			a.saveAudioSettings()
+			a.persistSettings()
 		case 'e', 'E':
 			if audio.ToggleEchoCancellation() {
 				room.SetToast("Echo cancellation ON")
 			} else {
 				room.SetToast("Echo cancellation OFF")
 			}
-			a.saveAudioSettings()
+			a.persistSettings()
 		case 's', 'S':
 			if audio.ToggleVoiceSmoothing() {
 				room.SetToast("Voice smoothing ON")
 			} else {
 				room.SetToast("Voice smoothing OFF")
 			}
-			a.saveAudioSettings()
+			a.persistSettings()
 		case 'm', 'M':
 			isMuted := audio.ToggleMute()
 			node.SendMuteState(isMuted)

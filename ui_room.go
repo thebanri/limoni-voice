@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -64,14 +65,21 @@ type RoomView struct {
 	OnTriggerSFX           func()
 	LastStageArea          cell.Rect
 	LastLogArea            cell.Rect
-	SelectionActive        bool
-	SelectionDragging      bool
-	SelectionStartX        int
-	SelectionStartY        int
-	SelectionEndX          int
-	SelectionEndY          int
-	SelectedText           string
-	renderedLines          []renderedChatLine
+	// ChatHeight is the footer's inner height the user chose by dragging its top border or
+	// with the chat panel's ▲/▼ buttons (0 = default). Render keeps it within the window.
+	ChatHeight        int
+	chatResizing      bool
+	lastFooterArea    cell.Rect // the footer as last drawn; empty in the mini HUD
+	lastRoomArea      cell.Rect
+	lastResizeButtons cell.Rect
+	SelectionActive   bool
+	SelectionDragging bool
+	SelectionStartX   int
+	SelectionStartY   int
+	SelectionEndX     int
+	SelectionEndY     int
+	SelectedText      string
+	renderedLines     []renderedChatLine
 }
 
 type renderedChatChar struct {
@@ -100,6 +108,32 @@ func NewRoomView() *RoomView {
 		chatHistory:    make([]string, 0, 32),
 		renderedLines:  make([]renderedChatLine, 0, 64),
 	}
+}
+
+// cleanFilePath turns a path as people paste it into one the file system takes: Explorer's
+// "Copy as path" and a file dragged into Windows Terminal wrap it in quotes, some terminals
+// drop a file:// URL, and a shell user writes ~ for home.
+func cleanFilePath(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 2 && (p[0] == '"' || p[0] == '\'') && p[len(p)-1] == p[0] {
+		p = p[1 : len(p)-1]
+	}
+	if rest, ok := strings.CutPrefix(p, "file://"); ok {
+		if u, err := url.PathUnescape(rest); err == nil {
+			rest = u
+		}
+		// file:///C:/x on Windows, file:///home/x elsewhere
+		if len(rest) > 2 && rest[0] == '/' && rest[2] == ':' {
+			rest = rest[1:]
+		}
+		p = filepath.FromSlash(rest)
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~\\") {
+		if home, err := os.UserHomeDir(); err == nil {
+			p = filepath.Join(home, p[1:])
+		}
+	}
+	return p
 }
 
 func (r *RoomView) AddLog(msg string) {
@@ -352,7 +386,7 @@ func (r *RoomView) SendCurrentChat() {
 				r.mu.Unlock()
 				return
 			}
-			filePath := strings.Join(parts[1:], " ")
+			filePath := cleanFilePath(strings.TrimPrefix(text, parts[0]))
 			sendFileCb := r.OnSendFile
 			r.mu.Unlock()
 			if sendFileCb != nil {
@@ -375,7 +409,7 @@ func (r *RoomView) SendCurrentChat() {
 			r.mu.Unlock()
 			if sendCodeCb != nil {
 				// Check if rawSnippet is a path to an existing local file
-				trimmedPath := strings.Trim(rawSnippet, "\"'")
+				trimmedPath := cleanFilePath(rawSnippet)
 				if fi, err := os.Stat(trimmedPath); err == nil && !fi.IsDir() {
 					if content, err := os.ReadFile(trimmedPath); err == nil {
 						go sendCodeCb(filepath.Base(trimmedPath), string(content))
@@ -549,27 +583,33 @@ func (r *RoomView) Update() {
 const minGridHeight = 4
 
 func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine) {
+	r.mu.Lock()
+	r.lastFooterArea, r.lastResizeButtons = cell.Rect{}, cell.Rect{} // set again when drawn
+	r.mu.Unlock()
 	if r.IsCompactMode || GetCompactHUD() || area.Height <= 6 {
 		r.renderCompactHUD(frame, area, node, audio)
 		return
 	}
 
 	// The controls wrap onto as many rows as the width needs; the footer grows to fit
-	// them, spaced out when there is room and packed when the terminal is short.
+	// them, spaced out when there is room and packed when the terminal is short. The chat
+	// shares the footer, so its height is the one the user picked when there is one.
 	items := r.controlItems(node, audio)
 	var ctrlWidth int
 	if cols := footerSplit(cell.NewRect(area.X, 0, area.Width, 3)); len(cols) == 2 {
 		ctrlWidth = int(controlsArea(cols[0]).Width)
 	}
-	footerInner, maxRows := 6, 3 // three spaced rows; the chat panel wants the lines too
-	if node.IsWatchingScreen {
-		footerInner, maxRows = 2, 2 // compact footer so the stream stage gets the height
+	r.mu.Lock()
+	footerInner := r.ChatHeight
+	r.mu.Unlock()
+	if footerInner <= 0 {
+		footerInner = defaultFooterRows
 	}
-	fl := layoutFlow(items, ctrlWidth, footerGap, maxRows)
+	fl := layoutFlow(items, ctrlWidth, footerGap, 3)
 	rows := len(fl.rows)
 	footerInner = max(footerInner, rows+(rows-1)*flowSpacing(rows, footerInner))
-	if int(area.Height)-3-(footerInner+2) < minGridHeight {
-		footerInner = max(rows, 2)
+	if limit := maxFooterRows(area); footerInner > limit {
+		footerInner = max(limit, rows, minFooterRows)
 	}
 	if int(area.Height)-3-(footerInner+2) < minGridHeight {
 		r.renderCompactHUD(frame, area, node, audio)
@@ -584,6 +624,9 @@ func (r *RoomView) Render(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNo
 	if len(vSplits) < 3 {
 		return
 	}
+	r.mu.Lock()
+	r.lastFooterArea, r.lastRoomArea = vSplits[2], area
+	r.mu.Unlock()
 
 	r.renderHeader(frame, vSplits[0], node)
 	// The cards and the stream stage are laid out for more height than a short window

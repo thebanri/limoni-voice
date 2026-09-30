@@ -654,12 +654,13 @@ func (r *RoomView) HandleChatClick(x, y uint16) bool {
 				clickURLToUse = rl.ClickURL
 				break
 			} else if rl.RawMessage != "" {
-				copyTextToUse = rl.RawMessage
-				if m := reChatCopy1.FindStringSubmatch(copyTextToUse); len(m) > 1 {
+				// A wrapped row of a [Copy: …] message has no button of its own. Plain
+				// text is not copied on a click: drag over it to select and copy.
+				if m := reChatCopy1.FindStringSubmatch(rl.RawMessage); len(m) > 1 {
 					copyTextToUse = m[1]
-				} else if m := reChatCopy2.FindStringSubmatch(copyTextToUse); len(m) > 1 {
+				} else if m := reChatCopy2.FindStringSubmatch(rl.RawMessage); len(m) > 1 {
 					copyTextToUse = m[1]
-				} else if m := reChatCopy3.FindStringSubmatch(copyTextToUse); len(m) > 1 {
+				} else if m := reChatCopy3.FindStringSubmatch(rl.RawMessage); len(m) > 1 {
 					copyTextToUse = m[1]
 				}
 				break
@@ -671,12 +672,7 @@ func (r *RoomView) HandleChatClick(x, y uint16) bool {
 	if copyTextToUse != "" {
 		r.ClearSelection()
 		CopyToClipboard(copyTextToUse)
-		previewStr := copyTextToUse
-		if len([]rune(previewStr)) > 35 {
-			previewStr = string([]rune(previewStr)[:35]) + "…"
-		}
-		r.SetToast(fmt.Sprintf("📋 Copied: %s", previewStr))
-		r.AddLog(fmt.Sprintf("[CLIPBOARD] Copied: %s", previewStr))
+		r.SetToast(copiedToast) // the copied text itself stays out of the chat
 		return true
 	}
 	if clickURLToUse != "" {

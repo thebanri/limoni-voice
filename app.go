@@ -57,6 +57,13 @@ type App struct {
 	screenPreset           int
 	shareSystemAudio       bool
 	screenShareDeps        screenshare.DependencyStatus
+	screenShareDepsFresh   atomic.Pointer[screenshare.DependencyStatus] // result of a background recheck
+	screenShareDepsBusy    atomic.Bool
+	screenShareDepsChecked time.Time
+
+	settingsMu        sync.Mutex
+	savedSettings     *settingsSnapshot // what the settings file holds, see persistSettings
+	settingsCheckedAt time.Time
 
 	relayDialogAnim       *animation.Float
 	exitDialogAnim        *animation.Float
@@ -517,6 +524,7 @@ func (a *App) resetToLobby() {
 }
 
 func (a *App) cleanExit() {
+	a.persistSettings()
 	a.stopGlobalPTT()
 	a.node.Close()
 	a.audio.Stop()
