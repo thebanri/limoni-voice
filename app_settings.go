@@ -90,31 +90,19 @@ func (a *App) applySettings(cfg AppConfig) {
 	audio.RUnlock()
 	if in >= 0 {
 		audio.SetInputDevice(in)
+	} else if s.InputDeviceName != "" {
+		audio.WantDevice(true, s.InputDevice, s.InputDeviceName) // selected once it is plugged in
 	}
 	if out >= 0 {
 		audio.SetOutputDevice(out)
+	} else if s.OutputDeviceName != "" {
+		audio.WantDevice(false, s.OutputDevice, s.OutputDeviceName)
 	}
 }
 
-// findDevice returns the index of the saved device in devices, or -1. The ID alone is not
-// enough: where it is a position in the list, it names another device after a change.
+// findDevice returns the index of the saved device in devices, or -1 (see engine.FindDevice).
 func findDevice(devices []engine.AudioDevice, id, name string) int {
-	if name == "" {
-		return -1
-	}
-	match := -1
-	for i, d := range devices {
-		if d.Name != name {
-			continue
-		}
-		if d.ID == id {
-			return i
-		}
-		if match < 0 {
-			match = i
-		}
-	}
-	return match
+	return engine.FindDevice(devices, id, name)
 }
 
 // settingsSnapshot is what persistSettings keeps on disk: the audio preferences and the layout.

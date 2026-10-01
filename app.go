@@ -195,6 +195,10 @@ func (a *App) wireNodeCallbacks() {
 		a.notifier.Notify(nickname, text)
 	}
 
+	node.OnChatHistory = func(entries []p2p.ChatEntry) {
+		a.room.AddChatHistory(entries, node.LocalID)
+	}
+
 	node.OnFileTransferProgress = func(transferID string, fileName string, transferred int64, total int64, speed float64, isUpload bool, done bool, err error) {
 		if err != nil {
 			a.room.SetToast(fmt.Sprintf("File error (%s): %v", fileName, err))
@@ -294,8 +298,12 @@ func (a *App) wireRoomCallbacks() {
 			}
 			return
 		}
-		node.SendChatMessage(text)
-		room.AddChatMessage(node.Nickname, node.LocalID, text, true, time.Now())
+		if text = strings.TrimSpace(text); len(text) > p2p.MaxChatBytes {
+			room.SetToast(Tf("Message cut to %d KB, the most one message carries", p2p.MaxChatBytes/1024))
+			text = p2p.ClipChat(text)
+		}
+		ts := node.SendChatMessage(text)
+		room.AddChatMessage(node.Nickname, node.LocalID, text, true, ts)
 	}
 	room.OnTriggerHop = func() {
 		_ = node.RotatePort()
@@ -378,6 +386,25 @@ func (a *App) wireRoomCallbacks() {
 				room.SetToast("File transfer started")
 			}
 		}()
+	}
+	room.OnSendClipboardImage = func() {
+		data, ext, err := GetClipboardImage()
+		switch {
+		case err != nil && len(data) == 0:
+			room.SetToast(Tf("Could not read the clipboard: %v", err))
+			return
+		case len(data) == 0:
+			room.SetToast(T("No image on the clipboard. Copy one, or send a file: /file <path>"))
+			return
+		}
+		name := "clipboard-" + time.Now().Format("20060102-150405") + "." + ext
+		room.AddLog(Tf("[FILE] Sending the clipboard image as %s (%s)...", name, formatBytes(int64(len(data)))))
+		if err := node.SendFileBytes(name, data, false); err != nil {
+			room.SetToast(fmt.Sprintf("Send error: %v", err))
+			room.AddLog(fmt.Sprintf("[FILE] Error sending %s: %v", name, err))
+		} else {
+			room.SetToast("File transfer started")
+		}
 	}
 	room.OnSendCode = func(title, code string) {
 		room.AddLog(fmt.Sprintf("[CODE] Sharing code snippet (%d bytes)...", len(code)))
@@ -534,6 +561,35 @@ func (a *App) cleanExit() {
 	os.Exit(0)
 }
 
+// watchAudioDevices lists the audio devices again every few seconds, so a headset or
+// microphone plugged in while the app runs can be picked, and announces the new ones.
+func (a *App) watchAudioDevices() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		for _, name := range a.audio.RefreshDevices() {
+			msg := Tf("New audio device: %s", name)
+			AddDebugLog("[AUDIO] " + msg)
+			if a.currentScreen == ScreenLobby {
+				a.lobby.SetToast(msg)
+			} else {
+				a.room.SetToast(msg)
+			}
+		}
+	}
+}
+
+// backgroundFrame is how often the window is redrawn while the terminal is in the background:
+// nobody watches the meters move then, and a game in front wants the CPU (the lobby's turning
+// microphone alone took a tenth of a core at 30 frames a second).
+const backgroundFrame = 100 * time.Millisecond
+
+// skipFrame reports whether this tick's frame is left out: in the background, only one frame
+// in every backgroundFrame is drawn.
+func skipFrame(background bool, now, lastFrame time.Time) bool {
+	return background && now.Sub(lastFrame) < backgroundFrame
+}
+
 // Run starts audio and processes events until the application exits.
 func (a *App) Run() {
 	a.audio.Start(func(rms float64, speaking bool, pcm []byte) {
@@ -545,6 +601,7 @@ func (a *App) Run() {
 	})
 	a.syncGlobalPTT()
 	a.warnIfMicBlocked()
+	go a.watchAudioDevices()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -580,6 +637,9 @@ func (a *App) Run() {
 			}
 		case now := <-renderTicker.C:
 			a.applyKicked()
+			if skipFrame(a.notifier.background.Load(), now, a.lastTime) {
+				continue
+			}
 			a.render(now)
 		}
 	}

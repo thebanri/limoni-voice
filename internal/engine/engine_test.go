@@ -679,3 +679,31 @@ func TestMutedSoundEffectsAreNotQueued(t *testing.T) {
 		t.Fatalf("Expected sfxQueue to be empty when SFXMuted is true, got %d chunks", len(audioEngine.sfxQueue))
 	}
 }
+
+// A device plugged in while running is listed, the selection follows its device rather than
+// its position, a removed device falls back to the default, and a chosen one that comes back
+// is selected again.
+func TestReselectFollowsTheDevice(t *testing.T) {
+	def := AudioDevice{ID: "default", Name: "Default", IsDefault: true}
+	usb := AudioDevice{ID: "1", Name: "USB Headset"}
+	builtin := AudioDevice{ID: "1", Name: "Built-in"}
+	builtinMoved := AudioDevice{ID: "2", Name: "Built-in"}
+
+	old := []AudioDevice{def, builtin}
+	devs := []AudioDevice{def, usb, builtinMoved}
+	if got := newDeviceNames(old, devs); len(got) != 1 || got[0] != "USB Headset" {
+		t.Fatalf("new devices = %q", got)
+	}
+	if idx, moved := reselect(old, 1, devs, builtin); idx != 2 || !moved {
+		t.Fatalf("selection = %d (moved %v), want the built-in device at 2, reopened", idx, moved)
+	}
+	if idx, moved := reselect(devs, 1, []AudioDevice{def, builtin}, usb); idx != 0 || !moved {
+		t.Fatalf("removed device: selection = %d (moved %v), want the default", idx, moved)
+	}
+	if idx, moved := reselect([]AudioDevice{def, builtin}, 0, devs, usb); idx != 1 || !moved {
+		t.Fatalf("returned device: selection = %d (moved %v), want the headset", idx, moved)
+	}
+	if idx, moved := reselect(old, 0, devs, def); idx != 0 || moved {
+		t.Fatalf("default stays: selection = %d (moved %v)", idx, moved)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 	"github.com/thebanri/limoni-voice/internal/applog"
@@ -166,6 +167,12 @@ type P2PNode struct {
 	audioPreRoll         []audioPreRollFrame
 	OnScreenShare        func(peerID string, isSharing bool, videoPort int)
 	OnChatMessage        func(senderID string, nickname string, text string, ts time.Time)
+	OnChatHistory        func(entries []ChatEntry) // messages from before we joined, oldest first
+	chatMu               sync.Mutex
+	chatLog              []ChatEntry              // the room's recent chat, handed to members who join
+	chatSeen             map[string]struct{}      // keys of chatLog
+	chatParts            map[string]*chatAssembly // long messages whose parts are arriving
+	chatPartsDone        map[string]time.Time     // long messages put together lately: their late copies are dropped
 	OnDebugLog           func(msg string)
 
 	// Room Security (Lock & PIN Protection)
@@ -688,6 +695,7 @@ func (n *P2PNode) LeaveRoom() {
 	n.joinSessions = make(map[string]*joinSession)
 	n.Peers = make(map[string]*PeerInfo)
 	n.mu.Unlock()
+	n.resetChatHistory()
 
 	if wasHost {
 		n.log("Closed room (Host left).")
@@ -846,24 +854,33 @@ func (n *P2PNode) SendDeafenState(isDeafened bool) {
 	n.broadcastToPeers(&pkt)
 }
 
-func (n *P2PNode) SendChatMessage(text string) {
-	text = strings.TrimSpace(text)
+// SendChatMessage sends a chat message to the room and returns the time it carries, which
+// is how the message is told apart in the history handed to members who join later.
+func (n *P2PNode) SendChatMessage(text string) time.Time {
+	now := time.UnixMilli(time.Now().UnixMilli())
+	text = ClipChat(strings.TrimSpace(text))
 	if text == "" {
-		return
-	}
-	if len(text) > 16384 {
-		text = text[:16384]
+		return now
 	}
 	n.mu.Lock()
-	if !n.IsConnected || (len(n.Peers) == 0 && !n.isRelayConnected) {
+	if !n.IsConnected {
 		n.mu.Unlock()
-		return
+		return now
+	}
+	n.recordChat(ChatEntry{SenderID: n.LocalID, Nickname: n.Nickname, Text: text, Timestamp: now})
+	if len(n.Peers) == 0 && !n.isRelayConnected {
+		n.mu.Unlock()
+		return now
 	}
 	room := n.roomID
 	n.seqCounter++
 	seq := n.seqCounter
 	n.mu.Unlock()
 
+	if len(text) > chatPartSize {
+		n.sendChatParts(ChatEntry{SenderID: n.LocalID, Nickname: n.Nickname, Text: text, Timestamp: now}, room, seq, "")
+		return now
+	}
 	pkt := P2PPacket{
 		Type:      PacketChatMessage,
 		RoomCode:  room,
@@ -872,9 +889,10 @@ func (n *P2PNode) SendChatMessage(text string) {
 		LocalPort: n.Port,
 		Seq:       seq,
 		Payload:   []byte(text),
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: now.UnixMilli(),
 	}
 	n.broadcastToPeers(&pkt)
+	return now
 }
 
 // sendPacketTo sends a packet directly to addr, or through the relay when addr is nil.
@@ -937,9 +955,31 @@ func (n *P2PNode) sendToRoom(pkt *P2PPacket, relayClass byte) {
 	for _, t := range targets {
 		n.writeUDP(data, t.addr, t.conn)
 	}
-	if hasRelayPeer && isRelay {
+	if (hasRelayPeer || len(data) > maxDirectDatagram) && isRelay {
 		n.sendRelayFrame(relayClass, data)
 	}
+}
+
+// maxDirectDatagram is the largest packet trusted to a direct path on its own. A bigger one
+// (a long chat message) is split into IP fragments, which many NATs and links drop, so it
+// goes through the relay as well; receivers drop the copy that arrives second.
+const maxDirectDatagram = 1200
+
+// MaxChatBytes bounds one chat message. One longer than chatPartSize goes in parts.
+const MaxChatBytes = 512 * 1024
+
+// ClipChat cuts text to MaxChatBytes without splitting a character.
+func ClipChat(text string) string { return clipText(text, MaxChatBytes) }
+
+// clipText cuts text to at most n bytes without splitting a character.
+func clipText(text string, n int) string {
+	if len(text) <= n {
+		return text
+	}
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return text[:n]
 }
 
 // GetPeer returns a snapshot of a peer (or nil)
@@ -1434,6 +1474,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 					if n.OnPeerEvent != nil {
 						go n.OnPeerEvent("join", peer)
 					}
+					n.shareChatHistoryLater(peer.ID)
 					go n.sendPingToPeer(peer.ID)
 				}
 			} else {
@@ -1533,6 +1574,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if n.OnPeerEvent != nil {
 				go n.OnPeerEvent("join", peer)
 			}
+			n.shareChatHistoryLater(peer.ID)
 		} else {
 			if peerAddr != nil {
 				peer.Addr = peerAddr
@@ -1776,23 +1818,28 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		}
 
 	case PacketChatMessage:
-		payload := pkt.Payload
-		if len(payload) > 16384 {
-			payload = payload[:16384]
-		}
-		msgText := string(payload)
+		msgText := clipText(string(pkt.Payload), chatPartSize) // a longer message comes in parts
 		if msgText != "" {
 			if !n.chatDedup.ShouldProcess(pkt.SenderID, pkt.Seq, pkt.Timestamp, msgText) {
 				return
 			}
 			ts := time.UnixMilli(pkt.Timestamp)
 			if pkt.Timestamp == 0 {
-				ts = time.Now()
+				ts = time.UnixMilli(time.Now().UnixMilli())
+			}
+			if !n.recordChat(ChatEntry{SenderID: pkt.SenderID, Nickname: pkt.Nickname, Text: msgText, Timestamp: ts}) {
+				return // already shown, from a member's history
 			}
 			if n.OnChatMessage != nil {
 				go n.OnChatMessage(pkt.SenderID, pkt.Nickname, msgText, ts)
 			}
 		}
+
+	case PacketChatHistory:
+		n.handleChatHistoryLocked(pkt)
+
+	case PacketChatPart:
+		n.handleChatPartLocked(pkt)
 
 	case PacketPortHop:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {

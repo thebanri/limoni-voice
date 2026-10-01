@@ -45,7 +45,9 @@ const (
 	PacketScreenNack    // Viewer → sharer (TargetID): Payload = missing video sequence numbers (see AppendSeqList)
 	PacketScreenAudio   // Sharer → watchers: Opus system audio frame (Seq, Timestamp, Payload)
 
-	PacketKick // Host → room: TargetID was removed; Payload = [ban flag] + host kick proof
+	PacketKick        // Host → room: TargetID was removed; Payload = [ban flag] + host kick proof
+	PacketChatHistory // Member → new member (TargetID): earlier chat messages (see p2p.encodeChatHistory)
+	PacketChatPart    // One part of a chat message too long for one packet (see p2p.encodeChatPart)
 )
 
 // FileMetadata describes a chunked file / code snippet transfer.

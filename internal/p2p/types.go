@@ -56,6 +56,8 @@ const (
 	PacketScreenAudio      = protocol.PacketScreenAudio
 	PacketKick             = protocol.PacketKick
 	PacketChatMessage      = protocol.PacketChatMessage
+	PacketChatHistory      = protocol.PacketChatHistory
+	PacketChatPart         = protocol.PacketChatPart
 	PacketPortHop          = protocol.PacketPortHop
 	PacketRoomLocked       = protocol.PacketRoomLocked
 	PacketFileHeader       = protocol.PacketFileHeader

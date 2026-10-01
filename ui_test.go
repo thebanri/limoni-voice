@@ -1974,3 +1974,54 @@ func TestStreamVolumePerSharer(t *testing.T) {
 		t.Fatalf("back on Ali's stream its level is %v, want the 0 set before", v)
 	}
 }
+
+// The keypad's / opens the chat like the main one: terminals with the kitty keyboard protocol
+// (Alacritty, kitty, WezTerm) report it as KP_DIVIDE, others in application keypad mode as
+// ESC O o. Every keypad key types its character.
+func TestKeypadKeysTypeTheirCharacter(t *testing.T) {
+	cases := map[string]rune{
+		"\x1b[57410u": '/', "\x1b[57411u": '*', "\x1b[57412u": '-', "\x1b[57413u": '+',
+		"\x1b[57409u": '.', "\x1b[57399u": '0', "\x1bOo": '/', "\x1bOj": '*', "\x1bOk": '+',
+		"\x1bOm": '-', "\x1bOn": '.', "\x1bOq": '1',
+	}
+	for seq, want := range cases {
+		ev, n := driver.ParseEvent([]byte(seq))
+		if n != len(seq) || ev.Type != driver.EventKey || ev.Key.Type != driver.KeyRune || ev.Key.Ch != want {
+			t.Errorf("%q: got %+v (%d bytes), want %q", seq, ev.Key, n, want)
+		}
+	}
+	if ev, _ := driver.ParseEvent([]byte("\x1bOM")); ev.Key.Type != driver.KeyEnter {
+		t.Errorf("keypad Enter in application mode: got %+v", ev.Key)
+	}
+}
+
+// /file with no path sends the clipboard's image; with a path it sends that file as before.
+func TestFileCommandSendsTheClipboardImage(t *testing.T) {
+	room := NewRoomView()
+	images := make(chan struct{}, 1)
+	files := make(chan string, 1)
+	room.OnSendClipboardImage = func() { images <- struct{}{} }
+	room.OnSendFile = func(p string) { files <- p }
+
+	room.ChatInputState.SetValue("/file")
+	room.SendCurrentChat()
+	select {
+	case <-images:
+	case <-time.After(time.Second):
+		t.Fatal("/file did not send the clipboard image")
+	}
+
+	room.ChatInputState.SetValue("/file ./main.go")
+	room.SendCurrentChat()
+	select {
+	case p := <-files:
+		if !strings.HasSuffix(p, "main.go") {
+			t.Fatalf("sent %q", p)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("/file <path> did not send the file")
+	}
+	if len(images) != 0 {
+		t.Fatal("/file <path> also sent the clipboard image")
+	}
+}

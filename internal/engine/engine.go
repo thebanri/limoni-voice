@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/binary"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -188,6 +189,8 @@ type AudioEngine struct {
 	OutputDevices     []AudioDevice
 	SelectedInputIdx  int
 	SelectedOutputIdx int
+	wantInput         AudioDevice // the device the user chose, selected again when it comes back
+	wantOutput        AudioDevice
 	CaptureBackend    string
 	PlaybackBackend   string
 
@@ -425,20 +428,101 @@ func NewAudioEngine() *AudioEngine {
 	}
 }
 
-func (a *AudioEngine) RefreshDevices() {
+// RefreshDevices enumerates the devices again, so one plugged in or removed while the app
+// runs shows up. The selection follows the device, not its position in the list; a device
+// that was removed falls back to the system default, and a chosen device that comes back is
+// selected again. It returns the names of the devices that appeared since the last call.
+func (a *AudioEngine) RefreshDevices() (added []string) {
 	inDevs := EnumerateInputDevices()
 	outDevs := EnumerateOutputDevices()
 
 	a.mu.Lock()
-	a.InputDevices = inDevs
-	a.OutputDevices = outDevs
-	if a.SelectedInputIdx >= len(inDevs) {
-		a.SelectedInputIdx = 0
+	if slices.Equal(a.InputDevices, inDevs) && slices.Equal(a.OutputDevices, outDevs) {
+		a.mu.Unlock()
+		return nil // nothing changed: the dialogs keep reading the same lists
 	}
-	if a.SelectedOutputIdx >= len(outDevs) {
-		a.SelectedOutputIdx = 0
-	}
+	added = append(newDeviceNames(a.InputDevices, inDevs), newDeviceNames(a.OutputDevices, outDevs)...)
+	inIdx, inMoved := reselect(a.InputDevices, a.SelectedInputIdx, inDevs, a.wantInput)
+	outIdx, outMoved := reselect(a.OutputDevices, a.SelectedOutputIdx, outDevs, a.wantOutput)
+	a.InputDevices, a.SelectedInputIdx = inDevs, inIdx
+	a.OutputDevices, a.SelectedOutputIdx = outDevs, outIdx
+	isRunning := a.running
 	a.mu.Unlock()
+
+	if isRunning && inMoved {
+		a.restartCapture()
+	}
+	if isRunning && outMoved {
+		a.restartPlayback()
+	}
+	return added
+}
+
+// WantDevice remembers the device the user chose, so it is selected once it is plugged in.
+func (a *AudioEngine) WantDevice(input bool, id, name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if input {
+		a.wantInput = AudioDevice{ID: id, Name: name}
+	} else {
+		a.wantOutput = AudioDevice{ID: id, Name: name}
+	}
+}
+
+// FindDevice returns the index of the device named name in devices, or -1. The ID alone is
+// not enough: where it is a position in the list (winmm), it names another device after a
+// change, so the name decides and the ID only breaks a tie between devices of the same name.
+func FindDevice(devices []AudioDevice, id, name string) int {
+	if name == "" {
+		return -1
+	}
+	match := -1
+	for i, d := range devices {
+		if d.Name != name {
+			continue
+		}
+		if d.ID == id {
+			return i
+		}
+		if match < 0 {
+			match = i
+		}
+	}
+	return match
+}
+
+// reselect finds the selected device of old in devs. moved reports that the stream must be
+// reopened: the device is gone (index 0, the system default, takes over) or the wanted one
+// is back.
+func reselect(old []AudioDevice, idx int, devs []AudioDevice, want AudioDevice) (newIdx int, moved bool) {
+	var cur AudioDevice
+	if idx >= 0 && idx < len(old) {
+		cur = old[idx]
+	}
+	if want.Name != "" && want.Name != cur.Name {
+		if i := FindDevice(devs, want.ID, want.Name); i >= 0 {
+			return i, true
+		}
+	}
+	if cur.Name == "" {
+		return max(0, min(idx, len(devs)-1)), false
+	}
+	if i := FindDevice(devs, cur.ID, cur.Name); i >= 0 {
+		return i, devs[i].ID != cur.ID
+	}
+	return 0, true
+}
+
+// newDeviceNames lists the devices of devs that old did not have.
+func newDeviceNames(old, devs []AudioDevice) []string {
+	var names []string
+	for _, d := range devs {
+		if d.IsDefault || FindDevice(old, d.ID, d.Name) >= 0 {
+			continue
+		}
+		names = append(names, d.Name)
+	}
+	return names
 }
 
 func (a *AudioEngine) SetInputDevice(idx int) {
@@ -448,6 +532,7 @@ func (a *AudioEngine) SetInputDevice(idx int) {
 		return
 	}
 	idx = max(0, min(idx, len(a.InputDevices)-1))
+	a.wantInput = a.InputDevices[idx]
 	if a.SelectedInputIdx == idx {
 		a.mu.Unlock()
 		return
@@ -482,6 +567,7 @@ func (a *AudioEngine) SetOutputDevice(idx int) {
 		return
 	}
 	idx = max(0, min(idx, len(a.OutputDevices)-1))
+	a.wantOutput = a.OutputDevices[idx]
 	if a.SelectedOutputIdx == idx {
 		a.mu.Unlock()
 		return

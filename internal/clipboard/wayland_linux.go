@@ -21,6 +21,9 @@ import (
 // textMimes are the text types offered when copying, and tried in order when pasting.
 var textMimes = []string{"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"}
 
+// imageMimes are the image types tried, in order, when an image is pasted.
+var imageMimes = []string{"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"}
+
 var errNoDataControl = errors.New("clipboard: compositor has no data-control protocol")
 
 // wlConn is a minimal Wayland client connection: wire encoding plus fd passing.
@@ -293,17 +296,24 @@ func (d *wlDevice) roundtrip(deadline time.Time, other func(wlEvent)) error {
 
 // readWayland returns the clipboard's text.
 func readWayland(timeout time.Duration) (string, error) {
+	data, _, err := readWaylandAs(timeout, textMimes)
+	return string(data), err
+}
+
+// readWaylandAs returns the clipboard's content in the first of mimes it is offered in, and
+// that type; nothing when it is offered in none of them.
+func readWaylandAs(timeout time.Duration, mimes []string) ([]byte, string, error) {
 	deadline := time.Now().Add(timeout)
 	d, err := openDevice(deadline)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	defer d.Close()
 	if d.selection == 0 {
-		return "", nil
+		return nil, "", nil
 	}
 	mime := ""
-	for _, want := range textMimes {
+	for _, want := range mimes {
 		for _, have := range d.offers[d.selection] {
 			if have == want && mime == "" {
 				mime = want
@@ -311,18 +321,18 @@ func readWayland(timeout time.Duration) (string, error) {
 		}
 	}
 	if mime == "" {
-		return "", nil // not text (an image, files…)
+		return nil, "", nil // not of these types (text, an image, files…)
 	}
 	var p [2]int
 	if err := syscall.Pipe2(p[:], syscall.O_CLOEXEC|syscall.O_NONBLOCK); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	r := os.NewFile(uintptr(p[0]), "clipboard")
 	defer r.Close()
 	err = d.send(d.selection, 0, wlArgs{}.str(mime), p[1]) // offer.receive
 	syscall.Close(p[1])
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	// The source writes and closes its end; read until EOF.
 	r.SetReadDeadline(deadline)
@@ -332,10 +342,10 @@ func readWayland(timeout time.Duration) (string, error) {
 		n, err := r.Read(buf)
 		out = append(out, buf[:n]...)
 		if err == io.EOF {
-			return string(out), nil
+			return out, mime, nil
 		}
 		if err != nil {
-			return string(out), err
+			return out, mime, err
 		}
 	}
 }

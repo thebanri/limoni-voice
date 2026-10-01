@@ -30,6 +30,13 @@ func (a *App) handlePaste(pasted string) {
 	if a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal {
 		a.pasteIntoLobby(pasted)
 	} else if a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal {
+		// Files dragged onto the terminal arrive as their paths: they are sent, not typed.
+		if files := droppedFiles(pasted); len(files) > 0 && a.room.OnSendFile != nil {
+			for _, f := range files {
+				a.room.OnSendFile(f)
+			}
+			return
+		}
 		a.pasteIntoChat(pasted)
 	}
 }

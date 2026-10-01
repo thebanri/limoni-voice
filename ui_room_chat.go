@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/thebanri/limoni-voice/internal/i18n"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
@@ -314,14 +315,51 @@ func wrapWordsToLines(text string, maxW int) (lines []string, glue []string) {
 	return lines, glue
 }
 
+// lineCacheKey names a message's wrapped lines: they change with its width, the theme (their
+// styles) and the language ("You:", translated logs).
+type lineCacheKey struct {
+	ts       int64
+	sender   string
+	senderID string
+	text     string
+	isChat   bool
+	isSelf   bool
+	width    int
+	theme    string
+	lang     i18n.Lang
+}
+
+// buildDisplayLines wraps the messages into screen lines. Each message's lines are kept from
+// the frame before, so a very long message (a pasted log) is wrapped once, not 30 times a
+// second.
 func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDisplayLine {
-	var lines []roomDisplayLine
 	if maxW < 10 {
 		maxW = 10
 	}
 	theme := CurrentTheme()
+	lang := i18n.Current()
 
+	r.lineCacheMu.Lock()
+	defer r.lineCacheMu.Unlock()
+	next := make(map[lineCacheKey][]roomDisplayLine, len(messages))
+	var lines []roomDisplayLine
 	for _, msg := range messages {
+		key := lineCacheKey{msg.Timestamp.UnixNano(), msg.Sender, msg.SenderID, msg.Text, msg.IsChat, msg.IsSelf, maxW, theme.ID, lang}
+		ml, ok := r.lineCache[key]
+		if !ok {
+			ml = messageDisplayLines(msg, maxW, theme)
+		}
+		next[key] = ml
+		lines = append(lines, ml...)
+	}
+	r.lineCache = next
+	return lines
+}
+
+// messageDisplayLines wraps one message into screen lines of at most maxW cells.
+func messageDisplayLines(msg RoomMessage, maxW int, theme ThemePalette) []roomDisplayLine {
+	var lines []roomDisplayLine
+	{
 		tsStr := fmt.Sprintf("[%s] ", msg.Timestamp.Format("15:04:05"))
 		tsLen := cell.StringWidth(tsStr)
 
@@ -447,7 +485,6 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 			}
 		}
 	}
-
 	return lines
 }
 

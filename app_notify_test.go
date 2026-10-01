@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 type sentNotes struct {
@@ -98,5 +99,19 @@ func TestNotifierViaTerminal(t *testing.T) {
 	d.flushToTerminal(func(title, body string) bool { got = append(got, title); return true })
 	if len(got) != 0 {
 		t.Fatalf("a flushed notification was sent again: %q", got)
+	}
+}
+
+// In the background the window is redrawn ten times a second instead of thirty.
+func TestSkipFrameInTheBackground(t *testing.T) {
+	last := time.Now()
+	if skipFrame(false, last.Add(33*time.Millisecond), last) {
+		t.Fatal("a focused window skipped a frame")
+	}
+	if !skipFrame(true, last.Add(33*time.Millisecond), last) || !skipFrame(true, last.Add(66*time.Millisecond), last) {
+		t.Fatal("a background window drew every frame")
+	}
+	if skipFrame(true, last.Add(100*time.Millisecond), last) {
+		t.Fatal("a background window stopped drawing")
 	}
 }

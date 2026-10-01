@@ -11,6 +11,17 @@ import (
 	"testing"
 )
 
+// startDetached starts a program the user goes on with on their own (an editor, a browser, a
+// file manager) and reaps it when it exits; without the Wait, every xdg-open that handed the
+// file on and quit stayed behind as a zombie until Limoni Voice closed.
+func startDetached(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
 // OpenInEditor opens the specified file in the system's default or preferred GUI/terminal editor
 func OpenInEditor(filePath string) error {
 	if testing.Testing() {
@@ -27,41 +38,41 @@ func OpenInEditor(filePath string) error {
 		// 1. Try VS Code if installed
 		if p, err := exec.LookPath("code"); err == nil && p != "" {
 			cmd := exec.Command("code", filePath)
-			if err := cmd.Start(); err == nil {
+			if err := startDetached(cmd); err == nil {
 				return nil
 			}
 		}
 		// 2. Try Windows ShellExecute via rundll32 (prevents cmd.exe shell argument injection)
 		cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", filePath)
-		if err := cmd.Start(); err == nil {
+		if err := startDetached(cmd); err == nil {
 			return nil
 		}
 		// 3. Fallback to notepad
 		cmdNotepad := exec.Command("notepad.exe", filePath)
-		return cmdNotepad.Start()
+		return startDetached(cmdNotepad)
 
 	case "darwin":
 		// 1. Try VS Code if installed
 		if p, err := exec.LookPath("code"); err == nil && p != "" {
 			cmd := exec.Command("code", filePath)
-			if err := cmd.Start(); err == nil {
+			if err := startDetached(cmd); err == nil {
 				return nil
 			}
 		}
 		// 2. Try macOS default text editor
 		cmd := exec.Command("open", "-t", filePath)
-		if err := cmd.Start(); err == nil {
+		if err := startDetached(cmd); err == nil {
 			return nil
 		}
 		// 3. Fallback to open
 		cmdOpen := exec.Command("open", filePath)
-		return cmdOpen.Start()
+		return startDetached(cmdOpen)
 
 	default: // Linux, BSD, etc.
 		// 1. Check custom GUI editor environment variable
 		if customEditor := os.Getenv("VISUAL"); customEditor != "" {
 			cmd := exec.Command(customEditor, filePath)
-			if err := cmd.Start(); err == nil {
+			if err := startDetached(cmd); err == nil {
 				return nil
 			}
 		}
@@ -69,7 +80,7 @@ func OpenInEditor(filePath string) error {
 		// 2. Try VS Code if installed
 		if p, err := exec.LookPath("code"); err == nil && p != "" {
 			cmd := exec.Command("code", filePath)
-			if err := cmd.Start(); err == nil {
+			if err := startDetached(cmd); err == nil {
 				return nil
 			}
 		}
@@ -77,7 +88,7 @@ func OpenInEditor(filePath string) error {
 		// 3. Try xdg-open (opens default desktop editor e.g. Kate, Gedit, Text Editor)
 		if p, err := exec.LookPath("xdg-open"); err == nil && p != "" {
 			cmd := exec.Command("xdg-open", filePath)
-			if err := cmd.Start(); err == nil {
+			if err := startDetached(cmd); err == nil {
 				return nil
 			}
 		}
@@ -85,7 +96,7 @@ func OpenInEditor(filePath string) error {
 		// 4. Try gio open
 		if p, err := exec.LookPath("gio"); err == nil && p != "" {
 			cmd := exec.Command("gio", "open", filePath)
-			if err := cmd.Start(); err == nil {
+			if err := startDetached(cmd); err == nil {
 				return nil
 			}
 		}
@@ -94,7 +105,7 @@ func OpenInEditor(filePath string) error {
 		for _, guiEditor := range []string{"cursor", "vscodium", "code-oss", "zed", "gedit", "kate", "gnome-text-editor", "mousepad", "xed", "pluma", "subl", "sublime-text", "atom", "kwrite"} {
 			if p, err := exec.LookPath(guiEditor); err == nil && p != "" {
 				cmd := exec.Command(guiEditor, filePath)
-				if err := cmd.Start(); err == nil {
+				if err := startDetached(cmd); err == nil {
 					return nil
 				}
 			}
@@ -108,7 +119,7 @@ func OpenInEditor(filePath string) error {
 		}
 		if term != "" {
 			cmd := exec.Command(term, "-e", cliEditor, filePath)
-			if err := cmd.Start(); err == nil {
+			if err := startDetached(cmd); err == nil {
 				return nil
 			}
 		}
@@ -122,7 +133,7 @@ func OpenInEditor(filePath string) error {
 				} else {
 					cmd = exec.Command(termEmulator, "-e", cliEditor, filePath)
 				}
-				if err := cmd.Start(); err == nil {
+				if err := startDetached(cmd); err == nil {
 					return nil
 				}
 			}
@@ -145,10 +156,10 @@ func OpenFolder(dirPath string) error {
 
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("explorer.exe", dirPath).Start()
+		return startDetached(exec.Command("explorer.exe", dirPath))
 	case "darwin":
-		return exec.Command("open", dirPath).Start()
+		return startDetached(exec.Command("open", dirPath))
 	default:
-		return exec.Command("xdg-open", dirPath).Start()
+		return startDetached(exec.Command("xdg-open", dirPath))
 	}
 }

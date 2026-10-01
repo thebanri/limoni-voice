@@ -12,5 +12,8 @@ var ErrUnavailable = errors.New("clipboard: no native implementation on this pla
 // Read is not implemented here.
 func Read() (string, error) { return "", ErrUnavailable }
 
+// ReadImage is not implemented here.
+func ReadImage() ([]byte, string, error) { return nil, "", ErrUnavailable }
+
 // Write is not implemented here.
 func Write(string) error { return ErrUnavailable }

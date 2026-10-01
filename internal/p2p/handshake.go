@@ -908,7 +908,7 @@ func (n *P2PNode) sendToMember(id string, pkt *P2PPacket, class byte) {
 	if addr != nil {
 		n.writeUDP(data, addr, conn)
 	}
-	if viaRelay && isRelay {
+	if (viaRelay || len(data) > maxDirectDatagram) && isRelay {
 		if targeted {
 			n.sendRelayTo(class, id, data)
 		} else {

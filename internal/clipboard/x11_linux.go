@@ -24,7 +24,8 @@ func openX11() (*x11Session, error) {
 		return nil, err
 	}
 	s := &x11Session{conn: conn, atoms: map[string]xproto.Atom{}}
-	for _, name := range append([]string{"CLIPBOARD", "TARGETS", "LIMONI_CLIP"}, textMimes...) {
+	names := append([]string{"CLIPBOARD", "TARGETS", "LIMONI_CLIP", "INCR"}, textMimes...)
+	for _, name := range append(names, imageMimes...) {
 		r, err := xproto.InternAtom(conn, false, uint16(len(name)), name).Reply()
 		if err != nil {
 			conn.Close()
@@ -34,8 +35,10 @@ func openX11() (*x11Session, error) {
 	}
 	if s.win, err = xproto.NewWindowId(conn); err == nil {
 		screen := xproto.Setup(conn).DefaultScreen(conn)
+		// Property changes are how a large selection (INCR) arrives in pieces.
 		err = xproto.CreateWindowChecked(conn, screen.RootDepth, s.win, screen.Root,
-			0, 0, 1, 1, 0, xproto.WindowClassInputOutput, screen.RootVisual, 0, nil).Check()
+			0, 0, 1, 1, 0, xproto.WindowClassInputOutput, screen.RootVisual,
+			xproto.CwEventMask, []uint32{xproto.EventMaskPropertyChange}).Check()
 	}
 	if err != nil {
 		conn.Close()
@@ -46,59 +49,98 @@ func openX11() (*x11Session, error) {
 
 // readX11 asks the CLIPBOARD selection's owner for its text.
 func readX11(timeout time.Duration) (string, error) {
+	data, _, err := readX11As(timeout, []string{"UTF8_STRING", "STRING"})
+	return string(data), err
+}
+
+// readX11As asks the CLIPBOARD selection's owner for its content in the first of targets it
+// converts to, and returns that target.
+func readX11As(timeout time.Duration, targets []string) ([]byte, string, error) {
 	s, err := openX11()
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	defer s.conn.Close()
 	owner, err := xproto.GetSelectionOwner(s.conn, s.atoms["CLIPBOARD"]).Reply()
 	if err != nil || owner.Owner == xproto.WindowNone {
-		return "", err
+		return nil, "", err
 	}
 	prop := s.atoms["LIMONI_CLIP"]
-	for _, target := range []string{"UTF8_STRING", "STRING"} {
+	for _, target := range targets {
 		xproto.ConvertSelection(s.conn, s.win, s.atoms["CLIPBOARD"], s.atoms[target], prop, xproto.TimeCurrentTime)
-		ok, err := s.waitNotify(timeout)
+		ev, err := s.waitEvent(timeout, func(ev xgb.Event) bool {
+			_, ok := ev.(xproto.SelectionNotifyEvent)
+			return ok
+		})
 		if err != nil {
-			return "", err
+			return nil, "", err
 		}
-		if !ok {
-			continue
+		if ev.(xproto.SelectionNotifyEvent).Property == xproto.AtomNone {
+			continue // the owner has nothing of this type
 		}
 		r, err := xproto.GetProperty(s.conn, true, s.win, prop, xproto.GetPropertyTypeAny, 0, 1<<24).Reply()
 		if err != nil {
-			return "", err
+			return nil, "", err
+		}
+		if r.Type == s.atoms["INCR"] {
+			data, err := s.readIncr(timeout, prop)
+			return data, target, err
 		}
 		if r.Format == 8 {
-			return string(r.Value), nil
+			return r.Value, target, nil
 		}
 	}
-	return "", nil
+	return nil, "", nil
 }
 
-// waitNotify waits for the SelectionNotify answering a ConvertSelection and reports
-// whether the owner converted it.
-func (s *x11Session) waitNotify(timeout time.Duration) (bool, error) {
-	got := make(chan bool, 1)
+// readIncr reads a selection too large for one property (a screenshot): the owner writes it
+// in pieces, each once the last was read and deleted, and ends with an empty one.
+func (s *x11Session) readIncr(timeout time.Duration, prop xproto.Atom) ([]byte, error) {
+	var out []byte
+	for {
+		_, err := s.waitEvent(timeout, func(ev xgb.Event) bool {
+			pn, ok := ev.(xproto.PropertyNotifyEvent)
+			return ok && pn.Atom == prop && pn.State == xproto.PropertyNewValue
+		})
+		if err != nil {
+			return out, err
+		}
+		r, err := xproto.GetProperty(s.conn, true, s.win, prop, xproto.GetPropertyTypeAny, 0, 1<<24).Reply()
+		if err != nil {
+			return out, err
+		}
+		if len(r.Value) == 0 {
+			return out, nil
+		}
+		out = append(out, r.Value...)
+	}
+}
+
+// waitEvent waits for the first event match accepts.
+func (s *x11Session) waitEvent(timeout time.Duration, match func(xgb.Event) bool) (xgb.Event, error) {
+	got := make(chan xgb.Event, 1)
 	go func() {
 		for {
 			ev, err := s.conn.WaitForEvent()
 			if ev == nil && err == nil {
-				got <- false
+				got <- nil
 				return
 			}
-			if sn, ok := ev.(xproto.SelectionNotifyEvent); ok {
-				got <- sn.Property != xproto.AtomNone
+			if ev != nil && match(ev) {
+				got <- ev
 				return
 			}
 		}
 	}()
 	select {
-	case ok := <-got:
-		return ok, nil
+	case ev := <-got:
+		if ev == nil {
+			return nil, errors.New("clipboard: X11 connection closed")
+		}
+		return ev, nil
 	case <-time.After(timeout):
 		s.conn.Close() // unblocks the goroutine
-		return false, errors.New("clipboard: X11 selection owner did not answer")
+		return nil, errors.New("clipboard: X11 selection owner did not answer")
 	}
 }
 

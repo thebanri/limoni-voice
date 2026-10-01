@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +44,8 @@ type RoomView struct {
 	chatPageRows           int // message rows the chat panel shows
 	chatLineCount          int // screen lines of the chat at the last draw, and their width
 	chatLineWidth          int
+	lineCache              map[lineCacheKey][]roomDisplayLine // each message's wrapped lines, from the last draw
+	lineCacheMu            sync.Mutex
 	UnreadChatCount        int
 	chatHistory            []string
 	historyIndex           int
@@ -52,6 +56,7 @@ type RoomView struct {
 	OnOpenScreenShareModal func()
 	OnSendChat             func(text string)
 	OnSendFile             func(filePath string)
+	OnSendClipboardImage   func() // /file with no path: the image on the clipboard
 	OnSendCode             func(title, code string)
 	OnLockRoom             func(pin string)
 	OnUnlockRoom           func()
@@ -197,6 +202,36 @@ func (r *RoomView) AddChatMessage(nickname string, senderID string, text string,
 	}
 }
 
+// AddChatHistory places messages sent before we joined among the ones shown, by time, so
+// a member who comes in later reads the conversation so far. Ones already shown are skipped.
+func (r *RoomView) AddChatHistory(entries []p2p.ChatEntry, localID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range entries {
+		ts := e.Timestamp
+		if slices.ContainsFunc(r.Messages, func(m RoomMessage) bool {
+			return m.IsChat && m.SenderID == e.SenderID && m.Text == e.Text && m.Timestamp.UnixMilli() == ts.UnixMilli()
+		}) {
+			continue
+		}
+		i := sort.Search(len(r.Messages), func(i int) bool { return r.Messages[i].Timestamp.After(ts) })
+		r.Messages = slices.Insert(r.Messages, i, RoomMessage{
+			Timestamp: ts,
+			Sender:    e.Nickname,
+			SenderID:  e.SenderID,
+			Text:      e.Text,
+			IsChat:    true,
+			IsSelf:    e.SenderID == localID,
+		})
+		if !r.IsChatFocused {
+			r.UnreadChatCount++
+		}
+	}
+	if len(r.Messages) > 300 {
+		r.Messages = r.Messages[len(r.Messages)-200:]
+	}
+}
+
 func (r *RoomView) SetChatFocused(focused bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -269,7 +304,7 @@ func (r *RoomView) SendCurrentChat() {
 		case "/help", "/?":
 			r.Messages = append(r.Messages, RoomMessage{
 				Timestamp: time.Now(),
-				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send <path>, /code <snippet>, /folder, /lock [pin], /unlock, /kick <user>, /ban <user>, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
+				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send [path], /code <snippet>, /folder, /lock [pin], /unlock, /kick <user>, /ban <user>, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
 				IsChat:    false,
 			})
 			r.mu.Unlock()
@@ -387,6 +422,11 @@ func (r *RoomView) SendCurrentChat() {
 
 		case "/send", "/file":
 			if len(parts) < 2 {
+				if sendImage := r.OnSendClipboardImage; sendImage != nil {
+					r.mu.Unlock()
+					go sendImage()
+					return
+				}
 				r.Messages = append(r.Messages, RoomMessage{
 					Timestamp: time.Now(),
 					Text:      "Usage: /send <file_path> (e.g. /send ./main.go)",

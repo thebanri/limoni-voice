@@ -736,6 +736,7 @@ func (n *P2PNode) handleRelaySignal(msg protocol.Signal) {
 				cp := *peer
 				go n.OnPeerEvent("join", &cp)
 			}
+			n.shareChatHistoryLater(msg.SenderID)
 		}
 		punch = append(punch, msg.SenderID)
 		go n.sendPingToPeer(msg.SenderID)

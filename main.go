@@ -80,6 +80,7 @@ Examples:
 }
 
 func main() {
+	startProfiler()
 	var (
 		flagRelay      = flag.String("relay", "", "Custom WebSocket relay URL (e.g. ws://192.168.1.100:27850/ws, or 'none' for LAN only)")
 		flagRelayToken = flag.String("relay-token", "", "Authentication token for protected relay server (or set LIMONI_RELAY_TOKEN)")

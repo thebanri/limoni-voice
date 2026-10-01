@@ -14,6 +14,32 @@ var ErrUnavailable = errors.New("clipboard: no Wayland data-control or X11 displ
 
 const readTimeout = time.Second
 
+// imageTimeout is longer: the app that copied a screenshot may encode it as it is pasted.
+const imageTimeout = 5 * time.Second
+
+// ReadImage returns the clipboard's image and its MIME type (nil when it holds no image).
+func ReadImage() ([]byte, string, error) {
+	var errs []error
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		data, mime, err := readWaylandAs(imageTimeout, imageMimes)
+		if err == nil {
+			return data, mime, nil
+		}
+		errs = append(errs, err)
+	}
+	if os.Getenv("DISPLAY") != "" {
+		data, mime, err := readX11As(imageTimeout, imageMimes)
+		if err == nil {
+			return data, mime, nil
+		}
+		errs = append(errs, err)
+	}
+	if len(errs) == 0 {
+		return nil, "", ErrUnavailable
+	}
+	return nil, "", errors.Join(errs...)
+}
+
 // Read returns the clipboard's text ("" when it holds none).
 func Read() (string, error) {
 	var errs []error
