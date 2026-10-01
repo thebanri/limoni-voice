@@ -476,25 +476,6 @@ func isMissingTools(err error) bool {
 	return errors.As(err, &missing) || strings.Contains(err.Error(), "not found")
 }
 
-// The viewer passes the frame rate option the installed mpv knows: mpv 0.41 exits at once on
-// --fps, which sent every viewer to the slower ffplay fallback.
-func TestMpvFPSOption(t *testing.T) {
-	cases := []struct {
-		list string
-		want string
-	}{
-		{" --container-fps-override         Double (0 to any) (default: 0)\n", "container-fps-override"},
-		{" --fps                            Double (0 to any) (default: 0)\n", "fps"},
-		{" --fps  Double\n --container-fps-override  Double\n", "container-fps-override"},
-		{"", "container-fps-override"},
-	}
-	for _, c := range cases {
-		if got := mpvFPSOptionFrom([]byte(c.list)); got != c.want {
-			t.Errorf("list %q: got %s, want %s", c.list, got, c.want)
-		}
-	}
-}
-
 // What a process prints as it fails at once reaches the log: read through StderrPipe, Wait
 // closed the pipe first and the reason (mpv's "option not found") was lost.
 func TestCaptureStderrKeepsTheLastWords(t *testing.T) {

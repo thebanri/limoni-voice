@@ -7,39 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"sync"
 )
-
-var mpvFPSOptions sync.Map // mpv path → the name of its option forcing the frame rate
-
-// mpvFPSOption names the option that sets the stream's frame rate for the mpv at path.
-// mpv 0.36 renamed --fps to --container-fps-override and 0.41 removed --fps; an option mpv
-// does not know makes it exit at once, so the viewer fell back to ffplay every time.
-func mpvFPSOption(path string) string {
-	if v, ok := mpvFPSOptions.Load(path); ok {
-		return v.(string)
-	}
-	name := mpvFPSOptionFrom(mpvOptionList(path))
-	mpvFPSOptions.Store(path, name)
-	return name
-}
-
-func mpvOptionList(path string) []byte {
-	cmd := exec.Command(path, "--no-config", "--list-options")
-	setupProcessGroup(cmd)
-	out, _ := cmd.Output()
-	return out
-}
-
-// mpvFPSOptionFrom picks the frame rate option from mpv's --list-options output.
-// A list that could not be read (mpv.exe may print nothing into a pipe) is taken for a current
-// mpv, which is what the Windows installer and today's distributions ship.
-func mpvFPSOptionFrom(list []byte) string {
-	if strings.Contains(string(list), "--fps ") && !strings.Contains(string(list), "--container-fps-override") {
-		return "fps" // mpv before 0.36
-	}
-	return "container-fps-override"
-}
 
 // StartReceiving launches a high-performance native video window (mpv or ffplay fallback) with
 // zero-latency flags. The MPEG-TS stream is written to Session.Stdin(): a private pipe, so no
@@ -84,8 +52,10 @@ func StartReceiving(ctx context.Context, opts ...ReceiverOptions) (*Session, err
 				"--framedrop=vo",
 				"--hwdec=auto-safe",
 				"--vd-lavc-show-all=no",
-				"--video-sync=audio",
-				fmt.Sprintf("--%s=%d", mpvFPSOption(p), opt.FPS),
+				// Show each frame as soon as it is decoded. Timed to its timestamps (a desktop
+				// capture's are uneven), mpv fell behind a 120 FPS stream and stopped reading,
+				// and the viewer skipped to the next keyframe over and over: a frozen picture.
+				"--untimed",
 				"--force-window=yes",
 				"--ontop=yes",
 				"--keep-open=yes",
