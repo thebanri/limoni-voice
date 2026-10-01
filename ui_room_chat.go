@@ -44,7 +44,21 @@ var (
 	reChatCopy1 = regexp.MustCompile(`(?s)📋\s*\[(?:Kopyala|Copy|COPY):\s*([^\]]+)\]`)
 	reChatCopy2 = regexp.MustCompile(`(?s)\[(?:kopyala|copy|KOPYALA|COPY|Kopyala|Copy):\s*([^\]]+)\]`)
 	reChatCopy3 = regexp.MustCompile(`copy://([^\s<>"]+)`)
+	// reChatCopyWhole is a whole message made by /copy: everything up to its last ] is the
+	// text, ] included. The patterns above stop at the first ], which cut a pasted log
+	// ("[15:43:24] …") to its first few characters.
+	reChatCopyWhole = regexp.MustCompile(`(?s)^\s*📋\s*\[(?:Kopyala|Copy|COPY):\s*(.*)\]\s*$`)
 )
+
+// messageCopyText returns the text a click on a copy message copies, or "".
+func messageCopyText(raw string) string {
+	for _, re := range []*regexp.Regexp{reChatCopyWhole, reChatCopy1, reChatCopy2, reChatCopy3} {
+		if m := re.FindStringSubmatch(raw); len(m) > 1 {
+			return m[1]
+		}
+	}
+	return ""
+}
 
 func cleanClickURL(raw string) string {
 	clean := strings.TrimSpace(raw)
@@ -97,6 +111,10 @@ type spanMatch struct {
 }
 
 func parseMessageSpans(text string) []chatSpan {
+	// A /copy message is one copy button from end to end, whatever it holds.
+	if m := reChatCopyWhole.FindStringSubmatch(text); len(m) > 1 {
+		return []chatSpan{{Text: text, IsCopy: true, CopyText: m[1]}}
+	}
 	var matches []spanMatch
 
 	// 1. Copy patterns (A: 📋 [Kopyala: ...], B: [copy: ...], C: copy://...)
@@ -235,10 +253,11 @@ func wrapSpansToLines(spans []chatSpan, availWidth int) (lines [][]chatSpan, glu
 			n := fitRunes(rs, availWidth-curW)
 			part := span
 			part.Text = string(rs[:n])
-			add(part, cell.StringWidth(part.Text))
+			pw := cell.StringWidth(part.Text)
+			add(part, pw)
 			flush()
 			rs = rs[n:]
-			w = cell.StringWidth(string(rs))
+			w -= pw // not measured again: that made a long unbroken text quadratic
 		}
 		if len(rs) > 0 {
 			part := span
@@ -643,13 +662,7 @@ func (r *RoomView) HandleChatClick(x, y uint16) bool {
 			} else if rl.RawMessage != "" {
 				// A wrapped row of a [Copy: …] message has no button of its own. Plain
 				// text is not copied on a click: drag over it to select and copy.
-				if m := reChatCopy1.FindStringSubmatch(rl.RawMessage); len(m) > 1 {
-					copyTextToUse = m[1]
-				} else if m := reChatCopy2.FindStringSubmatch(rl.RawMessage); len(m) > 1 {
-					copyTextToUse = m[1]
-				} else if m := reChatCopy3.FindStringSubmatch(rl.RawMessage); len(m) > 1 {
-					copyTextToUse = m[1]
-				}
+				copyTextToUse = messageCopyText(rl.RawMessage)
 				break
 			}
 		}

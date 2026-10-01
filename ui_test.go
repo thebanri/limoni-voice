@@ -2025,3 +2025,35 @@ func TestFileCommandSendsTheClipboardImage(t *testing.T) {
 		t.Fatal("/file <path> also sent the clipboard image")
 	}
 }
+
+// A /copy of a long log is one copy button from its first line to its last, and a click
+// copies all of it: the ] of "[15:43:24]" used to end the button there.
+func TestLongCopyMessageIsOneButton(t *testing.T) {
+	var sb strings.Builder
+	for i := range 400 {
+		fmt.Fprintf(&sb, "[15:43:%02d.605] [ROOM] [WARN] satır %d: exit status 1 ] çğş\n", i%60, i)
+	}
+	long := strings.TrimSpace(sb.String()) + strings.Repeat("x", 3000) // and an unbroken run
+	msg := "📋 [Copy: " + long + "]"
+
+	room := NewRoomView()
+	room.AddChatMessage("Ayşe", "a", msg, false, time.Now())
+	lines := room.buildDisplayLines(room.Messages, 60)
+	if len(lines) < 400 {
+		t.Fatalf("only %d lines", len(lines))
+	}
+	for i, l := range lines {
+		for _, sp := range l.Spans {
+			if !sp.IsCopy || sp.CopyText != long {
+				t.Fatalf("line %d is not part of the copy button: %+v", i, sp.Text)
+			}
+		}
+	}
+	if got := messageCopyText(msg); got != long {
+		t.Fatalf("a click copies %d bytes of %d", len(got), len(long))
+	}
+	// A copy button inside other text still ends at its own ].
+	if got := messageCopyText("bak: [copy: git pull] sonra"); got != "git pull" {
+		t.Fatalf("inline copy gave %q", got)
+	}
+}
