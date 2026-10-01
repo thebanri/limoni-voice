@@ -94,7 +94,15 @@ func ParseEvent(buf []byte) (Event, int) {
 			ev.Key.Type = KeyF3
 		case 'S':
 			ev.Key.Type = KeyF4
+		case 'M':
+			ev.Key.Type = KeyEnter // keypad Enter in application keypad mode
 		default:
+			// The other keys of the keypad in application keypad mode type their character.
+			if i := bytes.IndexByte(ss3Keypad, buf[2]); i >= 0 {
+				ev.Key.Type = KeyRune
+				ev.Key.Ch = rune(ss3KeypadChars[i])
+				return ev, 3
+			}
 			return Event{}, 3
 		}
 		return ev, 3
@@ -238,6 +246,17 @@ func parseCSI(buf []byte) (Event, int) {
 	return ev, consumed
 }
 
+// kpChars are the characters of the kitty keyboard protocol's keypad keys 57409 (KP_DECIMAL)
+// to 57416 (KP_SEPARATOR); 57414 (KP_ENTER) is handled as Enter.
+var kpChars = [...]rune{'.', '/', '*', '-', '+', 0, '=', ','}
+
+// ss3Keypad are the final bytes of the keypad keys in application keypad mode (ESC O x), and
+// ss3KeypadChars the characters they stand for.
+var (
+	ss3Keypad      = []byte("pqrstuvwxyjkmnoXl")
+	ss3KeypadChars = "0123456789*+-./=,"
+)
+
 // csiKey decodes the key (or focus change) a CSI sequence ending in cmd
 // stands for.
 func csiKey(cmd byte, params []int) Event {
@@ -300,6 +319,10 @@ func csiKey(cmd byte, params []int) Event {
 					return Event{Type: EventKey, Key: KeyEvent{Type: KeyRune, Ch: rune('0' + keyCode - 57399), Shift: shift, Alt: alt, Ctrl: ctrl}}
 				case keyCode == 57414: // KP_ENTER
 					return Event{Type: EventKey, Key: KeyEvent{Type: KeyEnter, Shift: shift, Alt: alt, Ctrl: ctrl}}
+				case keyCode >= 57409 && keyCode <= 57416: // KP_DECIMAL … KP_SEPARATOR: the character they type
+					if ch := kpChars[keyCode-57409]; ch != 0 {
+						return Event{Type: EventKey, Key: KeyEvent{Type: KeyRune, Ch: ch, Shift: shift, Alt: alt, Ctrl: ctrl}}
+					}
 				}
 				return Event{}
 			}
