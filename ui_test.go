@@ -2170,3 +2170,49 @@ func TestLongMessageIsShownCutShort(t *testing.T) {
 		t.Fatalf("short message cut: %+v", lines[len(lines)-2:])
 	}
 }
+
+// Sharing while watching someone else, your own broadcast keeps its stop and preview buttons.
+func TestStreamStageShowsOwnShareWhileWatching(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("me", "Ben", audio)
+	defer node.Close()
+	node.Peers["friend"] = &p2p.PeerInfo{ID: "friend", Nickname: "Arkadaş", IsSharingScreen: true, VideoFPS: 120}
+	node.IsWatchingScreen, node.WatchingPeerID, node.WatchingPeerNick = true, "friend", "Arkadaş"
+	node.IsSharingScreen, node.ActiveScreenShareFPS = true, 60
+
+	room := NewRoomView()
+	area := cell.NewRect(0, 0, 110, 16)
+	buf := buffer.NewBuffer(area)
+	room.renderStreamStage(terminal.NewFrame(buf, terminal.NewFocusManager()), area, node.GetPeersList(), node, audio)
+	var sb strings.Builder
+	for y := area.Y; y < area.Height; y++ {
+		for x := area.X; x < area.Width; x++ {
+			if c := buf.Get(x, y); c != nil && c.Content != 0 {
+				sb.WriteRune(c.Content)
+			}
+		}
+		sb.WriteByte('\n')
+	}
+	screen := sb.String()
+	for _, want := range []string{"STOP WATCHING", "YOUR SCREEN IS LIVE", "STOP BROADCAST", "PREVIEW MY SCREEN"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("%q missing from the stage:\n%s", want, screen)
+		}
+	}
+
+	// Only watching: no broadcast controls.
+	node.IsSharingScreen = false
+	buf = buffer.NewBuffer(area)
+	room.renderStreamStage(terminal.NewFrame(buf, terminal.NewFocusManager()), area, node.GetPeersList(), node, audio)
+	sb.Reset()
+	for y := area.Y; y < area.Height; y++ {
+		for x := area.X; x < area.Width; x++ {
+			if c := buf.Get(x, y); c != nil && c.Content != 0 {
+				sb.WriteRune(c.Content)
+			}
+		}
+	}
+	if strings.Contains(sb.String(), "STOP BROADCAST") {
+		t.Error("broadcast controls shown while not sharing")
+	}
+}

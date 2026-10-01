@@ -253,6 +253,46 @@ func (r *RoomView) renderMemberMiniCard(frame *terminal.Frame, area cell.Rect, n
 	}
 }
 
+// drawOwnShareControls draws, from row y, a line on your own broadcast with its stop and
+// preview buttons, for when you share while watching someone else. It returns the row after.
+func (r *RoomView) drawOwnShareControls(frame *terminal.Frame, inner cell.Rect, y uint16, node *p2p.P2PNode) uint16 {
+	theme := CurrentTheme()
+	buf := frame.Buffer
+	maxW := int(inner.Width) - 4
+	fps := node.ActiveScreenShareFPS
+	if fps <= 0 {
+		fps = 60
+	}
+	stats := node.ScreenStats()
+	status := Tf("YOUR SCREEN IS LIVE (%d FPS)", fps)
+	if stats.Watchers > 0 {
+		status += " · " + Tf("%d viewer(s) · %s · %.1f Mbps (adapts to their connection)", stats.Watchers, stats.Preset, float64(stats.Kbps)/1000)
+	}
+	buf.SetString(inner.X+3, y, clipToWidth(status, maxW), cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+
+	stopText := T("   [V] STOP BROADCAST (Click)   ")
+	previewText := T("   [O] PREVIEW MY SCREEN (Click)   ")
+	if node.IsPreviewingScreen() {
+		previewText = T("   [O] CLOSE PREVIEW (Click)   ")
+	}
+	stopX, rowY := inner.X+3, y+1
+	buf.SetString(stopX, rowY, clipToWidth(stopText, maxW), cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold})
+	clickable(frame, cell.NewRect(stopX, rowY, uint16(len([]rune(stopText))), 1), func(_ driver.MouseEvent) {
+		_ = node.StopScreenShare()
+		r.SetToast("Screen share stopped")
+	})
+	// The preview button beside the stop button, or under it when they do not fit.
+	previewX, previewY := stopX+uint16(cell.StringWidth(stopText))+2, rowY
+	if int(previewX)+cell.StringWidth(previewText) > int(inner.X+inner.Width) {
+		previewX, previewY = stopX, rowY+1
+	}
+	buf.SetString(previewX, previewY, clipToWidth(previewText, int(inner.X+inner.Width)-int(previewX)-1), cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold})
+	clickable(frame, cell.NewRect(previewX, previewY, uint16(len([]rune(previewText))), 1), func(_ driver.MouseEvent) {
+		go toggleScreenPreview(node, r)
+	})
+	return previewY + 2
+}
+
 func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, streamingPeers []*p2p.PeerInfo, node *p2p.P2PNode, audio *engine.AudioEngine) {
 	theme := CurrentTheme()
 	stageTitle := T(" LIVE STREAM STAGE ")
@@ -332,8 +372,14 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 				}
 			}
 
+			// Sharing too while watching: your own broadcast's controls stay at hand.
+			nextY := inner.Y + 8
+			if node.IsSharingScreen {
+				nextY = r.drawOwnShareControls(frame, inner, nextY, node)
+			}
+
 			if len(otherPeers) > 0 {
-				switchY := inner.Y + 8
+				switchY := nextY
 				buf.SetString(inner.X+3, switchY, clipToWidth(T("Switch to another live stream:"), int(inner.Width)-4), cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 				switchY += 1
 				for idx, p := range otherPeers {
