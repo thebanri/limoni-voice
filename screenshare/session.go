@@ -1,7 +1,6 @@
 package screenshare
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -113,24 +112,45 @@ func (s *Session) Options() BroadcastOptions {
 	return s.opt
 }
 
-// captureStderr streams a process's stderr into the log and a bounded buffer.
+// captureStderr streams a process's stderr into the log and a bounded buffer. It is set as
+// cmd.Stderr rather than read from StderrPipe: Wait then copies all of it before returning,
+// where with the pipe it closed it at exit and lost what a process said as it failed at once.
 func captureStderr(cmd *exec.Cmd, prefix string) *logBuffer {
 	buf := &logBuffer{}
-	pipe, err := cmd.StderrPipe()
-	if err != nil {
-		return buf
-	}
-	go func() {
-		scanner := bufio.NewScanner(pipe)
-		for scanner.Scan() {
-			text := scanner.Text()
-			buf.add(text)
-			if trimmed := strings.TrimSpace(text); trimmed != "" {
-				logMsg("[%s] %s", prefix, trimmed)
-			}
-		}
-	}()
+	cmd.Stderr = &stderrLines{buf: buf, prefix: prefix}
+	cmd.WaitDelay = 2 * time.Second // a child left holding stderr cannot hold up Wait
 	return buf
+}
+
+// stderrLines logs each complete line written to it.
+type stderrLines struct {
+	buf     *logBuffer
+	prefix  string
+	pending []byte
+}
+
+func (w *stderrLines) Write(p []byte) (int, error) {
+	w.pending = append(w.pending, p...)
+	for {
+		i := bytes.IndexAny(w.pending, "\r\n")
+		if i < 0 {
+			break
+		}
+		w.line(string(w.pending[:i]))
+		w.pending = w.pending[i+1:]
+	}
+	if len(w.pending) > 64*1024 { // no line end in sight: log what came
+		w.line(string(w.pending))
+		w.pending = nil
+	}
+	return len(p), nil
+}
+
+func (w *stderrLines) line(text string) {
+	if trimmed := strings.TrimSpace(text); trimmed != "" {
+		w.buf.add(text)
+		logMsg("[%s] %s", w.prefix, trimmed)
+	}
 }
 
 // attach makes g the current generation and supervises it.
