@@ -388,13 +388,20 @@ func (a *App) wireRoomCallbacks() {
 		}()
 	}
 	room.OnSendClipboardImage = func() {
+		// Files copied in a file manager first: they keep their names.
+		if files := GetClipboardFiles(); len(files) > 0 {
+			for _, f := range files {
+				room.OnSendFile(f)
+			}
+			return
+		}
 		data, ext, err := GetClipboardImage()
 		switch {
 		case err != nil && len(data) == 0:
 			room.SetToast(Tf("Could not read the clipboard: %v", err))
 			return
 		case len(data) == 0:
-			room.SetToast(T("No image on the clipboard. Copy one, or send a file: /file <path>"))
+			room.SetToast(T("Nothing to send on the clipboard. Copy a file in the file manager (Ctrl+C) or an image, or: /file <path>"))
 			return
 		}
 		name := "clipboard-" + time.Now().Format("20060102-150405") + "." + ext

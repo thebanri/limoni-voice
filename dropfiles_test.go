@@ -78,3 +78,26 @@ func TestDropOntoRoomSendsTheFile(t *testing.T) {
 		t.Fatalf("text paste: sent %q, typed %q", sent, a.room.ChatInputState.Value())
 	}
 }
+
+// Files copied in a file manager arrive as a text/uri-list; /file sends the ones that exist.
+func TestFilesFromURIList(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "rapor 1.pdf")
+	b := filepath.Join(dir, "foto.png")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := "# copied by Dolphin\r\n" +
+		(&url.URL{Scheme: "file", Path: filepath.ToSlash(a)}).String() + "\r\n" +
+		(&url.URL{Scheme: "file", Path: filepath.ToSlash(b)}).String() + "\r\n" +
+		(&url.URL{Scheme: "file", Path: filepath.ToSlash(dir)}).String() + "\r\n" + // a folder
+		"https://example.com/x.png\r\n"
+	if got := filesFromURIList(list); !slices.Equal(got, []string{a, b}) {
+		t.Fatalf("got %q", got)
+	}
+	if got := filesFromURIList(""); got != nil {
+		t.Fatalf("empty list gave %q", got)
+	}
+}

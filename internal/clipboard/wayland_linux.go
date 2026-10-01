@@ -21,6 +21,9 @@ import (
 // textMimes are the text types offered when copying, and tried in order when pasting.
 var textMimes = []string{"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"}
 
+// uriListMime is how file managers put copied files on the clipboard: one URL per line.
+const uriListMime = "text/uri-list"
+
 // imageMimes are the image types tried, in order, when an image is pasted.
 var imageMimes = []string{"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"}
 

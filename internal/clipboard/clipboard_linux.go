@@ -17,6 +17,30 @@ const readTimeout = time.Second
 // imageTimeout is longer: the app that copied a screenshot may encode it as it is pasted.
 const imageTimeout = 5 * time.Second
 
+// ReadFileList returns the clipboard's text/uri-list: the files copied in a file manager
+// (Ctrl+C in Dolphin, Nautilus, Thunar), one URL per line; nil when it holds none.
+func ReadFileList() ([]byte, error) {
+	var errs []error
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		data, _, err := readWaylandAs(readTimeout, []string{uriListMime})
+		if err == nil {
+			return data, nil
+		}
+		errs = append(errs, err)
+	}
+	if os.Getenv("DISPLAY") != "" {
+		data, _, err := readX11As(readTimeout, []string{uriListMime})
+		if err == nil {
+			return data, nil
+		}
+		errs = append(errs, err)
+	}
+	if len(errs) == 0 {
+		return nil, ErrUnavailable
+	}
+	return nil, errors.Join(errs...)
+}
+
 // ReadImage returns the clipboard's image and its MIME type (nil when it holds no image).
 func ReadImage() ([]byte, string, error) {
 	var errs []error

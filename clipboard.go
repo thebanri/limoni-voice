@@ -248,6 +248,50 @@ var imageExts = map[string]string{
 // imageMimeOrder is the order image types are picked in when the clipboard offers several.
 var imageMimeOrder = []string{"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"}
 
+// mockClipboardFiles is the clipboard's text/uri-list automated tests see.
+var mockClipboardFiles string
+
+// GetClipboardFiles returns the files copied to the clipboard in a file manager (Ctrl+C in
+// Dolphin, Nautilus, Thunar…) that exist, or nil. This is how a file is sent from a terminal
+// that does not pass dropped files on (Alacritty on Wayland).
+func GetClipboardFiles() []string {
+	var list []byte
+	switch {
+	case testing.Testing():
+		clipboardMu.RLock()
+		list = []byte(mockClipboardFiles)
+		clipboardMu.RUnlock()
+	case runtime.GOOS == "linux":
+		var err error
+		if list, err = clipboard.ReadFileList(); err != nil && os.Getenv("WAYLAND_DISPLAY") != "" {
+			if path, lerr := exec.LookPath("wl-paste"); lerr == nil {
+				list, _ = exec.Command(path, "--no-newline", "--type", "text/uri-list").Output()
+			}
+		}
+	default:
+		return nil // Windows and macOS put files on the clipboard in other forms
+	}
+	return filesFromURIList(string(list))
+}
+
+// filesFromURIList returns the existing regular files a text/uri-list names.
+func filesFromURIList(list string) []string {
+	var files []string
+	for _, line := range strings.FieldsFunc(list, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "file:") {
+			continue
+		}
+		if p := existingFile(line); p != "" {
+			files = append(files, p)
+		}
+	}
+	if len(files) > maxDroppedFiles {
+		files = files[:maxDroppedFiles]
+	}
+	return files
+}
+
 // GetClipboardImage returns the image on the clipboard (a screenshot, a copied picture) and
 // its file extension, or nil when the clipboard holds no image.
 func GetClipboardImage() ([]byte, string, error) {

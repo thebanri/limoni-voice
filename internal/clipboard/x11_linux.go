@@ -25,7 +25,8 @@ func openX11() (*x11Session, error) {
 	}
 	s := &x11Session{conn: conn, atoms: map[string]xproto.Atom{}}
 	names := append([]string{"CLIPBOARD", "TARGETS", "LIMONI_CLIP", "INCR"}, textMimes...)
-	for _, name := range append(names, imageMimes...) {
+	names = append(names, imageMimes...)
+	for _, name := range append(names, uriListMime) {
 		r, err := xproto.InternAtom(conn, false, uint16(len(name)), name).Reply()
 		if err != nil {
 			conn.Close()
