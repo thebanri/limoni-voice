@@ -1715,11 +1715,10 @@ func TestChatScrollsThroughLongMessage(t *testing.T) {
 	defer node.Close()
 	room := NewRoomView()
 	room.AddChatMessage("Alice", "a", "hi", false, time.Now())
-	var long strings.Builder
+	// Sixty lines in sixty messages: one message longer than maxShownMessageLines is cut short.
 	for i := range 60 {
-		fmt.Fprintf(&long, "log line %02d\n", i)
+		room.AddChatMessage("Alice", "a", fmt.Sprintf("log line %02d", i), false, time.Now())
 	}
-	room.AddChatMessage("Alice", "a", long.String(), false, time.Now())
 
 	area := cell.NewRect(0, 0, 120, 30)
 	render := func() string {
@@ -2039,8 +2038,12 @@ func TestLongCopyMessageIsOneButton(t *testing.T) {
 	room := NewRoomView()
 	room.AddChatMessage("Ayşe", "a", msg, false, time.Now())
 	lines := room.buildDisplayLines(room.Messages, 60)
-	if len(lines) < 400 {
-		t.Fatalf("only %d lines", len(lines))
+	// Shown cut short: the first lines, then the note, which is part of the button too.
+	if len(lines) != maxShownMessageLines+1 {
+		t.Fatalf("%d lines shown, want %d", len(lines), maxShownMessageLines+1)
+	}
+	if note := lines[len(lines)-1].Spans[0].Text; !strings.Contains(note, "too long") {
+		t.Fatalf("last line %q is not the note", note)
 	}
 	for i, l := range lines {
 		for _, sp := range l.Spans {
@@ -2055,5 +2058,115 @@ func TestLongCopyMessageIsOneButton(t *testing.T) {
 	// A copy button inside other text still ends at its own ].
 	if got := messageCopyText("bak: [copy: git pull] sonra"); got != "git pull" {
 		t.Fatalf("inline copy gave %q", got)
+	}
+}
+
+// A double click on a message copies all of it, however far it runs off the screen; one
+// click copies nothing, so a drag can still select part of it.
+func TestDoubleClickCopiesTheWholeMessage(t *testing.T) {
+	room := NewRoomView()
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("local_user", "You", audio)
+	var sb strings.Builder
+	for i := range 300 {
+		fmt.Fprintf(&sb, "[15:43:%02d] log satırı %d: çok uzun bir mesaj\n", i%60, i)
+	}
+	long := strings.TrimSpace(sb.String())
+	room.AddChatMessage("Ayşe", "a", long, false, time.Now())
+
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 100, 40))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	room.Render(frame, cell.NewRect(0, 0, 100, 40), node, audio)
+	room.mu.Lock()
+	rows := room.renderedLines
+	room.mu.Unlock()
+	if len(rows) == 0 {
+		t.Fatal("nothing drawn")
+	}
+	row := rows[len(rows)/2].RowY
+
+	SetMockClipboard("")
+	if room.HandleChatClick(20, row) {
+		t.Fatal("one click on plain text copied it")
+	}
+	if !room.HandleChatClick(20, row) {
+		t.Fatal("a double click copied nothing")
+	}
+	if got := GetClipboardText(); got != long {
+		t.Fatalf("copied %d bytes of %d", len(got), len(long))
+	}
+	// Two clicks far apart in time are two single clicks.
+	room.HandleChatClick(20, row)
+	room.mu.Lock()
+	room.lastClickAt = room.lastClickAt.Add(-time.Second)
+	room.mu.Unlock()
+	if room.HandleChatClick(20, row) {
+		t.Fatal("two slow clicks copied the message")
+	}
+}
+
+// Ctrl+V and right click paste what the clipboard holds: copied files and an image are sent,
+// text is typed.
+func TestPasteClipboardSendsFilesAndImages(t *testing.T) {
+	orig := readClipboard
+	t.Cleanup(func() { readClipboard = orig })
+	a := &App{room: NewRoomView(), currentScreen: ScreenRoom}
+	var sentFiles []string
+	images := make(chan struct{}, 1)
+	a.room.OnSendFile = func(p string) { sentFiles = append(sentFiles, p) }
+	a.room.OnSendClipboardImage = func() { images <- struct{}{} }
+
+	// An image only (a screenshot): no text, so the image is sent.
+	readClipboard = func() string { return "" }
+	a.pasteClipboard()
+	select {
+	case <-images:
+	case <-time.After(time.Second):
+		t.Fatal("a screenshot on the clipboard was not sent")
+	}
+
+	// Files copied in the file manager.
+	file := filepath.Join(t.TempDir(), "rapor.pdf")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clipboardMu.Lock()
+	mockClipboardFiles = "file://" + filepath.ToSlash(file) + "\r\n"
+	clipboardMu.Unlock()
+	t.Cleanup(func() { clipboardMu.Lock(); mockClipboardFiles = ""; clipboardMu.Unlock() })
+	readClipboard = func() string { return file } // file managers offer the path as text too
+	a.pasteClipboard()
+	if len(sentFiles) != 1 || sentFiles[0] != file || a.room.ChatInputState.Value() != "" {
+		t.Fatalf("copied file: sent %q, typed %q", sentFiles, a.room.ChatInputState.Value())
+	}
+
+	// Text.
+	clipboardMu.Lock()
+	mockClipboardFiles = ""
+	clipboardMu.Unlock()
+	readClipboard = func() string { return "selam" }
+	a.pasteClipboard()
+	if a.room.ChatInputState.Value() != "selam" || len(images) != 0 {
+		t.Fatalf("text paste typed %q", a.room.ChatInputState.Value())
+	}
+}
+
+// A long message is shown cut short with a note, and still copied whole by a double click;
+// a short one is shown whole.
+func TestLongMessageIsShownCutShort(t *testing.T) {
+	room := NewRoomView()
+	long := strings.TrimSpace(strings.Repeat("uzun bir log satırı\n", 200))
+	room.AddChatMessage("Ayşe", "a", long, false, time.Now())
+	room.AddChatMessage("Can", "c", "kısa\nmesaj", false, time.Now())
+	lines := room.buildDisplayLines(room.Messages, 80)
+	if len(lines) != maxShownMessageLines+1+2 {
+		t.Fatalf("%d lines, want %d", len(lines), maxShownMessageLines+3)
+	}
+	note := lines[maxShownMessageLines]
+	if len(note.Spans) != 1 || !note.Spans[0].IsNote || note.RawMessage != long {
+		t.Fatalf("note line: %+v", note)
+	}
+	if lines[len(lines)-1].Spans[0].Text != "mesaj" {
+		t.Fatalf("short message cut: %+v", lines[len(lines)-2:])
 	}
 }

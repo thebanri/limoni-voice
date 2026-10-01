@@ -44,6 +44,23 @@ func (a *App) handlePaste(pasted string) {
 // readClipboard reads the system clipboard; tests replace it.
 var readClipboard = GetClipboardText
 
+// pasteClipboard pastes into the room what the clipboard holds (Ctrl+V, right click): files
+// copied in the file manager are sent, text is typed into the chat, and an image (a
+// screenshot) is sent when there is no text.
+func (a *App) pasteClipboard() {
+	if files := GetClipboardFiles(); len(files) > 0 && a.room.OnSendFile != nil {
+		for _, f := range files {
+			a.room.OnSendFile(f)
+		}
+		return
+	}
+	if text := readClipboard(); text != "" || a.room.OnSendClipboardImage == nil {
+		a.pasteIntoChat(text)
+		return
+	}
+	go a.room.OnSendClipboardImage() // the image, or a toast that there is nothing to send
+}
+
 // pasteIntoChat inserts text at the chat input's cursor, line breaks and all, so code keeps
 // its lines (Ctrl+V, right click, the terminal's own paste).
 func (a *App) pasteIntoChat(text string) {
@@ -112,7 +129,7 @@ func (a *App) handleKey(e driver.KeyEvent) {
 	// Ctrl+V in active room chat
 	if e.Ctrl && (e.Ch == 'v' || e.Ch == 'V') && a.currentScreen == ScreenRoom &&
 		!a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && !a.showDebugModal {
-		a.pasteIntoChat(readClipboard())
+		a.pasteClipboard()
 		return
 	}
 

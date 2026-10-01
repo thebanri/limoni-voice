@@ -6,6 +6,21 @@ import (
 	"strings"
 )
 
+// dropsBlockedHint is shown on entering a room in a terminal that passes no dropped files on.
+const dropsBlockedHint = "[INFO] This terminal (Alacritty on Wayland) does not pass dragged files on. Copy the file in your file manager (Ctrl+C) and press Ctrl+V here."
+
+// terminalDropsBlocked is set at start: the app runs in an Alacritty on Wayland.
+var terminalDropsBlocked bool
+
+// alacrittyOnWayland reports, from the environment the app started with, whether it runs in
+// an Alacritty on Wayland, which passes no dropped files on (its winit has no Wayland drag and
+// drop). Alacritty picks Wayland when WAYLAND_DISPLAY is set, and the app inherits that; one
+// reopened on X11 (see relaunchForDragAndDrop) starts the app without it.
+func alacrittyOnWayland(getenv func(string) string) bool {
+	inAlacritty := getenv("ALACRITTY_WINDOW_ID") != "" || getenv("ALACRITTY_SOCKET") != "" || getenv("TERM") == "alacritty"
+	return inAlacritty && getenv("WAYLAND_DISPLAY") != ""
+}
+
 // maxDroppedFiles bounds how many files one drop sends.
 const maxDroppedFiles = 20
 

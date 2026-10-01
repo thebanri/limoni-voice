@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/thebanri/limoni-voice/internal/i18n"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -99,5 +100,42 @@ func TestFilesFromURIList(t *testing.T) {
 	}
 	if got := filesFromURIList(""); got != nil {
 		t.Fatalf("empty list gave %q", got)
+	}
+}
+
+// Alacritty on Wayland is told apart from one on X11 (reopened from the menu, or started
+// without WAYLAND_DISPLAY) and from other terminals.
+func TestAlacrittyOnWayland(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"alacritty on wayland", map[string]string{"ALACRITTY_SOCKET": "/run/user/1000/Alacritty-wayland-0-1.sock", "ALACRITTY_WINDOW_ID": "1", "TERM": "xterm-256color", "WAYLAND_DISPLAY": "wayland-0"}, true},
+		{"alacritty on x11", map[string]string{"ALACRITTY_WINDOW_ID": "1", "TERM": "alacritty", "DISPLAY": ":0"}, false},
+		{"konsole on wayland", map[string]string{"KONSOLE_VERSION": "250800", "WAYLAND_DISPLAY": "wayland-0"}, false},
+		{"alacritty with no IPC", map[string]string{"TERM": "alacritty", "WAYLAND_DISPLAY": "wayland-0"}, true},
+	}
+	for _, c := range cases {
+		if got := alacrittyOnWayland(func(k string) string { return c.env[k] }); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The hint is shown once a session, in the user's language.
+func TestDropHintShownOnce(t *testing.T) {
+	saved := terminalDropsBlocked
+	t.Cleanup(func() { terminalDropsBlocked = saved })
+	terminalDropsBlocked = true
+	a := &App{room: NewRoomView()}
+	a.showDropHint()
+	a.room = NewRoomView() // a second room this session
+	a.showDropHint()
+	if len(a.room.Messages) != 0 {
+		t.Fatal("the hint was shown again in the next room")
+	}
+	if !i18n.Has(i18n.Turkish, dropsBlockedHint) {
+		t.Fatal("no Turkish for the hint")
 	}
 }

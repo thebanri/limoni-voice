@@ -162,7 +162,7 @@ func (a *App) handleRoomMouse(m driver.MouseEvent) {
 	case driver.MouseRight:
 		// With mouse reporting on, the terminal hands its right-click paste to us.
 		if !m.Drag {
-			a.pasteIntoChat(readClipboard())
+			a.pasteClipboard()
 		}
 	case driver.MouseScrollUp:
 		room.ScrollChat(chatWheelLines)

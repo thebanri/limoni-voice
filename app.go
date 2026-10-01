@@ -26,12 +26,13 @@ import (
 // App owns the terminal UI state and routes events between the views, the audio engine and
 // the network node. Behaviour is split by concern across app_*.go files.
 type App struct {
-	backend *driver.Backend
-	term    *terminal.Terminal
-	node    *p2p.P2PNode
-	audio   *engine.AudioEngine
-	lobby   *LobbyView
-	room    *RoomView
+	dropHintShown bool // the dropped-files hint was shown this session
+	backend       *driver.Backend
+	term          *terminal.Terminal
+	node          *p2p.P2PNode
+	audio         *engine.AudioEngine
+	lobby         *LobbyView
+	room          *RoomView
 
 	notifier *desktopNotifier
 	knocks   knockQueue
@@ -376,7 +377,18 @@ func (a *App) wireRoomCallbacks() {
 		room.SetToast(fmt.Sprintf("Volume for %s set to %d%%", matched.Nickname, pct))
 		room.AddLog(fmt.Sprintf("[VOL] Volume for %s set to %d%%", matched.Nickname, pct))
 	}
+	// aloneInRoom tells the user a file has nobody to go to, instead of a transfer error.
+	aloneInRoom := func() bool {
+		if len(node.GetPeersList()) > 0 {
+			return false
+		}
+		room.SetToast(T("Nobody else is in the room to send it to"))
+		return true
+	}
 	room.OnSendFile = func(filePath string) {
+		if aloneInRoom() {
+			return
+		}
 		room.AddLog(fmt.Sprintf("[FILE] Sending %s...", filePath))
 		go func() {
 			if err := node.SendFile(filePath); err != nil {
@@ -388,6 +400,9 @@ func (a *App) wireRoomCallbacks() {
 		}()
 	}
 	room.OnSendClipboardImage = func() {
+		if aloneInRoom() {
+			return
+		}
 		// Files copied in a file manager first: they keep their names.
 		if files := GetClipboardFiles(); len(files) > 0 {
 			for _, f := range files {
@@ -499,6 +514,16 @@ func (a *App) startHost() {
 	a.room = NewRoomView()
 	a.currentScreen = ScreenRoom
 	a.audio.PlaySound(engine.SoundJoin)
+	a.showDropHint()
+}
+
+// showDropHint tells, once a session, how to send a file from a terminal that passes no
+// dragged files on.
+func (a *App) showDropHint() {
+	if terminalDropsBlocked && !a.dropHintShown {
+		a.dropHintShown = true
+		a.room.AddLog(dropsBlockedHint)
+	}
 }
 
 func (a *App) joinRoom(code string) {
@@ -520,6 +545,7 @@ func (a *App) joinRoom(code string) {
 			a.audio.PlaySound(engine.SoundJoin)
 			a.room.AddLog(fmt.Sprintf("[+] Successfully joined room %s! (Host: %s)", cleanCode, hostNick))
 			a.room.SetToast(fmt.Sprintf("Joined Room! Host: %s", hostNick))
+			a.showDropHint()
 		},
 		func(reason string) {
 			a.lobby.IsConnecting = false

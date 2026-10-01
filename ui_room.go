@@ -46,6 +46,8 @@ type RoomView struct {
 	chatLineWidth          int
 	lineCache              map[lineCacheKey][]roomDisplayLine // each message's wrapped lines, from the last draw
 	lineCacheMu            sync.Mutex
+	lastClickMessage       string    // the message clicked last, for a double click
+	lastClickAt            time.Time // and when
 	UnreadChatCount        int
 	chatHistory            []string
 	historyIndex           int

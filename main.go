@@ -80,6 +80,10 @@ Examples:
 }
 
 func main() {
+	terminalDropsBlocked = alacrittyOnWayland(os.Getenv) // before a relaunch puts WAYLAND_DISPLAY back
+	if relaunchForDragAndDrop() {
+		return // the app goes on in a new Alacritty window that passes dropped files on
+	}
 	startProfiler()
 	var (
 		flagRelay      = flag.String("relay", "", "Custom WebSocket relay URL (e.g. ws://192.168.1.100:27850/ws, or 'none' for LAN only)")

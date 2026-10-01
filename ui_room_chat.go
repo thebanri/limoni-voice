@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/thebanri/limoni-voice/internal/i18n"
@@ -21,7 +22,12 @@ type chatSpan struct {
 	ClickURL string
 	IsCopy   bool
 	CopyText string
+	IsNote   bool // a note of the app's own (a long message cut short), drawn muted
 }
+
+// maxShownMessageLines is how many lines of a message the chat shows; a longer one ends in a
+// note, and is copied whole with a double click (or a click, for a /copy).
+const maxShownMessageLines = 12
 
 type roomDisplayLine struct {
 	Timestamp      string
@@ -435,7 +441,11 @@ func messageDisplayLines(msg RoomMessage, maxW int, theme ThemePalette) []roomDi
 			}
 
 			firstLineOverall := true
+		paragraphs:
 			for _, para := range paragraphs {
+				if len(lines) > maxShownMessageLines {
+					break paragraphs // the rest is not shown; no need to wrap it
+				}
 				wrappedLines, glue := wrapSpansToLines(para, availFirst)
 				for wrapIdx, lSpans := range wrappedLines {
 					isContinuation := (wrapIdx > 0)
@@ -460,7 +470,13 @@ func messageDisplayLines(msg RoomMessage, maxW int, theme ThemePalette) []roomDi
 							RawMessage:     msg.Text,
 						})
 					}
+					if len(lines) > maxShownMessageLines {
+						break paragraphs
+					}
 				}
+			}
+			if len(lines) > maxShownMessageLines {
+				lines = append(lines[:maxShownMessageLines], tooLongNote(msg.Text, indentSpaces))
 			}
 		} else {
 			logColor := theme.TextMuted
@@ -507,6 +523,17 @@ func messageDisplayLines(msg RoomMessage, maxW int, theme ThemePalette) []roomDi
 	return lines
 }
 
+// tooLongNote is the line under a message cut short: the copy button of a /copy, or a note
+// that a double click copies the whole message.
+func tooLongNote(text, indent string) roomDisplayLine {
+	size := formatBytes(int64(len(text)))
+	note := chatSpan{Text: Tf("… message too long (%s): double-click to copy all of it", size), IsNote: true}
+	if m := reChatCopyWhole.FindStringSubmatch(text); len(m) > 1 {
+		note = chatSpan{Text: Tf("… message too long (%s): click to copy all of it", size), IsCopy: true, CopyText: m[1]}
+	}
+	return roomDisplayLine{Timestamp: indent, Spans: []chatSpan{note}, IsChat: true, RawMessage: text}
+}
+
 // renderChatSpans draws spans from startX in at most maxW cells and returns the characters
 // drawn and the column after them.
 func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, startX, rowY uint16, spans []chatSpan, maxW int) ([]renderedChatChar, uint16) {
@@ -529,6 +556,11 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 		Bg:       theme.SurfaceBg,
 		Modifier: cell.ModifierUnderline | cell.ModifierBold,
 	}
+	noteStyle := cell.Style{
+		Fg:       theme.TextMuted,
+		Bg:       theme.SurfaceBg,
+		Modifier: cell.ModifierItalic,
+	}
 
 	curX := startX
 	endX := startX + uint16(maxW)
@@ -545,6 +577,8 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 
 		if span.IsCopy {
 			buf.SetString(curX, rowY, string(sRunes), copyStyle)
+		} else if span.IsNote {
+			buf.SetString(curX, rowY, string(sRunes), noteStyle)
 		} else if span.IsLink {
 			// Also an OSC 8 hyperlink where the terminal supports them: it opens the
 			// address on the user's own machine, even through SSH.
@@ -648,6 +682,9 @@ func (r *RoomView) extractSelectedText() string {
 	return SanitizeClipboardText(result.String())
 }
 
+// doubleClickGap is the most time between the two clicks of a double click.
+const doubleClickGap = 400 * time.Millisecond
+
 func (r *RoomView) HandleChatClick(x, y uint16) bool {
 	r.mu.Lock()
 	var copyTextToUse, clickURLToUse string
@@ -661,8 +698,18 @@ func (r *RoomView) HandleChatClick(x, y uint16) bool {
 				break
 			} else if rl.RawMessage != "" {
 				// A wrapped row of a [Copy: …] message has no button of its own. Plain
-				// text is not copied on a click: drag over it to select and copy.
+				// text is not copied on one click (drag over it to select), but a double
+				// click copies the whole message, however far it runs off the screen.
 				copyTextToUse = messageCopyText(rl.RawMessage)
+				if copyTextToUse == "" {
+					now := time.Now()
+					if rl.RawMessage == r.lastClickMessage && now.Sub(r.lastClickAt) <= doubleClickGap {
+						copyTextToUse = rl.RawMessage
+						r.lastClickMessage = ""
+					} else {
+						r.lastClickMessage, r.lastClickAt = rl.RawMessage, now
+					}
+				}
 				break
 			}
 		}
