@@ -158,6 +158,29 @@ func isMutterAvailable() bool {
 
 // buildGstreamerPipewireCommand builds a GStreamer command line using PipeWire source to stream MPEG-TS UDP or stdout
 func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt BroadcastOptions, hasFD bool) (string, []string, error) {
+	source := []string{
+		"pipewiresrc",
+		"on-disconnect=none",
+		"automatic-eos=false",
+		"resend-last=true",
+	}
+	if hasFD {
+		source = append(source, "fd=3")
+	}
+	source = append(source,
+		fmt.Sprintf("path=%d", nodeID),
+		"do-timestamp=true",
+		"provide-clock=false",
+		"keepalive-time=100",
+		"always-copy=true",
+	)
+	return buildGstreamerCommand(source, targetURL, opt, false)
+}
+
+// buildGstreamerCommand runs source through the scaling, H.264 encoding and MPEG-TS output
+// every GStreamer capture shares. letterbox keeps the source's aspect ratio with bars (a
+// camera's 4:3 picture in a 16:9 frame); a screen is scaled to the frame.
+func buildGstreamerCommand(source []string, targetURL string, opt BroadcastOptions, letterbox bool) (string, []string, error) {
 	gstBin, err := FindExecutable("gst-launch-1.0")
 	if err != nil {
 		return "", nil, fmt.Errorf("gst-launch-1.0 not found: %w", err)
@@ -227,34 +250,24 @@ func buildGstreamerPipewireCommand(nodeID uint32, targetURL string, opt Broadcas
 	outWidth = (outWidth / 2) * 2
 	outHeight = (outHeight / 2) * 2
 
-	args := []string{
-		"-q",
-		"pipewiresrc",
-		"on-disconnect=none",
-		"automatic-eos=false",
-		"resend-last=true",
-	}
-	if hasFD {
-		args = append(args, "fd=3")
-	}
+	args := append([]string{"-q"}, source...)
 	encoder := getBestLinuxEncoder()
 	rawFormat := "I420"
 	if encoder == "nvh264enc" || encoder == "vaapih264enc" || encoder == "vulkanh264enc" {
 		rawFormat = "NV12"
 	}
 
+	caps := fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=%s", outWidth, outHeight, fps, rawFormat)
+	if letterbox {
+		caps += ",pixel-aspect-ratio=1/1" // square pixels: videoscale adds bars instead of stretching
+	}
 	args = append(args,
-		fmt.Sprintf("path=%d", nodeID),
-		"do-timestamp=true",
-		"provide-clock=false",
-		"keepalive-time=100",
-		"always-copy=true",
 		// max-size-buffers=4: Gecikme birikmesini önlemek için kuyruk sınırlandırıldı
 		"!", "queue", "max-size-buffers=4", "max-size-bytes=0", "max-size-time=0",
 		"!", "videoconvert", "n-threads=4",
 		"!", "videoscale",
 		"!", "videorate", "skip-to-first=true", "drop-only=true", "max-duplication-time=0",
-		"!", fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1,format=%s", outWidth, outHeight, fps, rawFormat),
+		"!", caps,
 	)
 
 	switch encoder {

@@ -429,6 +429,7 @@ var turkish = map[string]string{
 	"[D] Undeafen":                   "[D] Sesi Aç",
 	"[Deafened]":                     "[Ses kapalı]",
 	"[Del] Clear":                    "[Del] Temizle",
+	"[Camera] %s":                    "[Kamera] %s",
 	"[Desktop] %s":                   "[Masaüstü] %s",
 	"[Desktop] All Screens Combined": "[Masaüstü] Tüm Ekranlar Birlikte",
 	"[Desktop] Entire Screen (Primary Display)":                                                                               "[Masaüstü] Tüm Ekran (Birincil Ekran)",

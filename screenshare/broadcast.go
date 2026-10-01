@@ -48,6 +48,9 @@ var planBuilder = buildBroadcastPlan
 
 func buildBroadcastPlan(opt BroadcastOptions, targetURL string, src *pipewireSource, onSourceClosed func()) (*broadcastPlan, error) {
 	plan := &broadcastPlan{}
+	if IsCameraTarget(opt.WindowID) {
+		return buildCameraPlan(cameraOptions(opt), targetURL)
+	}
 	switch runtime.GOOS {
 	case "linux":
 		bin, args, pwFile, cleanup, err := buildLinuxBroadcastCommand(opt, targetURL, src, onSourceClosed)
@@ -123,6 +126,34 @@ func buildBroadcastPlan(opt BroadcastOptions, targetURL string, src *pipewireSou
 
 	default:
 		return nil, fmt.Errorf("unsupported platform for screen broadcasting: %s", runtime.GOOS)
+	}
+	return plan, nil
+}
+
+// buildCameraPlan captures a camera instead of a screen: V4L2 through GStreamer on Linux,
+// DirectShow or AVFoundation through ffmpeg elsewhere.
+func buildCameraPlan(opt BroadcastOptions, targetURL string) (*broadcastPlan, error) {
+	plan := &broadcastPlan{}
+	if runtime.GOOS == "linux" {
+		bin, args, err := buildGstreamerCameraCommand(opt, targetURL)
+		if err != nil {
+			return nil, err
+		}
+		plan.bin, plan.args = bin, args
+		return plan, nil
+	}
+	p, err := FindExecutable("ffmpeg")
+	if err != nil {
+		return nil, errors.New("'ffmpeg' is required to share a camera")
+	}
+	plan.bin = p
+	switch runtime.GOOS {
+	case "windows":
+		plan.args = buildWindowsCameraArgs(opt, targetURL, p)
+	case "darwin":
+		plan.args = buildMacCameraArgs(opt, targetURL, p)
+	default:
+		return nil, fmt.Errorf("unsupported platform for camera sharing: %s", runtime.GOOS)
 	}
 	return plan, nil
 }

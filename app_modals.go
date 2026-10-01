@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -128,6 +129,10 @@ func (a *App) openScreenShareModal() {
 	a.screenShareTargets = screenshare.ListWindows()
 	if len(a.screenShareTargets) == 0 {
 		a.screenShareTargets = []screenshare.WindowInfo{{ID: "desktop", Title: "[Desktop] Entire Screen (Primary View)"}}
+	}
+	// Cameras right under the first entry (the whole screen), which stays the default.
+	if cams := screenshare.ListCameras(); len(cams) > 0 {
+		a.screenShareTargets = slices.Insert(a.screenShareTargets, 1, cams...)
 	}
 	a.selectedScreenShareIdx = 0
 	a.screenShareDeps = screenshare.CheckDependencies()

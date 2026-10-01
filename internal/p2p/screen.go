@@ -213,6 +213,13 @@ func parseKbps(s string, fallback int) int {
 }
 
 func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset screenshare.Preset, withAudio bool) error {
+	if screenshare.IsCameraTarget(opts.WindowID) {
+		// A camera is 720p30 at most, and carries no system audio: the voice goes in the call.
+		preset = screenshare.CameraPreset(preset)
+		target := opts.WindowID
+		opts = preset.Options(target)
+		withAudio = false
+	}
 	n.mu.Lock()
 	if !n.IsConnected {
 		n.mu.Unlock()
