@@ -131,9 +131,11 @@ jobs:
           path: macos/build
 
       - name: Install System Packaging Tools
+        # genisoimage builds the macOS .dmg, zip the .app.zip. No ffmpeg: nothing here runs it,
+        # and installing it with its dependencies took 20 of a release's 24 minutes.
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg genisoimage zip
+          sudo apt-get install -y --no-install-recommends genisoimage zip
 
       - name: Install rcodesign (signs the macOS app bundles)
         run: |
