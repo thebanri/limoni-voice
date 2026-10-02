@@ -124,6 +124,15 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Without a terminal there is nothing to draw on: say so and leave cleanly. Package
+	// validators (winget's) start the executable with no arguments and no console, and read
+	// a non-zero exit as a broken install.
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		fmt.Fprintln(os.Stderr, "Limoni Voice is an interactive terminal application: run it in a terminal.")
+		fmt.Fprintln(os.Stderr, "See limoni-voice --help for the options.")
+		os.Exit(0)
+	}
+
 	logPath := *flagLogFile
 	if logPath == "" {
 		logPath = applog.DefaultPath()
