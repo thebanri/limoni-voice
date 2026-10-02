@@ -193,7 +193,7 @@ PublisherUrl: https://github.com/thebanri
 PackageName: Limoni Voice
 PackageUrl: https://github.com/${REPO}
 License: AGPL-3.0
-LicenseUrl: https://github.com/${REPO}/blob/main/LICENSE
+LicenseUrl: https://github.com/${REPO}/blob/${VERSION}/LICENSE
 ShortDescription: ${DESC}
 Tags:
   - voice-chat
