@@ -263,7 +263,7 @@ func TestTheViewerClosesAsSoonAsTheSharerStops(t *testing.T) {
 }
 
 // The sharer's "I stopped" travels through a link its own video has just congested, so it can
-// be dropped or arrive seconds late. A sharer that still answers pings while its video has
+// be dropped or arrive seconds late. A sharer whose pings say it stopped while its video has
 // stopped has ended the share, and the viewer must not wait for the long guard to say so.
 func TestAViewerClosesQuicklyWhileTheSharerIsStillAnswering(t *testing.T) {
 	if testing.Short() {
@@ -304,7 +304,11 @@ func TestAViewerClosesQuicklyWhileTheSharerIsStillAnswering(t *testing.T) {
 	waitFor(t, "sharer registers the viewer", 5*time.Second, func() bool { return host.ScreenStats().Watchers == 1 })
 	waitForFirstChunk(t, viewer)
 
+	// The share ends without an announcement: the video stops and pings say so.
 	videoGone.Store(true)
+	host.mu.Lock()
+	host.IsSharingScreen = false
+	host.mu.Unlock()
 	start := time.Now()
 	waitFor(t, "the viewer closes without the announcement", 3*time.Second, func() bool {
 		viewer.mu.RLock()
@@ -312,6 +316,57 @@ func TestAViewerClosesQuicklyWhileTheSharerIsStillAnswering(t *testing.T) {
 		return viewer.screenRx == nil
 	})
 	t.Logf("the viewer closed %v after the video stopped", time.Since(start))
+	_ = host.StopScreenShare()
+}
+
+// Over a congested relay, pings and voice go ahead of video, so a sharer can answer pings while
+// its stream is starved for seconds. The viewer must not take that for the end of the share.
+func TestAViewerKeepsAStarvedStreamWhileTheSharerStillShares(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams real video for a few seconds")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	host, viewer := relayRoom(t, "5360-amber-falcon-river")
+	useSyntheticScreenPipeline(t, ffmpeg)
+
+	long, live := streamStall.Load(), liveStreamStall.Load()
+	streamStall.Store(int64(time.Minute))
+	liveStreamStall.Store(int64(700 * time.Millisecond))
+	t.Cleanup(func() {
+		streamStall.Store(long)
+		liveStreamStall.Store(live)
+	})
+
+	var starved atomic.Bool
+	setScreenSendFilter(func(data []byte, to string, class byte) bool { return !starved.Load() })
+
+	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: screenshare.DefaultPreset}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+		viewer.mu.RLock()
+		defer viewer.mu.RUnlock()
+		p := viewer.Peers[host.LocalID]
+		return p != nil && p.IsSharingScreen
+	})
+	if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "sharer registers the viewer", 5*time.Second, func() bool { return host.ScreenStats().Watchers == 1 })
+	waitForFirstChunk(t, viewer)
+
+	starved.Store(true)
+	time.Sleep(3 * time.Second) // far longer than the short guard, with pings still flowing
+	viewer.mu.RLock()
+	watching := viewer.screenRx != nil && viewer.IsWatchingScreen
+	viewer.mu.RUnlock()
+	if !watching {
+		t.Fatal("the viewer closed a share that was only starved")
+	}
+	starved.Store(false)
 	_ = host.StopScreenShare()
 }
 

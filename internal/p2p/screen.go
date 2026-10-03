@@ -55,8 +55,8 @@ const (
 var (
 	captureStall = stallGuard(10 * time.Second)
 	streamStall  = stallGuard(5 * time.Second)
-	// liveStreamStall applies while the sharer still answers pings: the link is fine, so
-	// silence means the share ended.
+	// liveStreamStall applies while the sharer still answers pings and they say it no longer
+	// shares: the link is fine and the share ended, only its announcement went missing.
 	liveStreamStall = stallGuard(1500 * time.Millisecond)
 	// streamStartStall is the wait before the first chunk. Starting a capture and an encoder
 	// takes seconds, and closing the viewer in the middle of that looks like a share that
@@ -1068,10 +1068,10 @@ func (rx *screenRx) loop() {
 		now := time.Now()
 		n.mu.RLock()
 		rtt := time.Duration(0)
-		sharerAlive := false
+		shareEnded := false
 		if p, ok := n.Peers[rx.peerID]; ok {
 			rtt = time.Duration(p.PingMs) * time.Millisecond
-			sharerAlive = now.Sub(p.LastSeen) < 2*time.Second
+			shareEnded = now.Sub(p.LastSeen) < 2*time.Second && !p.IsSharingScreen
 		}
 		n.mu.RUnlock()
 
@@ -1112,11 +1112,12 @@ func (rx *screenRx) loop() {
 		limit := time.Duration(streamStartStall.Load())
 		reason := "The stream never started"
 		if gotData {
-			// A sharer still answering pings while its video has stopped has ended the share:
-			// its announcement was lost or is still queued behind the video it just sent. One
-			// that answers nothing may only be having a bad minute, so that waits longer.
+			// A sharer whose pings say it stopped sharing has ended the share: its announcement
+			// was lost or is still queued behind the video it just sent. Pings outrun video on
+			// a congested relay, so a sharer that answers them while still sharing has a starved
+			// stream, not a finished one; that, like a sharer that answers nothing, waits longer.
 			limit = time.Duration(streamStall.Load())
-			if sharerAlive {
+			if shareEnded {
 				limit = min(limit, time.Duration(liveStreamStall.Load()))
 			}
 			reason = "The stream stopped"
