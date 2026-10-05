@@ -301,7 +301,13 @@ func (a *App) declineCurrentOffer() {
 // --- relay settings modal ---
 
 func (a *App) probeRelayStatus(u, tok string) {
-	target := p2p.NormalizeRelayURL(u)
+	// An empty address is LAN mode: every caller passes "" for it. NormalizeRelayURL
+	// reads "" as the default relay, so -lan probed the public relay at start and the
+	// lobby said RELAY: ONLINE.
+	target := ""
+	if strings.TrimSpace(u) != "" {
+		target = p2p.NormalizeRelayURL(u)
+	}
 	if target == "" {
 		a.lobby.RelayOnline = false
 		a.lobby.RelayStatus = "LAN Mode"
