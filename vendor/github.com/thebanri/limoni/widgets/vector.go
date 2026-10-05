@@ -8,7 +8,7 @@ import (
 	"github.com/thebanri/limoni/graphics"
 )
 
-// DrawLine, Bresenham Çizgi Algoritmasını kullanarak canvas üzerine iki nokta arasına çizgi çizer.
+// DrawLine draws a line between two points on the canvas with Bresenham's line algorithm.
 func (c *Canvas) DrawLine(x1, y1, x2, y2 int, style cell.Style) {
 	dx := abs(x2 - x1)
 	dy := abs(y2 - y1)
@@ -39,7 +39,7 @@ func (c *Canvas) DrawLine(x1, y1, x2, y2 int, style cell.Style) {
 	}
 }
 
-// DrawCircle, Midpoint (Bresenham) Daire Algoritmasını kullanarak belirtilen merkez ve yarıçapta bir çember çizer.
+// DrawCircle draws a circle of the given centre and radius with the midpoint (Bresenham) circle algorithm.
 func (c *Canvas) DrawCircle(cx, cy, r int, style cell.Style) {
 	if r < 0 {
 		return
@@ -68,21 +68,21 @@ func (c *Canvas) DrawCircle(cx, cy, r int, style cell.Style) {
 	}
 }
 
-// DrawRect, sol üst köşe koordinatları, genişlik ve yüksekliği belirtilen bir dikdörtgen çizer.
+// DrawRect draws a rectangle from its top-left corner, width and height.
 func (c *Canvas) DrawRect(x, y, w, h int, style cell.Style) {
 	if w <= 0 || h <= 0 {
 		return
 	}
-	// Yatay çizgiler
+	// Horizontal lines
 	c.DrawLine(x, y, x+w-1, y, style)
 	c.DrawLine(x, y+h-1, x+w-1, y+h-1, style)
-	// Dikey çizgiler
+	// Vertical lines
 	c.DrawLine(x, y, x, y+h-1, style)
 	c.DrawLine(x+w-1, y, x+w-1, y+h-1, style)
 }
 
-// DrawBezierQuadratic, başlangıç (x0, y0), kontrol (x1, y1) ve bitiş (x2, y2) noktalarıyla belirlenen
-// ikinci dereceden (quadratic) Bezier eğrisini çizer. 'steps' çizimin kaç adımdan oluşacağını belirler (varsayılan: 50).
+// DrawBezierQuadratic draws the quadratic Bezier curve given by the start (x0, y0), control (x1, y1)
+// and end (x2, y2) points. 'steps' is how many steps the curve is drawn in (default: 50).
 func (c *Canvas) DrawBezierQuadratic(x0, y0, x1, y1, x2, y2 int, steps int, style cell.Style) {
 	if steps <= 0 {
 		steps = 50
@@ -105,8 +105,8 @@ func (c *Canvas) DrawBezierQuadratic(x0, y0, x1, y1, x2, y2 int, steps int, styl
 	}
 }
 
-// DrawBezierCubic, başlangıç (x0, y0), iki kontrol (x1, y1), (x2, y2) ve bitiş (x3, y3) noktalarıyla
-// belirlenen üçüncü dereceden (cubic) Bezier eğrisini çizer. 'steps' çizimin kaç adımdan oluşacağını belirler (varsayılan: 50).
+// DrawBezierCubic draws the cubic Bezier curve given by the start (x0, y0), the two control points
+// (x1, y1), (x2, y2) and the end (x3, y3). 'steps' is how many steps the curve is drawn in (default: 50).
 func (c *Canvas) DrawBezierCubic(x0, y0, x1, y1, x2, y2, x3, y3 int, steps int, style cell.Style) {
 	if steps <= 0 {
 		steps = 50
@@ -137,18 +137,18 @@ func abs(x int) int {
 	return x
 }
 
-// DrawTexturedTriangle, doku (texture) haritalaması kullanarak Canvas üzerine dokulu bir üçgen çizer.
+// DrawTexturedTriangle draws a textured triangle on the Canvas using texture mapping.
 func (c *Canvas) DrawTexturedTriangle(p0, p1, p2 graphics.Vertex2D, uv0, uv1, uv2 graphics.UV, img image.Image) {
 	if c == nil || img == nil || c.width == 0 || c.height == 0 || img.Bounds().Empty() {
 		return
 	}
-	// Üçgenin sınır kutusunu (bounding box) hesapla
+	// Work out the triangle's bounding box
 	minX := int(math.Min(p0.X, math.Min(p1.X, p2.X)))
 	maxX := int(math.Max(p0.X, math.Max(p1.X, p2.X)))
 	minY := int(math.Min(p0.Y, math.Min(p1.Y, p2.Y)))
 	maxY := int(math.Max(p0.Y, math.Max(p1.Y, p2.Y)))
 
-	// Canvas sınırlarına kırp (clip)
+	// Clip to the canvas bounds
 	canvasW := int(c.width) * 2
 	canvasH := int(c.height) * 4
 
@@ -180,17 +180,17 @@ func (c *Canvas) DrawTexturedTriangle(p0, p1, p2 graphics.Vertex2D, uv0, uv1, uv
 			fx := float64(x)
 			fy := float64(y)
 
-			// Barycentric koordinatları hesapla
+			// Work out the barycentric coordinates
 			lambda1 := ((p1.Y-p2.Y)*(fx-p2.X) + (p2.X-p1.X)*(fy-p2.Y)) / denom
 			lambda2 := ((p2.Y-p0.Y)*(fx-p2.X) + (p0.X-p2.X)*(fy-p2.Y)) / denom
 			lambda3 := 1.0 - lambda1 - lambda2
 
-			// Eğer piksel üçgenin içindeyse (küçük tolerans payı ile)
+			// If the pixel is inside the triangle (with a small tolerance)
 			if lambda1 >= -0.005 && lambda2 >= -0.005 && lambda3 >= -0.005 {
 				u := lambda1*uv0.U + lambda2*uv1.U + lambda3*uv2.U
 				v := lambda1*uv0.V + lambda2*uv1.V + lambda3*uv2.V
 
-				// Doku koordinatlarını piksel koordinatlarına eşle
+				// Map the texture coordinates to pixel coordinates
 				tx := int(u * imgW)
 				ty := int(v * imgH)
 				if tx < 0 {
@@ -221,15 +221,15 @@ func (c *Canvas) DrawTexturedTriangle(p0, p1, p2 graphics.Vertex2D, uv0, uv1, uv
 	}
 }
 
-// DrawFilledTriangle, belirtilen stilde (renkte) dolu bir üçgen çizer.
+// DrawFilledTriangle draws a triangle filled with the given style (colour).
 func (c *Canvas) DrawFilledTriangle(p0, p1, p2 graphics.Vertex2D, style cell.Style) {
-	// Üçgenin sınır kutusunu (bounding box) hesapla
+	// Work out the triangle's bounding box
 	minX := int(math.Min(p0.X, math.Min(p1.X, p2.X)))
 	maxX := int(math.Max(p0.X, math.Max(p1.X, p2.X)))
 	minY := int(math.Min(p0.Y, math.Min(p1.Y, p2.Y)))
 	maxY := int(math.Max(p0.Y, math.Max(p1.Y, p2.Y)))
 
-	// Canvas sınırlarına kırp (clip)
+	// Clip to the canvas bounds
 	canvasW := int(c.width) * 2
 	canvasH := int(c.height) * 4
 
@@ -256,12 +256,12 @@ func (c *Canvas) DrawFilledTriangle(p0, p1, p2 graphics.Vertex2D, style cell.Sty
 			fx := float64(x)
 			fy := float64(y)
 
-			// Barycentric koordinatları hesapla
+			// Work out the barycentric coordinates
 			lambda1 := ((p1.Y-p2.Y)*(fx-p2.X) + (p2.X-p1.X)*(fy-p2.Y)) / denom
 			lambda2 := ((p2.Y-p0.Y)*(fx-p2.X) + (p0.X-p2.X)*(fy-p2.Y)) / denom
 			lambda3 := 1.0 - lambda1 - lambda2
 
-			// Eğer piksel üçgenin içindeyse (küçük tolerans payı ile)
+			// If the pixel is inside the triangle (with a small tolerance)
 			if lambda1 >= -0.005 && lambda2 >= -0.005 && lambda3 >= -0.005 {
 				c.Set(x, y, style)
 			}

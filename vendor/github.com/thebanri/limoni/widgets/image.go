@@ -9,31 +9,41 @@ import (
 	"github.com/thebanri/limoni/graphics"
 )
 
-// Image, terminalde yerel görsel protokolleri (Kitty, Sixel, iTerm2) kullanarak
-// PNG/JPG gibi gerçek resimleri çizebilen TUI bileşenidir.
+// imageProtocol is the image protocol the terminal drawing ctx settled on,
+// which may come from the capability handshake (a Sixel terminal found by
+// its DA1 answer). Outside a terminal it is what the environment suggests.
+func imageProtocol(ctx cell.Context) graphics.Protocol {
+	if ctx.ImageProtocol != 0 {
+		return graphics.Protocol(ctx.ImageProtocol)
+	}
+	return graphics.DetectProtocol()
+}
+
+// Image draws real pictures such as PNG/JPG in the terminal, using the
+// native image protocols (Kitty, Sixel, iTerm2).
 type Image struct {
-	// ID, widget odak kimliğidir.
+	// ID is the widget's focus ID.
 	ID string
-	// Img, gösterilecek olan ham resim nesnesidir.
+	// Img is the raw image to show.
 	Img image.Image
-	// ZIndex, resmin dikey katman yerleşim sırasıdır. Negatif değerler (örneğin -1)
-	// resmin metin hücrelerinin arkasına (underneath text) çizilmesini sağlar.
+	// ZIndex is the image's layer order. Negative values (e.g. -1)
+	// draw the image underneath the text cells.
 	ZIndex int
-	// ForceHalfBlock, aktif edilirse donanımsal protokoller yerine hücre tabanlı half-block yöntemini zorlar.
+	// ForceHalfBlock, when set, forces the cell-based half-block method instead of the hardware protocols.
 	ForceHalfBlock bool
-	// CircleMask, resmi daire şeklinde kırpar (avatar).
+	// CircleMask crops the image to a circle (for avatars).
 	CircleMask bool
 	// OpaqueBackground composites transparency over Background before native rendering.
 	OpaqueBackground bool
 	Background       cell.Color
-	// Transparent, resmin şeffaf piksellerinin korunup korunmayacağını belirtir.
+	// Transparent reports whether the image's transparent pixels are kept.
 	Transparent bool
-	// Opacity, resmin opaklık değeridir (0.0 ile 1.0 arasında).
+	// Opacity is the image's opacity (between 0.0 and 1.0).
 	Opacity float64
-	// OpacitySet, Opacity alanının bilinçli olarak ayarlandığını belirtir.
-	// Böylece 0.0 değeri ile varsayılan (belirtilmemiş) değer ayrıştırılır.
+	// OpacitySet reports that Opacity was set on purpose,
+	// so that 0.0 can be told apart from the default (unset) value.
 	OpacitySet bool
-	// FocusedStyle, odaklandığında uygulanacak kenar/vurgu stilidir.
+	// FocusedStyle is the border/highlight style applied when focused.
 	FocusedStyle cell.Style
 
 	// Cache fields
@@ -45,10 +55,10 @@ type Image struct {
 	lastMaskedImg image.Image
 }
 
-// Draw, çizim alanındaki hücrelerin içeriğini boşluk karakteriyle temizler
-// ve resmi çizim çerçevesine (Frame) kaydeder.
-// Eğer hedef terminal görsel protokollerini desteklemiyorsa, Half-Block (U+2584)
-// yöntemiyle doğrudan hücre tamponu üzerine 1x2 çözünürlüklü resim çizer.
+// Draw blanks the cells of the drawing area with spaces and registers
+// the image with the Frame.
+// If the terminal supports no image protocol, it draws the image straight
+// into the cell buffer with half blocks (U+2584), at 1x2 resolution.
 func (im *Image) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if im.ID != "" && ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(im.ID)
@@ -90,16 +100,16 @@ func (im *Image) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 	if im.OpaqueBackground && bgCol.Type() != cell.ColorDefault {
 		r, g, b := bgCol.RGB()
-		img = graphics.FlattenImage(img, color.RGBA{R: r, G: g, B: b, A: 255})
+		img = graphics.FlattenImageRGB(img, r, g, b)
 	}
 
-	proto := graphics.DetectProtocol()
+	proto := imageProtocol(ctx)
 	if !im.ForceHalfBlock && !im.OpaqueBackground && !im.Transparent && proto != graphics.ProtocolHalfBlock {
-		// Native image protocols transparan pikselleri terminalin varsayılan
-		// arka planına bırakır. Bu renk çoğu terminalde siyahtır ve widget'ın
-		// arka planından farklı bir dikdörtgen/şerit oluşturur.
+		// Native image protocols leave transparent pixels to the terminal's default
+		// background. In most terminals that is black, which makes a rectangle or
+		// band that differs from the widget's background.
 		r, g, b := ctx.Style.Bg.RGB()
-		img = graphics.FlattenImage(img, color.RGBA{R: r, G: g, B: b, A: 255})
+		img = graphics.FlattenImageRGB(img, r, g, b)
 	}
 	if im.ForceHalfBlock || proto == graphics.ProtocolHalfBlock {
 		im.drawHalfBlock(ctx, buf, img)
@@ -112,7 +122,7 @@ func (im *Image) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 
 	if registered {
-		// Yerel grafik protokol modları: Metinlerin resmin arkasından taşmasını önlemek için alanı resim işaretiyle doldur
+		// Native image protocol modes: fill the area with image markers so text does not show through from behind the image
 		for y := ctx.Area.Y; y < ctx.Area.Y+ctx.Area.Height; y++ {
 			for x := ctx.Area.X; x < ctx.Area.X+ctx.Area.Width; x++ {
 				if c := buf.Get(x, y); c != nil {
@@ -128,7 +138,7 @@ func (im *Image) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			}
 		}
 	} else {
-		// Grafik protokolü yoksa half-block moduna düş
+		// Without an image protocol, fall back to half-block mode
 		im.drawHalfBlock(ctx, buf, img)
 	}
 }
@@ -180,11 +190,11 @@ func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.I
 				}
 			}
 
-			// Üst piksel (Background rengi olacak)
+			// Top pixel (becomes the background colour)
 			topCol := resized.At(int(cx), int(2*cy))
 			_, _, _, ta := topCol.RGBA()
 
-			// Alt piksel (Foreground rengi olacak)
+			// Bottom pixel (becomes the foreground colour)
 			botCol := resized.At(int(cx), int(2*cy+1))
 			_, _, _, ba := botCol.RGBA()
 
@@ -201,17 +211,17 @@ func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.I
 				fgColor = blendColor(botCol, effCellBg)
 			}
 
-			// Hücreyi güncelle
+			// Update the cell
 			if c := buf.Get(cellX, cellY); c != nil {
 				c.Style.Modifier = cell.ModifierReset
 
 				if !topOpaque && !botOpaque {
-					// Her iki piksel de şeffaf -> Boşluk karakteri
+					// Both pixels transparent -> a space
 					c.Content = ' '
 					c.Style.Fg = cell.NewColorDefault()
 					c.Style.Bg = effCellBg
 				} else if topOpaque && !botOpaque {
-					// Üst dolu, alt şeffaf -> Alt yarım blok (▄) ile Bg üst piksel, Fg arka plan
+					// Top filled, bottom transparent -> lower half block (▄) with Bg the top pixel, Fg the background
 					effBg := effCellBg
 					if effBg.Type() == cell.ColorDefault {
 						effBg = cell.NewColorRGB(0, 0, 0)
@@ -220,7 +230,7 @@ func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.I
 					c.Style.Fg = effBg
 					c.Style.Bg = bgColor
 				} else if !topOpaque && botOpaque {
-					// Üst şeffaf, alt dolu -> Alt yarım blok (▄) ile Fg alt piksel, Bg arka plan
+					// Top transparent, bottom filled -> lower half block (▄) with Fg the bottom pixel, Bg the background
 					effBg := effCellBg
 					if effBg.Type() == cell.ColorDefault {
 						effBg = cell.NewColorRGB(0, 0, 0)
@@ -229,7 +239,7 @@ func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.I
 					c.Style.Fg = fgColor
 					c.Style.Bg = effBg
 				} else {
-					// İkisi de dolu -> Alt yarım blok (▄) ile Fg alt piksel, Bg üst piksel
+					// Both filled -> lower half block (▄) with Fg the bottom pixel, Bg the top pixel
 					c.Content = '▄'
 					c.Style.Fg = fgColor
 					c.Style.Bg = bgColor
@@ -241,37 +251,34 @@ func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.I
 	}
 }
 
-// SizeHint, resmin kaplayacağı alanı belirler. Varsayılan olarak kendisine tahsis
-// edilmek istenen maksimum alanı dolduracak şekilde maksimum satır ve sütun boyutunu döner.
+// SizeHint sets the area the image covers. By default it returns the largest rows and
+// columns, filling the maximum area offered to it.
 func (im *Image) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	return maxArea.Width, maxArea.Height
 }
 
-// blendColor, yarı-transparan veya tamamen transparan resim piksellerini
-// konteyner arka plan rengiyle alfa-harmanlama (alpha blending) formülüyle birleştirir.
+// blendColor combines semi-transparent or fully transparent image pixels with the
+// container's background colour by alpha blending.
 func blendColor(fgColor color.Color, bg cell.Color) cell.Color {
+	// RGBA returns colour already multiplied by alpha, so the background is
+	// what is added, not a second weighting of the foreground: multiplying
+	// by alpha again drew a half-transparent edge at a quarter strength, a
+	// dark fringe around every anti-aliased picture.
 	r, g, b, a := fgColor.RGBA()
 	if a < 4000 {
 		return bg
 	}
-	if a >= 65000 || bg.Type() == cell.ColorDefault {
+	if a >= 65000 {
 		return cell.NewColorRGB(uint8(r>>8), uint8(g>>8), uint8(b>>8))
 	}
-
-	alpha := float64(a) / 65535.0
-
-	// Foreground renk kanalları
-	fgR := uint8(r >> 8)
-	fgG := uint8(g >> 8)
-	fgB := uint8(b >> 8)
-
-	// Background renk kanalları
+	if bg.Type() == cell.ColorDefault {
+		// The background is unknown: show the colour itself.
+		return cell.NewColorRGB(uint8(r*0xFFFF/a>>8), uint8(g*0xFFFF/a>>8), uint8(b*0xFFFF/a>>8))
+	}
+	rest := 1 - float64(a)/0xFFFF
 	bgR, bgG, bgB := bg.RGB()
-
-	// Alfa harmanlama formülü: C = C_fg * alpha + C_bg * (1 - alpha)
-	blendR := uint8(float64(fgR)*alpha + float64(bgR)*(1.0-alpha))
-	blendG := uint8(float64(fgG)*alpha + float64(bgG)*(1.0-alpha))
-	blendB := uint8(float64(fgB)*alpha + float64(bgB)*(1.0-alpha))
-
-	return cell.NewColorRGB(blendR, blendG, blendB)
+	mix := func(premultiplied uint32, back uint8) uint8 {
+		return uint8(min(255, float64(premultiplied)/257+float64(back)*rest+0.5))
+	}
+	return cell.NewColorRGB(mix(r, bgR), mix(g, bgG), mix(b, bgB))
 }

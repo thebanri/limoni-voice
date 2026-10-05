@@ -35,14 +35,17 @@ func openModal(frame *terminal.Frame, id string, area cell.Rect, onClickOutside 
 	frame.BeginLayer(id)
 }
 
-// renderTextInput draws a text input with a white cursor block. Limoni v0.8 paints the cursor
-// white-on-black and then also reverses it, so terminals show it black; drop the reverse.
+// renderTextInput draws a text input with its cursor in the theme's colours: a block of the
+// text colour. Limoni marks the cursor with reverse video alone, which swaps the cell's own
+// colours, or the terminal's defaults when the input sets none; on a light terminal that is
+// a dark block on a dark theme. The cursor is the only reverse cell the input draws.
 func renderTextInput(frame *terminal.Frame, input widgets.TextInput, area cell.Rect) {
 	frame.RenderWidget(input, area)
-	white, black := cell.NewColorRGB(255, 255, 255), cell.NewColorRGB(0, 0, 0)
+	theme := CurrentTheme()
 	for x := area.X; x < area.X+area.Width; x++ {
-		if c := frame.Buffer.Get(x, area.Y); c != nil && c.Style.Modifier&cell.ModifierReverse != 0 && c.Style.Bg == white && c.Style.Fg == black {
+		if c := frame.Buffer.Get(x, area.Y); c != nil && c.Style.Modifier&cell.ModifierReverse != 0 {
 			c.Style.Modifier &^= cell.ModifierReverse
+			c.Style.Fg, c.Style.Bg = theme.InputBg, theme.Text
 		}
 	}
 }

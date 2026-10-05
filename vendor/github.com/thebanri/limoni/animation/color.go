@@ -6,8 +6,8 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 )
 
-// Color, zaman tabanlı olarak bir cell.Color değerini (TrueColor/RGB) hedeflenen renge doğru
-// ivmelenme eğrisi kullanarak pürüzsüzce geçiren (fade/blend) animasyon yöneticisidir.
+// Color animates a cell.Color (TrueColor/RGB) towards a target colour over time,
+// fading smoothly along an easing curve.
 type Color struct {
 	startCol  cell.Color
 	endCol    cell.Color
@@ -18,7 +18,7 @@ type Color struct {
 	animating bool
 }
 
-// NewColor, başlangıç rengiyle yeni bir Color animasyon nesnesi oluşturur.
+// NewColor returns a Color animation starting at the given colour.
 func NewColor(initial cell.Color) *Color {
 	return &Color{
 		startCol:  initial,
@@ -28,8 +28,8 @@ func NewColor(initial cell.Color) *Color {
 	}
 }
 
-// AnimateTo, belirtilen hedef renge doğru yeni bir renk geçişi başlatır.
-// Eğer duration sıfır veya sıfırdan küçükse, hedef renge anında geçiş yapılır.
+// AnimateTo starts a new transition towards the target colour.
+// If duration is zero or negative, the colour jumps to the target at once.
 func (c *Color) AnimateTo(target cell.Color, duration time.Duration, easing EasingFunc) {
 	if easing == nil {
 		easing = Linear
@@ -48,8 +48,8 @@ func (c *Color) AnimateTo(target cell.Color, duration time.Duration, easing Easi
 	}
 }
 
-// Update, animasyonun durumunu verilen zamana göre günceller.
-// Animasyon devam ediyorsa true, bitmişse veya hiç başlamamışsa false döner.
+// Update advances the animation to the given time.
+// It reports true while the animation is running, false once it has finished or if it never started.
 func (c *Color) Update(now time.Time) bool {
 	if !c.animating {
 		return false
@@ -62,12 +62,12 @@ func (c *Color) Update(now time.Time) bool {
 		return false
 	}
 
-	// Normalize edilmiş zaman (0.0 - 1.0)
+	// Normalised time (0.0 - 1.0)
 	t := float64(elapsed) / float64(c.duration)
-	// İvmelenme katsayısı
+	// Eased progress
 	progress := c.easing(t)
 
-	// Eğer her iki renk de RGB ise TrueColor kanal interpolasyonu uygula
+	// If both colours are RGB, interpolate each TrueColor channel
 	if c.startCol.Type() == cell.ColorRGB && c.endCol.Type() == cell.ColorRGB {
 		sr, sg, sb := c.startCol.RGB()
 		er, eg, eb := c.endCol.RGB()
@@ -78,7 +78,7 @@ func (c *Color) Update(now time.Time) bool {
 
 		c.current = cell.NewColorRGB(r, g, b)
 	} else {
-		// RGB dışındaki renk türleri (Default veya ANSI) için orta noktada doğrudan geçiş yap (step function)
+		// Other colour kinds (Default or ANSI) switch over at the midpoint (step function)
 		if progress >= 0.5 {
 			c.current = c.endCol
 		} else {
@@ -89,12 +89,12 @@ func (c *Color) Update(now time.Time) bool {
 	return true
 }
 
-// Value, güncel rengi döndürür.
+// Value returns the current colour.
 func (c *Color) Value() cell.Color {
 	return c.current
 }
 
-// SetColor, animasyonu sonlandırıp rengi doğrudan belirtilen renge eşitler.
+// SetColor stops the animation and sets the colour directly.
 func (c *Color) SetColor(col cell.Color) {
 	c.startCol = col
 	c.endCol = col
@@ -102,12 +102,12 @@ func (c *Color) SetColor(col cell.Color) {
 	c.animating = false
 }
 
-// Stop, animasyonu olduğu yerde durdurur. Renk güncel geçiş durumunda kalır.
+// Stop halts the animation where it is. The colour stays at its current blend.
 func (c *Color) Stop() {
 	c.animating = false
 }
 
-// IsAnimating, animasyonun çalışıp çalışmadığını belirtir.
+// IsAnimating reports whether the animation is running.
 func (c *Color) IsAnimating() bool {
 	return c.animating
 }

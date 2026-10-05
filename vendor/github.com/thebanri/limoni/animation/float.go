@@ -4,8 +4,8 @@ import (
 	"time"
 )
 
-// Float, zaman tabanlı olarak bir sayısal değeri (float64) hedeflenen değere doğru
-// ivmelenme (easing) eğrisi kullanarak pürüzsüzce yakınsatan animasyon yöneticisidir.
+// Float animates a numeric value (float64) towards a target over time,
+// converging smoothly along an easing curve.
 type Float struct {
 	startVal  float64
 	endVal    float64
@@ -16,7 +16,7 @@ type Float struct {
 	animating bool
 }
 
-// NewFloat, belirtilen başlangıç değeriyle yeni bir Float animasyon nesnesi oluşturur.
+// NewFloat returns a Float animation starting at the given value.
 func NewFloat(initial float64) *Float {
 	return &Float{
 		startVal:  initial,
@@ -26,8 +26,8 @@ func NewFloat(initial float64) *Float {
 	}
 }
 
-// AnimateTo, belirtilen hedef değere doğru yeni bir animasyon başlatır.
-// Eğer duration sıfır veya sıfırdan küçükse, hedef değere anında geçiş yapılır.
+// AnimateTo starts a new animation towards the target value.
+// If duration is zero or negative, the value jumps to the target at once.
 func (f *Float) AnimateTo(target float64, duration time.Duration, easing EasingFunc) {
 	if easing == nil {
 		easing = Linear
@@ -46,8 +46,8 @@ func (f *Float) AnimateTo(target float64, duration time.Duration, easing EasingF
 	}
 }
 
-// Update, animasyonun durumunu verilen zamana göre günceller.
-// Animasyon hâlâ devam ediyorsa true, bitmişse veya hiç başlamamışsa false döner.
+// Update advances the animation to the given time.
+// It reports true while the animation is still running, false once it has finished or if it never started.
 func (f *Float) Update(now time.Time) bool {
 	if !f.animating {
 		return false
@@ -60,27 +60,27 @@ func (f *Float) Update(now time.Time) bool {
 		return false
 	}
 
-	// Normalize edilmiş zaman (0.0 - 1.0)
+	// Normalised time (0.0 - 1.0)
 	t := float64(elapsed) / float64(f.duration)
-	// İvmelenme katsayısı
+	// Eased progress
 	progress := f.easing(t)
-	// Doğrusal interpolasyon (Lerp)
+	// Linear interpolation (lerp)
 	f.current = f.startVal + (f.endVal-f.startVal)*progress
 
 	return true
 }
 
-// Value, güncel değeri döndürür.
+// Value returns the current value.
 func (f *Float) Value() float64 {
 	return f.current
 }
 
-// Target, hedeflenen bitiş değerini döndürür.
+// Target returns the value the animation ends at.
 func (f *Float) Target() float64 {
 	return f.endVal
 }
 
-// SetValue, animasyonu sonlandırıp değeri doğrudan belirtilen sayıya eşitler.
+// SetValue stops the animation and sets the value directly.
 func (f *Float) SetValue(val float64) {
 	f.startVal = val
 	f.endVal = val
@@ -88,12 +88,12 @@ func (f *Float) SetValue(val float64) {
 	f.animating = false
 }
 
-// Stop, animasyonu olduğu yerde durdurur. Değer güncel konumunda kalır.
+// Stop halts the animation where it is. The value stays where it is.
 func (f *Float) Stop() {
 	f.animating = false
 }
 
-// IsAnimating, animasyonun çalışıp çalışmadığını belirtir.
+// IsAnimating reports whether the animation is running.
 func (f *Float) IsAnimating() bool {
 	return f.animating
 }

@@ -6,7 +6,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 )
 
-// RadioButton, çoklu seçenek gruplarında tekil seçim yapmayı sağlayan radyo butonudur.
+// RadioButton is a radio button for choosing one option from a group.
 type RadioButton struct {
 	ID           string
 	Selected     *string
@@ -16,20 +16,20 @@ type RadioButton struct {
 	FocusedStyle cell.Style
 }
 
-// Draw, radyo butonunu ( ) veya (*) formatında çizer ve tıklanıldığında odağı alıp seçili grup değerini günceller.
+// Draw draws the radio button as ( ) or (*); when clicked it takes the focus and updates the group's selected value.
 func (rb RadioButton) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if rb.ID == "" || ctx.Area.Width == 0 || ctx.Area.Height == 0 {
 		return
 	}
 
-	// Odaklanabilir olarak kaydet
+	// Register as focusable
 	if ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(rb.ID)
 	}
 
 	isFocused := (ctx.FocusedID == rb.ID)
 
-	// Tıklama olayında odağı al ve seçimi güncelle
+	// On click, take the focus and update the selection
 	if ctx.RegisterClickAction != nil {
 		// Focus and select, registered as data: no allocation per frame.
 		ctx.RegisterClickAction(ctx.Area, cell.ClickAction{Focus: rb.ID, Assign: rb.Selected, Value: rb.Value})
@@ -44,13 +44,13 @@ func (rb RadioButton) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		})
 	}
 
-	// Stil birleştirme
+	// Merge the styles
 	textStyle := ctx.Style.Merge(rb.Style)
 	if isFocused {
 		textStyle = textStyle.Merge(rb.FocusedStyle)
 	}
 
-	// ( ) veya (*) durum metnini hazırla
+	// Prepare the ( ) or (*) state text
 	prefix := "( ) "
 	if rb.Selected != nil && *rb.Selected == rb.Value {
 		prefix = "(*) "
@@ -59,7 +59,7 @@ func (rb RadioButton) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	buf.SetStringWithin(ctx.Area.X, ctx.Area.Y, prefix+rb.Label, textStyle, ctx.Area.Width)
 }
 
-// SizeHint, radyo butonunun kaplayacağı tek satırlık alanı ve en boy ihtiyacını döner.
+// SizeHint returns the single-row area the radio button needs, with its width.
 func (rb RadioButton) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	neededW := uint16(cell.StringWidth(rb.Label) + 4)
 	if neededW > maxArea.Width {

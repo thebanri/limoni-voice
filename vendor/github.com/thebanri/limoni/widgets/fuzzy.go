@@ -6,10 +6,10 @@ import (
 	"unicode"
 )
 
-// FuzzyMatch, query'nin tüm karakterlerini sırasıyla target içinde arayarak
-// bir eşleşme puanı ve eşleşme durumu döndürür.
-// Büyük/küçük harf duyarsız çalışır.
-// Ardışık eşleşmeler bonus puan alır (VS Code davranışı).
+// FuzzyMatch looks for every character of query, in order, in target, and
+// returns a match score and whether it matched.
+// It is case-insensitive.
+// Consecutive matches earn bonus points (as in VS Code).
 func FuzzyMatch(query, target string) (score int, matched bool) {
 	if query == "" {
 		return 0, true
@@ -28,14 +28,14 @@ func FuzzyMatch(query, target string) (score int, matched bool) {
 
 	for ti := 0; ti < len(targetRunes) && qi < len(queryRunes); ti++ {
 		if targetRunes[ti] == queryRunes[qi] {
-			// Temel eşleşme puanı
+			// Base match score
 			points := 1
 
-			// Ardışık eşleşme bonusu (gittikçe artan)
+			// Consecutive match bonus (growing)
 			consecutive++
 			points += consecutive * 2
 
-			// Kelime başlangıcı bonusu (ilk karakter veya öncesinde boşluk/tire/alt çizgi)
+			// Word start bonus (first character, or after a space/hyphen/underscore)
 			if ti == 0 {
 				points += 10
 			} else {
@@ -49,7 +49,7 @@ func FuzzyMatch(query, target string) (score int, matched bool) {
 				}
 			}
 
-			// Tam eşleşme bonusu (büyük/küçük harf birebir aynı)
+			// Exact match bonus (same case)
 			if originalRunes[ti] == []rune(query)[qi] {
 				points += 1
 			}
@@ -159,16 +159,16 @@ func FuzzyFilterByStable[T any](query string, items []T, text func(T) string) []
 	return filtered
 }
 
-// FuzzyResult, bulanık arama sonucunu temsil eder.
+// FuzzyResult is a fuzzy search result.
 type FuzzyResult struct {
 	Item  CommandItem
 	Score int
 }
 
-// FuzzyFilter, verilen query ile tüm öğeleri filtreler ve skora göre azalan sırada döndürür.
+// FuzzyFilter filters all items by query and returns them sorted by descending score.
 func FuzzyFilter(query string, items []CommandItem) []CommandItem {
 	if query == "" {
-		// Boş sorgu: tüm öğeleri kategoriye göre sıralı döndür
+		// Empty query: return every item, sorted by category
 		result := make([]CommandItem, len(items))
 		copy(result, items)
 		sort.SliceStable(result, func(i, j int) bool {

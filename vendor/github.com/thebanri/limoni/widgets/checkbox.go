@@ -6,7 +6,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 )
 
-// Checkbox, işaretlenebilir interaktif bir onay kutusudur.
+// Checkbox is an interactive box that can be ticked.
 type Checkbox struct {
 	ID           string
 	Checked      *bool
@@ -15,13 +15,13 @@ type Checkbox struct {
 	FocusedStyle cell.Style
 }
 
-// Draw, onay kutusunu [ ] veya [x] formatında çizer ve tıklanıldığında odağı alıp durumunu tersine çevirir (toggle).
+// Draw draws the checkbox as [ ] or [x]; when clicked it takes the focus and toggles its state.
 func (cb Checkbox) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if cb.ID == "" || ctx.Area.Width == 0 || ctx.Area.Height == 0 {
 		return
 	}
 
-	// Odaklanabilir olarak kaydet
+	// Register as focusable
 	if ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(cb.ID)
 	}
@@ -43,13 +43,13 @@ func (cb Checkbox) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		})
 	}
 
-	// Stil birleştirme
+	// Merge the styles
 	textStyle := ctx.Style.Merge(cb.Style)
 	if isFocused {
 		textStyle = textStyle.Merge(cb.FocusedStyle)
 	}
 
-	// [ ] veya [x] durum metnini hazırla
+	// Prepare the [ ] or [x] state text
 	prefix := "[ ] "
 	if cb.Checked != nil && *cb.Checked {
 		prefix = "[x] "
@@ -63,7 +63,7 @@ func (cb Checkbox) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 }
 
-// SizeHint, onay kutusunun kaplayacağı tek satırlık alanı ve en boy ihtiyacını döner.
+// SizeHint returns the single-row area the checkbox needs, with its width.
 func (cb Checkbox) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	neededW := uint16(cell.StringWidth(cb.Label) + 4)
 	if neededW > maxArea.Width {

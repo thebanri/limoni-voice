@@ -6,7 +6,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// WindowsConsoleState terminalin önceki konsol modlarını saklar.
+// WindowsConsoleState holds the terminal's previous console modes.
 type WindowsConsoleState struct {
 	inHandle  windows.Handle
 	outHandle windows.Handle
@@ -14,7 +14,7 @@ type WindowsConsoleState struct {
 	outMode   uint32
 }
 
-// MakeRaw Windows konsolunu VT100 / Sanal Terminal (Raw) moduna geçirir.
+// MakeRaw switches the Windows console to VT100 / virtual terminal (raw) mode.
 func MakeRaw(inFd, outFd uintptr) (*WindowsConsoleState, error) {
 	inHandle := windows.Handle(inFd)
 	outHandle := windows.Handle(outFd)
@@ -34,11 +34,11 @@ func MakeRaw(inFd, outFd uintptr) (*WindowsConsoleState, error) {
 		outMode:   outMode,
 	}
 
-	// Ham giriş modu: Line/Echo/Processed kapat, Virtual Terminal Input ve Window/Mouse Input aç
+	// Raw input: turn off Line/Echo/Processed, turn on Virtual Terminal Input and Window/Mouse Input
 	rawInMode := inMode &^ (windows.ENABLE_ECHO_INPUT | windows.ENABLE_LINE_INPUT | windows.ENABLE_PROCESSED_INPUT)
 	rawInMode |= windows.ENABLE_VIRTUAL_TERMINAL_INPUT | windows.ENABLE_EXTENDED_FLAGS
 
-	// Ham çıkış modu: VT100 Sanal Terminal İşleme aç
+	// Raw output: turn on VT100 virtual terminal processing
 	rawOutMode := outMode | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING | windows.ENABLE_PROCESSED_OUTPUT
 
 	if err := windows.SetConsoleMode(inHandle, rawInMode); err != nil {
@@ -52,7 +52,7 @@ func MakeRaw(inFd, outFd uintptr) (*WindowsConsoleState, error) {
 	return state, nil
 }
 
-// Restore terminali eski konsol modlarına döndürür.
+// Restore returns the terminal to its previous console modes.
 func RestoreConsole(state *WindowsConsoleState) error {
 	if state == nil {
 		return nil

@@ -8,7 +8,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 )
 
-// brailleOffset, 2x4 piksel alt ızgarasındaki (x, y) koordinatlarını Braille bitmask değerlerine eşler.
+// brailleOffset maps (x, y) in the 2x4 pixel sub-grid to Braille bitmask values.
 // y: 0..3, x: 0..1
 var brailleOffset = [4][2]byte{
 	{0x01, 0x08}, // y=0: x=0 -> Dot 1 (0x01), x=1 -> Dot 4 (0x08)
@@ -17,8 +17,8 @@ var brailleOffset = [4][2]byte{
 	{0x40, 0x80}, // y=3: x=0 -> Dot 7 (0x40), x=1 -> Dot 8 (0x80)
 }
 
-// Canvas, hücre başına 2x4 sanal piksel çözünürlüğünde (Braille karakterleri kullanarak)
-// terminal üzerinde yüksek çözünürlüklü vektör çizimleri yapmayı sağlayan görsel bileşendir.
+// Canvas draws high-resolution vector graphics in the terminal, at 2x4 virtual
+// pixels per cell (using Braille characters).
 type Canvas struct {
 	// Marker picks the characters the canvas is drawn with; the zero value
 	// is Braille. Drawing always happens at 2×4 dots per cell.
@@ -31,8 +31,8 @@ type Canvas struct {
 	depth  []float64
 }
 
-// NewCanvas, belirtilen hücre genişlik ve yüksekliğinde yeni bir Canvas oluşturur.
-// Sanal çizim alanı çözünürlüğü: (width * 2) x (height * 4) piksel olacaktır.
+// NewCanvas returns a Canvas of the given width and height in cells.
+// The virtual drawing area is (width * 2) x (height * 4) pixels.
 func NewCanvas(width, height uint16) *Canvas {
 	return &Canvas{
 		width:  width,
@@ -42,7 +42,7 @@ func NewCanvas(width, height uint16) *Canvas {
 	}
 }
 
-// Reset, canvas boyutunu günceller ve iç tamponları bellek tahsisatı yapmadan sıfırlar (kapasite yeterliyse).
+// Reset updates the canvas size and clears its buffers without allocating (when the capacity suffices).
 func (c *Canvas) Reset(width, height uint16) {
 	neededCells := int(width) * int(height)
 	neededPixels := int(width) * 2 * int(height) * 4
@@ -92,8 +92,8 @@ func makeDepthBuffer(size int) []float64 {
 	return depth
 }
 
-// Set, canvas üzerindeki sanal (px, py) pikselini aktif hale getirir ve rengini/stilini günceller.
-// Koordinatlar sınır dışındaysa işlem yok sayılır (clipping).
+// Set turns on the virtual pixel (px, py) and updates its colour/style.
+// Coordinates out of bounds are ignored (clipping).
 func (c *Canvas) Set(px, py int, style cell.Style) {
 	if px < 0 || py < 0 || px >= int(c.width)*2 || py >= int(c.height)*4 {
 		return
@@ -154,8 +154,8 @@ func (c *Canvas) ClearDepth() {
 	}
 }
 
-// Unset, canvas üzerindeki sanal (px, py) pikselini pasif hale getirir.
-// Koordinatlar sınır dışındaysa işlem yok sayılır.
+// Unset turns off the virtual pixel (px, py).
+// Coordinates out of bounds are ignored.
 func (c *Canvas) Unset(px, py int) {
 	if px < 0 || py < 0 || px >= int(c.width)*2 || py >= int(c.height)*4 {
 		return
@@ -170,7 +170,7 @@ func (c *Canvas) Unset(px, py int) {
 	c.grid[idx] &= ^brailleOffset[dy][dx]
 }
 
-// Clear, tüm canvas'ı temizler; pikselleri sıfırlar ve stilleri varsayılana döndürür.
+// Clear clears the whole canvas: it resets the pixels and returns the styles to the default.
 func (c *Canvas) Clear() {
 	for i := range c.grid {
 		c.grid[i] = 0
@@ -178,7 +178,7 @@ func (c *Canvas) Clear() {
 	}
 }
 
-// Draw, canvas içeriğini terminal tamponuna (buffer.Buffer) Braille karakterleri olarak çizer.
+// Draw draws the canvas into the terminal buffer (buffer.Buffer) as Braille characters.
 func (c *Canvas) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	area := ctx.Area
 	if area.Width == 0 || area.Height == 0 {
@@ -210,7 +210,7 @@ func (c *Canvas) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 }
 
-// SizeHint, verilen üst sınırlara göre bu canvas'ın tercih ettiği boyutları döner.
+// SizeHint returns the canvas's preferred size within the given bounds.
 func (c *Canvas) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	w := c.width
 	h := c.height

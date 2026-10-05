@@ -18,22 +18,22 @@ type GridConstraint struct {
 	Value uint16
 }
 
-// GridFixed, sabit hücre boyutunda bir kısıtlama döndürür.
+// GridFixed returns a constraint of a fixed number of cells.
 func GridFixed(val uint16) GridConstraint {
 	return GridConstraint{Type: gridFixed, Value: val}
 }
 
-// GridPercentage, yüzdeye dayalı bir kısıtlama döndürür.
+// GridPercentage returns a percentage-based constraint.
 func GridPercentage(val uint16) GridConstraint {
 	return GridConstraint{Type: gridPercentage, Value: val}
 }
 
-// GridFraction, kalan alanı esnek oranlarda paylaştıran bir kısıtlama döndürür (1fr, 2fr vb.).
+// GridFraction returns a constraint that shares the remaining space in flexible proportions (1fr, 2fr and so on).
 func GridFraction(val uint16) GridConstraint {
 	return GridConstraint{Type: gridFraction, Value: val}
 }
 
-// GridAuto, kalan veya varsayılan hücre boyutunu atar.
+// GridAuto assigns the remaining or default cell size.
 func GridAuto() GridConstraint {
 	return GridConstraint{Type: gridAuto, Value: 0}
 }
@@ -52,7 +52,7 @@ func NewGridLayout(cols []GridConstraint, rows []GridConstraint, gap uint16) *Gr
 	}
 }
 
-// GridArea, grid üzerindeki belirli bir hücre alanını ve onun span genişlemesini temsil eder.
+// GridArea is one cell area of the grid, together with how far it spans.
 type GridArea struct {
 	Area   cell.Rect
 	RowIdx int
@@ -64,7 +64,7 @@ type GridArea struct {
 	gap    uint16
 }
 
-// Span, mevcut hücreyi belirtilen satır ve sütun miktarı kadar genişletir (RowSpan, ColSpan).
+// Span extends the cell by the given number of rows and columns (RowSpan, ColSpan).
 func (ga GridArea) Span(rowSpan, colSpan int) cell.Rect {
 	if rowSpan <= 0 {
 		rowSpan = 1
@@ -105,7 +105,7 @@ func (ga GridArea) Span(rowSpan, colSpan int) cell.Rect {
 	return cell.NewRect(x, y, w, h)
 }
 
-// GridAreas, GridLayout.Split çağrısının sonucunda oluşan tüm hücre alanlarını saklar.
+// GridAreas holds all the cell areas produced by GridLayout.Split.
 type GridAreas struct {
 	areas [][]cell.Rect
 	rowH  []uint16
@@ -136,12 +136,12 @@ func (g *GridLayout) Split(area cell.Rect) *GridAreas {
 		return &GridAreas{}
 	}
 
-	// 1. Sütun Genişliklerini Çöz
+	// 1. Solve the column widths
 	colW := solveGridConstraints(g.Columns, area.Width, g.Gap)
-	// 2. Satır Yüksekliklerini Çöz
+	// 2. Solve the row heights
 	rowH := solveGridConstraints(g.Rows, area.Height, g.Gap)
 
-	// Sütun ve satır X/Y başlangıç konumlarını hesapla
+	// Work out where each column and row starts (X/Y)
 	colX := make([]uint16, len(colW))
 	currX := area.X
 	for i, w := range colW {
@@ -162,7 +162,7 @@ func (g *GridLayout) Split(area cell.Rect) *GridAreas {
 		}
 	}
 
-	// 2D matris alanları oluştur
+	// Build the 2D matrix of areas
 	areas := make([][]cell.Rect, len(rowH))
 	for r := 0; r < len(rowH); r++ {
 		areas[r] = make([]cell.Rect, len(colW))
@@ -187,7 +187,7 @@ func solveGridConstraints(constraints []GridConstraint, totalVal uint16, gap uin
 		return nil
 	}
 
-	// Toplam boşluğu (gap) güvenli şekilde çıkar
+	// Subtract the total gap safely
 	totalGap := uint32(0)
 	if n > 1 {
 		totalGap = uint32(n-1) * uint32(gap)
@@ -201,7 +201,7 @@ func solveGridConstraints(constraints []GridConstraint, totalVal uint16, gap uin
 	remainingVal := availableVal
 	totalFr := uint32(0)
 
-	// 1. Aşama: Sabit (Fixed) ve Yüzdesel (Percentage) olanları hesapla
+	// Pass 1: work out the Fixed and Percentage tracks
 	for i, c := range constraints {
 		switch c.Type {
 		case gridFixed:
@@ -223,7 +223,7 @@ func solveGridConstraints(constraints []GridConstraint, totalVal uint16, gap uin
 		}
 	}
 
-	// 2. Aşama: Fraction (fr) ve Auto olanları esnek şekilde paylaştır
+	// Pass 2: share out the Fraction (fr) and Auto tracks flexibly
 	if totalFr > 0 && remainingVal > 0 {
 		var distributed uint16
 		for i, c := range constraints {
@@ -233,7 +233,7 @@ func solveGridConstraints(constraints []GridConstraint, totalVal uint16, gap uin
 				distributed += val
 			}
 		}
-		// Yuvarlama farkını dağıtarak kalan tüm alanı tam doldur
+		// Spread the rounding remainder so the whole space is filled exactly
 		diff := remainingVal - distributed
 		for i := 0; i < len(constraints) && diff > 0; i++ {
 			if constraints[i].Type == gridFraction {
@@ -242,7 +242,7 @@ func solveGridConstraints(constraints []GridConstraint, totalVal uint16, gap uin
 			}
 		}
 	} else if remainingVal > 0 {
-		// Eşit şekilde paylaştır (auto veya kalan alanlar)
+		// Share out equally (auto or remaining space)
 		autoCount := uint32(0)
 		for _, c := range constraints {
 			if c.Type == gridAuto {

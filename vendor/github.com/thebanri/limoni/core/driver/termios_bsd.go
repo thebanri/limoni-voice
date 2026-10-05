@@ -6,13 +6,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TermiosState terminalin önceki özgün termios ayarlarını saklar.
+// TermiosState holds the terminal's original termios settings.
 type TermiosState struct {
 	termios unix.Termios
 }
 
-// MakeRaw terminali Raw Mode'a (ham mod) geçirir ve eski ayarları geri yüklemek üzere döner.
-// BSD sistemlerinde TIOCGETA / TIOCSETA ioctl çağrılarını CGO'suz kullanır.
+// MakeRaw switches the terminal to raw mode and returns the old settings for restoring later.
+// On BSD it uses the TIOCGETA / TIOCSETA ioctls, without cgo.
 func MakeRaw(fd int) (*TermiosState, error) {
 	termios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
 	if err != nil {
@@ -39,7 +39,7 @@ func MakeRaw(fd int) (*TermiosState, error) {
 	return oldState, nil
 }
 
-// Restore terminali eski özgün ayarlarına döndürür.
+// Restore returns the terminal to its original settings.
 func Restore(fd int, state *TermiosState) error {
 	if state == nil {
 		return nil

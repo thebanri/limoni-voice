@@ -8,11 +8,11 @@ import (
 	"github.com/thebanri/limoni/layout"
 )
 
-// ListState, kaydırılabilir ve seçilebilir listenin durumunu (state) temsil eder.
+// ListState is the state of a scrollable, selectable list.
 type ListState struct {
-	// Selected, listede o an seçilmiş olan öğenin indeksidir. Seçili öğe yoksa -1'dir.
+	// Selected is the index of the selected item, or -1 if none is selected.
 	Selected int
-	// Offset, ekranda listenin en üstünde gösterilen ilk öğenin indeksidir (Scroll kayma mesafesi).
+	// Offset is the index of the first item shown at the top of the list (the scroll offset).
 	Offset int
 
 	// rows is reused for the visible rows' semantic nodes on every frame, so
@@ -20,7 +20,7 @@ type ListState struct {
 	rows []accessibility.AccessibilityNode
 }
 
-// NewListState yeni bir ListState örneği oluşturur. Varsayılan olarak hiçbir öğe seçili değildir.
+// NewListState returns a new ListState. By default nothing is selected.
 func NewListState() *ListState {
 	return &ListState{
 		Selected: -1,
@@ -28,7 +28,7 @@ func NewListState() *ListState {
 	}
 }
 
-// Select, belirtilen indeksi seçili hale getirir.
+// Select selects the given index.
 func (s *ListState) Select(index int) {
 	s.Selected = index
 }
@@ -47,34 +47,34 @@ func (s *ListState) Previous() {
 	}
 }
 
-// ScrollTo, seçili olan öğenin (Selected) listenin görünür yüksekliği (height) içerisinde
-// her zaman görünür kalmasını garanti eder. Seçilen öğe ekran dışına taşarsa, Offset değerini otomatik kaydırır.
+// ScrollTo keeps the selected item (Selected) always visible within the list's visible
+// height. If the selected item goes off screen, it scrolls Offset to follow it.
 //
-// Parametreler:
-//   - height: Listenin ekrandaki görünür satır yüksekliği.
-//   - total: Listedeki toplam öğe sayısı.
+// Parameters:
+//   - height: the number of rows of the list visible on screen.
+//   - total: the total number of items in the list.
 func (s *ListState) ScrollTo(height int, total int) {
 	if s.Selected < 0 || total == 0 || height <= 0 {
 		s.Offset = 0
 		return
 	}
 
-	// Seçim sınır dışıysa sınırla
+	// Clamp a selection that is out of range
 	if s.Selected >= total {
 		s.Selected = total - 1
 	}
 
-	// Seçim ekranın yukarısında kalıyorsa görünümü yukarı kaydır
+	// If the selection is above the view, scroll up
 	if s.Selected < s.Offset {
 		s.Offset = s.Selected
 	}
 
-	// Seçim ekranın aşağısında kalıyorsa görünümü aşağı kaydır
+	// If the selection is below the view, scroll down
 	if s.Selected >= s.Offset+height {
 		s.Offset = s.Selected - height + 1
 	}
 
-	// Sınır korumaları
+	// Bounds guards
 	if s.Offset < 0 {
 		s.Offset = 0
 	}
@@ -87,34 +87,38 @@ func (s *ListState) ScrollTo(height int, total int) {
 	}
 }
 
-// List, terminal ekranında liste şeklinde dikey öğeler çizen interaktif widget'tır.
+// List is an interactive widget that draws items as a vertical list.
 type List struct {
-	// ID, listenin odaklanma ve kimlik belirleme kimliğidir.
+	// ID is the list's focus and identity ID.
 	ID string
 	// Label names the list in the semantic tree — what a screen reader
 	// announces and what an automation selector matches. Defaults to "List".
 	Label string
-	// Items, listede gösterilecek olan metin dizilimleridir.
+	// Items are the strings shown in the list.
 	Items []string
-	// Provider, sanal liste (virtual scrolling) için veri sağlayıcıdır.
-	// Eğer belirtilirse Items dizisi yerine bu kullanılır.
+	// Provider supplies the data for a virtual (virtually scrolled) list.
+	// If set, it is used instead of Items.
 	Provider ListProvider
-	// Scrollbar, aktif edilirse listenin sağ kenarında bir dikey kaydırma çubuğu çizer.
+	// Scrollbar, when set, draws a vertical scrollbar on the right edge of the list.
 	Scrollbar bool
-	// ScrollbarTrackStyle, kaydırma çubuğu rayının (track) stilidir.
+	// ScrollbarTrackStyle is the style of the scrollbar track.
 	ScrollbarTrackStyle cell.Style
-	// ScrollbarThumbStyle, kaydırma çubuğu kaydırıcısının (thumb) stilidir.
+	// ScrollbarThumbStyle is the style of the scrollbar thumb.
 	ScrollbarThumbStyle cell.Style
-	// Style, listenin genel rengini ve yazı stilini belirtir.
+	// Style is the list's overall colour and text style.
 	Style cell.Style
-	// FocusedStyle, liste odağa sahip olduğunda uygulanacak stildir.
+	// FocusedStyle is the style applied when the list has the focus.
 	FocusedStyle cell.Style
-	// SelectedStyle, seçili olan öğenin vurgulanacağı stildir.
+	// SelectedStyle is the style the selected item is highlighted with.
 	SelectedStyle cell.Style
-	// HighlightSymbol, seçili olan öğenin soluna yerleştirilecek semboldür (örn: "> ").
+	// HighlightSymbol is the symbol placed left of the selected item (e.g. "> ").
 	HighlightSymbol string
+	// HighlightSpacing keeps the symbol's width free on every row, so the
+	// text of the selected row lines up with the rest instead of moving
+	// right when it is selected.
+	HighlightSpacing bool
 
-	// State, listenin seçili indeksi ve kaydırma durumunu tutan işaretçidir (pointer).
+	// State points to the list's selected index and scroll state.
 	State *ListState
 }
 
@@ -179,8 +183,8 @@ func (l *List) WithFocusedStyle(style cell.Style) *List {
 	return l
 }
 
-// Draw, listeyi belirtilen alana çizer. Görünür öğeleri hesaplar, seçili öğeyi vurgular
-// ve listedeki her öğe için otomatik fare tıklama bölgeleri (RegisterClick) kaydeder.
+// Draw draws the list into the area. It works out the visible items, highlights the selected
+// one and registers a mouse click region (RegisterClick) for each item.
 func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	area := ctx.Area
 	totalItems := len(l.Items)
@@ -202,7 +206,7 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if ctx.IsFocused(l.ID) {
 		listStyle = listStyle.Merge(l.FocusedStyle)
 	}
-	selStyle := listStyle.Merge(l.SelectedStyle)
+	styler, _ := l.Provider.(ListStyler)
 
 	selected := -1
 	offset := 0
@@ -241,7 +245,7 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		})
 	}
 
-	// Dikey kaydırma çubuğunu (Scrollbar) çiz
+	// Draw the vertical scrollbar
 	visibleHeight := int(area.Height)
 	if l.Scrollbar && totalItems > visibleHeight && area.Width > 1 {
 		scrollbarX := area.X + area.Width - 1
@@ -275,7 +279,7 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				}
 			}
 		}
-		// Ray alanını metin çizim alanından düş
+		// Take the track out of the text area
 		area.Width--
 	}
 
@@ -295,12 +299,14 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 		isSel := itemIdx == selected
 		itemStyle := listStyle
-
+		if styler != nil {
+			itemStyle = itemStyle.Merge(styler.StyleAt(itemIdx))
+		}
 		if isSel {
-			itemStyle = selStyle
+			itemStyle = itemStyle.Merge(l.SelectedStyle)
 		}
 
-		// Satırın arka planını temizle ve doldur
+		// Clear and fill the row's background
 		for x := area.X; x < area.X+area.Width; x++ {
 			c := buf.Get(x, currY)
 			if c == nil {
@@ -318,21 +324,21 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			c.Style = rowStyle
 		}
 
-		// Metni çiz (allocation-free string rendering)
+		// Draw the text (allocation-free string rendering)
 		textX := area.X
 		rightLimit := area.X + area.Width
-		if isSel && l.HighlightSymbol != "" {
+		if l.HighlightSymbol != "" && (isSel || l.HighlightSpacing) {
 			symWidth := uint16(cell.StringWidth(l.HighlightSymbol))
-			if textX < rightLimit {
+			if isSel && textX < rightLimit {
 				buf.SetStringWithin(textX, currY, l.HighlightSymbol, itemStyle, rightLimit-textX)
-				textX += symWidth
 			}
+			textX += symWidth
 		}
 		if textX < rightLimit {
 			buf.SetStringWithin(textX, currY, itemText, itemStyle, rightLimit-textX)
 		}
 
-		// Otomatik fare yönlendirme köprüsünü bağla
+		// Hook up the automatic mouse routing
 		if ctx.RegisterClickAction != nil && l.State != nil {
 			// Clicking a row selects it and focuses the list, as data.
 			ctx.RegisterClickAction(cell.Rect{X: area.X, Y: currY, Width: area.Width, Height: 1},
@@ -348,7 +354,7 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 				Width:  area.Width,
 				Height: 1,
 			}
-			// Öğeye fareyle tıklandığında listedeki bu indeksi seç (Selected) ve odaklan
+			// When the item is clicked, select this index (Selected) and take the focus
 			ctx.RegisterClick(itemRect, func() {
 				st.Selected = targetIdx
 				if id != "" && setFocus != nil {
@@ -358,7 +364,7 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
-	// Kalan boş satırları arka plan rengiyle doldur
+	// Fill the remaining empty rows with the background colour
 	for y := totalItems - offset; y < int(area.Height); y++ {
 		if y < 0 {
 			continue
@@ -384,7 +390,7 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 }
 
-// SizeHint, listenin en uzun öğesini ve toplam öğe sayısını hesaplayarak ideal boyutları döndürür.
+// SizeHint returns the ideal size from the longest item and the number of items.
 func (l List) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	totalItems := len(l.Items)
 	if l.Provider != nil {

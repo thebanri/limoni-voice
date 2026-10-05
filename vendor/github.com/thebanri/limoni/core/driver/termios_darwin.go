@@ -6,44 +6,44 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TermiosState terminalin önceki özgün termios ayarlarını saklar.
+// TermiosState holds the terminal's original termios settings.
 type TermiosState struct {
 	termios unix.Termios
 }
 
-// MakeRaw terminali Raw Mode'a (ham mod) geçirir ve eski ayarları geri yüklemek üzere döner.
-// macOS (Darwin) üzerinde TIOCGETA / TIOCSETA ioctl çağrılarını CGO'suz kullanır.
+// MakeRaw switches the terminal to raw mode and returns the old settings for restoring later.
+// On macOS (Darwin) it uses the TIOCGETA / TIOCSETA ioctls, without cgo.
 func MakeRaw(fd int) (*TermiosState, error) {
-	// Mevcut terminal ayarlarını al
+	// Read the current terminal settings
 	termios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
 	if err != nil {
 		return nil, err
 	}
 
-	// Eski ayarları yedekle
+	// Keep a copy of the old settings
 	oldState := &TermiosState{termios: *termios}
 
-	// Ham mod ayarlarını uygula
+	// Apply the raw mode settings
 	raw := *termios
 
-	// Giriş bayraklarını temizle (Input flags)
+	// Clear the input flags
 	raw.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
 
-	// Çıkış bayraklarını temizle (Output flags)
+	// Clear the output flags
 	raw.Oflag &^= unix.OPOST
 
-	// Kontrol bayraklarını ayarla (Control flags)
+	// Set the control flags
 	raw.Cflag &^= unix.CSIZE | unix.PARENB
 	raw.Cflag |= unix.CS8
 
-	// Yerel bayrakları temizle (Local flags)
+	// Clear the local flags
 	raw.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
 
-	// Okuma parametrelerini ayarla (Control Characters)
+	// Set the read parameters (control characters)
 	raw.Cc[unix.VMIN] = 1
 	raw.Cc[unix.VTIME] = 0
 
-	// Yeni ayarları terminale uygula (TIOCSETA - hemen uygula)
+	// Apply the new settings to the terminal (TIOCSETA - immediately)
 	err = unix.IoctlSetTermios(fd, unix.TIOCSETA, &raw)
 	if err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func MakeRaw(fd int) (*TermiosState, error) {
 	return oldState, nil
 }
 
-// Restore terminali eski özgün ayarlarına döndürür.
+// Restore returns the terminal to its original settings.
 func Restore(fd int, state *TermiosState) error {
 	if state == nil {
 		return nil

@@ -55,21 +55,28 @@ func TestModalButtonsReceiveClicks(t *testing.T) {
 	}
 }
 
-// The text cursor is a white block: Limoni's cursor paints white-on-black and reverses it.
-func TestTextInputCursorIsWhite(t *testing.T) {
+// The text cursor is a block of the theme's text colour, whatever the input's own colours and
+// the terminal's: reverse video alone would show the terminal's defaults swapped.
+func TestTextInputCursorIsTheThemesText(t *testing.T) {
 	b := driver.NewPortableBackend(driver.NewMemoryTerminalIO(nil, 40, 3))
 	term, err := terminal.New(b)
 	if err != nil {
 		t.Fatal(err)
 	}
+	theme := CurrentTheme()
 	state := widgets.NewTextInputState()
 	state.SetValue("hi")
-	_ = term.Draw(func(f *terminal.Frame) {
-		area := cell.NewRect(0, 1, 20, 1)
-		renderTextInput(f, widgets.TextInput{ID: "in", State: state, Focused: true}, area)
-		c := f.Buffer.Get(2, 1) // after "hi"
-		if c.Style.Modifier&cell.ModifierReverse != 0 || c.Style.Bg != cell.NewColorRGB(255, 255, 255) {
-			t.Fatalf("cursor style %+v, want a white background without reverse", c.Style)
-		}
-	})
+	for _, style := range []cell.Style{{}, {Fg: theme.Text, Bg: theme.InputBg}} {
+		_ = term.Draw(func(f *terminal.Frame) {
+			area := cell.NewRect(0, 1, 20, 1)
+			renderTextInput(f, widgets.TextInput{ID: "in", State: state, Focused: true, Style: style}, area)
+			c := f.Buffer.Get(2, 1) // after "hi"
+			if c.Style.Modifier&cell.ModifierReverse != 0 || c.Style.Bg != theme.Text || c.Style.Fg != theme.InputBg {
+				t.Fatalf("input style %+v: cursor style %+v, want the theme's text as a block", style, c.Style)
+			}
+			if h := f.Buffer.Get(0, 1); h.Style.Bg == theme.Text {
+				t.Fatalf("the text before the cursor is drawn as a cursor too: %+v", h.Style)
+			}
+		})
+	}
 }

@@ -3,7 +3,6 @@
 package driver
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +13,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Backend Windows platformunda konsol I/O, Raw mode ve event döngüsünü yönetir.
+// Backend manages console I/O, raw mode and the event loop on Windows.
 type Backend struct {
 	in           *os.File
 	out          *os.File
@@ -31,9 +30,12 @@ type Backend struct {
 	inlineMu     sync.RWMutex
 	replies      replyCollector
 	looping      atomic.Bool
+	setUp        bool           // Setup has run
+	reader       *consoleReader // reads the console; paused while it is released
+	mouse        mouseCapture
 }
 
-// NewBackend yeni bir Windows Backend örneği oluşturur.
+// NewBackend returns a new Windows Backend.
 func NewBackend(in, out *os.File) *Backend {
 	return &Backend{
 		in:     in,
@@ -43,7 +45,7 @@ func NewBackend(in, out *os.File) *Backend {
 	}
 }
 
-// NewPortableBackend yeni bir taşınabilir/uzaktan bağlantı Backend örneği oluşturur.
+// NewPortableBackend returns a new portable (remote connection) Backend.
 func NewPortableBackend(io TerminalIO) *Backend {
 	w, h, _ := io.Size()
 	if w == 0 || h == 0 {
@@ -75,13 +77,18 @@ func (b *Backend) SetSize(w, h uint16) {
 	}
 }
 
-// Setup terminali Raw / VT100 moduna geçirir ve ekran hazırlık kodlarını gönderir.
+// Setup switches the terminal to raw / VT100 mode and sends the screen setup codes.
+//
+// A second call does nothing, as on Unix: the console mode recorded by a
+// second one is the raw mode, which Close would then restore.
 func (b *Backend) Setup() error {
+	if b.setUp {
+		return nil
+	}
+	b.setUp = true
 	if b.portableIO != nil {
-		setupCmds := fullScreenSetupCmds()
-		if height := b.Inline(); height > 0 {
-			setupCmds = inlineSetupCmds(height)
-		}
+		setupCmds := setupSequence(b.Inline(), b.mouse.enabled())
+		b.mouse.active.Store(true)
 		setupCmds = b.replies.withProbe(setupCmds)
 		_, err := b.portableIO.Write([]byte(setupCmds))
 		return err
@@ -93,10 +100,8 @@ func (b *Backend) Setup() error {
 	}
 	b.state = state
 
-	setupCmds := fullScreenSetupCmds()
-	if height := b.Inline(); height > 0 {
-		setupCmds = inlineSetupCmds(height)
-	}
+	setupCmds := setupSequence(b.Inline(), b.mouse.enabled())
+	b.mouse.active.Store(true)
 	setupCmds = b.replies.withProbe(setupCmds)
 	if _, err := b.out.WriteString(setupCmds); err != nil {
 		b.Close()
@@ -106,7 +111,7 @@ func (b *Backend) Setup() error {
 	return nil
 }
 
-// Close terminali eski ayarlarına döndürür ve alternatif ekrandan çıkar.
+// Close restores the terminal's previous settings and leaves the alternate screen.
 func (b *Backend) Close() error {
 	b.closeOnce.Do(func() {
 		// Let answers to the startup queries arrive before the console is
@@ -139,12 +144,12 @@ func (b *Backend) Close() error {
 	return b.closeErr
 }
 
-// Events olay akışını dinleyen kanal alıcısını döner.
+// Events returns the channel that delivers events.
 func (b *Backend) Events() <-chan Event {
 	return b.events
 }
 
-// StartEventLoop Windows konsolunda girdi ve olay döngüsünü başlatır.
+// StartEventLoop starts the input and event loop on the Windows console.
 func (b *Backend) StartEventLoop() {
 	b.startOnce.Do(func() {
 		b.looping.Store(true)
@@ -153,127 +158,48 @@ func (b *Backend) StartEventLoop() {
 }
 
 func (b *Backend) startEventLoop() {
-	inputChan := make(chan []byte, 32)
-	go func() {
-		buf := make([]byte, 512)
-		// Go reads a console like a text file: a Ctrl+Z at the start of a read comes back as
-		// io.EOF (the 0x1A itself is skipped). A console has no end, so reading goes on;
-		// stopping would end all keyboard and mouse input while the app kept running.
-		var mode uint32
-		console := b.portableIO == nil && b.in != nil && windows.GetConsoleMode(windows.Handle(b.in.Fd()), &mode) == nil
-		for {
-			var n int
-			var err error
-			if b.portableIO != nil {
-				n, err = b.portableIO.Read(buf)
-			} else if b.in != nil {
-				n, err = b.in.Read(buf)
-			} else {
-				return
-			}
-			if err != nil {
-				if console && errors.Is(err, io.EOF) {
-					continue
-				}
-				return
-			}
-			if n > 0 {
-				temp := make([]byte, n)
-				copy(temp, buf[:n])
-				select {
-				case inputChan <- temp:
-				case <-b.done:
-					return
-				}
-			}
+	var r io.Reader
+	switch {
+	case b.portableIO != nil:
+		r = b.portableIO
+	case b.in != nil:
+		r = b.in
+	default:
+		return
+	}
+	// The console sends no resize signal: poll its size.
+	var lastW, lastH uint16
+	if w, h, err := b.Size(); err == nil {
+		lastW, lastH = w, h
+	}
+	poll := func() (uint16, uint16, bool) {
+		w, h, err := b.Size()
+		if err != nil || (w == lastW && h == lastH) {
+			return w, h, false
 		}
-	}()
-
+		lastW, lastH = w, h
+		return w, h, true
+	}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	// A console is read so that Release can stop the reading; anything else
+	// (a remote session, a pipe) the plain way.
+	input := (<-chan []byte)(nil)
+	if b.portableIO == nil {
+		if cr, err := newConsoleReader(b.in); err == nil {
+			b.reader = cr
+			input = cr.chunks(512, b.done)
+		}
+	}
+	if input == nil {
+		input = readChunks(r, 512, b.done)
+	}
 	go func() {
-		var readBuf []byte
-		const escTimeoutDuration = 25 * time.Millisecond
-		var escTimer *time.Timer
-		var escTimerChan <-chan time.Time
-
-		// Periyodik pencere boyutu kontrolü (Windows için)
-		ticker := time.NewTicker(200 * time.Millisecond)
 		defer ticker.Stop()
-
-		var lastW, lastH uint16
-		if w, h, err := b.Size(); err == nil {
-			lastW, lastH = w, h
-		}
-
-		for {
-			select {
-			case <-b.done:
-				if escTimer != nil {
-					escTimer.Stop()
-				}
-				return
-
-			case <-ticker.C:
-				if w, h, err := b.Size(); err == nil && (w != lastW || h != lastH) {
-					lastW, lastH = w, h
-					select {
-					case b.events <- Event{
-						Type: EventResize,
-						Resize: ResizeEvent{
-							Width:  w,
-							Height: h,
-						},
-					}:
-					case <-b.done:
-						return
-					}
-				}
-
-			case chunk := <-inputChan:
-				readBuf = append(readBuf, chunk...)
-				if escTimer != nil {
-					escTimer.Stop()
-					escTimer = nil
-					escTimerChan = nil
-				}
-
-				for len(readBuf) > 0 {
-					ev, consumed := ParseBracketedPaste(readBuf)
-					if consumed == 0 {
-						ev, consumed = ParseEvent(readBuf)
-					}
-					if consumed > 0 {
-						if ev.Type != EventNone && !b.replies.record(ev) {
-							b.events <- ev
-						}
-						readBuf = readBuf[consumed:]
-					} else {
-						break
-					}
-				}
-
-				if len(readBuf) == 1 && readBuf[0] == '\x1b' {
-					escTimer = time.NewTimer(escTimeoutDuration)
-					escTimerChan = escTimer.C
-				}
-
-			case <-escTimerChan:
-				if len(readBuf) == 1 && readBuf[0] == '\x1b' {
-					b.events <- Event{
-						Type: EventKey,
-						Key: KeyEvent{
-							Type: KeyEsc,
-						},
-					}
-					readBuf = readBuf[:0]
-				}
-				escTimer = nil
-				escTimerChan = nil
-			}
-		}
+		b.parseInput(input, ticker.C, poll)
 	}()
 }
 
-// Size konsol tamponu boyutunu döner.
+// Size returns the size of the console buffer.
 func (b *Backend) Size() (uint16, uint16, error) {
 	if b.portableIO != nil {
 		w, h, err := b.portableIO.Size()
@@ -301,12 +227,12 @@ func (b *Backend) Size() (uint16, uint16, error) {
 	return w, h, nil
 }
 
-// CellPixelSize hücresel piksel boyutunu döner (Windows varsayılanı).
+// CellPixelSize returns the pixel size of a cell (the Windows default).
 func (b *Backend) CellPixelSize() (uint16, uint16, error) {
 	return 10, 20, nil
 }
 
-// Write doğrudan konsola yazar.
+// Write writes straight to the console.
 func (b *Backend) Write(p []byte) (int, error) {
 	if b.portableIO != nil {
 		return b.portableIO.Write(p)
@@ -317,7 +243,7 @@ func (b *Backend) Write(p []byte) (int, error) {
 	return 0, nil
 }
 
-// StartSyncUpdate senkron güncellemeyi başlatır (\x1b[?2026h).
+// StartSyncUpdate begins a synchronised update (\x1b[?2026h).
 func (b *Backend) StartSyncUpdate() {
 	if b.portableIO != nil {
 		_, _ = b.portableIO.Write([]byte("\x1b[?2026h"))
@@ -328,7 +254,7 @@ func (b *Backend) StartSyncUpdate() {
 	}
 }
 
-// EndSyncUpdate senkron güncellemeyi kapatır (\x1b[?2026l).
+// EndSyncUpdate ends the synchronised update (\x1b[?2026l).
 func (b *Backend) EndSyncUpdate() {
 	if b.portableIO != nil {
 		_, _ = b.portableIO.Write([]byte("\x1b[?2026l"))

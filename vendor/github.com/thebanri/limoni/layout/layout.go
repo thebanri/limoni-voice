@@ -28,51 +28,51 @@ var splitCache = struct {
 	m: make(map[layoutKey][]cell.Rect),
 }
 
-// Direction, yerleşim elemanlarının dizilim yönünü belirten türdür.
+// Direction is the direction layout elements are arranged in.
 type Direction uint8
 
 const (
-	// Horizontal, elemanları soldan sağa yatay olarak dizer.
+	// Horizontal arranges elements left to right.
 	Horizontal Direction = iota
-	// Vertical, elemanları yukarıdan aşağıya dikey olarak dizer.
+	// Vertical arranges elements top to bottom.
 	Vertical
 )
 
-// ConstraintType, esnek yerleşim kısıtlamasının matematiksel türünü belirtir.
+// ConstraintType is the mathematical kind of a flexible layout constraint.
 type ConstraintType uint8
 
 const (
-	// ConstraintFixed, sabit bir karakter hücresi genişliği/yüksekliği atar.
+	// ConstraintFixed assigns a fixed width/height in character cells.
 	ConstraintFixed ConstraintType = iota
-	// ConstraintPercentage, üst alanın yüzdesel oranında alan atar (0-100).
+	// ConstraintPercentage assigns a percentage of the parent area (0-100).
 	ConstraintPercentage
-	// ConstraintRatio, kalan alanı ağırlıklı oranlara göre paylaştırır (örn. 1:2:3).
+	// ConstraintRatio shares the remaining space by weight (e.g. 1:2:3).
 	ConstraintRatio
-	// ConstraintMin, en az belirtilen boyutta alan atar.
+	// ConstraintMin assigns at least the specified size.
 	ConstraintMin
-	// ConstraintMax, en fazla belirtilen boyutta alan atar.
+	// ConstraintMax assigns at most the specified size.
 	ConstraintMax
-	// ConstraintFill, geriye kalan tüm boşluğu kaplayan kısıtlama.
+	// ConstraintFill takes all the remaining space.
 	ConstraintFill
-	// ConstraintFit, içerik boyutuna göre alan ayırır.
+	// ConstraintFit sizes by the content.
 	ConstraintFit
 )
 
-// Constraint, tek bir esnek yerleşim kısıtlaması hücresidir.
-// Tür (Type) ve ilişkili Değeri (Value) barındırır.
+// Constraint is a single flexible layout constraint.
+// It holds a Type and the Value that goes with it.
 type Constraint struct {
 	Type  ConstraintType
 	Value uint16
 }
 
-// Fixed, sabit boyutta (karakter hücresi cinsinden) bir kısıtlama oluşturur.
-// Örneğin: Fixed(10) -> tam olarak 10 satır veya sütunluk alan ayırır.
+// Fixed returns a constraint of a fixed size (in character cells).
+// For example, Fixed(10) takes exactly 10 rows or columns.
 func Fixed(val uint16) Constraint {
 	return Constraint{Type: ConstraintFixed, Value: val}
 }
 
-// Percentage, toplam kullanılabilir alanın yüzdesi kadar bir kısıtlama oluşturur (0-100).
-// Örneğin: Percentage(30) -> alanın %30'unu ayırır.
+// Percentage returns a constraint of a percentage of the total available space (0-100).
+// For example, Percentage(30) takes 30% of the space.
 func Percentage(val uint16) Constraint {
 	if val > 100 {
 		val = 100
@@ -80,8 +80,8 @@ func Percentage(val uint16) Constraint {
 	return Constraint{Type: ConstraintPercentage, Value: val}
 }
 
-// Ratio, geriye kalan boş alanın ağırlıklı oranlarına göre dağıtılmasını sağlar.
-// Örneğin: Ratio(2) ve Ratio(1) -> kalan alan 2/3 ve 1/3 oranlarında paylaştırılır.
+// Ratio shares out the remaining space by weight.
+// For example, Ratio(2) and Ratio(1) split the remaining space 2/3 and 1/3.
 func Ratio(val uint16) Constraint {
 	if val == 0 {
 		val = 1
@@ -89,37 +89,37 @@ func Ratio(val uint16) Constraint {
 	return Constraint{Type: ConstraintRatio, Value: val}
 }
 
-// Min, en az belirtilen boyutta alan tahsis edilmesini garanti eder.
+// Min guarantees that at least the specified size is allocated.
 func Min(val uint16) Constraint {
 	return Constraint{Type: ConstraintMin, Value: val}
 }
 
-// Max, en fazla belirtilen boyutta alan tahsis edilmesini sınırlar.
+// Max caps the space allocated at the given size.
 func Max(val uint16) Constraint {
 	return Constraint{Type: ConstraintMax, Value: val}
 }
 
-// Fill, geriye kalan tüm boşluğu kaplayan bir kısıtlama oluşturur. (Ratio(1) ile eşdeğerdir).
+// Fill returns a constraint that takes all the remaining space. (Equivalent to Ratio(1).)
 func Fill() Constraint {
 	return Constraint{Type: ConstraintFill}
 }
 
-// FitContent, içerik boyutuna (SizeHint) göre kısıtlama oluşturur.
+// FitContent returns a constraint sized by the content (SizeHint).
 func FitContent() Constraint {
 	return Constraint{Type: ConstraintFit}
 }
 
-// FlexLayout, belirtilen kısıtlamalar ve yön doğrultusunda terminal alanını bölen esnek kutu yapısıdır.
+// FlexLayout is a flexible box that splits a terminal area along a direction by its constraints.
 type FlexLayout struct {
-	// Direction, elemanların yatay mı dikey mi dizileceğini belirtir.
+	// Direction says whether elements are arranged horizontally or vertically.
 	Direction Direction
-	// Gap, bölünen alanlar arasında bırakılacak boşluk mesafesidir (hücre sayısı).
+	// Gap is the space left between the areas, in cells.
 	Gap uint16
-	// Constraints, alanın nasıl bölünmesi gerektiğini tanımlayan kısıtlamalar listesidir.
+	// Constraints is the list of constraints that say how to split the area.
 	Constraints []Constraint
 }
 
-// NewFlexLayout yeni bir esnek yerleşim (FlexLayout) motoru oluşturup döndürür.
+// NewFlexLayout returns a new flexible layout (FlexLayout) engine.
 func NewFlexLayout(dir Direction, gap uint16, constraints ...Constraint) FlexLayout {
 	return FlexLayout{
 		Direction:   dir,
@@ -128,8 +128,8 @@ func NewFlexLayout(dir Direction, gap uint16, constraints ...Constraint) FlexLay
 	}
 }
 
-// Split, parametre olarak verilen ana Rect alanını, kısıtlamalara göre alt alanlara böler.
-// Yuvarlama hatalarını ve boşluk (gap) hesaplarını sıfır heap tahsisatı ile yönetir.
+// Split divides the given Rect into sub-areas according to the constraints.
+// It handles rounding errors and gaps with zero heap allocations.
 func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 	if len(fl.Constraints) == 0 {
 		return nil
@@ -163,7 +163,7 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 		splitCache.RUnlock()
 	}
 
-	// Bölme yönündeki toplam boyutu belirle (Genişlik veya Yükseklik)
+	// Total size along the split direction (width or height)
 	var totalSize uint16
 	if fl.Direction == Horizontal {
 		totalSize = area.Width
@@ -171,19 +171,19 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 		totalSize = area.Height
 	}
 
-	// Eğer alan boyutu sıfırsa sıfır boyutlu dikdörtgenler dön
+	// If the area has zero size, return zero-sized rectangles
 	if totalSize == 0 {
 		return make([]cell.Rect, len(fl.Constraints))
 	}
 
-	// Boşluk (gap) hesabı
+	// Gap calculation
 	numGaps := len(fl.Constraints) - 1
 	totalGap := uint32(0)
 	if numGaps > 0 {
 		totalGap = uint32(numGaps) * uint32(fl.Gap)
 	}
 
-	// Kullanılabilir net alan hesabı
+	// Net usable space
 	var usableSize uint16
 	if uint32(totalSize) > totalGap {
 		usableSize = totalSize - uint16(totalGap)
@@ -191,7 +191,7 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 
 	sizes := make([]uint16, len(fl.Constraints))
 
-	// 1. Aşama: Sabit ve yüzdesel oranlı (flexible olmayan) kısıtlamaları hesapla
+	// Pass 1: work out the fixed and percentage (non-flexible) constraints
 	var fixedTotal uint16
 	fitIdx := 0
 
@@ -218,7 +218,7 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 		}
 	}
 
-	// Eğer sabit kısıtlamaların toplamı kullanılabilir alanı aşarsa, bunları oranlayarak küçült
+	// If the fixed constraints add up to more than the usable space, shrink them proportionally
 	if fixedTotal > usableSize && fixedTotal > 0 {
 		var scaledTotal uint16
 		for i, c := range fl.Constraints {
@@ -227,13 +227,13 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 				sizes[i] = uint16(sz)
 				scaledTotal += uint16(sz)
 			} else if c.Type == ConstraintMin {
-				// Min kısıtlamaları da sabit boyutlu gibi küçülür
+				// Min constraints shrink like fixed ones too
 				sz := (uint32(sizes[i]) * uint32(usableSize)) / uint32(fixedTotal)
 				sizes[i] = uint16(sz)
 				scaledTotal += uint16(sz)
 			}
 		}
-		// Yuvarlama kaynaklı kalan farkları dağıt
+		// Spread the remainder left by rounding
 		diff := usableSize - scaledTotal
 		for i := 0; i < len(sizes) && diff > 0; i++ {
 			c := fl.Constraints[i]
@@ -245,10 +245,10 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 		fixedTotal = usableSize
 	}
 
-	// Geriye kalan boş alan
+	// Remaining free space
 	remaining := usableSize - fixedTotal
 
-	// 2. Aşama: Geriye kalan alanı oransal (Ratio, Fill, Min ve Max) kısıtlamalara dağıt
+	// Pass 2: share the remaining space among the proportional constraints (Ratio, Fill, Min and Max)
 	if remaining > 0 {
 		n := len(fl.Constraints)
 		var activeStack [32]bool
@@ -308,12 +308,12 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 					}
 					sz := uint16((uint32(remaining) * weight) / totalWeight)
 
-					// Max kısıtlaması aşım kontrolü
+					// Check whether a Max constraint is exceeded
 					if c.Type == ConstraintMax {
 						currentTotal := sizes[i] + sz
 						if currentTotal > c.Value {
-							sz = c.Value - sizes[i] // Sadece limite kadar büyüt
-							active[i] = false       // Artık bu eleman daha fazla büyüyemez
+							sz = c.Value - sizes[i] // Grow only up to the limit
+							active[i] = false       // This element cannot grow any further
 							cappedThisIteration = true
 						}
 					}
@@ -323,7 +323,7 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 				}
 			}
 
-			// Kalan yuvarlama farkını en son aktif elemanlara ekle
+			// Add the rounding remainder to the last active elements
 			if !cappedThisIteration && remaining > distributed {
 				diff := remaining - distributed
 				for i := 0; i < n && diff > 0; i++ {
@@ -335,13 +335,13 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 				}
 			}
 
-			// Boyutları güncelle
+			// Update the sizes
 			for i := 0; i < n; i++ {
 				sizes[i] += added[i]
 			}
 			remaining -= distributed
 
-			// Eğer bu iterasyonda hiçbir eleman limite takılmadıysa, tüm kalan alan dağıtılmıştır
+			// If no element hit its limit in this iteration, all the remaining space has been shared out
 			if !cappedThisIteration {
 				break
 			}
@@ -356,7 +356,7 @@ func (fl FlexLayout) Split(area cell.Rect, fitSizes ...uint16) []cell.Rect {
 		}
 	}
 
-	// Sınır alanlarını hesapla ve dilim olarak döndür
+	// Work out the bounds and return them as a slice
 	res := make([]cell.Rect, len(fl.Constraints))
 	currX := area.X
 	currY := area.Y

@@ -11,14 +11,14 @@ var bayer4x4 = [4][4]float64{
 	{15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0},
 }
 
-// ApplyDitherFade, oldBuf ile newBuf arasındaki dither (retro karıncalanma) geçişini newBuf üzerine uygular.
-// progress parametresi 0.0 ile 1.0 arasında bir değerdir.
+// ApplyDitherFade applies a dither (retro speckle) transition from oldBuf to newBuf, writing into newBuf.
+// progress is a value between 0.0 and 1.0.
 func ApplyDitherFade(newBuf *buffer.Buffer, oldBuf *buffer.Buffer, progress float64) {
 	if oldBuf == nil || newBuf == nil || progress >= 1.0 {
 		return
 	}
 	if progress <= 0.0 {
-		// oldBuf'ı newBuf üzerine tamamen kopyala
+		// Copy oldBuf over newBuf entirely
 		if len(newBuf.Content) == len(oldBuf.Content) {
 			newBuf.Invalidate()
 			copy(newBuf.Content, oldBuf.Content)
@@ -30,9 +30,9 @@ func ApplyDitherFade(newBuf *buffer.Buffer, oldBuf *buffer.Buffer, progress floa
 	h := newBuf.Area.Height
 
 	for y := uint16(0); y < h; y++ {
-		// Metin veya border karakteri içeren satırlarda hücre hücre geçiş
-		// yapılmaz. Böylece bir kelimenin karakterleri eski ve yeni frame'den
-		// karışık gelerek okunamaz hale gelmez.
+		// Rows containing text or border characters do not transition cell by
+		// cell. That way a word never becomes unreadable from mixing characters
+		// of the old and the new frame.
 		textRow := transitionRowHasGlyph(oldBuf, newBuf, y, w)
 		rowThreshold := (float64(y) + 0.5) / float64(h)
 
@@ -42,7 +42,7 @@ func ApplyDitherFade(newBuf *buffer.Buffer, oldBuf *buffer.Buffer, progress floa
 				threshold = rowThreshold
 			}
 			if progress < threshold {
-				// oldBuf hücresini newBuf'a kopyala
+				// Copy the oldBuf cell into newBuf
 				oldCell := oldBuf.Get(x+oldBuf.Area.X, y+oldBuf.Area.Y)
 				newCell := newBuf.Get(x+newBuf.Area.X, y+newBuf.Area.Y)
 				if oldCell != nil && newCell != nil {
@@ -53,9 +53,9 @@ func ApplyDitherFade(newBuf *buffer.Buffer, oldBuf *buffer.Buffer, progress floa
 	}
 }
 
-// transitionRowHasGlyph, bir satırda karakter/border bulunduğunu belirler.
-// Boş veya yalnızca renkli grafik hücrelerinde Bayer dither korunur; metin
-// satırlarında ise bütün satır birlikte geçiş yapar.
+// transitionRowHasGlyph reports whether a row contains a character or border.
+// Blank rows and rows of coloured graphics keep the Bayer dither; text
+// rows transition as a whole.
 func transitionRowHasGlyph(oldBuf, newBuf *buffer.Buffer, y, width uint16) bool {
 	for x := uint16(0); x < width; x++ {
 		oldCell := oldBuf.Get(x+oldBuf.Area.X, y+oldBuf.Area.Y)

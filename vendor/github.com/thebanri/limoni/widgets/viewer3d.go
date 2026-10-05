@@ -288,12 +288,11 @@ func (v *Viewer3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if v.ID != "" && ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(v.ID)
 	}
-	if v.ID != "" && ctx.RegisterClick != nil && v.State == nil {
-		ctx.RegisterClick(ctx.Area, func() {
-			if ctx.SetFocus != nil {
-				ctx.SetFocus(v.ID)
-			}
-		})
+	if v.ID != "" && ctx.RegisterClickAction != nil && v.State == nil {
+		ctx.RegisterClickAction(ctx.Area, cell.ClickAction{Focus: v.ID})
+	} else if v.ID != "" && ctx.RegisterClick != nil && ctx.SetFocus != nil && v.State == nil {
+		setFocus, id := ctx.SetFocus, v.ID
+		ctx.RegisterClick(ctx.Area, func() { setFocus(id) })
 	}
 
 	// Auto-load texture from ImagePath if provided
@@ -338,7 +337,7 @@ func (v *Viewer3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
-	pixels := v.Pixels && ctx.RegisterImage != nil && v.imageProtocol() != graphics.ProtocolHalfBlock
+	pixels := v.Pixels && ctx.RegisterImage != nil && v.imageProtocol(ctx) != graphics.ProtocolHalfBlock
 	var target raster3D
 	var virtualW, virtualH float64
 	redraw := true
@@ -403,7 +402,7 @@ type raster3D interface {
 	DrawFilledTriangleDepth(p0, p1, p2 graphics.Vertex2D, z0, z1, z2 float64, style cell.Style)
 	DrawLambertTriangleDepth(p0, p1, p2 graphics.Vertex2D, z0, z1, z2 float64, normal graphics.Vector3D, light graphics.Light, baseStyle cell.Style)
 	DrawGouraudTriangleDepth(p0, p1, p2 graphics.Vertex2D, z0, z1, z2 float64, c0, c1, c2 cell.Color, baseStyle cell.Style)
-	DrawTexturedTriangleDepth(p0, p1, p2 graphics.Vertex2D, z0, z1, z2 float64, uv0, uv1, uv2 graphics.UV, img image.Image)
+	DrawTexturedTrianglePerspective(p0, p1, p2 graphics.Vertex2D, z0, z1, z2, w0, w1, w2 float64, uv0, uv1, uv2 graphics.UV, img image.Image)
 	DrawLine(x1, y1, x2, y2 int, style cell.Style)
 }
 
@@ -476,7 +475,10 @@ func imageIdentity(img image.Image) uintptr {
 	return 1 // a value type: treat every frame's as the same picture
 }
 
-func (v *Viewer3D) imageProtocol() graphics.Protocol {
+func (v *Viewer3D) imageProtocol(ctx cell.Context) graphics.Protocol {
+	if ctx.ImageProtocol != 0 {
+		return graphics.Protocol(ctx.ImageProtocol)
+	}
 	if !v.protoKnown {
 		v.proto, v.protoKnown = graphics.DetectProtocol(), true
 	}
@@ -599,7 +601,8 @@ func (v *Viewer3D) rasterize(t raster3D, virtualW, virtualH, baseScale, dist flo
 				switch shading {
 				case ShadingTexture:
 					if texture != nil {
-						t.DrawTexturedTriangleDepth(sa, sb, sc, a.pos.Z, b.pos.Z, c.pos.Z, a.uv, b.uv, c.uv, texture)
+						t.DrawTexturedTrianglePerspective(sa, sb, sc, a.pos.Z, b.pos.Z, c.pos.Z,
+							a.pos.Z+dist, b.pos.Z+dist, c.pos.Z+dist, a.uv, b.uv, c.uv, texture)
 					} else {
 						t.DrawFilledTriangleDepth(sa, sb, sc, a.pos.Z, b.pos.Z, c.pos.Z, faceStyle)
 					}

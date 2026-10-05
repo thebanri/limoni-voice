@@ -34,7 +34,7 @@ func getSolidImage(c cell.Color) image.Image {
 	return img
 }
 
-// Kenarlık yön maskeleri (bitmask).
+// Border direction masks (bitmask).
 const (
 	BorderNone   uint8 = 0
 	BorderLeft   uint8 = 1 << 0
@@ -44,7 +44,7 @@ const (
 	BorderAll    uint8 = BorderLeft | BorderRight | BorderTop | BorderBottom
 )
 
-// BorderSymbols, kenarlık çizgisinde kullanılacak olan glif (rune) grubunu tanımlar.
+// BorderSymbols is the set of glyphs (runes) used to draw a border.
 type BorderSymbols struct {
 	Horizontal  rune
 	Vertical    rune
@@ -55,7 +55,7 @@ type BorderSymbols struct {
 }
 
 var (
-	// SymbolsSingle ince/standart kenarlık çizgileridir.
+	// SymbolsSingle is the thin, standard border.
 	SymbolsSingle = BorderSymbols{
 		Horizontal:  '─',
 		Vertical:    '│',
@@ -64,7 +64,7 @@ var (
 		BottomLeft:  '└',
 		BottomRight: '┘',
 	}
-	// SymbolsDouble çift çizgili kenarlıktır.
+	// SymbolsDouble is the double-line border.
 	SymbolsDouble = BorderSymbols{
 		Horizontal:  '═',
 		Vertical:    '║',
@@ -73,7 +73,7 @@ var (
 		BottomLeft:  '╚',
 		BottomRight: '╝',
 	}
-	// SymbolsThick kalın kenarlık çizgileridir.
+	// SymbolsThick is the thick border.
 	SymbolsThick = BorderSymbols{
 		Horizontal:  '━',
 		Vertical:    '┃',
@@ -82,7 +82,7 @@ var (
 		BottomLeft:  '┗',
 		BottomRight: '┛',
 	}
-	// SymbolsRounded köşeleri yuvarlatılmış ince kenarlıktır.
+	// SymbolsRounded is the thin border with rounded corners.
 	SymbolsRounded = BorderSymbols{
 		Horizontal:  '─',
 		Vertical:    '│',
@@ -91,7 +91,7 @@ var (
 		BottomLeft:  '╰',
 		BottomRight: '╯',
 	}
-	// SymbolsBlock dolu blok elemanlı kalın kenarlıktır.
+	// SymbolsBlock is the thick border made of full block elements.
 	SymbolsBlock = BorderSymbols{
 		Horizontal:  '█',
 		Vertical:    '█',
@@ -122,7 +122,7 @@ var (
 	}
 )
 
-// Alignment, başlık veya metin hizalamasını belirten türdür.
+// Alignment is the alignment of a title or text.
 type Alignment uint8
 
 const (
@@ -143,20 +143,20 @@ func UniformInsets(value uint16) Insets {
 	return Insets{Top: value, Right: value, Bottom: value, Left: value}
 }
 
-// Block, terminal ekranında kenarlık çizebilen, arka plan dolgusu yapabilen
-// ve üstüne başlık (Title) yerleştirebilen en temel kapsayıcı (container) widget'tır.
-// Alt bileşenini (Child) otomatik olarak daraltılmış iç alana yönlendirir ve stil mirasını aktarır.
+// Block is the most basic container widget: it can draw a border, fill a background
+// and carry a Title on top.
+// It hands its Child the shrunken inner area and passes the inherited style on.
 type Block struct {
-	// Title, bloğun üst kenarında gösterilecek olan başlık metnidir.
+	// Title is the text shown on the block's top border.
 	Title string
-	// TitleAlignment, başlık metninin kenarlık üzerindeki hizasını belirler (Left, Center, Right).
+	// TitleAlignment sets where the title sits on the border (Left, Center, Right).
 	TitleAlignment Alignment
-	// TitleStyle, başlık metninin rengini ve stil özelliklerini belirler.
+	// TitleStyle sets the title's colour and style.
 	TitleStyle cell.Style
 
-	// Borders, hangi kenarların çizileceğini belirleyen maske alanıdır (örn. BorderAll veya BorderTop|BorderBottom).
+	// Borders is the mask of which sides to draw (e.g. BorderAll or BorderTop|BorderBottom).
 	Borders uint8
-	// BorderSymbols, kenarlık çiziminde kullanılacak olan glif sembolleridir (örn. SymbolsRounded).
+	// BorderSymbols are the glyphs the border is drawn with (e.g. SymbolsRounded).
 	BorderSymbols BorderSymbols
 	// MergeBorders joins this block's border with light box-drawing characters
 	// already in the buffer, so two adjacent blocks share one edge and meet in
@@ -165,30 +165,30 @@ type Block struct {
 	// Off by default: it costs a read per border cell, and a block drawn over
 	// unrelated line art would otherwise fuse with it.
 	MergeBorders bool
-	// BorderStyle, kenarlık çizgilerinin rengini ve stilini belirler.
+	// BorderStyle sets the colour and style of the border lines.
 	BorderStyle cell.Style
 
-	// Margin, bloğun dışındaki CSS benzeri boşluktur. Margin alanı çizilmez.
+	// Margin is CSS-like space outside the block. The margin is not drawn.
 	Margin Insets
 
-	// Padding, içerik ile kenarlık arasındaki CSS benzeri iç boşluktur.
-	// Eski tekil PaddingLeft/Right/Top/Bottom alanları geriye dönük olarak desteklenir.
+	// Padding is CSS-like space between the content and the border.
+	// The old separate PaddingLeft/Right/Top/Bottom fields are still supported.
 	Padding       Insets
 	PaddingLeft   uint16
 	PaddingRight  uint16
 	PaddingTop    uint16
 	PaddingBottom uint16
 
-	// Style, bloğun arka plan dolgu rengini ve varsayılan genel stilini belirler.
+	// Style sets the block's background fill and default style.
 	Style cell.Style
 
-	// Child, bloğun içerisine çizilecek olan alt görsel bileşendir.
+	// Child is the component drawn inside the block.
 	Child Widget
-	// Opaque, true ise bloğun arkasına yerel resimlerin sızmasını engellemek için solid renkli resim katmanı ekler.
+	// Opaque, when true, adds a solid-colour image layer behind the block so native images do not show through it.
 	Opaque bool
 }
 
-// NewBlock, BorderAll ve SymbolsRounded ile hazır bir Block oluşturur.
+// NewBlock returns a Block with BorderAll and SymbolsRounded.
 func NewBlock() *Block {
 	return &Block{
 		Borders:       BorderAll,
@@ -196,98 +196,98 @@ func NewBlock() *Block {
 	}
 }
 
-// WithTitle başlık metnini belirler.
+// WithTitle sets the title text.
 func (b *Block) WithTitle(title string) *Block {
 	b.Title = title
 	return b
 }
 
-// WithTitleAlign başlık metninin hizalamasını belirler.
+// WithTitleAlign sets the title's alignment.
 func (b *Block) WithTitleAlign(align Alignment) *Block {
 	b.TitleAlignment = align
 	return b
 }
 
-// WithTitleStyle başlık stilini belirler.
+// WithTitleStyle sets the title's style.
 func (b *Block) WithTitleStyle(style cell.Style) *Block {
 	b.TitleStyle = style
 	return b
 }
 
-// WithBorders hangi kenarlıkların çizileceğini belirler.
+// WithBorders sets which borders are drawn.
 func (b *Block) WithBorders(borders uint8) *Block {
 	b.Borders = borders
 	return b
 }
 
-// Rounded yuvarlatılmış köşeli kenarlık sembollerini seçer.
+// Rounded selects the rounded-corner border symbols.
 func (b *Block) Rounded() *Block {
 	b.BorderSymbols = SymbolsRounded
 	return b
 }
 
-// Single standart ince kenarlık sembollerini seçer.
+// Single selects the standard thin border symbols.
 func (b *Block) Single() *Block {
 	b.BorderSymbols = SymbolsSingle
 	return b
 }
 
-// Double çift çizgili kenarlık sembollerini seçer.
+// Double selects the double-line border symbols.
 func (b *Block) Double() *Block {
 	b.BorderSymbols = SymbolsDouble
 	return b
 }
 
-// Thick kalın kenarlık sembollerini seçer.
+// Thick selects the thick border symbols.
 func (b *Block) Thick() *Block {
 	b.BorderSymbols = SymbolsThick
 	return b
 }
 
-// BlockBorder dolu blok elemanlı kenarlık sembollerini seçer.
+// BlockBorder selects the full-block border symbols.
 func (b *Block) BlockBorder() *Block {
 	b.BorderSymbols = SymbolsBlock
 	return b
 }
 
-// WithBorderStyle kenarlık çizgisi stilini belirler.
+// WithBorderStyle sets the border line style.
 func (b *Block) WithBorderStyle(style cell.Style) *Block {
 	b.BorderStyle = style
 	return b
 }
 
-// WithStyle bloğun genel arka plan stilini belirler.
+// WithStyle sets the block's overall background style.
 func (b *Block) WithStyle(style cell.Style) *Block {
 	b.Style = style
 	return b
 }
 
-// WithPadding bloğun CSS benzeri iç boşluklarını ayarlar.
+// WithPadding sets the block's CSS-like inner spacing.
 func (b *Block) WithPadding(top, right, bottom, left uint16) *Block {
 	b.Padding = Insets{Top: top, Right: right, Bottom: bottom, Left: left}
 	return b
 }
 
-// WithMargin bloğun CSS benzeri dış boşluklarını ayarlar.
+// WithMargin sets the block's CSS-like outer spacing.
 func (b *Block) WithMargin(top, right, bottom, left uint16) *Block {
 	b.Margin = Insets{Top: top, Right: right, Bottom: bottom, Left: left}
 	return b
 }
 
-// WithChild bloğun içine yerleştirilecek alt bileşeni atar.
+// WithChild sets the component placed inside the block.
 func (b *Block) WithChild(child Widget) *Block {
 	b.Child = child
 	return b
 }
 
-// Draw, bloğu ve kenarlıklarını çizer, arka planını doldurur ve alt bileşenin (Child) çizimini tetikler.
+// Draw draws the block and its borders, fills its background and draws its Child.
 func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	area := insetRect(ctx.Area, b.Margin)
 	if area.Width == 0 || area.Height == 0 {
 		return
 	}
 
-	// Bloğun nihai stilini belirle (Miras kalan stil ile bu bloğun stilini birleştir)
+	// Work out the block's final style (the inherited style merged with this block's)
 	blockStyle := ctx.Style.Merge(b.Style)
 	if b.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
 		blockStyle = blockStyle.Merge(ctx.ThemeStyle("surface"))
@@ -297,7 +297,7 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		borderStyle = blockStyle.Merge(ctx.ThemeStyle("border"))
 	}
 
-	// 1. Aşama: Bloğun arka planını doldur
+	// Pass 1: fill the block's background
 	//
 	// When merging borders, cells that will receive a border of this block are
 	// left alone: the fill would erase the neighbouring block's glyph before
@@ -313,26 +313,26 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 
 	if b.Opaque && blockStyle.Bg.Type() != cell.ColorDefault && ctx.RegisterImage != nil {
-		proto := graphics.DetectProtocol()
+		proto := imageProtocol(ctx)
 		if proto != graphics.ProtocolHalfBlock {
 			solidImg := getSolidImage(blockStyle.Bg)
 			ctx.RegisterImage(area, solidImg, -99, false) // Marker for frame.go to map ZIndex
 		}
 	}
 
-	// 2. Aşama: Kenarlıkları çiz
+	// Pass 2: draw the borders
 	hasL := (b.Borders & BorderLeft) != 0
 	hasR := (b.Borders & BorderRight) != 0
 	hasT := (b.Borders & BorderTop) != 0
 	hasB := (b.Borders & BorderBottom) != 0
 
 	sym := b.BorderSymbols
-	// Eğer kenarlık sembolleri atanmadıysa varsayılan ince çizgiyi kullan
+	// If no border symbols are set, use the default thin line
 	if sym.Horizontal == 0 {
 		sym = SymbolsSingle
 	}
 
-	// Yatay çizgileri çiz
+	// Draw the horizontal lines
 	if hasT {
 		for x := area.X + 1; x < area.X+area.Width-1; x++ {
 			b.putBorder(buf, x, area.Y, sym.Horizontal, borderStyle)
@@ -344,7 +344,7 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
-	// Dikey çizgileri çiz
+	// Draw the vertical lines
 	if hasL {
 		for y := area.Y + 1; y < area.Y+area.Height-1; y++ {
 			b.putBorder(buf, area.X, y, sym.Vertical, borderStyle)
@@ -356,7 +356,7 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
-	// Köşe birleşimlerini çiz
+	// Draw the corner joins
 	if hasT && hasL {
 		b.putBorder(buf, area.X, area.Y, sym.TopLeft, borderStyle)
 	}
@@ -370,7 +370,7 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		b.putBorder(buf, area.X+area.Width-1, area.Y+area.Height-1, sym.BottomRight, borderStyle)
 	}
 
-	// 3. Aşama: Başlığı üst kenarlığa çiz
+	// Pass 3: draw the title on the top border
 	if b.Title != "" && hasT && area.Width > 4 {
 		titleStyle := blockStyle.Merge(b.TitleStyle)
 		rawTitleWidth := uint16(cell.StringWidth(b.Title))
@@ -415,7 +415,7 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		buf.SetCell(closingX, area.Y, cell.Cell{Content: ' ', Style: titleStyle})
 	}
 
-	// 4. Aşama: Alt bileşeni (Child) çiz
+	// Pass 4: draw the Child
 	if b.Child != nil {
 		var offsetL, offsetR, offsetT, offsetB uint16
 		if hasL {
@@ -431,7 +431,7 @@ func (b Block) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			offsetB = 1
 		}
 
-		// Kenarlık ve Padding paylarını ekle
+		// Add the border and padding allowances
 		left := offsetL + b.Padding.Left + b.PaddingLeft
 		right := offsetR + b.Padding.Right + b.PaddingRight
 		top := offsetT + b.Padding.Top + b.PaddingTop
@@ -504,7 +504,7 @@ func (b Block) Inner(area cell.Rect) cell.Rect {
 	}
 }
 
-// SizeHint, kenarlık, margin ve dolgu paylarını hesaba katarak bu bloğun kaplamak istediği en uygun alanı hesaplar.
+// SizeHint works out the space this block would like, allowing for its border, margin and padding.
 func (b Block) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	var offsetL, offsetR, offsetT, offsetB uint16
 	if (b.Borders & BorderLeft) != 0 {
@@ -523,10 +523,10 @@ func (b Block) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	overheadW := offsetL + offsetR + b.Padding.Left + b.Padding.Right + b.PaddingLeft + b.PaddingRight + b.Margin.Left + b.Margin.Right
 	overheadH := offsetT + offsetB + b.Padding.Top + b.Padding.Bottom + b.PaddingTop + b.PaddingBottom + b.Margin.Top + b.Margin.Bottom
 
-	// Başlığın sığması için asgari genişlik sınırı
+	// Minimum width for the title to fit
 	titleLen := uint16(0)
 	if b.Title != "" {
-		titleLen = uint16(cell.StringWidth(b.Title)) + 4 // " Başlık " + köşeler
+		titleLen = uint16(cell.StringWidth(b.Title)) + 4 // " Title " + corners
 	}
 
 	if b.Child != nil {
@@ -538,7 +538,7 @@ func (b Block) SizeHint(maxArea cell.Rect) (width, height uint16) {
 			childMaxH = maxArea.Height - overheadH
 		}
 
-		// Alt bileşenin pazarlık boyutunu sorgula
+		// Ask the Child for its preferred size
 		childW, childH := b.Child.SizeHint(cell.NewRect(maxArea.X, maxArea.Y, childMaxW, childMaxH))
 		width = childW + overheadW
 		height = childH + overheadH
@@ -547,12 +547,12 @@ func (b Block) SizeHint(maxArea cell.Rect) (width, height uint16) {
 		height = overheadH
 	}
 
-	// Eğer başlık genişliği daha büyükse genişliği başlığa göre genişlet
+	// If the title is wider, widen to fit the title
 	if width < titleLen {
 		width = titleLen
 	}
 
-	// Sınırların dışına taşmayı engelle
+	// Do not go past the bounds
 	if width > maxArea.Width {
 		width = maxArea.Width
 	}

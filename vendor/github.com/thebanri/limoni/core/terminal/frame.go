@@ -23,17 +23,17 @@ type TraceEntry struct {
 	Phase    driver.EventPhase
 }
 
-// ClickRegion, ekranda tıklanabilir (interaktif) bir bölgeyi ve bu bölgeye tıklandığında
-// çalıştırılacak olan fare olay yöneticisi (callback) fonksiyonunu tanımlar.
+// ClickRegion describes a clickable (interactive) area of the screen and the mouse
+// handler (callback) to run when it is clicked.
 type ClickRegion struct {
-	// Area, tıklanabilir bölgenin ekran koordinatları ve boyut sınırlarıdır.
+	// Area is the screen coordinates and size of the clickable region.
 	Area cell.Rect
-	// Handler, bu alana tıklandığında tetiklenecek olan olay yöneticisi fonksiyonudur.
+	// Handler is the function called when the area is clicked.
 	Handler func(ev driver.MouseEvent)
-	// LayerID, bu tıklama bölgesinin hangi katmana ait olduğunu belirtir.
-	// Boş string ise kök (root) katmanına aittir.
+	// LayerID is the layer this click region belongs to.
+	// An empty string means the root layer.
 	LayerID string
-	// MouseOnly, MouseNone hareket/hover olaylarının da bu bölgeye yönlendirilmesini sağlar.
+	// MouseOnly also routes MouseNone motion/hover events to this region.
 	MouseOnly bool
 
 	// onClick, action and scroll are the allocation-free alternatives to
@@ -68,16 +68,16 @@ func (r ClickRegion) Fire(ev driver.MouseEvent, f *Frame) {
 	}
 }
 
-// ImageRegion, ekranda grafik olarak çizdirilmek istenen bir resmi ve bu resmin
-// çizileceği hedef hücre koordinatlarını tanımlar.
+// ImageRegion describes an image to be drawn as graphics on the screen and the
+// target cells it is drawn into.
 type ImageRegion struct {
-	// Area, resmin çizileceği hedef hücre koordinatları ve satır/sütun boyutlarıdır.
+	// Area is the target cell coordinates and the size in rows and columns.
 	Area cell.Rect
-	// Img, çizilecek olan ham resim verisidir.
+	// Img is the raw image to draw.
 	Img image.Image
-	// ZIndex, resmin dikey katman sıralama parametresidir.
+	// ZIndex orders the image among the layers.
 	ZIndex int
-	// Transparent, resmin şeffaf piksellerinin korunup korunmayacağını belirtir.
+	// Transparent reports whether the image's transparent pixels are kept.
 	Transparent bool
 }
 
@@ -109,7 +109,7 @@ type Frame struct {
 	// DebugRegions records the layout boundaries of rendered widgets.
 	DebugRegions []DebugRegion
 
-	// mouseCaptureRequest, çizim sırasında bir widget tarafından talep edilen fare yakalama callback'idir.
+	// mouseCaptureRequest is a mouse capture callback requested by a widget while drawing.
 	mouseCaptureRequest func(ev driver.MouseEvent)
 	hoveredRegionID     string
 	lastClickID         string
@@ -124,7 +124,11 @@ type Frame struct {
 	// context; see cell.Context.Hyperlinks.
 	Hyperlinks bool
 
-	// WidgetStats, bu çizim karesinde çizilen widget'ların render sürelerini saklar.
+	// ImageProtocol mirrors the terminal's chosen image protocol into every
+	// draw context; see cell.Context.ImageProtocol.
+	ImageProtocol uint8
+
+	// WidgetStats holds how long each widget drawn in this frame took to render.
 	WidgetStats []WidgetStat
 	// Accessibility holds this frame's semantic nodes. Children may point into
 	// buffers widgets reuse next frame; use AccessibilityTree to keep a copy.
@@ -201,7 +205,7 @@ type DebugRegion struct {
 	Overflowed bool
 }
 
-// NewFrame, belirtilen buffer ve odak yöneticisi üzerinde çizim yapacak yeni bir Frame örneği oluşturur.
+// NewFrame returns a Frame that draws into the given buffer with the given focus manager.
 func NewFrame(buf *buffer.Buffer, focusMgr *FocusManager) *Frame {
 	f := &Frame{
 		Buffer:           buf,
@@ -367,9 +371,9 @@ func (f *Frame) initClosures() {
 		if f.currentIsOutsideModal {
 			topModal := f.TopmostModal()
 			if topModal != nil && ContainsRect(topModal.Area, eventArea) {
-				// Modal içindeki olaylara izin ver
+				// Allow events inside the modal
 			} else if f.ActiveModal != nil && ContainsRect(f.ActiveModal.Area, eventArea) {
-				// Modal içindeki olaylara izin ver
+				// Allow events inside the modal
 			} else {
 				return
 			}
@@ -441,8 +445,8 @@ func (f *Frame) initClosures() {
 	}
 }
 
-// Reset, çizim karesinin durumunu (kaydedilmiş tıklama, resim alanları, modal ve katmanları) sıfırlar.
-// Bellek Optimizasyonu: Slice kapasitesini koruyarak sıfır tahsisatla listeyi temizler (slice[:0]).
+// Reset clears the frame's state (registered clicks, image areas, the modal and layers).
+// It keeps the slices' capacity, so clearing them (slice[:0]) allocates nothing.
 // BeginFocusScope restricts keyboard navigation to widgets rendered in the scope.
 func (f *Frame) BeginFocusScope(id string) {
 	if f.FocusManager != nil {
@@ -556,16 +560,16 @@ func (f *Frame) WriteAccessibilityLineMode(w io.Writer, mode accessibility.Mode)
 	return mode.WriteLineMode(w, f.Accessibility)
 }
 
-// RegisterModal, bu karede çizilen aktif bir modal katmanı kaydeder.
-// Sadece tek bir aktif modal desteklenir ve en son kaydedilen (en üstteki) modal geçerli olur.
-// Geriye dönük uyumluluk: Eski API'yi korumak için ActiveModal'a da yazar.
+// RegisterModal records an active modal layer drawn in this frame.
+// Only one active modal is supported; the one registered last (the topmost) wins.
+// For backwards compatibility it also sets ActiveModal, the old API.
 func (f *Frame) RegisterModal(id string, area cell.Rect, onClickOutside func()) {
 	f.ActiveModal = &Modal{
 		ID:           id,
 		Area:         area,
 		ClickOutside: onClickOutside,
 	}
-	// Yeni katman sistemine de ekle
+	// Also add to the new layer system
 	f.Layers = append(f.Layers, Layer{
 		ID:           id,
 		Type:         LayerModal,
@@ -575,8 +579,8 @@ func (f *Frame) RegisterModal(id string, area cell.Rect, onClickOutside func()) 
 	})
 }
 
-// RegisterLayer, yeni katmanlı render sistemi için bir katman kaydeder.
-// ZIndex değeri büyüdükçe katman üst üste biner. Çizim sırasına göre son katman en üsttedir.
+// RegisterLayer records a layer for the layered rendering system.
+// Layers with a larger ZIndex sit on top. In drawing order, the last layer is on top.
 func (f *Frame) RegisterLayer(id string, layerType LayerType, area cell.Rect, zIndex int, onClickOutside func()) {
 	layer := Layer{
 		ID:           id,
@@ -587,7 +591,7 @@ func (f *Frame) RegisterLayer(id string, layerType LayerType, area cell.Rect, zI
 	}
 	f.Layers = append(f.Layers, layer)
 
-	// Geriye dönük uyumluluk: Modal türündeyse ActiveModal'ı da güncelle
+	// Backwards compatibility: for a modal layer, update ActiveModal too
 	if layerType == LayerModal {
 		f.ActiveModal = &Modal{
 			ID:           id,
@@ -597,7 +601,7 @@ func (f *Frame) RegisterLayer(id string, layerType LayerType, area cell.Rect, zI
 	}
 }
 
-// RemoveLayer, belirtilen ID'ye sahip katmanı listeden kaldırır.
+// RemoveLayer removes the layer with the given ID.
 func (f *Frame) RemoveLayer(id string) {
 	for i := 0; i < len(f.Layers); i++ {
 		if f.Layers[i].ID == id {
@@ -605,7 +609,7 @@ func (f *Frame) RemoveLayer(id string) {
 			i--
 		}
 	}
-	// ActiveModal güncelleme: Sadece modal türündeki katmanlar için
+	// Update ActiveModal: for modal layers only
 	if f.ActiveModal != nil {
 		found := false
 		for _, l := range f.Layers {
@@ -620,8 +624,8 @@ func (f *Frame) RemoveLayer(id string) {
 	}
 }
 
-// TopLayer, en yüksek z-index değerine sahip katmanı döndürür.
-// Hiç katman yoksa nil döner.
+// TopLayer returns the layer with the highest z-index.
+// It returns nil if there are no layers.
 func (f *Frame) TopLayer() *Layer {
 	if len(f.Layers) == 0 {
 		return nil
@@ -635,7 +639,7 @@ func (f *Frame) TopLayer() *Layer {
 	return top
 }
 
-// TopmostModal, aktif katmanlar arasında en üstteki (en yüksek ZIndex'e sahip) modal katmanı döner.
+// TopmostModal returns the topmost modal layer (the one with the highest ZIndex) among the active layers.
 func (f *Frame) TopmostModal() *Layer {
 	var top *Layer
 	for i := range f.Layers {
@@ -649,7 +653,7 @@ func (f *Frame) TopmostModal() *Layer {
 	return top
 }
 
-// IsInsideAnyLayer, verilen koordinatın herhangi bir katman alanı içinde olup olmadığını kontrol eder.
+// IsInsideAnyLayer reports whether the coordinate falls inside any layer's area.
 func (f *Frame) IsInsideAnyLayer(x, y uint16) bool {
 	for i := range f.Layers {
 		if f.Layers[i].Area.Contains(x, y) {
@@ -659,9 +663,9 @@ func (f *Frame) IsInsideAnyLayer(x, y uint16) bool {
 	return false
 }
 
-// RegisterClickHandler, belirtilen alan (rect) üzerine fare tıklaması yapıldığında
-// çalıştırılacak bir callback kaydeder. Otomatik fare yönlendirme sistemi (Mouse Event Router) bu kaydı kullanır.
-// layerID parametresi, bu tıklama bölgesinin hangi katmana ait olduğunu belirtir.
+// RegisterClickHandler registers a callback to run when the given area (rect) is
+// clicked. The mouse event router uses these registrations.
+// layerID is the layer the click region belongs to.
 func (f *Frame) RegisterClickHandler(area cell.Rect, handler func(ev driver.MouseEvent)) {
 	if handler == nil {
 		return
@@ -854,8 +858,8 @@ func (f *Frame) EventTrace() []string {
 	return trace
 }
 
-// CaptureMouse, aktif farenin sürükleme boyunca kayıtlı handler'a yönlendirilmesini sağlar.
-// Handler, MouseRelease olayını aldıktan sonra yakalama otomatik olarak bırakılır.
+// CaptureMouse routes the mouse to the registered handler for the rest of a drag.
+// The capture is released automatically once the handler has received MouseRelease.
 func (f *Frame) CaptureMouse(handler func(ev driver.MouseEvent)) {
 	if handler != nil {
 		f.mouseCaptureRequest = handler
@@ -871,7 +875,7 @@ func (f *Frame) TakeMouseCapture() func(ev driver.MouseEvent) {
 	return handler
 }
 
-// RegisterClickHandlerInLayer, belirtilen katman ID'si altında bir tıklama alanı kaydeder.
+// RegisterClickHandlerInLayer registers a click area under the given layer ID.
 func (f *Frame) RegisterClickHandlerInLayer(area cell.Rect, handler func(ev driver.MouseEvent), layerID string) {
 	if handler == nil {
 		return
@@ -895,9 +899,9 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 		return
 	}
 
-	// Hata ayıklama bölgesi olarak kaydet. Overlay widget'ları çizim için
-	// tam ekran alanı kullanabilir; DebugArea ile gerçek görünür sınırlarını
-	// ayrıca bildirebilirler.
+	// Register it as a debug region. Overlay widgets may draw over the
+	// whole screen; with DebugArea they can report their real visible
+	// bounds separately.
 	wType := getWidgetTypeName(w)
 	debugArea := area
 	if provider, ok := w.(interface{ DebugArea(cell.Rect) cell.Rect }); ok {
@@ -935,7 +939,7 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 		}
 	}
 
-	// Katman durumunu belirle: Widget, herhangi bir katmanın içinde mi?
+	// Work out the layer: is the widget inside any layer?
 	isInsideLayer := f.activeLayerID != ""
 	isOutsideModal := false
 	currentLayerID := f.activeLayerID
@@ -965,10 +969,10 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 			isOutsideModal = true
 		}
 	} else if f.ActiveModal != nil && !ContainsRect(f.ActiveModal.Area, area) && !(debugArea.Width > 0 && ContainsRect(f.ActiveModal.Area, debugArea)) {
-		// Eski modal sistemi ile geriye dönük uyumluluk
+		// Backwards compatibility with the old modal system
 		isOutsideModal = true
 	} else if len(f.Layers) > 0 && f.ActiveModal == nil {
-		// Kök katmanda çizilen widget'lar, katmanlar varken engellenmeli.
+		// Widgets drawn in the root layer must be blocked while layers exist.
 		isOutsideModal = true
 	}
 
@@ -977,9 +981,10 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 	f.currentIsOutsideModal = isOutsideModal
 	f.currentLayerID = currentLayerID
 
-	// Temiz stil ve sınırlandırılmış alan ile çizim bağlamı oluştur
+	// Build the drawing context with a clean style and a clipped area
 	ctx := cell.NewContext(area, defStyle)
 	ctx.Hyperlinks = f.Hyperlinks
+	ctx.ImageProtocol = f.ImageProtocol
 	if f.ThemeSet {
 		// Built once: a closure made here was an allocation per widget per
 		// frame whenever a theme was set.
@@ -1027,13 +1032,13 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 	})
 }
 
-// BeginLayer, bir sonraki çizilecek widget'ların belirli bir katmana ait olduğunu bildirir.
-// Widget'lar Draw() sırasında hangi katmana ait olduklarını bu şekilde öğrenir.
+// BeginLayer declares that the widgets drawn next belong to a given layer.
+// This is how widgets learn during Draw() which layer they are in.
 func (f *Frame) BeginLayer(id string) {
 	f.activeLayerID = id
 }
 
-// EndLayer, aktif katman çizimini sonlandırır ve kök katmana geri döner.
+// EndLayer ends drawing into the active layer and returns to the root layer.
 func (f *Frame) EndLayer() {
 	f.activeLayerID = ""
 }

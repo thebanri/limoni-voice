@@ -6,25 +6,71 @@ import (
 	"github.com/thebanri/limoni/core/driver"
 )
 
-// PopupItem, açılır menüdeki bir öğeyi temsil eder.
+// PopupItem is an item in a popup menu.
 type PopupItem struct {
-	// Text, menü öğesinin gösterilecek metnidir.
+	// Text is the menu item's text.
 	Text string
-	// Disabled, bu öğenin seçilemez (gri) durumda olup olmadığını belirtir.
+	// Disabled reports whether the item cannot be selected (greyed out).
 	Disabled bool
-	// Handler, bu öğe seçildiğinde çalıştırılacak callback fonksiyonudur.
+	// Handler is the callback run when the item is chosen.
 	Handler func()
 }
 
-// PopupState, açılır menünün açılıp kapanma durumunu ve seçim indeksini yönetir.
+// PopupState manages whether the popup menu is open and the selected index.
 type PopupState struct {
-	// IsOpen, menünün açık olup olmadığını belirtir.
+	// IsOpen reports whether the menu is open.
 	IsOpen bool
-	// Selected, mevcut fare sobre kalan (hover) veya klavye ile seçili öğe indeksi.
+	// Selected is the index of the item under the mouse (hover) or selected with the keyboard.
 	Selected int
+
+	// Handlers, built once, and the last frame's callbacks they call.
+	onButton     func()
+	onItem       []func()
+	onHover      []func(driver.MouseEvent)
+	lastHandlers []func()
+	id           string
+	setFocus     func(string)
 }
 
-// NewPopupState, yeni bir PopupState nesnesi oluşturur.
+func (ps *PopupState) focus() {
+	if ps.setFocus != nil {
+		ps.setFocus(ps.id)
+	}
+}
+
+// buttonHandler focuses the popup and opens or closes it. Built once.
+func (ps *PopupState) buttonHandler() func() {
+	if ps.onButton == nil {
+		ps.onButton = func() {
+			ps.focus()
+			ps.Toggle()
+		}
+	}
+	return ps.onButton
+}
+
+// itemHandlers returns item i's click (close, then run its Handler) and hover
+// (select it) handlers, built once per state and index.
+func (ps *PopupState) itemHandlers(i int) (func(), func(driver.MouseEvent)) {
+	for len(ps.onItem) <= i {
+		index := len(ps.onItem)
+		ps.onItem = append(ps.onItem, func() {
+			ps.focus()
+			ps.Close()
+			if index < len(ps.lastHandlers) && ps.lastHandlers[index] != nil {
+				ps.lastHandlers[index]()
+			}
+		})
+		ps.onHover = append(ps.onHover, func(ev driver.MouseEvent) {
+			if ev.Button == driver.MouseNone {
+				ps.Selected = index
+			}
+		})
+	}
+	return ps.onItem[i], ps.onHover[i]
+}
+
+// NewPopupState returns a new PopupState.
 func NewPopupState() *PopupState {
 	return &PopupState{
 		IsOpen:   false,
@@ -32,19 +78,19 @@ func NewPopupState() *PopupState {
 	}
 }
 
-// Open, menüyü açar.
+// Open opens the menu.
 func (ps *PopupState) Open() {
 	ps.IsOpen = true
 	ps.Selected = -1
 }
 
-// Close, menüyü kapatır.
+// Close closes the menu.
 func (ps *PopupState) Close() {
 	ps.IsOpen = false
 	ps.Selected = -1
 }
 
-// Toggle, menünün açık/kapalı durumunu değiştirir.
+// Toggle opens or closes the menu.
 func (ps *PopupState) Toggle() {
 	if ps.IsOpen {
 		ps.Close()
@@ -53,7 +99,7 @@ func (ps *PopupState) Toggle() {
 	}
 }
 
-// Next, seçimi bir sonraki öğeye taşır (disabled öğeleri atlar).
+// Next moves the selection to the next item (skipping disabled ones).
 func (ps *PopupState) Next(totalItems int) {
 	if totalItems <= 0 {
 		return
@@ -64,53 +110,53 @@ func (ps *PopupState) Next(totalItems int) {
 	}
 }
 
-// Prev, seçimi bir önceki öğeye taşır (disabled öğeleri atlar).
+// Prev moves the selection to the previous item (skipping disabled ones).
 func (ps *PopupState) Prev() {
 	if ps.Selected > 0 {
 		ps.Selected--
 	}
 }
 
-// Popup, açılır menü (dropdown) widget'ıdır.
-// Başlangıç butonuna tıklandığında aşağı doğru bir menü listesi açılır.
-// Her öğe tıklanabilir ve odaklanabilir. Menü alanı dışına tıklandığında kapanır.
+// Popup is a dropdown menu widget.
+// Clicking its button opens a menu list below it.
+// Every item is clickable and focusable. A click outside the menu closes it.
 type Popup struct {
-	// ID, popup'ın benzersiz tanımlayıcısıdır.
+	// ID uniquely identifies the popup.
 	ID string
-	// Label, buton üzerindeki başlangıç metnidir.
+	// Label is the text on the button.
 	Label string
-	// Items, menüdeki öğelerin listesidir.
+	// Items is the list of menu items.
 	Items []PopupItem
-	// State, popup'ın açık/kapalı ve seçim durumunu yönetir.
+	// State holds whether the popup is open and what is selected.
 	State *PopupState
-	// Style, buton ve menü arka plan stilini belirler.
+	// Style sets the button and menu background style.
 	Style cell.Style
-	// ItemStyle, menü öğelerinin normal stilini belirler.
+	// ItemStyle sets the normal style of the menu items.
 	ItemStyle cell.Style
-	// SelectedStyle, menü öğesinin fare sobre kaldığında/klavye ile seçili olduğundaki stilidir.
+	// SelectedStyle is the style of a menu item under the mouse or selected with the keyboard.
 	SelectedStyle cell.Style
-	// DisabledStyle, devre dışı bırakılmış menü öğelerinin stilidir.
+	// DisabledStyle is the style of disabled menu items.
 	DisabledStyle cell.Style
-	// BorderStyle, menü kenarlığının stilini belirler.
+	// BorderStyle sets the style of the menu border.
 	BorderStyle cell.Style
-	// BorderSymbols, menü kenarlık sembollerini belirler.
+	// BorderSymbols sets the menu border symbols.
 	BorderSymbols BorderSymbols
 }
 
-// Draw, popup butonunu ve açık durumdaysa menü listesini çizer.
-// Menü açıldığında, her öğe için tıklama alanları ve odak bölgeleri kaydedilir.
+// Draw draws the popup button and, when open, the menu list.
+// When the menu is open, a click area and focus region are registered for each item.
 func (p Popup) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if p.ID == "" || ctx.Area.Width == 0 || ctx.Area.Height == 0 {
 		return
 	}
 
-	// 1. BUTON ÇİZİMİ (Her zaman görünür)
+	// 1. THE BUTTON (always visible)
 	btnStyle := ctx.Style.Merge(p.Style)
 	btnText := " " + p.Label + " ▾ "
 	btnW := uint16(cell.StringWidth(btnText))
 	btnH := uint16(1)
 
-	// Buton arka planını doldur
+	// Fill the button background
 	for dx := uint16(0); dx < ctx.Area.Width; dx++ {
 		if c := buf.Get(ctx.Area.X+dx, ctx.Area.Y); c != nil {
 			c.Content = ' '
@@ -118,35 +164,37 @@ func (p Popup) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
-	// Buton metnini yaz
+	// Draw button text
 	setClipped(buf, ctx.Area.X, ctx.Area.Y, btnText, btnStyle, int(ctx.Area.Width))
 	_ = btnW
 	_ = btnH
 
-	// Buton tıklama alanını kaydet
+	// Register the button's click area
 	if ctx.RegisterClick != nil {
 		btnArea := cell.NewRect(ctx.Area.X, ctx.Area.Y, ctx.Area.Width, 1)
-		ctx.RegisterClick(btnArea, func() {
-			if ctx.SetFocus != nil {
-				ctx.SetFocus(p.ID)
+		if p.State != nil {
+			p.State.id, p.State.setFocus = p.ID, ctx.SetFocus
+			p.State.lastHandlers = p.State.lastHandlers[:0]
+			for _, item := range p.Items {
+				p.State.lastHandlers = append(p.State.lastHandlers, item.Handler)
 			}
-			if p.State != nil {
-				p.State.Toggle()
-			}
-		})
+			ctx.RegisterClick(btnArea, p.State.buttonHandler())
+		} else if setFocus, id := ctx.SetFocus, p.ID; setFocus != nil {
+			ctx.RegisterClick(btnArea, func() { setFocus(id) })
+		}
 	}
 
-	// Odaklanabilir olarak kaydet
+	// Register as focusable
 	if ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(p.ID)
 	}
 
-	// 2. MENÜ LİSTESİ ÇİZİMİ (Sadece açıksa)
+	// 2. THE MENU LIST (only when open)
 	if p.State == nil || !p.State.IsOpen {
 		return
 	}
 
-	// Menü genişliğini en uzun öğeye göre hesapla
+	// Work out the menu width from the longest item
 	menuW := uint16(0)
 	for _, item := range p.Items {
 		itemLen := uint16(cell.StringWidth(item.Text)) + 2 // " " padding
@@ -154,18 +202,18 @@ func (p Popup) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			menuW = itemLen
 		}
 	}
-	// Minimum genişlik: buton genişliği
+	// Minimum width: the button's width
 	if menuW < ctx.Area.Width {
 		menuW = ctx.Area.Width
 	}
-	// Menü yüksekliği: kenarlık (2) + öğeler
+	// Menu height: border (2) + items
 	menuH := uint16(len(p.Items)) + 2
 
-	// Menü alanı (butonun hemen altında)
+	// Menu area (right below the button)
 	menuX := ctx.Area.X
 	menuY := ctx.Area.Y + 1
 
-	// Menü arka planını doldur
+	// Fill the menu background
 	menuBgStyle := ctx.Style.Merge(p.Style)
 	for dy := uint16(0); dy < menuH; dy++ {
 		for dx := uint16(0); dx < menuW; dx++ {
@@ -178,34 +226,45 @@ func (p Popup) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 
-	// Menü kenarlığını çiz
+	// Draw the menu border
 	borderStyle := ctx.Style.Merge(p.BorderStyle)
 	sym := p.BorderSymbols
 	if sym.TopLeft == 0 {
 		sym = SymbolsRounded
 	}
 
-	// Köşeler
+	// Corners
 	buf.SetCell(menuX, menuY, cell.Cell{Content: sym.TopLeft, Style: borderStyle})
 	buf.SetCell(menuX+menuW-1, menuY, cell.Cell{Content: sym.TopRight, Style: borderStyle})
 	buf.SetCell(menuX, menuY+menuH-1, cell.Cell{Content: sym.BottomLeft, Style: borderStyle})
 	buf.SetCell(menuX+menuW-1, menuY+menuH-1, cell.Cell{Content: sym.BottomRight, Style: borderStyle})
 
-	// Yatay kenarlıklar
+	// Horizontal borders
 	for col := menuX + 1; col < menuX+menuW-1; col++ {
 		buf.SetCell(col, menuY, cell.Cell{Content: sym.Horizontal, Style: borderStyle})
 		buf.SetCell(col, menuY+menuH-1, cell.Cell{Content: sym.Horizontal, Style: borderStyle})
 	}
 
-	// Dikey kenarlıklar
+	// Vertical borders
 	for row := menuY + 1; row < menuY+menuH-1; row++ {
 		buf.SetCell(menuX, row, cell.Cell{Content: sym.Vertical, Style: borderStyle})
 		buf.SetCell(menuX+menuW-1, row, cell.Cell{Content: sym.Vertical, Style: borderStyle})
 	}
 
-	// Menü öğelerini çiz
+	// Hover regions first: the region registered last wins a left click, and
+	// with hover registered after the click regions, a click on an item
+	// reached the hover handler, which ignores clicks, and the menu never
+	// ran the item.
+	for i := range p.Items {
+		if !p.Items[i].Disabled && ctx.RegisterMouse != nil {
+			_, hover := p.State.itemHandlers(i)
+			ctx.RegisterMouse(cell.NewRect(menuX, menuY+uint16(i)+1, menuW, 1), hover)
+		}
+	}
+
+	// Draw the menu items
 	for i, item := range p.Items {
-		itemY := menuY + uint16(i) + 1 // Kenarlık payı
+		itemY := menuY + uint16(i) + 1 // Border allowance
 		isSelected := p.State.Selected == i
 
 		itemStyle := menuBgStyle.Merge(p.ItemStyle)
@@ -215,7 +274,7 @@ func (p Popup) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			itemStyle = menuBgStyle.Merge(p.SelectedStyle)
 		}
 
-		// Öğe arka planını doldur
+		// Fill the item background
 		for dx := uint16(1); dx < menuW-1; dx++ {
 			x := menuX + dx
 			if c := buf.Get(x, itemY); c != nil {
@@ -224,53 +283,26 @@ func (p Popup) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			}
 		}
 
-		// Öğe metnini yaz (kenarlık payıyla)
+		// Write the item text (inside the border)
 		displayText := " " + item.Text
 		setClipped(buf, menuX+1, itemY, displayText, itemStyle, int(menuW)-2)
 
-		// Seçili öğe göstergesi
+		// Selected item marker
 		if isSelected && !item.Disabled {
 			checkMark := "▸"
 			buf.SetString(menuX+1, itemY, checkMark, itemStyle)
 		}
 
-		// Tıklama alanını kaydet
+		// Register the click area
 		if ctx.RegisterClick != nil && !item.Disabled {
-			itemArea := cell.NewRect(menuX, itemY, menuW, 1)
-			handler := item.Handler
-			itemIndex := i
-			ctx.RegisterClick(itemArea, func() {
-				if ctx.SetFocus != nil {
-					ctx.SetFocus(p.ID)
-				}
-				if p.State != nil {
-					p.State.Close()
-				}
-				if handler != nil {
-					handler()
-				}
-				_ = itemIndex
-			})
+			click, _ := p.State.itemHandlers(i)
+			ctx.RegisterClick(cell.NewRect(menuX, itemY, menuW, 1), click)
 		}
 	}
 
-	// Fare sobre (hover) olaylarını kaydet: Menü öğelerinin üzerinde gezinirken seçimi güncelle
-	for i := range p.Items {
-		if !p.Items[i].Disabled {
-			itemArea := cell.NewRect(menuX, menuY+uint16(i)+1, menuW, 1)
-			hoverIdx := i
-			if ctx.RegisterMouse != nil {
-				ctx.RegisterMouse(itemArea, func(ev driver.MouseEvent) {
-					if ev.Button == driver.MouseNone && p.State != nil {
-						p.State.Selected = hoverIdx
-					}
-				})
-			}
-		}
-	}
 }
 
-// SizeHint, popup'ın buton yüksekliğini ve varsayılan genişliğini döndürür.
+// SizeHint returns the popup button's height and default width.
 func (p Popup) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	btnW := uint16(cell.StringWidth(p.Label)) + 4 // " ▾ " padding
 	if btnW > maxArea.Width {

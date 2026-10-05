@@ -13,8 +13,8 @@ const (
 	DirRight
 )
 
-// FocusManager, TUI ekranında çizilen interaktif bileşenlerin odak (focus) durumlarını
-// ve Tab / Shift+Tab navigasyon sırasını yönetir.
+// FocusManager tracks the focus state of the interactive components drawn on the
+// screen and the Tab / Shift+Tab navigation order.
 type FocusManager struct {
 	focusedID  string
 	focusable  []string
@@ -30,7 +30,7 @@ type FocusManager struct {
 	lastBounds    map[string]cell.Rect
 }
 
-// NewFocusManager, yeni bir FocusManager örneği oluşturur.
+// NewFocusManager returns a new FocusManager.
 func NewFocusManager() *FocusManager {
 	return &FocusManager{
 		focusable:  make([]string, 0, 16),
@@ -40,13 +40,13 @@ func NewFocusManager() *FocusManager {
 	}
 }
 
-// Register, bu çizim karesinde odaklanabilir bir bileşenin ID'sini kaydeder.
-// Eğer henüz odaklanmış bir bileşen yoksa, ilk kaydedilen bileşen otomatik odaklanır.
+// Register records the ID of a focusable component drawn in this frame.
+// If nothing is focused yet, the first component registered takes the focus.
 func (fm *FocusManager) Register(id string) {
 	if id == "" {
 		return
 	}
-	// Zaten kayıtlıysa ekleme
+	// Already registered: do not add it again
 	for _, fld := range fm.focusable {
 		if fld == id {
 			return
@@ -68,7 +68,7 @@ func (fm *FocusManager) Register(id string) {
 		}
 	}
 
-	// Eğer başlangıçta hiçbir odak seçili değilse, ilk odağı buraya ver
+	// If nothing was focused at the start, give it the focus here
 	if fm.focusedID == "" {
 		fm.focusedID = id
 	}
@@ -109,7 +109,7 @@ func (fm *FocusManager) ActiveScopes() []string {
 	return res
 }
 
-// Focused, aktif olarak odaklanmış olan widget'ın ID'sini döndürür.
+// Focused returns the ID of the focused widget.
 func (fm *FocusManager) Focused() string {
 	return fm.focusedID
 }
@@ -127,12 +127,12 @@ func (fm *FocusManager) FocusableIDs() []string {
 // IsFocused reports whether id currently owns the focus.
 func (fm *FocusManager) IsFocused(id string) bool { return id != "" && fm.focusedID == id }
 
-// SetFocused, aktif odaklanan widget ID'sini manuel olarak ayarlar.
+// SetFocused sets the focused widget ID by hand.
 func (fm *FocusManager) SetFocused(id string) {
 	fm.focusedID = id
 }
 
-// Clear, çizim karesi başında odaklanabilir elemanlar listesini temizler.
+// Clear empties the list of focusable elements at the start of a frame.
 func (fm *FocusManager) Clear() {
 	// Keep this frame's registrations for navigation that happens before the
 	// next frame registers its own. Swapping rather than copying the bounds
@@ -150,7 +150,7 @@ func (fm *FocusManager) Clear() {
 	clear(fm.bounds)
 }
 
-// Next, odağı listedeki bir sonraki elemana geçirir.
+// Next moves the focus to the next element in the list.
 func (fm *FocusManager) Next() {
 	items := fm.navigationItems()
 	if len(items) == 0 {
@@ -184,7 +184,7 @@ func (fm *FocusManager) NextExcluding(prefix string) {
 	}
 }
 
-// Prev, odağı listedeki bir önceki elemana geçirir.
+// Prev moves the focus to the previous element in the list.
 func (fm *FocusManager) Prev() {
 	items := fm.navigationItems()
 	if len(items) == 0 {

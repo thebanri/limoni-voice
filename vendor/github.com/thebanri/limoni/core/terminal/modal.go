@@ -2,40 +2,40 @@ package terminal
 
 import "github.com/thebanri/limoni/core/cell"
 
-// Modal, katmanlı çizimde (layered rendering) üstte duran ve olayları filtreleyen modal pencere bilgisini saklar.
+// Modal holds the modal window that sits on top in layered rendering and filters events.
 type Modal struct {
 	ID           string
 	Area         cell.Rect
 	ClickOutside func()
 }
 
-// LayerType, katman türünü tanımlar.
+// LayerType is the kind of a layer.
 type LayerType uint8
 
 const (
-	// LayerModal, odak kilitli (focus-trapped) modal pencere katmanıdır.
+	// LayerModal is a modal window layer that traps the focus.
 	LayerModal LayerType = iota
-	// LayerPopup, açılır menü (dropdown) gibi hafif katman türüdür. Odak kilidi yoktur.
+	// LayerPopup is a light layer, such as a dropdown menu. It does not trap the focus.
 	LayerPopup
 )
 
-// Layer, katmanlı render sisteminde tek bir üst üste binen çizim katmanını temsil eder.
-// Her katman, kendi alanı içindeki olayları filtreler ve alt katmanlara sızmasını engeller.
-// Z-Index değeri büyüdükçe katman üst üste biner (en büyük z-index en üstte).
+// Layer is one overlapping drawing layer in the layered rendering system.
+// Each layer filters the events inside its area and keeps them from leaking to the layers below.
+// Layers with a larger Z-Index sit on top (the largest z-index is topmost).
 type Layer struct {
-	// ID, katmanın benzersiz tanımlayıcısıdır.
+	// ID uniquely identifies the layer.
 	ID string
-	// Type, katmanın türünü (Modal veya Popup) belirtir.
+	// Type is the kind of layer (Modal or Popup).
 	Type LayerType
-	// Area, katmanın kapladığı ekran alanıdır.
+	// Area is the part of the screen the layer covers.
 	Area cell.Rect
-	// ClickOutside, modal alanı dışına tıklandığında tetiklenen callback fonksiyonudur.
+	// ClickOutside is called when a click lands outside the modal's area.
 	ClickOutside func()
-	// ZIndex, katmanın çizim sırasını belirler. Büyük değer = üstte.
+	// ZIndex sets the layer's drawing order. Larger is higher.
 	ZIndex int
 }
 
-// ContainsRect, child alanının tamamen parent alanı içinde olup olmadığını sorgular.
+// ContainsRect reports whether child lies entirely within parent.
 func ContainsRect(parent, child cell.Rect) bool {
 	return child.X >= parent.X &&
 		child.Y >= parent.Y &&
@@ -43,7 +43,7 @@ func ContainsRect(parent, child cell.Rect) bool {
 		int(child.Y)+int(child.Height) <= int(parent.Y)+int(parent.Height)
 }
 
-// Intersects, iki dikdörtgenin kesişip kesişmediğini denetler.
+// Intersects reports whether two rectangles intersect.
 func Intersects(r1, r2 cell.Rect) bool {
 	return r1.X < r2.X+r2.Width &&
 		r2.X < r1.X+r1.Width &&
@@ -51,7 +51,7 @@ func Intersects(r1, r2 cell.Rect) bool {
 		r2.Y < r1.Y+r1.Height
 }
 
-// CenterRect, belirtilen genişlik ve yükseklikte, parent alanının tam ortasında konumlanmış bir dikdörtgen hesaplar.
+// CenterRect returns a rectangle of the given width and height centred in parent.
 func CenterRect(parent cell.Rect, w, h uint16) cell.Rect {
 	if w > parent.Width {
 		w = parent.Width
@@ -66,8 +66,8 @@ func CenterRect(parent cell.Rect, w, h uint16) cell.Rect {
 	return cell.NewRect(x, y, w, h)
 }
 
-// ScaleRect, bir dikdörtgen alanını belirtilen ilerleme yüzdesine (0.0 -> 1.0) göre
-// merkez noktasını koruyarak yeniden ölçeklendirir.
+// ScaleRect scales a rectangle by the given progress (0.0 -> 1.0),
+// keeping its centre where it is.
 func ScaleRect(base cell.Rect, progress float64) cell.Rect {
 	if progress <= 0 {
 		return cell.NewRect(base.X+base.Width/2, base.Y+base.Height/2, 0, 0)
@@ -79,7 +79,7 @@ func ScaleRect(base cell.Rect, progress float64) cell.Rect {
 	w := uint16(float64(base.Width) * progress)
 	h := uint16(float64(base.Height) * progress)
 
-	// Jitter (titreme) ve sub-pixel hizalama kaymalarını önlemek için w ve h değerlerini çifte yuvarla
+	// Round w and h to even numbers to avoid jitter and sub-pixel alignment drift
 	if w%2 != 0 && w < base.Width {
 		w++
 	}
@@ -93,8 +93,8 @@ func ScaleRect(base cell.Rect, progress float64) cell.Rect {
 	return cell.NewRect(x, y, w, h)
 }
 
-// SlideUpRect, bir dikdörtgeni alt kenardan (ekranın dışından) hedef dikey koordinata (Y) doğru
-// belirtilen ilerleme yüzdesine (0.0 -> 1.0) göre pürüzsüzce kaydırır.
+// SlideUpRect slides a rectangle smoothly from below the bottom edge (off screen) up to its
+// target row (Y), by the given progress (0.0 -> 1.0).
 func SlideUpRect(base cell.Rect, parentHeight uint16, progress float64) cell.Rect {
 	if progress <= 0 {
 		return cell.NewRect(base.X, parentHeight, base.Width, base.Height)

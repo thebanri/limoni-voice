@@ -30,8 +30,8 @@ func parseReads(reads [][]byte) []driver.Event {
 
 // A paste longer than one console read arrives in pieces; until its end marker comes the
 // parser must wait instead of turning the text into key presses (which opened the settings
-// with "t" and flipped options). Guards the patch in vendor/.../core/driver/parser.go, which
-// `go mod vendor` removes.
+// with "t" and flipped options). Fixed in Limoni v0.11.1; this was once a patch in vendor/,
+// which `go mod vendor` removes.
 func TestLongPasteArrivingInPieces(t *testing.T) {
 	text := strings.Repeat("Relay: Connected (wss://relay) RTT 117ms\ttest mute deafen\n", 110) // ~6 KB
 	stream := []byte("\x1b[200~" + text + "\x1b[201~" + "x")

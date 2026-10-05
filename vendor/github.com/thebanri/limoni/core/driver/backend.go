@@ -31,6 +31,10 @@ type Backend struct {
 	mu         sync.RWMutex
 	replies    replyCollector
 	looping    atomic.Bool // the event loop that reads replies is running
+	reader     *ttyReader  // reads the terminal; paused while it is released
+	released   atomic.Bool // the terminal belongs to another program (Release)
+	setUp      bool        // Setup has run
+	mouse      mouseCapture
 }
 
 // SetInline switches the backend to inline rendering: no alternate screen, the
@@ -100,14 +104,21 @@ func (b *Backend) SetSize(w, h uint16) {
 
 // Setup switches the terminal into raw mode and sends screen setup escape codes
 // (alternate screen buffer, hide cursor, SGR mouse tracking, focus in/out reporting, bracketed paste, disable auto-wrap).
+//
+// A second call does nothing: limoni.New sets the backend up and
+// Program.RunTerminal sets up the backend it is given, and a second raw mode
+// recorded the raw terminal as the one to restore, so Close left the shell
+// with no echo and no line editing.
 func (b *Backend) Setup() error {
+	if b.setUp {
+		return nil
+	}
+	b.setUp = true
 	// Inline mode keeps the normal screen buffer and leaves auto-wrap on: the
 	// frame lives among the user's scrollback rather than replacing it, and a
 	// row that overflows should wrap the way ordinary terminal output does.
-	setupCmds := fullScreenSetupCmds()
-	if height := b.Inline(); height > 0 {
-		setupCmds = inlineSetupCmds(height)
-	}
+	setupCmds := setupSequence(b.Inline(), b.mouse.enabled())
+	b.mouse.active.Store(true)
 	setupCmds = b.replies.withProbe(setupCmds)
 	if b.portableIO != nil {
 		_, err := b.portableIO.Write([]byte(setupCmds))
@@ -117,6 +128,7 @@ func (b *Backend) Setup() error {
 	// Enter raw mode
 	state, err := MakeRaw(int(b.in.Fd()))
 	if err != nil {
+		b.setUp = false
 		return fmt.Errorf("failed to put terminal in raw mode: %w", err)
 	}
 	b.state = state
@@ -193,138 +205,50 @@ func (b *Backend) StartEventLoop() {
 
 func (b *Backend) startEventLoop() {
 	if b.portableIO != nil {
-		inputChan := make(chan []byte, 32)
-		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := b.portableIO.Read(buf)
-				if err != nil {
-					close(inputChan)
-					return
-				}
-				if n > 0 {
-					temp := make([]byte, n)
-					copy(temp, buf[:n])
-					select {
-					case inputChan <- temp:
-					case <-b.done:
-						return
-					}
-				}
+		// No SIGWINCH from a portable terminal: poll its size instead.
+		poll := func() (uint16, uint16, bool) {
+			w, h, err := b.portableIO.Size()
+			if err != nil {
+				return 0, 0, false
 			}
-		}()
-
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			if w == b.width && h == b.height {
+				return w, h, false
+			}
+			b.width, b.height = w, h
+			return w, h, true
+		}
+		ticker := time.NewTicker(250 * time.Millisecond)
 		go func() {
-			var readBuf []byte
-			const escTimeoutDuration = 25 * time.Millisecond
-			var escTimer *time.Timer
-			var escTimerChan <-chan time.Time
-
-			ticker := time.NewTicker(250 * time.Millisecond)
 			defer ticker.Stop()
-
-			for {
-				select {
-				case <-b.done:
-					if escTimer != nil {
-						escTimer.Stop()
-					}
-					return
-
-				case <-ticker.C:
-					if w, h, err := b.portableIO.Size(); err == nil {
-						b.mu.Lock()
-						if w != b.width || h != b.height {
-							b.width, b.height = w, h
-							b.mu.Unlock()
-							select {
-							case b.events <- Event{
-								Type: EventResize,
-								Resize: ResizeEvent{
-									Width:  w,
-									Height: h,
-								},
-							}:
-							case <-b.done:
-								return
-							}
-						} else {
-							b.mu.Unlock()
-						}
-					}
-
-				case chunk, ok := <-inputChan:
-					if !ok {
-						return
-					}
-					readBuf = append(readBuf, chunk...)
-					if escTimer != nil {
-						escTimer.Stop()
-						escTimer = nil
-						escTimerChan = nil
-					}
-
-					for len(readBuf) > 0 {
-						ev, consumed := ParseBracketedPaste(readBuf)
-						if consumed == 0 {
-							ev, consumed = ParseEvent(readBuf)
-						}
-						if consumed > 0 {
-							if ev.Type != EventNone && !b.replies.record(ev) {
-								select {
-								case b.events <- ev:
-								case <-b.done:
-									return
-								}
-							}
-							readBuf = readBuf[consumed:]
-						} else {
-							break
-						}
-					}
-
-					if len(readBuf) == 1 && readBuf[0] == '\x1b' {
-						escTimer = time.NewTimer(escTimeoutDuration)
-						escTimerChan = escTimer.C
-					}
-
-				case <-escTimerChan:
-					if len(readBuf) == 1 && readBuf[0] == '\x1b' {
-						select {
-						case b.events <- Event{
-							Type: EventKey,
-							Key: KeyEvent{
-								Type: KeyEsc,
-							},
-						}:
-						case <-b.done:
-							return
-						}
-						readBuf = readBuf[:0]
-					}
-					escTimer = nil
-					escTimerChan = nil
-				}
-			}
+			b.parseInput(readChunks(b.portableIO, 1024, b.done), ticker.C, poll)
 		}()
 		return
 	}
 
-	// 1. SIGWINCH (Pencere boyut değişimi) yakalayıcıyı başlat
+	// 1. Start the SIGWINCH (window resize) handler
 	b.sigWinch = make(chan os.Signal, 1)
 	signal.Notify(b.sigWinch, unix.SIGWINCH)
 
-	// Harici sonlandırma sinyalleri (SIGINT, SIGTERM) geldiğinde terminali koru
+	// Protect the terminal when an external termination signal (SIGINT, SIGTERM) arrives
 	sigTerm := make(chan os.Signal, 1)
 	signal.Notify(sigTerm, os.Interrupt, unix.SIGTERM)
 	go func() {
-		select {
-		case <-sigTerm:
-			_ = b.Close()
-			os.Exit(130)
-		case <-b.done:
-			signal.Stop(sigTerm)
-			return
+		for {
+			select {
+			case sig := <-sigTerm:
+				// Ctrl+C in a program the terminal was released to reaches
+				// this process too; that program is the one to stop.
+				if sig == os.Interrupt && b.released.Load() {
+					continue
+				}
+				_ = b.Close()
+				os.Exit(130)
+			case <-b.done:
+				signal.Stop(sigTerm)
+				return
+			}
 		}
 	}()
 
@@ -353,108 +277,18 @@ func (b *Backend) startEventLoop() {
 		}
 	}()
 
-	// 2. TTY Girdi Okuyucu ve ESC Zaman Aşımı Olay Döngüsünü başlat
-	inputChan := make(chan []byte, 32)
-	go func() {
-		buf := make([]byte, 512)
-		for {
-			n, err := b.in.Read(buf)
-			if err != nil {
-				// Hata durumunda veya dosya kapandığında okuyucu goroutine sonlanır
-				close(inputChan)
-				return
-			}
-			if n > 0 {
-				temp := make([]byte, n)
-				copy(temp, buf[:n])
-				select {
-				case inputChan <- temp:
-				case <-b.done:
-					return
-				}
-			}
-		}
-	}()
-
-	go func() {
-		var readBuf []byte
-		const escTimeoutDuration = 25 * time.Millisecond
-		var escTimer *time.Timer
-		var escTimerChan <-chan time.Time
-
-		for {
-			select {
-			case <-b.done:
-				if escTimer != nil {
-					escTimer.Stop()
-				}
-				return
-
-			case chunk, ok := <-inputChan:
-				if !ok {
-					return
-				}
-				readBuf = append(readBuf, chunk...)
-
-				// Eğer ESC zamanlayıcı aktifse durdur (yeni karakter geldi, escape sequence devam ediyor olabilir)
-				if escTimer != nil {
-					escTimer.Stop()
-					escTimer = nil
-					escTimerChan = nil
-				}
-
-				// Tamponu ayrıştır
-				for len(readBuf) > 0 {
-					ev, consumed := ParseBracketedPaste(readBuf)
-					if consumed == 0 {
-						ev, consumed = ParseEvent(readBuf)
-					}
-					if consumed > 0 {
-						if ev.Type != EventNone && !b.replies.record(ev) {
-							select {
-							case b.events <- ev:
-							case <-b.done:
-								return
-							}
-						}
-						readBuf = readBuf[consumed:]
-					} else {
-						// Tamamlanmamış bir dizi var
-						break
-					}
-				}
-
-				// Eğer tamponda sadece tek bir '\x1b' (Escape) kaldıysa, ESC tuşu olup olmadığını
-				// anlamak için bir zaman aşımı başlatıyoruz.
-				if len(readBuf) == 1 && readBuf[0] == '\x1b' {
-					escTimer = time.NewTimer(escTimeoutDuration)
-					escTimerChan = escTimer.C
-				}
-
-			case <-escTimerChan:
-				// Zaman aşımı doldu ve yeni byte gelmedi. Bu durumda tamponda bekleyen '\x1b'
-				// doğrudan ESC tuşu basımı olarak kabul edilir.
-				if len(readBuf) == 1 && readBuf[0] == '\x1b' {
-					select {
-					case b.events <- Event{
-						Type: EventKey,
-						Key: KeyEvent{
-							Type: KeyEsc,
-						},
-					}:
-					case <-b.done:
-						return
-					}
-					readBuf = readBuf[:0]
-				}
-				escTimer = nil
-				escTimerChan = nil
-			}
-		}
-	}()
+	// 2. Read the TTY and turn its bytes into events. The reader can be
+	// paused, so Release can hand the terminal to another program.
+	r, err := newTTYReader(b.in)
+	if err != nil {
+		go b.parseInput(readChunks(b.in, 512, b.done), nil, nil)
+		return
+	}
+	b.reader = r
+	go b.parseInput(r.chunks(512, b.done), nil, nil)
 }
 
-// Size terminal pencerisinin mevcut satır ve sütun boyutunu döner.
+// Size returns the terminal window's current rows and columns.
 func (b *Backend) Size() (uint16, uint16, error) {
 	if b.portableIO != nil {
 		b.mu.RLock()
@@ -469,8 +303,8 @@ func (b *Backend) Size() (uint16, uint16, error) {
 	return ws.Col, ws.Row, nil
 }
 
-// CellPixelSize terminal hücresinin piksel cinsinden genişlik ve yüksekliğini döner.
-// Eğer terminal piksel bilgilerini raporlamıyorsa veya hata oluşursa varsayılan olarak (10, 20) döner.
+// CellPixelSize returns the width and height of a terminal cell in pixels.
+// If the terminal does not report pixel sizes, or an error occurs, it returns (10, 20).
 func (b *Backend) CellPixelSize() (uint16, uint16, error) {
 	if b.portableIO != nil {
 		return 10, 20, nil
@@ -486,7 +320,7 @@ func (b *Backend) CellPixelSize() (uint16, uint16, error) {
 	return ws.Xpixel / ws.Col, ws.Ypixel / ws.Row, nil
 }
 
-// Write doğrudan terminal çıkışına veri yazar.
+// Write writes data straight to the terminal output.
 func (b *Backend) Write(p []byte) (int, error) {
 	if b.portableIO != nil {
 		return b.portableIO.Write(p)
@@ -494,8 +328,8 @@ func (b *Backend) Write(p []byte) (int, error) {
 	return b.out.Write(p)
 }
 
-// StartSyncUpdate modern terminallerde senkron güncellemeyi başlatır (\x1b[?2026h).
-// Bu ekran yırtılmalarını (tearing/flicker) engeller.
+// StartSyncUpdate begins a synchronised update on modern terminals (\x1b[?2026h).
+// This prevents tearing and flicker.
 func (b *Backend) StartSyncUpdate() {
 	if b.portableIO != nil {
 		_, _ = b.portableIO.Write([]byte("\x1b[?2026h"))
@@ -504,7 +338,7 @@ func (b *Backend) StartSyncUpdate() {
 	b.out.WriteString("\x1b[?2026h")
 }
 
-// EndSyncUpdate senkron güncellemeyi kapatır (\x1b[?2026l).
+// EndSyncUpdate ends the synchronised update (\x1b[?2026l).
 func (b *Backend) EndSyncUpdate() {
 	if b.portableIO != nil {
 		_, _ = b.portableIO.Write([]byte("\x1b[?2026l"))

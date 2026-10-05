@@ -54,7 +54,7 @@ func (t Transducer) Draw(ctx cell.Context, buf *buffer.Buffer) {
 					continue
 				}
 				c := *cellPtr
-				// Metin rengini karartarak fade-in uygula
+				// Apply fade-in by darkening text colour
 				c.Style.Fg = interpolateColor(cell.NewColorRGB(25, 25, 25), c.Style.Fg, t.Progress)
 				c.Style.Bg = interpolateColor(cell.NewColorRGB(25, 25, 25), c.Style.Bg, t.Progress)
 				buf.SetCell(ctx.Area.X+x, ctx.Area.Y+y, c)

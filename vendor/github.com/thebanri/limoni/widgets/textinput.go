@@ -237,7 +237,7 @@ func (state *TextInputState) delete() bool {
 	return true
 }
 
-// TextInput, tek satırlı bir metin girişi kutusudur.
+// TextInput is a single-line text input box.
 type TextInput struct {
 	ID               string
 	State            *TextInputState
@@ -327,7 +327,7 @@ func (ti TextInput) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		return
 	}
 
-	// Odak sistemine kaydol
+	// Register with focus system
 	if ctx.RegisterFocus != nil {
 		ctx.RegisterFocus(ti.ID)
 	}
@@ -344,13 +344,13 @@ func (ti TextInput) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		})
 	}
 
-	// Stil birleştirme
+	// Merge the styles
 	boxStyle := ctx.Style.Merge(ti.Style)
 	if isFocused {
 		boxStyle = boxStyle.Merge(ti.FocusedStyle)
 	}
 
-	// Arka planı doldur
+	// Fill the background
 	for y := ctx.Area.Y; y < ctx.Area.Y+ctx.Area.Height; y++ {
 		for x := ctx.Area.X; x < ctx.Area.X+ctx.Area.Width; x++ {
 			if c := buf.Get(x, y); c != nil {
@@ -483,15 +483,18 @@ func putGlyph(buf *buffer.Buffer, x, y uint16, r rune, width int, st cell.Style)
 }
 
 // paintCursor draws the software cursor: the cell under it inverted.
+// paintCursor marks the cell at x, y as the text cursor by drawing it in
+// reverse video: the cell's own colours swapped, so the block shows on any
+// background. It once also set black on white — which reverse video swaps
+// back to white on black, so on a dark theme a cursor over a space could not
+// be seen at all.
 func paintCursor(buf *buffer.Buffer, x, y uint16) {
 	if c := buf.Get(x, y); c != nil {
-		c.Style.Modifier |= cell.ModifierReverse | cell.ModifierBold
-		c.Style.Bg = cell.NewColorRGB(255, 255, 255)
-		c.Style.Fg = cell.NewColorRGB(0, 0, 0)
+		c.Style.Modifier |= cell.ModifierReverse
 	}
 }
 
-// SizeHint, metin giriş kutusunun tek satırlı olduğunu bildirir.
+// SizeHint reports that the text input is a single row.
 func (ti TextInput) SizeHint(maxArea cell.Rect) (width, height uint16) {
 	return maxArea.Width, 1
 }
