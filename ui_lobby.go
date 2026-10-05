@@ -9,6 +9,7 @@ import (
 
 	"github.com/thebanri/limoni-voice/assets"
 	"github.com/thebanri/limoni-voice/internal/i18n"
+	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
@@ -393,6 +394,9 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 
 	unfocusedBorder := cell.Style{Fg: theme.Border}
 	unfocusedBg := cell.Style{Bg: theme.SurfaceBg}
+	// A card out of focus keeps a dim border, but its title is text to read:
+	// in the border's colour it all but vanished on the dark themes.
+	unfocusedTitle := cell.Style{Fg: theme.TextMuted}
 
 	// 1. Nickname Block
 	isNickFocused := (l.ActiveInput == 0)
@@ -412,8 +416,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		l.ActiveInput = 0
 	})
 
+	nickTitleStyle := unfocusedTitle
+	if isNickFocused {
+		nickTitleStyle = nickBorderStyle
+	}
 	nickBlock := widgets.Block{
 		Title:         nickTitle,
+		TitleStyle:    nickTitleStyle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   nickBorderStyle,
@@ -476,8 +485,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	})
 
+	hostTitleStyle := unfocusedTitle
+	if isHostFocused {
+		hostTitleStyle = hostBorderStyle
+	}
 	hostBlock := widgets.Block{
 		Title:         hostTitle,
+		TitleStyle:    hostTitleStyle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   hostBorderStyle,
@@ -497,12 +511,12 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	if isHostFocused {
 		codeLabelStyle = cell.Style{Fg: theme.Text, Bg: hostBgStyle.Bg}
 	}
-	buf.SetString(hostInner.X, hostInner.Y, codeLabel, codeLabelStyle)
+	putClipped(buf, hostInner.X, hostInner.Y, int(hostInner.Width), codeLabel, codeLabelStyle)
 
 	keyBoxStr := fmt.Sprintf("  [ %s ]  ", l.CurrentCode)
-	buf.SetString(hostInner.X+2, hostInner.Y+1, keyBoxStr, keyStyle)
+	keyW := putClipped(buf, hostInner.X+2, hostInner.Y+1, int(hostInner.Width)-2, keyBoxStr, keyStyle)
 
-	clickable(frame, cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(len([]rune(keyBoxStr))), 1), func(_ driver.MouseEvent) {
+	clickable(frame, cell.NewRect(hostInner.X+2, hostInner.Y+1, uint16(keyW), 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 2
 		if l.OnCopyCode != nil {
 			l.OnCopyCode(l.CurrentCode)
@@ -520,8 +534,8 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Modifier: cell.ModifierBold,
 		}
 	}
-	buf.SetString(hostInner.X, hostInner.Y+3, pinCheckStr, pinCheckStyle)
-	clickable(frame, cell.NewRect(hostInner.X, hostInner.Y+3, uint16(len([]rune(pinCheckStr))), 1), func(_ driver.MouseEvent) {
+	pinW := putClipped(buf, hostInner.X, hostInner.Y+3, int(hostInner.Width), pinCheckStr, pinCheckStyle)
+	clickable(frame, cell.NewRect(hostInner.X, hostInner.Y+3, uint16(pinW), 1), func(_ driver.MouseEvent) {
 		l.IsPinProtected = !l.IsPinProtected
 		if l.IsPinProtected {
 			if l.PinState.Value() == "" {
@@ -534,11 +548,12 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		}
 	})
 
-	if l.IsPinProtected {
+	// The PIN field beside the checkbox, kept inside the card.
+	if pinX := int(hostInner.X) + pinW + 1; l.IsPinProtected && pinX < int(hostInner.X+hostInner.Width) {
 		pinInputRect := cell.Rect{
-			X:      hostInner.X + uint16(len([]rune(pinCheckStr))) + 1,
+			X:      uint16(pinX),
 			Y:      hostInner.Y + 3,
-			Width:  8,
+			Width:  uint16(min(8, int(hostInner.X+hostInner.Width)-pinX)),
 			Height: 1,
 		}
 		pinInput := widgets.TextInput{
@@ -553,39 +568,60 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		})
 	}
 
-	openLabel := T("[Enter] Open This Room")
-	copyLabel := T("[F2] Copy Code")
-	newLabel := T("[F3] New Code")
-	sep := "   •   "
-	hostBtns := openLabel + sep + copyLabel + sep + newLabel
-	buf.SetString(hostInner.X, hostInner.Y+4, hostBtns, hostBtnStyle)
-
-	openX := hostInner.X
-	openW := uint16(len([]rune(openLabel)))
-	clickable(frame, cell.NewRect(openX, hostInner.Y+4, openW, 1), func(_ driver.MouseEvent) {
-		l.ActiveInput = 2
-		if l.OnStartHost != nil {
-			l.OnStartHost()
+	// The three actions on one row, apart by the widest separator that lets
+	// all three fit; where none does, only the ones that fit whole are drawn.
+	// They used to run over the card's right border.
+	hostLabels := [...]string{T("[Enter] Open This Room"), T("[F2] Copy Code"), T("[F3] New Code")}
+	hostActions := [...]func(){
+		func() {
+			if l.OnStartHost != nil {
+				l.OnStartHost()
+			}
+		},
+		func() {
+			if l.OnCopyCode != nil {
+				l.OnCopyCode(l.CurrentCode)
+			}
+		},
+		func() {
+			if l.OnNewCode != nil {
+				l.OnNewCode()
+			}
+		},
+	}
+	sep := " · "
+	for _, wide := range []string{"   •   ", "  •  "} {
+		total := 2 * cell.StringWidth(wide)
+		for _, lab := range hostLabels {
+			total += cell.StringWidth(lab)
 		}
-	})
-
-	copyX := openX + openW + uint16(len([]rune(sep)))
-	copyW := uint16(len([]rune(copyLabel)))
-	clickable(frame, cell.NewRect(copyX, hostInner.Y+4, copyW, 1), func(_ driver.MouseEvent) {
-		l.ActiveInput = 2
-		if l.OnCopyCode != nil {
-			l.OnCopyCode(l.CurrentCode)
+		if total <= int(hostInner.Width) {
+			sep = wide
+			break
 		}
-	})
-
-	newX := copyX + copyW + uint16(len([]rune(sep)))
-	newW := uint16(len([]rune(newLabel)))
-	clickable(frame, cell.NewRect(newX, hostInner.Y+4, newW, 1), func(_ driver.MouseEvent) {
-		l.ActiveInput = 2
-		if l.OnNewCode != nil {
-			l.OnNewCode()
+	}
+	bx, bEnd := int(hostInner.X), int(hostInner.X+hostInner.Width)
+	for i, lab := range hostLabels {
+		gap := 0
+		if i > 0 {
+			gap = cell.StringWidth(sep)
 		}
-	})
+		lw := cell.StringWidth(lab)
+		if bx+gap+lw > bEnd {
+			break
+		}
+		if gap > 0 {
+			buf.SetString(uint16(bx), hostInner.Y+4, sep, hostBtnStyle)
+			bx += gap
+		}
+		buf.SetString(uint16(bx), hostInner.Y+4, lab, hostBtnStyle)
+		act := hostActions[i]
+		clickable(frame, cell.NewRect(uint16(bx), hostInner.Y+4, uint16(lw), 1), func(_ driver.MouseEvent) {
+			l.ActiveInput = 2
+			act()
+		})
+		bx += lw
+	}
 
 	// 3. Join Room Block
 	isJoinFocused := (l.ActiveInput == 1)
@@ -628,8 +664,13 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		l.ActiveInput = 1
 	})
 
+	joinTitleStyle := unfocusedTitle
+	if isJoinFocused || l.IsConnecting {
+		joinTitleStyle = joinBorderStyle
+	}
 	joinBlock := widgets.Block{
 		Title:         joinTitle,
+		TitleStyle:    joinTitleStyle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   joinBorderStyle,
@@ -652,7 +693,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	if isJoinFocused || l.IsConnecting {
 		joinLabelStyle = cell.Style{Fg: theme.Text, Bg: joinBgStyle.Bg}
 	}
-	buf.SetString(joinInner.X, joinInner.Y, joinLabel, joinLabelStyle)
+	putClipped(buf, joinInner.X, joinInner.Y, int(joinInner.Width), joinLabel, joinLabelStyle)
 
 	joinInputRect := cell.Rect{
 		X:      joinInner.X + 1,
@@ -673,7 +714,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	if l.IsConnecting {
 		joinBtns = T("⏳ [Wait] Connecting to host...   •   [Esc] Cancel")
 	}
-	buf.SetString(joinInner.X, joinInner.Y+3, joinBtns, joinBtnStyle)
+	putClipped(buf, joinInner.X, joinInner.Y+3, int(joinInner.Width), joinBtns, joinBtnStyle)
 
 	clickable(frame, cell.NewRect(joinInner.X, joinInner.Y+3, joinInner.Width, 1), func(_ driver.MouseEvent) {
 		l.ActiveInput = 1
@@ -701,6 +742,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 	bottomArea := vSplits[3]
 	botBlock := widgets.Block{
 		Title:         T(" INFO & SHORTCUTS "),
+		TitleStyle:    unfocusedTitle,
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.Border},
@@ -721,7 +763,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Bg:       theme.Accent,
 			Modifier: cell.ModifierBold,
 		}
-		buf.SetString(botInner.X+1, botInner.Y, "  "+tr(l.ToastMsg)+"  ", toastStyle)
+		putClipped(buf, botInner.X+1, botInner.Y, int(botInner.Width)-1, "  "+tr(l.ToastMsg)+"  ", toastStyle)
 	} else {
 		isCustom := IsCustomRelayActive(l.RelayURL)
 		relayBtn := T("[ R : Relay & Security Settings ]")
@@ -739,8 +781,8 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			}
 		}
 
-		buf.SetString(botInner.X+1, botInner.Y, relayBtn, relayBtnStyle)
-		clickable(frame, cell.NewRect(botInner.X+1, botInner.Y, uint16(len([]rune(relayBtn))), 1), func(_ driver.MouseEvent) {
+		relayW := putClipped(buf, botInner.X+1, botInner.Y, int(botInner.Width)-1, relayBtn, relayBtnStyle)
+		clickable(frame, cell.NewRect(botInner.X+1, botInner.Y, uint16(relayW), 1), func(_ driver.MouseEvent) {
 			if l.OnOpenRelayModal != nil {
 				l.OnOpenRelayModal()
 			}
@@ -752,8 +794,10 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			Bg:       theme.InputBg,
 			Modifier: cell.ModifierBold,
 		}
+		testShown, langShown := false, false
 		testBtnX := botInner.X + 1 + uint16(len([]rune(relayBtn))) + 2
 		if testBtnX+uint16(len([]rune(testBtn))) <= botInner.X+botInner.Width {
+			testShown = true
 			buf.SetString(testBtnX, botInner.Y, testBtn, testBtnStyle)
 			clickable(frame, cell.NewRect(testBtnX, botInner.Y, uint16(len([]rune(testBtn))), 1), func(_ driver.MouseEvent) {
 				if l.OnOpenTestModal != nil {
@@ -764,6 +808,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			langBtn := Tf("[ L : %s ]", i18n.Current().Name())
 			langBtnX := testBtnX + uint16(len([]rune(testBtn))) + 2
 			if langBtnX+uint16(len([]rune(langBtn))) <= botInner.X+botInner.Width {
+				langShown = true
 				buf.SetString(langBtnX, botInner.Y, langBtn, testBtnStyle)
 				clickable(frame, cell.NewRect(langBtnX, botInner.Y, uint16(len([]rune(langBtn))), 1), func(_ driver.MouseEvent) {
 					if l.OnCycleLanguage != nil {
@@ -779,25 +824,43 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			if l.RelayURL == "" {
 				relayInfo = T("Active Relay: Official Public Server (Railway)")
 			}
-			buf.SetString(botInner.X+1, botInner.Y+1, relayInfo, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
+			putClipped(buf, botInner.X+1, botInner.Y+1, int(botInner.Width)-1, relayInfo, cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
 			rowOffset = 2
 		}
 
+		// Only what the buttons above do not already say: R, T and L were
+		// each written two or three times.
 		helpLines := []string{
-			T("• [R] Relay & Security Settings (Click or press R)"),
-			T("• [T] or [F4] Audio & Microphone Test (Click or press T)"),
 			T("• [Tab] Switch input field • [Enter] Open / Connect"),
-			T("• [F2]/[C] Copy key • [F3]/[G] New key • [L] Language • [Esc] Exit"),
+			T("• [F2]/[C] Copy key • [F3]/[G] New key • [Esc] Exit"),
+		}
+		if !testShown {
+			helpLines = append(helpLines, T("• [T] or [F4] Audio & Microphone Test (Click or press T)"))
+		}
+		if !langShown {
+			helpLines = append(helpLines, T("• [L] Language"))
 		}
 		for i, h := range helpLines {
 			lineY := botInner.Y + rowOffset + uint16(i)
 			if lineY < botInner.Y+botInner.Height {
 				lineStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
-				if i == 0 {
-					lineStyle = cell.Style{Fg: theme.BorderFocused, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold}
-				}
-				buf.SetString(botInner.X+1, lineY, h, lineStyle)
+				putClipped(buf, botInner.X+1, lineY, int(botInner.Width)-1, h, lineStyle)
 			}
 		}
 	}
+}
+
+// putClipped writes s at x, y within w columns and returns the columns used.
+// Text that does not fit is cut and ends in "…" rather than running over the
+// card's border.
+func putClipped(buf *buffer.Buffer, x, y uint16, w int, s string, st cell.Style) int {
+	if w <= 0 {
+		return 0
+	}
+	if cell.StringWidth(s) <= w {
+		return int(buf.SetStringWithin(x, y, s, st, uint16(w)))
+	}
+	n := int(buf.SetStringWithin(x, y, s, st, uint16(w-1)))
+	buf.SetCell(x+uint16(n), y, cell.Cell{Content: '…', Style: st})
+	return n + 1
 }

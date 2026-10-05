@@ -679,6 +679,11 @@ func (a *App) handleLobbyKey(e driver.KeyEvent) {
 			a.cycleLanguage()
 		case 'q', 'Q':
 			a.openExitModal()
+		default:
+			// Typing with the room card selected went nowhere, silently.
+			if unicode.IsPrint(e.Ch) {
+				lobby.SetToast("To type: 1 for your nickname, 3 for a room key")
+			}
 		}
 	case 3:
 		switch e.Type {
