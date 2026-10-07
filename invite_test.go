@@ -3,6 +3,10 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/thebanri/limoni/core/buffer"
+	"github.com/thebanri/limoni/core/driver"
+	"github.com/thebanri/limoni/core/terminal"
 )
 
 func TestParseJoinArg(t *testing.T) {
@@ -53,20 +57,76 @@ func TestInviteLinkRoundTrip(t *testing.T) {
 	}
 }
 
-// A link from the URL handler only fills in the room; --join joins.
+// A link from the URL handler only fills in the room and asks; --join joins.
 func TestOpenInviteFromLinkNeedsConfirmation(t *testing.T) {
+	const code = "8282-amber-falcon-river"
 	lobby := NewLobbyView()
 	a := &App{lobby: lobby}
-	a.openInvite("", "limoni://join/8282-amber-falcon-river")
-	if lobby.CodeState.Value() != "8282-amber-falcon-river" || lobby.ActiveInput != 1 {
+	a.openInvite("", "limoni://join/"+code)
+	if lobby.CodeState.Value() != code || lobby.ActiveInput != 1 {
 		t.Fatalf("code not filled in: %q input=%d", lobby.CodeState.Value(), lobby.ActiveInput)
 	}
-	if lobby.IsConnecting {
-		t.Fatal("joined a room from a link without confirmation")
+	if a.pendingInvite != code {
+		t.Fatalf("invite dialog not open: %q", a.pendingInvite)
+	}
+
+	// The window may pop up while the user is typing elsewhere: an Enter right away is dropped.
+	a.handleInviteKey(driver.KeyEvent{Type: driver.KeyEnter})
+	if a.pendingInvite != code || lobby.IsConnecting {
+		t.Fatal("an Enter as the dialog opened joined the room")
+	}
+
+	a.handleInviteKey(driver.KeyEvent{Type: driver.KeyEsc})
+	if a.pendingInvite != "" || lobby.IsConnecting {
+		t.Fatalf("Esc did not close the dialog: %q", a.pendingInvite)
+	}
+	if lobby.CodeState.Value() != code {
+		t.Fatalf("declining cleared the key: %q", lobby.CodeState.Value())
 	}
 
 	a.openInvite("", "limoni://join/")
-	if lobby.ToastMsg != "Invalid room key or invite link" {
-		t.Fatalf("toast = %q", lobby.ToastMsg)
+	if lobby.ToastMsg != "Invalid room key or invite link" || a.pendingInvite != "" {
+		t.Fatalf("toast = %q, pending = %q", lobby.ToastMsg, a.pendingInvite)
+	}
+}
+
+// The invite dialog shows the room and its buttons answer clicks.
+func TestInviteModalButtons(t *testing.T) {
+	term, err := terminal.New(driver.NewPortableBackend(driver.NewMemoryTerminalIO(nil, 100, 30)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var joined, cancelled int
+	draw := func() *buffer.Buffer {
+		var buf *buffer.Buffer
+		_ = term.Draw(func(f *terminal.Frame) {
+			DrawInviteModal(f, f.Area(), "8282-amber-falcon-river", func() { joined++ }, func() { cancelled++ })
+			buf = f.Buffer
+		})
+		return buf
+	}
+	find := func(buf *buffer.Buffer, text string) (uint16, uint16) {
+		for y := uint16(0); y < buf.Area.Height; y++ {
+			if x := strings.Index(screenText(buf, y), text); x >= 0 {
+				return uint16(len([]rune(screenText(buf, y)[:x]))), y
+			}
+		}
+		t.Fatalf("%q not on screen", text)
+		return 0, 0
+	}
+
+	buf := draw()
+	find(buf, "Join this room?")
+	find(buf, "8282-amber-falcon-river")
+	x, y := find(buf, "[Esc] Cancel")
+	term.RouteMouseEvent(driver.MouseEvent{X: x + 1, Y: y, Button: driver.MouseLeft})
+	if cancelled != 1 || joined != 0 {
+		t.Fatalf("cancel click: joined=%d cancelled=%d", joined, cancelled)
+	}
+
+	x, y = find(draw(), "[Enter] Join")
+	term.RouteMouseEvent(driver.MouseEvent{X: x + 1, Y: y, Button: driver.MouseLeft})
+	if joined != 1 {
+		t.Fatalf("join click: joined=%d cancelled=%d", joined, cancelled)
 	}
 }

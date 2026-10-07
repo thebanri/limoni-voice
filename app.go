@@ -52,6 +52,8 @@ type App struct {
 	showDebugModal       bool
 	showRelayModal       bool
 	debugView            *DebugView
+	pendingInvite        string    // room key an invite link opened the app with, until answered
+	inviteShownAt        time.Time // keys are ignored for inviteArmDelay after the dialog opens
 
 	screenShareTargets     []screenshare.WindowInfo
 	selectedScreenShareIdx int

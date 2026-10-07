@@ -132,6 +132,8 @@ func (a *App) render(now time.Time) {
 				DrawTestModal(f, f.Area(), a.audio, a.node, a.toggleGlobalPTT, a.notifier.enabled.Load(), a.toggleNotificationsToast, a.cycleLanguage, a.closeTestModal)
 			case a.showExitModal || exitProg > 0.001:
 				DrawExitModal(f, f.Area(), exitProg, a.cleanExit, a.closeExitModal)
+			case a.pendingInvite != "":
+				DrawInviteModal(f, f.Area(), a.pendingInvite, a.acceptInvite, a.declineInvite)
 			}
 			drawFileOffer(f)
 		})

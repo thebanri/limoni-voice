@@ -27,7 +27,7 @@ func (a *App) handlePaste(pasted string) {
 	if pasted == "" {
 		return
 	}
-	if a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal {
+	if a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal && a.pendingInvite == "" {
 		a.pasteIntoLobby(pasted)
 	} else if a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal {
 		// Files dragged onto the terminal arrive as their paths: they are sent, not typed.
@@ -155,6 +155,9 @@ func (a *App) handleKey(e driver.KeyEvent) {
 		return
 	case a.showExitModal:
 		a.handleConfirmModalKey(e, "exit_app_dialog_btn_0", a.cleanExit, a.closeExitModal)
+		return
+	case a.currentScreen == ScreenLobby && a.pendingInvite != "":
+		a.handleInviteKey(e)
 		return
 	case a.showLeaveModal:
 		a.handleConfirmModalKey(e, "leave_room_dialog_btn_0", a.leaveRoom, a.closeLeaveModal)

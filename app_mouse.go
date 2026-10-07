@@ -40,7 +40,7 @@ func (a *App) handleMouse(m driver.MouseEvent) {
 		} else if m.Button == driver.MouseScrollDown {
 			a.debugView.ScrollBy(-chatWheelLines)
 		}
-	case a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal:
+	case a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal && a.pendingInvite == "":
 		a.handleLobbyMouse(m)
 	case a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal:
 		a.handleRoomMouse(m)

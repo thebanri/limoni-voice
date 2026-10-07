@@ -3,6 +3,12 @@ package main
 import (
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/thebanri/limoni/core/cell"
+	"github.com/thebanri/limoni/core/driver"
+	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni/widgets"
 )
 
 // inviteScheme is the URL scheme registered by the installers (Linux desktop entry, Windows
@@ -53,10 +59,14 @@ func parseJoinArg(arg string) (string, bool) {
 	return code, code != ""
 }
 
+// inviteArmDelay is how long the invite dialog ignores keys after it opens: the terminal
+// window can pop up while the user is typing elsewhere, and a stray Enter must not join.
+const inviteArmDelay = 700 * time.Millisecond
+
 // openInvite handles a room given on the command line. --join, typed by the user, joins
 // right away. A bare argument is what the limoni:// URL handler passes, and any web page
 // can open such a link: joining on it would put the user, microphone live, in a room a
-// stranger picked. That code is only filled in; pressing Enter joins.
+// stranger picked. That code is only filled in, and a dialog asks before joining.
 func (a *App) openInvite(joinFlag, urlArg string) {
 	arg, confirmed := joinFlag, true
 	if strings.TrimSpace(arg) == "" {
@@ -76,5 +86,81 @@ func (a *App) openInvite(joinFlag, urlArg string) {
 		a.joinRoom(code)
 		return
 	}
-	a.lobby.SetToast("Invite to room " + code + ": press Enter to join")
+	a.pendingInvite, a.inviteShownAt = code, time.Now()
+}
+
+// acceptInvite joins the room of the invite dialog.
+func (a *App) acceptInvite() {
+	code := a.pendingInvite
+	a.pendingInvite = ""
+	if code != "" {
+		a.joinRoom(code)
+	}
+}
+
+// declineInvite closes the invite dialog. The key stays in the join field.
+func (a *App) declineInvite() {
+	a.pendingInvite = ""
+}
+
+func (a *App) handleInviteKey(e driver.KeyEvent) {
+	switch {
+	case e.Type == driver.KeyEsc, e.Type == driver.KeyRune && strings.ContainsRune("nNhH", e.Ch):
+		a.declineInvite()
+	case time.Since(a.inviteShownAt) < inviteArmDelay:
+	case e.Type == driver.KeyEnter, e.Type == driver.KeyRune && strings.ContainsRune("yYeE", e.Ch):
+		a.acceptInvite()
+	}
+}
+
+// DrawInviteModal asks whether to join the room an invite link opened the app with. It stays
+// until answered, unlike a toast, so the key filled in by a link is never a silent surprise.
+func DrawInviteModal(frame *terminal.Frame, screenArea cell.Rect, code string, onJoin, onCancel func()) {
+	if code == "" {
+		return
+	}
+	modalW, modalH := uint16(58), uint16(8)
+	if screenArea.Width < modalW+2 {
+		modalW = screenArea.Width - 2
+	}
+	if screenArea.Height < modalH+2 {
+		return
+	}
+	area := terminal.CenterRect(screenArea, modalW, modalH)
+	theme := CurrentTheme()
+	buf := frame.Buffer
+	widgets.DrawShadow(buf, area, 2, 1)
+	openModal(frame, "invite_dialog", area, onCancel)
+	defer frame.EndLayer()
+	for y := area.Y; y < area.Y+area.Height; y++ {
+		for x := area.X; x < area.X+area.Width; x++ {
+			buf.SetCell(x, y, cell.Cell{Content: ' ', Style: cell.Style{Bg: theme.SurfaceBg}})
+		}
+	}
+	block := widgets.Block{
+		Title:          T(" 🍋 INVITE "),
+		TitleAlignment: widgets.AlignCenter,
+		Borders:        widgets.BorderAll,
+		BorderSymbols:  widgets.SymbolsRounded,
+		BorderStyle:    cell.Style{Fg: theme.Warning, Modifier: cell.ModifierBold},
+		Style:          cell.Style{Bg: theme.SurfaceBg},
+	}
+	frame.RenderWidget(block, area)
+	inner := block.Inner(area)
+	if inner.Height < 6 || inner.Width < 20 {
+		return
+	}
+	w := int(inner.Width) - 2
+	putClipped(buf, inner.X+1, inner.Y+1, w, T("Join this room?"), cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+	putClipped(buf, inner.X+1, inner.Y+2, w, code, cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+	putClipped(buf, inner.X+1, inner.Y+3, w, T("Join only if you know who sent you the link."), cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
+
+	join := T(" [Enter] Join ")
+	cancel := T(" [Esc] Cancel ")
+	joinX := inner.X + 1
+	cancelX := joinX + uint16(len([]rune(join))) + 2
+	buf.SetString(joinX, inner.Y+5, join, cell.Style{Fg: cell.NewColorRGB(0, 0, 0), Bg: theme.Success, Modifier: cell.ModifierBold})
+	buf.SetString(cancelX, inner.Y+5, cancel, cell.Style{Fg: theme.Text, Bg: theme.InputBg, Modifier: cell.ModifierBold})
+	clickable(frame, cell.NewRect(joinX, inner.Y+5, uint16(len([]rune(join))), 1), func(_ driver.MouseEvent) { onJoin() })
+	clickable(frame, cell.NewRect(cancelX, inner.Y+5, uint16(len([]rune(cancel))), 1), func(_ driver.MouseEvent) { onCancel() })
 }
