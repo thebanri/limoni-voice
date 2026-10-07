@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseJoinArg(t *testing.T) {
 	const code = "8282-amber-falcon-river"
@@ -13,6 +16,9 @@ func TestParseJoinArg(t *testing.T) {
 		"limoni://" + code,
 		"limoni://join/" + code + "?utm=x",
 		"limoni://join/8282%2Damber%2Dfalcon%2Driver",
+		"https://limoni-voice-website.vercel.app/join#" + code,
+		"HTTPS://Limoni-Voice-Website.vercel.app/join/#" + code,
+		"https://limoni-voice-website.vercel.app/join?ref=x#8282%2Damber%2Dfalcon%2Driver",
 		inviteLink(code),
 	} {
 		got, ok := parseJoinArg(in)
@@ -20,9 +26,29 @@ func TestParseJoinArg(t *testing.T) {
 			t.Errorf("parseJoinArg(%q) = %q, %v", in, got, ok)
 		}
 	}
-	for _, in := range []string{"", "limoni://", "limoni://join/", "   "} {
+	for _, in := range []string{
+		"", "limoni://", "limoni://join/", "   ",
+		"https://limoni-voice-website.vercel.app/join",
+		"https://limoni-voice-website.vercel.app/join#",
+		"https://limoni-voice-website.vercel.app/#" + code,
+		"https://evil.example/join#" + code,
+		"https://limoni-voice-website.vercel.app.evil.example/join#" + code,
+	} {
 		if got, ok := parseJoinArg(in); ok {
 			t.Errorf("parseJoinArg(%q) accepted %q", in, got)
+		}
+	}
+}
+
+// The key rides in the fragment, escaped, so a custom key with spaces or a '#' survives.
+func TestInviteLinkRoundTrip(t *testing.T) {
+	for _, code := range []string{"8282-amber-falcon-river", "our room #2", "kod/ü?x"} {
+		link := inviteLink(code)
+		if !strings.HasPrefix(link, "https://"+inviteHost+"/join#") {
+			t.Fatalf("inviteLink(%q) = %q", code, link)
+		}
+		if got, ok := parseJoinArg(link); !ok || got != NormalizeCode(code) {
+			t.Errorf("parseJoinArg(inviteLink(%q)) = %q, %v", code, got, ok)
 		}
 	}
 }

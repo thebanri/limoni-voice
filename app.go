@@ -474,7 +474,7 @@ func (a *App) wireRoomCallbacks() {
 		link := inviteLink(node.RoomCode)
 		CopyToClipboard(link)
 		room.SetToast("Invite link copied: " + link)
-		room.AddLog("[ROOM] Invite link copied. It opens Limoni Voice and joins this room (Linux & Windows installs); anyone with it can join, like the room key.")
+		room.AddLog("[ROOM] Invite link copied. Clicked, it opens Limoni Voice with this room filled in (installed on Linux, Windows or macOS); anyone with it can join, like the room key.")
 	}
 	room.OnOpenFolder = func(dirPath string) {
 		if err := OpenFolder(dirPath); err != nil {
@@ -527,8 +527,8 @@ func (a *App) showDropHint() {
 }
 
 func (a *App) joinRoom(code string) {
-	cleanCode := NormalizeCode(code)
-	if cleanCode == "" {
+	cleanCode, ok := parseJoinArg(code) // a pasted invite link works as well as the key
+	if !ok {
 		a.lobby.SetToast("Please enter a valid room key")
 		return
 	}

@@ -106,7 +106,7 @@
 ### 💬 Sohbet & Oda Güvenliği
 - **Terminal İçi Chat**: Çok satırlı metin yazımı, tıklanabilir linkler & slash komutları (`/help`, `/clear`)
 - **Masaüstü Bildirimleri**: Terminal arka plandayken gelen mesaj, katılım ve dosya teklifleri sistem bildirimi olarak gösterilir (ayarlarda `B` ile açılıp kapanır)
-- **Davet Bağlantıları**: `/invite` bir `limoni://join/<anahtar>` bağlantısı kopyalar; Linux, Windows ve macOS (Limoni Voice.app) kurulumlarında bağlantı Limoni Voice'u oda kodu dolu olarak açar (katılmak için Enter). `limoni-voice --join <anahtar veya bağlantı>` doğrudan katılır
+- **Davet Bağlantıları**: `/invite` her sohbet uygulamasında tıklanabilen bir `https://limoni-voice-website.vercel.app/join#<anahtar>` bağlantısı kopyalar. Sayfa `limoni://join/<anahtar>` adresini açar; Linux, Windows ve macOS (Limoni Voice.app) kurulumlarında Limoni Voice oda kodu dolu olarak başlar (katılmak için Enter). Anahtar `#` işaretinden sonra durur; tarayıcılar bu kısmı sunucuya hiç göndermez, sayfa da okuduktan sonra anahtarı adres çubuğundan siler. Bağlantı lobiye yapıştırılınca da çalışır; `limoni-voice --join <anahtar veya bağlantı>` doğrudan katılır
 - **Kapı Çalma**: `/knock` açıkken oda anahtarını bilen herkes, host onu içeri alana (`Y`) ya da geri çevirene (`N`) kadar bekler
 - **Oda Kilidi & PIN**: 4 haneli PIN koruması (`/lock <pin>`) ve host kilit yönetimi
 - **Atma & Yasaklama**: Host bir üyeyi `/kick <kullanıcı>` ile çıkarır ya da `/ban <kullanıcı>` ile oda açık kaldıkça dışarıda tutar. Çıkarma host'un anahtarıyla kanıtlanır, üyeler sahte çıkarma yapamaz; grup anahtarı anında yenilenir, çıkarılan üye odayı takip edemez

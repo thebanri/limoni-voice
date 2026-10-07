@@ -106,7 +106,7 @@
 ### 💬 Chat & Room Security
 - **Terminal Chat**: Multi-line messaging, clickable links & slash commands (`/help`, `/clear`)
 - **Desktop Notifications**: Chat messages, joins and file offers raise a system notification while the terminal is in the background (toggle with `B` in settings)
-- **Invite Links**: `/invite` copies a `limoni://join/<key>` link; on Linux, Windows and macOS (Limoni Voice.app) installs it opens Limoni Voice with the room filled in (press Enter to join). `limoni-voice --join <key or link>` joins directly
+- **Invite Links**: `/invite` copies an `https://limoni-voice-website.vercel.app/join#<key>` link, clickable in any chat app. The page opens `limoni://join/<key>`, so on Linux, Windows and macOS (Limoni Voice.app) installs Limoni Voice starts with the room filled in (press Enter to join). The key sits after the `#`, which browsers never send to the server, and the page wipes it from the address bar once read. Pasting the link into the lobby works too, and `limoni-voice --join <key or link>` joins directly
 - **Knock to Join**: `/knock` makes everyone who has the room key wait until the host lets them in (`Y`) or turns them away (`N`)
 - **Room Lock & PIN**: 4-digit PIN protection (`/lock <pin>`) and host access control
 - **Kick & Ban**: The host removes a member with `/kick <user>` or keeps them out with `/ban <user>` (for as long as the room is open). The removal is proven with the host's key, so no member can fake one, and the group key is rotated at once so the removed member cannot follow the room
