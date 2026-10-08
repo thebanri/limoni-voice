@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -92,6 +93,10 @@ func (a *App) startSelectedScreenShare(target screenshare.WindowInfo) {
 	go func() {
 		cfg := p2p.ScreenShareConfig{TargetID: target.ID, Preset: presetIdx, SystemAudio: withAudio}
 		if err := a.node.StartScreenShareWith(cfg); err != nil {
+			if errors.Is(err, screenshare.ErrPickerCancelled) {
+				a.room.SetToast("Screen share cancelled")
+				return
+			}
 			a.room.SetToast(fmt.Sprintf("Error: %v", err))
 			return
 		}
@@ -119,6 +124,10 @@ func (a *App) saveScreenSettings() {
 }
 
 func (a *App) openScreenShareModal() {
+	if a.node.ScreenShareStarting() {
+		a.room.SetToast("Screen share is starting: choose the screen in the picker")
+		return
+	}
 	if a.node.IsSharingScreen {
 		go func() {
 			_ = a.node.StopScreenShare()

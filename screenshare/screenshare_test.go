@@ -3,6 +3,8 @@ package screenshare
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -207,6 +209,41 @@ func TestBuildLinuxBroadcastCommand(t *testing.T) {
 		}
 		t.Logf("Built Wayland app broadcast command: %s %v", bin, args)
 	})
+}
+
+// On Wayland a screen the portal did not hand over is never captured some other way: x11grab
+// sees only XWayland there, so a picker that failed to open started a share of an empty
+// screen nobody chose. Cancelling the picker starts nothing at all.
+func TestWaylandPortalFailureStartsNoOtherCapture(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("portal capture is Linux-specific")
+	}
+	if _, err := FindExecutable("gpu-screen-recorder"); err == nil {
+		t.Skip("gpu-screen-recorder captures monitors before the portal is asked")
+	}
+	if isMutterAvailable() {
+		t.Skip("GNOME captures monitors through Mutter, not the portal")
+	}
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
+	opts := BroadcastOptions{Resolution: "1920x1080", FPS: 60, Bitrate: "6M", WindowID: "monitor:DP-2:1920:1080:1920:0"}
+	t.Cleanup(func() { requestPortal = requestPortalCast })
+
+	for _, portalErr := range []error{ErrPickerCancelled, fmt.Errorf("%w (portal response 2)", ErrPickerFailed)} {
+		requestPortal = func(context.Context, uint32, ...func()) (uint32, *os.File, func() (*os.File, error), func(), error) {
+			return 0, nil, nil, nil, portalErr
+		}
+		bin, args, _, _, err := buildLinuxBroadcastCommand(opts, "udp://127.0.0.1:50100", nil)
+		if err != nil && isMissingTools(err) {
+			t.Skipf("no PipeWire capture tools here: %v", err)
+		}
+		if errors.Is(portalErr, ErrPickerFailed) && err == nil && strings.Contains(bin, "wf-recorder") {
+			continue // wlroots captures without the portal
+		}
+		if !errors.Is(err, portalErr) {
+			t.Fatalf("portal said %v; got %s %v, err %v", portalErr, bin, args, err)
+		}
+	}
 }
 
 func TestWatchPIDLiveness(t *testing.T) {
@@ -491,5 +528,29 @@ func TestCaptureStderrKeepsTheLastWords(t *testing.T) {
 		if !strings.Contains(buf.String(), "Error parsing option fps") {
 			t.Fatalf("stderr lost: %q", buf.String())
 		}
+	}
+}
+
+// x264 warned on every frame of a 120 FPS share; each warning was a debug log line, and in two
+// minutes they had pushed out everything that said why the share started the way it did.
+func TestRepeatedEncoderLinesAreLoggedOnce(t *testing.T) {
+	var logged []string
+	SetLogCallback(func(msg string) { logged = append(logged, msg) })
+	t.Cleanup(func() { SetLogCallback(nil) })
+
+	w := &stderrLines{buf: &logBuffer{}, prefix: "BROADCAST-LIVE"}
+	for frame := range 1200 {
+		fmt.Fprintf(w, "[libx264 @ 0x55ed507faac0] VBV underflow (frame %d, -87 bits)\n", frame)
+		if frame%60 == 0 {
+			fmt.Fprintf(w, "frame=%d fps=120 q=32.0 size=    7933KiB time=00:01:48.76 bitrate= 597.5kbits/s\r", frame)
+		}
+	}
+	fmt.Fprintln(w, "[mpegts @ 0x1] Packet corrupt")
+
+	if len(logged) != 3 {
+		t.Fatalf("logged %d lines, want the warning, the progress and the new line once each:\n%s", len(logged), strings.Join(logged, "\n"))
+	}
+	if !strings.Contains(logged[2], "Packet corrupt") {
+		t.Fatalf("a different line was held back: %q", logged[2])
 	}
 }

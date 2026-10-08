@@ -3,6 +3,7 @@ package p2p
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -439,5 +440,46 @@ func TestLocalPreviewOfOwnShare(t *testing.T) {
 	_ = host.StopScreenShare()
 	if host.IsPreviewingScreen() {
 		t.Fatal("the preview outlived the share")
+	}
+}
+
+// A share that waits on the screen picker cannot be started a second time meanwhile: the
+// second capture took the first one's place, and the first ran on with nothing to stop it.
+func TestScreenShareStartsOnceWhileThePickerIsOpen(t *testing.T) {
+	n := testRoomNode("starter", "4242")
+	picker := make(chan struct{})
+	var captures atomic.Int32
+	startCaptureSession = func(context.Context, string, int, ...screenshare.BroadcastOptions) (*screenshare.Session, error) {
+		captures.Add(1)
+		select {
+		case <-picker:
+		case <-time.After(3 * time.Second): // a second capture would wait here forever
+		}
+		return nil, screenshare.ErrPickerCancelled
+	}
+	t.Cleanup(func() { startCaptureSession = screenshare.StartBroadcasting })
+
+	first := make(chan error, 1)
+	go func() { first <- n.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop"}) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for !n.ScreenShareStarting() {
+		if time.Now().After(deadline) {
+			t.Fatal("the first share never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := n.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop"}); !errors.Is(err, ErrScreenShareStarting) {
+		t.Fatalf("second start while the picker is open: %v", err)
+	}
+	close(picker)
+	if err := <-first; !errors.Is(err, screenshare.ErrPickerCancelled) {
+		t.Fatalf("first start: %v", err)
+	}
+	if got := captures.Load(); got != 1 {
+		t.Fatalf("%d captures were started, want 1", got)
+	}
+	if n.ScreenShareStarting() {
+		t.Fatal("still starting after the picker was answered")
 	}
 }

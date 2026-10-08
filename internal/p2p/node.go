@@ -155,6 +155,7 @@ type P2PNode struct {
 	ScreenPreset         int  // index into screenshare.Presets
 	ShareSystemAudio     bool // include system audio when sharing
 	screenTx             *screenTx
+	screenStarting       bool // a share is being set up (the picker may be open); see startScreenShare
 	screenRx             *screenRx
 	previewRx            *screenRx // local preview of our own share
 	relayTargeted        bool      // relay forwards frames to single members

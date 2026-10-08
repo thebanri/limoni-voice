@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thebanri/limoni-voice/internal/applog"
 	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni-voice/internal/ptt"
@@ -151,6 +152,7 @@ func (a *App) wireNodeCallbacks() {
 
 	screenshare.SetLogCallback(func(msg string) {
 		AddDebugLog("[SCREEN] " + msg)
+		applog.Print("[SCREEN] " + msg) // the debug view keeps 1000 lines; why a share failed must outlive them
 	})
 
 	node.OnLog = func(msg string) {

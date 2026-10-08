@@ -127,7 +127,17 @@ type stderrLines struct {
 	buf     *logBuffer
 	prefix  string
 	pending []byte
+	seen    map[string]*repeatedLine // by the line with its numbers left out
 }
+
+// repeatedLine counts a line an encoder keeps printing.
+type repeatedLine struct {
+	loggedAt time.Time
+	skipped  int
+}
+
+// repeatLogInterval is how often a line that keeps coming is logged again, with a count.
+const repeatLogInterval = 10 * time.Second
 
 func (w *stderrLines) Write(p []byte) (int, error) {
 	w.pending = append(w.pending, p...)
@@ -146,11 +156,41 @@ func (w *stderrLines) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// line logs text. An encoder can print the same warning for every frame (x264's "VBV
+// underflow" at 120 FPS) and its progress twice a second: such a line is logged once, then
+// once every repeatLogInterval with how many were left out, so it cannot push everything else
+// out of the debug log.
 func (w *stderrLines) line(text string) {
-	if trimmed := strings.TrimSpace(text); trimmed != "" {
-		w.buf.add(text)
-		logMsg("[%s] %s", w.prefix, trimmed)
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return
 	}
+	w.buf.add(text)
+	key := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return -1
+		}
+		return r
+	}, trimmed)
+	now := time.Now()
+	if r := w.seen[key]; r != nil {
+		if now.Sub(r.loggedAt) < repeatLogInterval {
+			r.skipped++
+			return
+		}
+		if r.skipped > 0 {
+			logMsg("[%s] %s (and %d like it)", w.prefix, trimmed, r.skipped)
+		} else {
+			logMsg("[%s] %s", w.prefix, trimmed)
+		}
+		r.loggedAt, r.skipped = now, 0
+		return
+	}
+	if w.seen == nil || len(w.seen) >= 256 {
+		w.seen = map[string]*repeatedLine{}
+	}
+	w.seen[key] = &repeatedLine{loggedAt: now}
+	logMsg("[%s] %s", w.prefix, trimmed)
 }
 
 // attach makes g the current generation and supervises it.

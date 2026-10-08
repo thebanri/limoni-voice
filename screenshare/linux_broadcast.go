@@ -2,12 +2,24 @@ package screenshare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var (
+	// ErrPickerCancelled is the user closing the screen picker without choosing.
+	ErrPickerCancelled = errors.New("screen selection cancelled")
+	// ErrPickerFailed is the desktop failing to show the screen picker at all. On KDE it
+	// happens after Qt is updated under a running xdg-desktop-portal-kde.
+	ErrPickerFailed = errors.New("the screen picker could not open: restart xdg-desktop-portal (or log out and back in)")
+)
+
+// requestPortal is requestPortalCast; tests replace it.
+var requestPortal = requestPortalCast
 
 // pipewireSource is a compositor screencast (portal or Mutter) kept alive across encoder
 // restarts, so a bitrate change does not ask the user to pick the screen again.
@@ -70,6 +82,8 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 		return gstErr == nil
 	}
 
+	var portalErr error // the portal's failure on Wayland, which no fallback can make up for
+
 	// 1. If user selected a Window or App on Wayland -> Route to XDG Desktop Portal Window Cast
 	// (GPU Screen Recorder window capture only works in pure X11; Wayland window capture requires XDG Desktop Portal)
 	if wayland && isWindowTarget {
@@ -82,7 +96,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 		if targetID == "portal" {
 			sourceType = 3 // 3 = Monitor or Window
 		}
-		nodeID, pwFile, reopen, cleanup, errPortal := requestPortalCast(ctx, sourceType, onCancel...)
+		nodeID, pwFile, reopen, cleanup, errPortal := requestPortal(ctx, sourceType, onCancel...)
 		if errPortal == nil && nodeID != 0 {
 			bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
 			if errGst == nil {
@@ -207,7 +221,7 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 			} else if targetID == "portal" {
 				sourceType = 3
 			}
-			nodeID, pwFile, reopen, cleanup, errPortal := requestPortalCast(ctx, sourceType, onCancel...)
+			nodeID, pwFile, reopen, cleanup, errPortal := requestPortal(ctx, sourceType, onCancel...)
 			if errPortal == nil && nodeID != 0 {
 				bin, args, errGst := buildGstreamerPipewireCommand(nodeID, targetURL, opt, pwFile != nil)
 				if errGst == nil {
@@ -216,6 +230,13 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 				if cleanup != nil {
 					cleanup()
 				}
+			}
+			if errors.Is(errPortal, ErrPickerCancelled) {
+				return "", nil, nil, nil, errPortal // the user said no: nothing else may start
+			}
+			if errPortal != nil {
+				logMsg("[PORTAL] Screen capture through the portal failed: %v", errPortal)
+				portalErr = errPortal
 			}
 		}
 	}
@@ -246,9 +267,13 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 		}
 	}
 
-	// x11grab below only sees XWayland windows (usually a black screen) on Wayland.
+	// x11grab below only sees XWayland windows (usually a black screen) on Wayland: a share
+	// the user never picked, of nothing, is worse than saying why the picker did not come.
 	if wayland && !gstReady() {
 		return "", nil, nil, nil, gstErr
+	}
+	if wayland && portalErr != nil {
+		return "", nil, nil, nil, portalErr
 	}
 
 	// 5. Universal direct FFmpeg capture across all X11 Linux distributions (GNOME, KDE, XFCE, Cinnamon, MATE, i3, etc.)

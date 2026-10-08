@@ -186,6 +186,16 @@ func (n *P2PNode) StartScreenShare(targetIP string, targetPort int, customOpts .
 	return n.startScreenShare(opts, preset, cfg.SystemAudio)
 }
 
+// ErrScreenShareStarting is a start while another one is still being set up.
+var ErrScreenShareStarting = errors.New("screen share is already starting")
+
+// ScreenShareStarting reports whether a share is being set up, maybe waiting on the picker.
+func (n *P2PNode) ScreenShareStarting() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.screenStarting
+}
+
 // StartScreenShareWith starts sharing cfg.TargetID with a quality preset.
 func (n *P2PNode) StartScreenShareWith(cfg ScreenShareConfig) error {
 	preset := screenshare.PresetByIndex(cfg.Preset)
@@ -229,7 +239,19 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 		n.mu.Unlock()
 		return nil
 	}
+	// Setting a share up can wait minutes on the screen picker. A second start meanwhile
+	// made a second capture, and the first, no longer the room's share, could not be stopped.
+	if n.screenStarting {
+		n.mu.Unlock()
+		return ErrScreenShareStarting
+	}
+	n.screenStarting = true
 	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		n.screenStarting = false
+		n.mu.Unlock()
+	}()
 
 	captureConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {

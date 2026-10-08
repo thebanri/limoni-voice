@@ -231,9 +231,14 @@ func requestPortalCast(ctx context.Context, sourceType uint32, onSessionClosed .
 		cleanup()
 		return 0, nil, nil, nil, fmt.Errorf("Start response failed: %w", err)
 	}
-	if respCode != 0 {
+	switch respCode {
+	case 0:
+	case 1:
 		cleanup()
-		return 0, nil, nil, nil, errors.New("window selection cancelled by user")
+		return 0, nil, nil, nil, ErrPickerCancelled
+	default:
+		cleanup()
+		return 0, nil, nil, nil, fmt.Errorf("%w (portal response %d)", ErrPickerFailed, respCode)
 	}
 
 	nodeID := parsePipewireNodeID(results["streams"].Value())
