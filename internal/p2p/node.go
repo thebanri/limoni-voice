@@ -1303,7 +1303,11 @@ func (n *P2PNode) handleDatagram(data []byte, raddr *net.UDPAddr, via *net.UDPCo
 
 	var pkt P2PPacket
 	if err := openPacket(data, &pkt, keyring); err != nil {
-		n.noteUndecryptable()
+		if fromRelay {
+			n.noteUndecryptable(nil)
+		} else {
+			n.noteUndecryptable(raddr)
+		}
 		return
 	}
 	n.noteDecrypted()

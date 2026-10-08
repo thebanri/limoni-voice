@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"net"
 	"testing"
 	"time"
 
@@ -130,5 +131,43 @@ func TestKeyFrameRequiresOurRoom(t *testing.T) {
 	bob.mu.RUnlock()
 	if other.handleKeyFrame(frame, nil) {
 		t.Fatal("a frame tagged for another room was accepted")
+	}
+}
+
+// A member whose machine also runs a Limoni Voice hosting another room (an invite link opens
+// a second window) received that room's announcements, sealed with its key, several copies a
+// heartbeat. It took them for proof that it had lost our key and asked the host for it every
+// three seconds. Unreadable packets count only when they come from where the room is.
+func TestForeignRoomPacketsDoNotTriggerKeyRequests(t *testing.T) {
+	bob := rekeyMember("bob", "host")
+	hostAddr := &net.UDPAddr{IP: net.IPv4(203, 0, 113, 5), Port: 50000}
+	bob.Peers["host"] = &PeerInfo{ID: "host", Nickname: "host", Addr: hostAddr, LastSeen: time.Now()}
+
+	other := testRoomNode("carol", "9999")
+	hello := P2PPacket{Type: PacketHello, RoomCode: "9999", SenderID: "carol", Nickname: "carol"}
+	foreign, err := sealPacket(&hello, other.keyring)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, from := range []*net.UDPAddr{
+		{IP: net.IPv4(127, 0, 0, 1), Port: 50000},
+		{IP: net.IPv4(192, 168, 1, 20), Port: 50000},
+	} {
+		for range 3 * undecryptableRun {
+			bob.handleDatagram(foreign, from, nil)
+		}
+	}
+	if bob.keyRequestAt.Load() != 0 {
+		t.Fatal("another room's packets made the member ask the host for the key")
+	}
+
+	// From the host's address, on a port it hopped to, unreadable packets still mean the key
+	// is gone.
+	for range undecryptableRun {
+		bob.handleDatagram(foreign, &net.UDPAddr{IP: hostAddr.IP, Port: 50007}, nil)
+	}
+	if bob.keyRequestAt.Load() == 0 {
+		t.Fatal("unreadable packets from the host did not make the member ask for the key")
 	}
 }

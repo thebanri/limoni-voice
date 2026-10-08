@@ -36,10 +36,18 @@ const (
 	undecryptableRun = 5
 )
 
-// noteUndecryptable records a packet that could not be opened. Voice alone delivers fifty
-// packets a second, so the counters are atomic and the slow path runs at most every couple
-// of seconds.
-func (n *P2PNode) noteUndecryptable() {
+// noteUndecryptable records a packet that could not be opened. raddr is where a direct
+// datagram came from, nil for one the relay delivered. Voice alone delivers fifty packets a
+// second, so the counters are atomic and the slow path runs at most every couple of seconds.
+//
+// Only packets from the room count. Another room's host on the same machine or network
+// announces itself on the Limoni ports, over loopback and every broadcast address, several
+// copies every heartbeat, sealed with its own key: counted, they made a member that holds
+// the current key ask the host for it every few seconds, for as long as that room was open.
+func (n *P2PNode) noteUndecryptable(raddr *net.UDPAddr) {
+	if raddr != nil && !n.isMemberIP(raddr.IP) {
+		return
+	}
 	if n.undecryptable.Add(1) < undecryptableRun {
 		return
 	}
@@ -65,6 +73,19 @@ func (n *P2PNode) noteUndecryptable() {
 	}
 	n.log("[E2EE] Cannot open room packets: asking the host for the current group key")
 	n.requestGroupKey(host)
+}
+
+// isMemberIP reports whether a member of the room is reached at ip. The port is not
+// compared: a member that hops ports keeps its address.
+func (n *P2PNode) isMemberIP(ip net.IP) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, peer := range n.Peers {
+		if peer.Addr != nil && peer.Addr.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // noteDecrypted clears the run of unreadable packets after one opens.

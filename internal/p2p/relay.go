@@ -563,7 +563,7 @@ func (n *P2PNode) handleRelayPacket(sealed []byte) {
 
 	var pkt P2PPacket
 	if err := openPacket(sealed, &pkt, keyring); err != nil {
-		n.noteUndecryptable()
+		n.noteUndecryptable(nil)
 		return
 	}
 	n.noteDecrypted()
