@@ -29,7 +29,7 @@ func (a *App) handlePaste(pasted string) {
 	}
 	if a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal && a.pendingInvite == "" {
 		a.pasteIntoLobby(pasted)
-	} else if a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal {
+	} else if a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && a.pendingInvite == "" {
 		// Files dragged onto the terminal arrive as their paths: they are sent, not typed.
 		if files := droppedFiles(pasted); len(files) > 0 && a.room.OnSendFile != nil {
 			for _, f := range files {
@@ -128,7 +128,7 @@ func (a *App) handleKey(e driver.KeyEvent) {
 
 	// Ctrl+V in active room chat
 	if e.Ctrl && (e.Ch == 'v' || e.Ch == 'V') && a.currentScreen == ScreenRoom &&
-		!a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && !a.showDebugModal {
+		!a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && !a.showDebugModal && a.pendingInvite == "" {
 		a.pasteClipboard()
 		return
 	}
@@ -156,7 +156,7 @@ func (a *App) handleKey(e driver.KeyEvent) {
 	case a.showExitModal:
 		a.handleConfirmModalKey(e, "exit_app_dialog_btn_0", a.cleanExit, a.closeExitModal)
 		return
-	case a.currentScreen == ScreenLobby && a.pendingInvite != "":
+	case a.pendingInvite != "":
 		a.handleInviteKey(e)
 		return
 	case a.showLeaveModal:

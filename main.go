@@ -81,10 +81,6 @@ Examples:
 
 func main() {
 	terminalDropsBlocked = alacrittyOnWayland(os.Getenv) // before a relaunch puts WAYLAND_DISPLAY back
-	if relaunchForDragAndDrop() {
-		return // the app goes on in a new Alacritty window that passes dropped files on
-	}
-	startProfiler()
 	var (
 		flagRelay      = flag.String("relay", "", "Custom WebSocket relay URL (e.g. ws://192.168.1.100:27850/ws, or 'none' for LAN only)")
 		flagRelayToken = flag.String("relay-token", "", "Authentication token for protected relay server (or set LIMONI_RELAY_TOKEN)")
@@ -123,6 +119,18 @@ func main() {
 		fmt.Printf("Limoni Voice %s (%s | E2EE CPace + AES-256-GCM | Opus 48 kHz | P2P Full-Mesh)\n", AppVersion, runtime.Version())
 		os.Exit(0)
 	}
+
+	// Started for an invite link while the app is open: the open app asks about it, and no
+	// second copy starts (see instance.go). --join is typed on purpose and starts one.
+	if *flagJoin == "" && flag.Arg(0) != "" && forwardInvite(inviteSocketPath(), flag.Arg(0)) {
+		fmt.Println("Limoni Voice is already open: the invite went to that window.")
+		os.Exit(0)
+	}
+
+	if relaunchForDragAndDrop() {
+		return // the app goes on in a new Alacritty window that passes dropped files on
+	}
+	startProfiler()
 
 	// Without a terminal there is nothing to draw on: say so and leave cleanly. Package
 	// validators (winget's) start the executable with no arguments and no console, and read
@@ -236,6 +244,12 @@ func main() {
 	}
 
 	app := NewApp(b, t, node, audio, cfg)
+	app.inviteListener = listenForInvites(inviteSocketPath(), func(link string) {
+		select {
+		case app.invites <- link:
+		default: // a burst of links: the dialog shows one at a time anyway
+		}
+	})
 	app.openInvite(*flagJoin, flag.Arg(0))
 	app.Run()
 }

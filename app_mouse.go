@@ -13,7 +13,7 @@ func (a *App) handleMouse(m driver.MouseEvent) {
 		a.handleRelayModalMouse(m)
 	}
 
-	roomInteractive := a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && !a.showDebugModal
+	roomInteractive := a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && !a.showDebugModal && a.pendingInvite == ""
 	if roomInteractive && m.Button == driver.MouseLeft && !m.Drag {
 		a.room.mu.Lock()
 		if a.room.IsChatFocused && !a.room.LastLogArea.Contains(m.X, m.Y) {
@@ -42,7 +42,7 @@ func (a *App) handleMouse(m driver.MouseEvent) {
 		}
 	case a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal && a.pendingInvite == "":
 		a.handleLobbyMouse(m)
-	case a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal:
+	case a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && a.pendingInvite == "":
 		a.handleRoomMouse(m)
 	}
 }

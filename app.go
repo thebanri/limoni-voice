@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/signal"
@@ -52,8 +53,10 @@ type App struct {
 	showDebugModal       bool
 	showRelayModal       bool
 	debugView            *DebugView
-	pendingInvite        string    // room key an invite link opened the app with, until answered
-	inviteShownAt        time.Time // keys are ignored for inviteArmDelay after the dialog opens
+	pendingInvite        string      // room key an invite link opened the app with, until answered
+	inviteShownAt        time.Time   // keys are ignored for inviteArmDelay after the dialog opens
+	invites              chan string // invite links handed over by processes started for them
+	inviteListener       io.Closer   // the socket they arrive on; nil when another copy has it
 
 	screenShareTargets     []screenshare.WindowInfo
 	selectedScreenShareIdx int
@@ -116,6 +119,7 @@ func NewApp(b *driver.Backend, t *terminal.Terminal, node *p2p.P2PNode, audio *e
 		relaySelStart:         -1,
 		relaySelEnd:           -1,
 		relaySelField:         -1,
+		invites:               make(chan string, 4),
 	}
 	// Over SSH a desktop notification would pop up on the remote machine; the terminal's
 	// own notification reaches the user, where the terminal can show one.
@@ -586,6 +590,9 @@ func (a *App) resetToLobby() {
 }
 
 func (a *App) cleanExit() {
+	if a.inviteListener != nil {
+		_ = a.inviteListener.Close() // os.Exit skips deferred calls: the socket file goes now
+	}
 	a.persistSettings()
 	a.stopGlobalPTT()
 	a.node.Close()
@@ -670,6 +677,8 @@ func (a *App) Run() {
 			case driver.EventFocus:
 				a.notifier.SetFocused(ev.Focus.Gained)
 			}
+		case link := <-a.invites:
+			a.receiveInvite(link)
 		case now := <-renderTicker.C:
 			a.applyKicked()
 			if skipFrame(a.notifier.background.Load(), now, a.lastTime) {

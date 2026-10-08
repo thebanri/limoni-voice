@@ -133,7 +133,7 @@ func (a *App) render(now time.Time) {
 			case a.showExitModal || exitProg > 0.001:
 				DrawExitModal(f, f.Area(), exitProg, a.cleanExit, a.closeExitModal)
 			case a.pendingInvite != "":
-				DrawInviteModal(f, f.Area(), a.pendingInvite, a.acceptInvite, a.declineInvite)
+				DrawInviteModal(f, f.Area(), a.pendingInvite, false, a.acceptInvite, a.declineInvite)
 			}
 			drawFileOffer(f)
 		})
@@ -158,6 +158,8 @@ func (a *App) render(now time.Time) {
 		switch {
 		case a.showDebugModal:
 			drawDebug(f)
+		case a.pendingInvite != "":
+			DrawInviteModal(f, f.Area(), a.pendingInvite, true, a.acceptInvite, a.declineInvite)
 		case a.showRelayModal || relayProg > 0.001:
 			drawRelay(f, a.node.RelayStatus())
 		case a.showTestModal:
