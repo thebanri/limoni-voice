@@ -40,7 +40,10 @@ jobs:
 
       - name: Staticcheck
         # The platform files (CoreAudio, ScreenCaptureKit, Win32, ...) only build for their OS,
-        # so each one is checked from here as well.
+        # so each one is checked from here as well. staticcheck v0.8.1 cannot read the export data
+        # Go 1.27.2 writes (version 5), so it runs on 1.27.1 until a staticcheck release can.
+        env:
+          GOTOOLCHAIN: go1.27.1
         run: |
           GOBIN=/tmp/bin go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           for goos in linux darwin windows; do
