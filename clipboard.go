@@ -433,13 +433,7 @@ func OpenBrowserURL(urlStr string) error {
 
 	switch runtime.GOOS {
 	case "windows":
-		// Option 1: rundll32.exe url.dll,FileProtocolHandler <url> (invokes Windows ShellExecute safely)
-		cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", cleanURL)
-		if err := startDetached(cmd); err == nil {
-			return nil
-		}
-		// Option 2: Parameterized PowerShell Start-Process (no string interpolation)
-		return startDetached(exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $args[0]", cleanURL))
+		return shellOpen(cleanURL)
 	case "darwin":
 		cmd := exec.Command("open", cleanURL)
 		return startDetached(cmd)

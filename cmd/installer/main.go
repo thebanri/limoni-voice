@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -114,15 +113,8 @@ func main() {
 	}
 
 	fmt.Println("[*] Updating user PATH variable...")
-	psPathScript := fmt.Sprintf(`
-		$binDir = '%s'
-		$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-		if ($userPath -notlike "*$binDir*") {
-			[Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
-		}
-	`, strings.ReplaceAll(binDir, "'", "''"))
-	if out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psPathScript).CombinedOutput(); err != nil {
-		fmt.Printf("[-] Could not update PATH: %v %s\n", err, strings.TrimSpace(string(out)))
+	if err := addToUserPath(binDir); err != nil {
+		fmt.Printf("[-] Could not update PATH: %v\n", err)
 	}
 
 	// 4. Screen share tools: FFmpeg and mpv
@@ -144,9 +136,7 @@ func main() {
 
 	// Launch detached in a new independent console window
 	if fileExists(targetVoiceExe) {
-		launchCmd := exec.Command("cmd.exe", "/c", "start", "", targetVoiceExe)
-		launchCmd.Dir = installDir
-		_ = launchCmd.Start()
+		_ = launchInNewConsole(targetVoiceExe, installDir)
 	}
 }
 
@@ -219,26 +209,7 @@ func selfHealAndLaunch(installDir, targetVoiceExe, currExeAbs string) error {
 	fmt.Println("[✓] Limoni Voice restored successfully! Launching...")
 	time.Sleep(300 * time.Millisecond)
 
-	launchCmd := exec.Command("cmd.exe", "/c", "start", "", targetVoiceExe)
-	launchCmd.Dir = installDir
-	return launchCmd.Start()
-}
-
-// registerInviteScheme registers the limoni:// URL scheme under HKCU, so no administrator
-// rights are needed; removing HKCU\Software\Classes\limoni undoes it.
-func registerInviteScheme(exe, icon string) error {
-	const key = `HKCU\Software\Classes\limoni`
-	for _, args := range [][]string{
-		{"add", key, "/ve", "/d", "URL:Limoni Voice invite", "/f"},
-		{"add", key, "/v", "URL Protocol", "/d", "", "/f"},
-		{"add", key + `\DefaultIcon`, "/ve", "/d", icon, "/f"},
-		{"add", key + `\shell\open\command`, "/ve", "/d", `"` + exe + `" "%1"`, "/f"},
-	} {
-		if out, err := exec.Command("reg", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-		}
-	}
-	return nil
+	return launchInNewConsole(targetVoiceExe, installDir)
 }
 
 func writeOrReplaceExecutable(targetPath string, data []byte) error {

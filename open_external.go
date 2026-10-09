@@ -42,9 +42,8 @@ func OpenInEditor(filePath string) error {
 				return nil
 			}
 		}
-		// 2. Try Windows ShellExecute via rundll32 (prevents cmd.exe shell argument injection)
-		cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", filePath)
-		if err := startDetached(cmd); err == nil {
+		// 2. The program Windows associates with the file type
+		if err := shellOpen(filePath); err == nil {
 			return nil
 		}
 		// 3. Fallback to notepad
