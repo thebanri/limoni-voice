@@ -3,8 +3,11 @@ package voice
 import "time"
 
 // BitrateLadder lists the voice bitrates the controller moves between, lowest first. Opus
-// speech stays intelligible at 12 kbps and is transparent around 32 kbps.
-var BitrateLadder = []int{12000, 16000, 24000, DefaultBitrate}
+// speech stays intelligible at 16 kbps and is transparent around 32 kbps. There is no
+// 12 kbps step: gopus v0.1.2, switched down to it mid-stream, can keep encoding silence for
+// as long as it stays there, while the RMS in the packet header still moves the speaker's
+// meter (TestBitrateLadderNeverGoesSilent).
+var BitrateLadder = []int{16000, 24000, DefaultBitrate}
 
 // Thresholds of the bitrate controller. Stepping down is quick, because a congested link
 // loses speech; stepping up waits for a stretch of clean reports so a flaky link does not

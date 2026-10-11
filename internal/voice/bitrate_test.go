@@ -1,6 +1,8 @@
 package voice
 
 import (
+	"math"
+	"math/rand"
 	"testing"
 	"time"
 )
@@ -104,5 +106,47 @@ func TestEncoderPacketsFollowTheBitrate(t *testing.T) {
 	}
 	if low := size(); low >= high {
 		t.Fatalf("12 kbps packets (%d bytes) are not smaller than 32 kbps ones (%d)", low, high)
+	}
+}
+
+// Walking the ladder as a flaky link does, with the loss hint changing too, never leaves the
+// encoder sending silence while someone talks. With a 12 kbps step this seed went silent at
+// frame 2711 and stayed so until the bitrate rose again.
+func TestBitrateLadderNeverGoesSilent(t *testing.T) {
+	enc, _ := NewEncoder(48000, 960)
+	dec, _ := NewDecoder(48000, 960)
+	walk, noise := rand.New(rand.NewSource(77)), rand.New(rand.NewSource(1))
+	frame, out := make([]int16, 960), make([]int16, 960)
+	idx, phase := len(BitrateLadder)-1, 0.0
+	for f := 0; f < 3200; f++ {
+		if f%150 == 0 && walk.Intn(3) == 0 {
+			idx = max(0, min(len(BitrateLadder)-1, idx+walk.Intn(3)-1))
+			enc.SetBitrate(BitrateLadder[idx])
+		}
+		if f%250 == 0 {
+			enc.SetPacketLoss(walk.Intn(30))
+		}
+		talking := (f/150)%3 != 2 // 3 s of speech, 3 s more, 3 s of room noise
+		pitch := 110 + 60*math.Sin(float64(f)/40)
+		for i := range frame {
+			v := noise.NormFloat64() * 200
+			if talking {
+				phase += 2 * math.Pi * pitch / 48000
+				v += 6000*math.Sin(phase) + 3000*math.Sin(3*phase) + 1500*math.Sin(5*phase)
+			}
+			frame[i] = int16(max(-32768, min(32767, v)))
+		}
+		pkt, err := enc.EncodeInt16(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = dec.Decode(pkt, out)
+		var e float64
+		for _, s := range out {
+			e += float64(s) * float64(s)
+		}
+		if talking && f%150 > 10 && math.Sqrt(e/960) < 50 {
+			t.Fatalf("frame %d at %d bps decoded to silence while talking", f, enc.Bitrate())
+		}
 	}
 }
