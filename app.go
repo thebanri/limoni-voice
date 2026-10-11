@@ -207,6 +207,7 @@ func (a *App) wireNodeCallbacks() {
 	node.OnChatHistory = func(entries []p2p.ChatEntry) {
 		a.room.AddChatHistory(entries, node.LocalID)
 	}
+	node.OnChatHistoryToggled = a.chatHistoryNotice
 
 	node.OnFileTransferProgress = func(transferID string, fileName string, transferred int64, total int64, speed float64, isUpload bool, done bool, err error) {
 		if err != nil {
@@ -299,6 +300,10 @@ func (a *App) wireRoomCallbacks() {
 		trimmed := strings.TrimSpace(text)
 		if strings.EqualFold(trimmed, "/relay") || strings.EqualFold(trimmed, "/server") {
 			a.openRelayModal()
+			return
+		}
+		if f := strings.Fields(trimmed); len(f) > 0 && strings.EqualFold(f[0], "/history") {
+			a.setChatHistory(f[1:])
 			return
 		}
 		if strings.EqualFold(trimmed, "/net") || strings.EqualFold(trimmed, "/stats") {
@@ -520,9 +525,38 @@ func (a *App) startHost() {
 		a.node.UnlockRoom()
 	}
 	a.room = NewRoomView()
+	if a.node.SetChatHistory(!LoadAppConfig().NoChatHistory) {
+		a.chatHistoryNotice(true)
+	}
 	a.currentScreen = ScreenRoom
 	a.audio.PlaySound(engine.SoundJoin)
 	a.showDropHint()
+}
+
+// setChatHistory handles /history [on|off] (alone it toggles): the host decides for the room
+// whether members who join see the earlier chat, and the choice holds for the rooms it hosts next.
+func (a *App) setChatHistory(args []string) {
+	if !a.node.IsHost {
+		a.room.SetToast("Only the room host can turn chat history on or off")
+		return
+	}
+	on := !a.node.ChatHistoryOn()
+	if len(args) > 0 {
+		on = !strings.EqualFold(args[0], "off")
+	}
+	a.node.SetChatHistory(on)
+	_ = UpdateAppConfig(func(c *AppConfig) { c.NoChatHistory = !on })
+	a.chatHistoryNotice(!on)
+}
+
+func (a *App) chatHistoryNotice(off bool) {
+	if off {
+		a.room.SetToast("Chat history off")
+		a.room.AddLog("[ROOM] Chat history off: members who join do not see earlier messages")
+	} else {
+		a.room.SetToast("Chat history on")
+		a.room.AddLog("[ROOM] Chat history on: members who join see the messages from now on")
+	}
 }
 
 // showDropHint tells, once a session, how to send a file from a terminal that passes no
@@ -606,11 +640,21 @@ func (a *App) cleanExit() {
 }
 
 // watchAudioDevices lists the audio devices again every few seconds, so a headset or
-// microphone plugged in while the app runs can be picked, and announces the new ones.
+// microphone plugged in while the app runs can be picked, and announces the new ones. It also
+// reopens a device stream that went silent.
 func (a *App) watchAudioDevices() {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		capture, playback := a.audio.ReopenStalledStreams()
+		if capture {
+			AddDebugLog("[AUDIO] Microphone stopped delivering sound; reopened it")
+			applog.Print("[AUDIO] Microphone stopped delivering sound; reopened it")
+		}
+		if playback {
+			AddDebugLog("[AUDIO] Speakers stopped playing; reopened them")
+			applog.Print("[AUDIO] Speakers stopped playing; reopened them")
+		}
 		for _, name := range a.audio.RefreshDevices() {
 			msg := Tf("New audio device: %s", name)
 			AddDebugLog("[AUDIO] " + msg)

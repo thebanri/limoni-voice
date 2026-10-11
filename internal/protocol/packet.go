@@ -100,8 +100,9 @@ type Packet struct {
 	JitterMs        uint16        `json:"jitter_ms,omitempty"`
 	TargetID        string        `json:"target_id,omitempty"` // addressed member for point-to-point control packets
 	VideoKbps       uint32        `json:"video_kbps,omitempty"`
-	HasAudio        bool          `json:"has_audio,omitempty"` // screen share carries system audio
-	Vouch           []byte        `json:"vouch,omitempty"`     // new member's host vouch for its identity key (e2ee.MarshalVouch)
+	HasAudio        bool          `json:"has_audio,omitempty"`       // screen share carries system audio
+	NoChatHistory   bool          `json:"no_chat_history,omitempty"` // host's ping: members keep no chat history for joiners
+	Vouch           []byte        `json:"vouch,omitempty"`           // new member's host vouch for its identity key (e2ee.MarshalVouch)
 }
 
 // Fixed header layout (20 bytes):
@@ -116,6 +117,7 @@ const (
 	flagSharing
 	flagLocked
 	flagHasAudio
+	flagNoChatHistory
 )
 
 // TLV tags for optional fields. Unknown tags are skipped so newer peers stay compatible.
@@ -189,6 +191,9 @@ func (p *Packet) AppendBinary(dst []byte) []byte {
 	if p.HasAudio {
 		flags |= flagHasAudio
 	}
+	if p.NoChatHistory {
+		flags |= flagNoChatHistory
+	}
 	binary.BigEndian.PutUint16(hdr[2:4], flags)
 	binary.BigEndian.PutUint32(hdr[4:8], p.Seq)
 	binary.BigEndian.PutUint64(hdr[8:16], uint64(p.Timestamp))
@@ -251,6 +256,7 @@ func (p *Packet) UnmarshalBinary(data []byte) error {
 	p.IsSharingScreen = flags&flagSharing != 0
 	p.IsLocked = flags&flagLocked != 0
 	p.HasAudio = flags&flagHasAudio != 0
+	p.NoChatHistory = flags&flagNoChatHistory != 0
 	p.Seq = binary.BigEndian.Uint32(data[4:8])
 	p.Timestamp = int64(binary.BigEndian.Uint64(data[8:16]))
 	rms := math.Float32frombits(binary.BigEndian.Uint32(data[16:20]))

@@ -174,6 +174,8 @@ type P2PNode struct {
 	chatSeen             map[string]struct{}      // keys of chatLog
 	chatParts            map[string]*chatAssembly // long messages whose parts are arriving
 	chatPartsDone        map[string]time.Time     // long messages put together lately: their late copies are dropped
+	chatHistoryOff       bool                     // the host turned the room's chat history off: none is kept, sent or taken
+	OnChatHistoryToggled func(off bool)           // the host turned the room's chat history on or off
 	OnDebugLog           func(msg string)
 
 	// Room Security (Lock & PIN Protection)
@@ -1108,6 +1110,7 @@ func (n *P2PNode) sendPingToPeer(peerID string) {
 	videoFPS := n.ActiveScreenShareFPS
 	peerAddr := peer.Addr
 	viaRelay := peer.ViaRelay
+	isHost := n.IsHost
 	var vouch []byte
 	if time.Now().Before(n.joinVouchUntil) {
 		vouch = n.joinVouch
@@ -1128,6 +1131,7 @@ func (n *P2PNode) sendPingToPeer(peerID string) {
 		VideoPort:       videoPort,
 		VideoFPS:        videoFPS,
 		Vouch:           vouch,
+		NoChatHistory:   isHost && !n.ChatHistoryOn(),
 		Timestamp:       time.Now().UnixMilli(),
 	}
 	if viaRelay || peerAddr == nil {
@@ -1700,6 +1704,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if pkt.VideoFPS > 0 {
 				peer.VideoFPS = pkt.VideoFPS
 			}
+		}
+		if pkt.SenderID == n.HostID && n.SetChatHistory(!pkt.NoChatHistory) && n.OnChatHistoryToggled != nil {
+			go n.OnChatHistoryToggled(pkt.NoChatHistory)
 		}
 		// Dedup incoming ping: if we already received and answered this exact ping seq/timestamp, don't echo again
 		if pkt.Timestamp > 0 && !n.ctrlDedup.ShouldProcess(pkt.SenderID, PacketPing, pkt.Seq, pkt.Timestamp) {

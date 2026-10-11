@@ -707,3 +707,27 @@ func TestReselectFollowsTheDevice(t *testing.T) {
 		t.Fatalf("default stays: selection = %d (moved %v)", idx, moved)
 	}
 }
+
+type stubStream struct{ closed bool }
+
+func (s *stubStream) Close() error    { s.closed = true; return nil }
+func (s *stubStream) Backend() string { return "stub" }
+
+// A device stream that stopped delivering frames is closed and reopened; a live one is left.
+func TestReopenStalledStreams(t *testing.T) {
+	a := NewAudioEngine()
+	live, stalled := &stubStream{}, &stubStream{}
+	a.running, a.stopChan = true, make(chan struct{})
+	a.captureStream, a.playbackStream = stalled, live
+	a.lastCapture.Store(time.Now().Add(-3 * stallAfter).UnixNano())
+	a.lastRender.Store(time.Now().UnixNano())
+	t.Cleanup(a.Stop)
+
+	capture, playback := a.ReopenStalledStreams()
+	if !capture || playback || !stalled.closed || live.closed {
+		t.Fatalf("reopened capture=%v playback=%v; stalled closed=%v, live closed=%v", capture, playback, stalled.closed, live.closed)
+	}
+	if capture, _ := a.ReopenStalledStreams(); capture {
+		t.Fatal("a stream just reopened counts as stalled")
+	}
+}

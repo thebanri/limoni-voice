@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thebanri/limoni-voice/internal/audioio"
@@ -242,6 +243,8 @@ type AudioEngine struct {
 	// Live audio streams
 	captureStream  audioio.Stream
 	playbackStream audioio.Stream
+	lastCapture    atomic.Int64 // unix nanos of the last frame the microphone delivered
+	lastRender     atomic.Int64 // unix nanos of the last frame the speakers asked for
 	onFrame        func(rms float64, speaking bool, pcm []byte)
 
 	// Receive & mixing
@@ -849,7 +852,30 @@ func (a *AudioEngine) selectedDeviceID(input bool) string {
 	return "default"
 }
 
+// stallAfter is how long an open device may go without a frame before it is reopened. A
+// driver that stops handing buffers back (a failed waveOutWrite / waveInAddBuffer after a
+// device hiccup) never recovers on its own, and nothing else would notice.
+const stallAfter = 2 * time.Second
+
+// ReopenStalledStreams reopens the microphone or speaker stream when it stopped delivering
+// frames, and reports which it reopened.
+func (a *AudioEngine) ReopenStalledStreams() (capture, playback bool) {
+	now := time.Now().UnixNano()
+	a.mu.RLock()
+	capture = a.running && a.captureStream != nil && now-a.lastCapture.Load() > int64(stallAfter)
+	playback = a.running && a.playbackStream != nil && now-a.lastRender.Load() > int64(stallAfter)
+	a.mu.RUnlock()
+	if capture {
+		a.restartCapture()
+	}
+	if playback {
+		a.restartPlayback()
+	}
+	return capture, playback
+}
+
 func (a *AudioEngine) startCapture() {
+	a.lastCapture.Store(time.Now().UnixNano()) // a new stream gets stallAfter to deliver its first frame
 	stream, err := audioio.OpenCapture(a.selectedDeviceID(true), a.processCaptureFrame)
 	a.mu.Lock()
 	if err != nil {
@@ -870,6 +896,7 @@ func (a *AudioEngine) startCapture() {
 }
 
 func (a *AudioEngine) startPlayback() {
+	a.lastRender.Store(time.Now().UnixNano())
 	stream, err := audioio.OpenPlayback(a.selectedDeviceID(false), a.renderFrame)
 	a.mu.Lock()
 	if err != nil {
@@ -915,6 +942,7 @@ func pcmFromInt16(frame []int16) []byte {
 // processCaptureFrame runs the capture chain on one device frame:
 // gain → echo cancellation → noise suppression / VAD → loopback and network callback.
 func (a *AudioEngine) processCaptureFrame(frame []int16) {
+	a.lastCapture.Store(time.Now().UnixNano())
 	a.mu.RLock()
 	aecEnabled := a.EchoCancellation && !a.InTestMode && a.playbackStream != nil
 	a.mu.RUnlock()
@@ -1459,6 +1487,7 @@ func (a *AudioEngine) fallbackSimulatedLoop(stop chan struct{}) {
 
 // renderFrame mixes everything that should be heard into out (one device frame).
 func (a *AudioEngine) renderFrame(out []int16) {
+	a.lastRender.Store(time.Now().UnixNano())
 	a.mu.Lock()
 	outputVol := a.OutputVolume
 	accum := a.mixAccum

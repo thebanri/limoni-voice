@@ -128,6 +128,54 @@ func TestJoinerReceivesEarlierChat(t *testing.T) {
 	}
 }
 
+// With the host's chat history off, the members learn it from the host's pings and nobody
+// hands a joiner the earlier chat; turning it back on shares only what was said since.
+func TestHostTurnsChatHistoryOff(t *testing.T) {
+	saved := chatHistoryDelays
+	chatHistoryDelays = []time.Duration{100 * time.Millisecond, 400 * time.Millisecond}
+	t.Cleanup(func() { chatHistoryDelays = saved })
+
+	relayURL, _ := startTestRelay(t)
+	host := newRelayNode(t, "nohist_host", "Alice", relayURL)
+	first := newRelayNode(t, "nohist_first", "Bob", relayURL)
+	late := newRelayNode(t, "nohist_late", "Carol", relayURL)
+	var lateHistory historySink
+	late.OnChatHistory = lateHistory.add
+
+	code := "4343-amber-falcon-lake"
+	host.HostRoom(code)
+	waitFor(t, "host registered on relay", 3*time.Second, func() bool {
+		host.mu.RLock()
+		defer host.mu.RUnlock()
+		return host.hostToken != ""
+	})
+	host.SendChatMessage("kept before off")
+	if !host.SetChatHistory(false) || host.SetChatHistory(false) {
+		t.Fatal("SetChatHistory does not report the change once")
+	}
+	if res := joinAndWait(t, first, code, 5*time.Second); !res.ok {
+		t.Fatalf("join failed: %+v", res)
+	}
+	waitFor(t, "Bob learns history is off", 5*time.Second, func() bool { return !first.ChatHistoryOn() })
+	host.SendChatMessage("secret")
+	first.SendChatMessage("also secret")
+
+	if res := joinAndWait(t, late, code, 5*time.Second); !res.ok {
+		t.Fatalf("late join failed: %+v", res)
+	}
+	time.Sleep(time.Second) // past both history deliveries
+	if got := lateHistory.texts(); len(got) != 0 {
+		t.Fatalf("Carol got history %q with it off", got)
+	}
+	host.SetChatHistory(true)
+	host.chatMu.Lock()
+	kept := len(host.chatLog)
+	host.chatMu.Unlock()
+	if !host.ChatHistoryOn() || kept != 0 {
+		t.Fatalf("turning history back on brought back %d old messages", kept)
+	}
+}
+
 // A long message is cut between characters, never inside one (ş, ğ, emoji are several bytes).
 func TestClipChatKeepsCharactersWhole(t *testing.T) {
 	text := strings.Repeat("a", MaxChatBytes-1) + "şğü"

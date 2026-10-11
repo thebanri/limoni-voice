@@ -33,6 +33,8 @@ type AppConfig struct {
 	ChatHeight int `json:"chat_height,omitempty"`
 	// ChatWidth is the chat's percent of the room footer width (0 = default).
 	ChatWidth int `json:"chat_width,omitempty"`
+	// NoChatHistory keeps the chat of the rooms this user hosts from members who join later.
+	NoChatHistory bool `json:"no_chat_history,omitempty"`
 }
 
 // ScreenSettings are the persisted screen share preferences.

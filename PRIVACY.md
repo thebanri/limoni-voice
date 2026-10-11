@@ -11,7 +11,9 @@ computer when you use it, and who receives it.
 Voice, video, screen shares, chat messages and files go to the other members of the room you
 join, directly when the network allows it. They are encrypted end to end with a group key
 (AES-256-GCM) that only the room's members hold. Members connected directly can see your IP
-address, as with any peer-to-peer program.
+address, as with any peer-to-peer program. A member who joins later receives the room's last
+200 chat messages from the members already there, unless the host turns this off with
+`/history off`.
 
 ## The public relay
 

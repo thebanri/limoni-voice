@@ -48,6 +48,9 @@ func (n *P2PNode) recordChat(e ChatEntry) bool {
 		return false
 	}
 	n.chatSeen[k] = struct{}{}
+	if n.chatHistoryOff {
+		return true // shortcut: chatSeen grows until the room is left while history is off; a chat's worth of keys
+	}
 	n.chatLog = append(n.chatLog, e)
 	if len(n.chatLog) > chatHistoryLimit {
 		for _, old := range n.chatLog[:len(n.chatLog)-chatHistoryLimit] {
@@ -58,11 +61,34 @@ func (n *P2PNode) recordChat(e ChatEntry) bool {
 	return true
 }
 
-// resetChatHistory forgets the room's messages when leaving it.
+// resetChatHistory forgets the room's messages, and its history setting, when leaving it.
 func (n *P2PNode) resetChatHistory() {
 	n.chatMu.Lock()
-	n.chatLog, n.chatSeen = nil, nil
+	n.chatLog, n.chatSeen, n.chatHistoryOff = nil, nil, false
 	n.chatMu.Unlock()
+}
+
+// SetChatHistory turns the room's chat history on or off. The host's pings carry the setting
+// to the members. Turning it off forgets what was kept, so it is never handed out later. It
+// reports whether the setting changed.
+func (n *P2PNode) SetChatHistory(on bool) bool {
+	n.chatMu.Lock()
+	defer n.chatMu.Unlock()
+	if n.chatHistoryOff != on {
+		return false
+	}
+	n.chatHistoryOff = !on
+	if !on {
+		n.chatLog = nil // chatSeen stays: it still drops the second copy of a live message
+	}
+	return true
+}
+
+// ChatHistoryOn reports whether the room hands its chat to members who join.
+func (n *P2PNode) ChatHistoryOn() bool {
+	n.chatMu.Lock()
+	defer n.chatMu.Unlock()
+	return !n.chatHistoryOff
 }
 
 // shareChatHistoryLater hands the chat so far to a member that just joined, so it sees what
@@ -111,7 +137,8 @@ func (n *P2PNode) sendChatHistory(peerID string) {
 // handleChatHistoryLocked takes the messages a member sent us on joining, leaving out the
 // ones we already have (every member sends its history, and sends it twice).
 func (n *P2PNode) handleChatHistoryLocked(pkt *P2PPacket) {
-	if pkt.TargetID != n.LocalID {
+	if pkt.TargetID != n.LocalID || !n.ChatHistoryOn() { // an older member sends it even when off
+
 		return
 	}
 	var fresh []ChatEntry
@@ -236,7 +263,7 @@ func (n *P2PNode) handleChatPartLocked(pkt *P2PPacket) {
 	if !ok || total > MaxChatBytes/chatPartSize+1 {
 		return
 	}
-	if history && pkt.TargetID != n.LocalID {
+	if history && (pkt.TargetID != n.LocalID || !n.ChatHistoryOn()) {
 		return
 	}
 	if !history && e.SenderID != pkt.SenderID {
