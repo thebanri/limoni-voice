@@ -157,6 +157,12 @@ func main() {
 	if os.Getenv("TERM_PROGRAM") == "Apple_Terminal" && os.Getenv("LIMONI_REP") == "" {
 		_ = os.Setenv("LIMONI_REP", "0")
 	}
+	// The app draws no images, but on a terminal that answers DA1 with Sixel (Windows
+	// Terminal 1.22+) Limoni puts a solid Sixel picture behind every dialog. Windows Terminal
+	// paints it over the dialog's text and leaves black blocks when the dialog animates.
+	if os.Getenv("LIMONI_GRAPHICS") == "" {
+		_ = os.Setenv("LIMONI_GRAPHICS", "halfblock")
+	}
 
 	setupConsole()
 	defer restoreConsole()
