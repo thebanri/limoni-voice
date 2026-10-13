@@ -13,6 +13,7 @@ import (
 	"github.com/thebanri/limoni-voice/internal/engine"
 	"github.com/thebanri/limoni-voice/internal/i18n"
 	"github.com/thebanri/limoni-voice/internal/p2p"
+	"github.com/thebanri/limoni-voice/internal/ptt"
 	"github.com/thebanri/limoni-voice/screenshare"
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
@@ -2214,5 +2215,30 @@ func TestStreamStageShowsOwnShareWhileWatching(t *testing.T) {
 	}
 	if strings.Contains(sb.String(), "STOP BROADCAST") {
 		t.Error("broadcast controls shown while not sharing")
+	}
+}
+
+// A key pressed with Alt or Ctrl in the terminal is a combination; Alt+F does not match F.
+func TestPTTKeyNameCombos(t *testing.T) {
+	cases := []struct {
+		e    driver.KeyEvent
+		want string
+	}{
+		{driver.KeyEvent{Type: driver.KeyRune, Ch: 'f'}, "F"},
+		{driver.KeyEvent{Type: driver.KeyRune, Ch: 'f', Alt: true}, "Alt+F"},
+		{driver.KeyEvent{Type: driver.KeyRune, Ch: 'f', Alt: true, Ctrl: true}, "Ctrl+Alt+F"},
+		{driver.KeyEvent{Type: driver.KeyF9, Shift: true}, "F9"},
+	}
+	for _, c := range cases {
+		key, name := pttKeyName(c.e)
+		if name != c.want {
+			t.Errorf("pttKeyName(%+v) = %q, want %q", c.e, name, c.want)
+		}
+		if canonical, ok := ptt.NormalizeKey(name); !ok || canonical != name {
+			t.Errorf("%q is not a canonical PTT key (%q)", name, canonical)
+		}
+		if strings.Contains(name, "+") && key != 0 {
+			t.Errorf("combination %q kept the rune %q", name, key)
+		}
 	}
 }

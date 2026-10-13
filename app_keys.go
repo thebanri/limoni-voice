@@ -418,8 +418,23 @@ func (a *App) handleConfirmModalKey(e driver.KeyEvent, confirmID string, confirm
 	}
 }
 
-// pttKeyName returns the configured PTT key name for a terminal key event (or "").
+// pttKeyName returns the configured PTT key name for a terminal key event (or ""), with the
+// Ctrl and Alt held with it ("Alt+F"). Shift is left out: letters are matched in either case.
 func pttKeyName(e driver.KeyEvent) (rune, string) {
+	key, name := pttBaseKeyName(e)
+	if name == "" || (!e.Ctrl && !e.Alt) {
+		return key, name
+	}
+	if e.Alt {
+		name = "Alt+" + name
+	}
+	if e.Ctrl {
+		name = "Ctrl+" + name
+	}
+	return 0, name
+}
+
+func pttBaseKeyName(e driver.KeyEvent) (rune, string) {
 	switch e.Type {
 	case driver.KeySpace:
 		return ' ', "Space"

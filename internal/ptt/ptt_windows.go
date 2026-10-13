@@ -16,10 +16,14 @@ var virtualKeys = map[string]uintptr{
 	"F7": 0x76, "F8": 0x77, "F9": 0x78, "F10": 0x79, "F11": 0x7A,
 }
 
-func startPlatform(key string, onChange ChangeFunc) (Watcher, error) {
+// modifierKeys: VK_CONTROL, VK_MENU and VK_SHIFT cover both sides; the Windows key has two.
+var modifierKeys = map[string][]uintptr{"Ctrl": {0x11}, "Alt": {0x12}, "Shift": {0x10}, "Cmd": {0x5B, 0x5C}}
+
+func startPlatform(name string, onChange ChangeFunc) (Watcher, error) {
 	if procGetAsyncKeyState.Find() != nil {
 		return nil, ErrUnsupported
 	}
+	mods, key := SplitCombo(name)
 	vk, ok := virtualKeys[key]
 	if !ok && len(key) == 1 {
 		vk = uintptr(key[0]) // 'A'-'Z' and '0'-'9' match their ASCII codes
@@ -28,9 +32,14 @@ func startPlatform(key string, onChange ChangeFunc) (Watcher, error) {
 	if !ok {
 		return nil, ErrUnsupported
 	}
-	pressed := func() bool {
+	groups := [][]uintptr{{vk}}
+	for _, m := range mods {
+		groups = append(groups, modifierKeys[m])
+	}
+	down := func(vk uintptr) bool {
 		state, _, _ := procGetAsyncKeyState.Call(vk)
 		return state&0x8000 != 0
 	}
+	pressed := func() bool { return allHeld(groups, down) }
 	return startPoller("GetAsyncKeyState", pressed, onChange, nil), nil
 }

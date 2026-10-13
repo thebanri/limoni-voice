@@ -51,8 +51,9 @@ func load() error {
 }
 
 // checkInputMonitoring asks macOS whether this process may read the keyboard. When it has
-// not decided yet, the permission prompt is shown and the watcher starts anyway: the key works
-// once the user allows it (macOS applies the choice after the terminal restarts).
+// not decided yet, the permission prompt is shown and the error is returned: without the
+// permission the key is only seen while the terminal has focus, and macOS applies the choice
+// after the terminal restarts.
 func checkInputMonitoring() error {
 	if ioHIDCheckAccess == nil {
 		return nil // before macOS 10.15 no permission is needed
@@ -63,32 +64,46 @@ func checkInputMonitoring() error {
 	case kIOHIDAccessTypeDenied:
 		return ErrInputMonitoring
 	default:
-		ioHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-		return nil
+		if ioHIDRequestAccess(kIOHIDRequestTypeListenEvent) {
+			return nil
+		}
+		return ErrInputMonitoring
 	}
 }
 
-func startPlatform(key string, onChange ChangeFunc) (Watcher, error) {
+// macModifiers: the left and right key of each modifier (kVK_Control … kVK_RightCommand).
+var macModifiers = map[string][]uint16{
+	"Ctrl": {0x3B, 0x3E}, "Alt": {0x3A, 0x3D}, "Shift": {0x38, 0x3C}, "Cmd": {0x37, 0x36},
+}
+
+func startPlatform(name string, onChange ChangeFunc) (Watcher, error) {
 	if err := load(); err != nil {
 		return nil, ErrUnsupported
 	}
 	if err := checkInputMonitoring(); err != nil {
 		return nil, err
 	}
-	var pressed func() bool
+	mods, key := SplitCombo(name)
+	var groups [][]uint16
+	for _, m := range mods {
+		groups = append(groups, macModifiers[m])
+	}
+	keyDown := func(code uint16) bool { return cgEventSourceKeyState(kCGEventSourceStateHIDSystemState, code) }
+	var keyPressed func() bool
 	switch key {
 	case "Mouse4", "Mouse5":
 		button := uint32(3)
 		if key == "Mouse5" {
 			button = 4
 		}
-		pressed = func() bool { return cgEventSourceButton(kCGEventSourceStateHIDSystemState, button) }
+		keyPressed = func() bool { return cgEventSourceButton(kCGEventSourceStateHIDSystemState, button) }
 	default:
 		code, ok := macKeys[key]
 		if !ok {
 			return nil, ErrUnsupported
 		}
-		pressed = func() bool { return cgEventSourceKeyState(kCGEventSourceStateHIDSystemState, code) }
+		keyPressed = func() bool { return keyDown(code) }
 	}
+	pressed := func() bool { return keyPressed() && allHeld(groups, keyDown) }
 	return startPoller("CGEventSourceKeyState", pressed, onChange, nil), nil
 }

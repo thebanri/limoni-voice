@@ -6,6 +6,7 @@ package ptt
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +32,50 @@ var Keys = []string{
 	"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 }
 
-// NormalizeKey maps user / terminal key names to the canonical names in Keys.
+// Modifiers can be held together with a key ("Alt+F"), listed in canonical order.
+// Cmd is Command on macOS, the Windows key on Windows and Super on Linux.
+var Modifiers = []string{"Ctrl", "Alt", "Shift", "Cmd"}
+
+var modifierAliases = map[string]string{
+	"ctrl": "Ctrl", "control": "Ctrl", "alt": "Alt", "option": "Alt", "opt": "Alt", "shift": "Shift",
+	"cmd": "Cmd", "command": "Cmd", "super": "Cmd", "win": "Cmd", "meta": "Cmd",
+}
+
+// SplitCombo splits a canonical name into its modifiers and key ("Alt+F" → [Alt], "F").
+func SplitCombo(name string) ([]string, string) {
+	parts := strings.Split(name, "+")
+	return parts[:len(parts)-1], parts[len(parts)-1]
+}
+
+// NormalizeKey maps user / terminal key names, optionally with modifiers ("alt+f"), to the
+// canonical names in Keys ("Alt+F").
 func NormalizeKey(name string) (string, bool) {
+	i := strings.LastIndex(name, "+")
+	if i <= 0 {
+		return normalizeKey(name)
+	}
+	key, ok := normalizeKey(name[i+1:])
+	if !ok {
+		return "", false
+	}
+	held := map[string]bool{}
+	for _, m := range strings.Split(name[:i], "+") {
+		canonical, ok := modifierAliases[strings.ToLower(strings.TrimSpace(m))]
+		if !ok {
+			return "", false
+		}
+		held[canonical] = true
+	}
+	var parts []string
+	for _, m := range Modifiers {
+		if held[m] {
+			parts = append(parts, m)
+		}
+	}
+	return strings.Join(append(parts, key), "+"), true
+}
+
+func normalizeKey(name string) (string, bool) {
 	switch name {
 	case " ":
 		return "Space", true
@@ -70,7 +113,21 @@ func NormalizeKey(name string) (string, bool) {
 
 // IsTypingKey reports whether a key also produces text (a global watcher on it fires while typing).
 func IsTypingKey(name string) bool {
-	return len(name) == 1 || name == "Space" || name == "Tab" || name == "Enter"
+	mods, key := SplitCombo(name)
+	if slices.ContainsFunc(mods, func(m string) bool { return m != "Shift" }) {
+		return false
+	}
+	return len(key) == 1 || key == "Space" || key == "Tab" || key == "Enter"
+}
+
+// allHeld reports whether every group has a key down, e.g. a modifier's left or right key.
+func allHeld[T any](groups [][]T, down func(T) bool) bool {
+	for _, g := range groups {
+		if !slices.ContainsFunc(g, down) {
+			return false
+		}
+	}
+	return true
 }
 
 // Start begins watching key. onChange runs on a background goroutine.

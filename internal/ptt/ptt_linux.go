@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +23,7 @@ import (
 var errMouseUnsupported = errors.New("ptt: mouse side buttons are not supported for push-to-talk on Linux, choose a key")
 
 func startPlatform(key string, onChange ChangeFunc) (Watcher, error) {
-	if key == "Mouse4" || key == "Mouse5" {
+	if _, base := SplitCombo(key); base == "Mouse4" || base == "Mouse5" {
 		return nil, errMouseUnsupported
 	}
 	wayland := os.Getenv("WAYLAND_DISPLAY") != ""
@@ -51,6 +52,11 @@ var x11Keysyms = map[string]xproto.Keysym{
 	"F7": 0xffc4, "F8": 0xffc5, "F9": 0xffc6, "F10": 0xffc7, "F11": 0xffc8,
 }
 
+// x11Modifiers: the left and right keysym of each modifier (Control_L … Super_R).
+var x11Modifiers = map[string][]xproto.Keysym{
+	"Ctrl": {0xffe3, 0xffe4}, "Alt": {0xffe9, 0xffea}, "Shift": {0xffe1, 0xffe2}, "Cmd": {0xffeb, 0xffec},
+}
+
 // x11Keysym returns the keysym of a canonical key name.
 func x11Keysym(key string) (xproto.Keysym, bool) {
 	if sym, ok := x11Keysyms[key]; ok {
@@ -62,10 +68,11 @@ func x11Keysym(key string) (xproto.Keysym, bool) {
 	return 0, false
 }
 
-func startX11(key string, onChange ChangeFunc) (Watcher, error) {
+func startX11(name string, onChange ChangeFunc) (Watcher, error) {
 	if os.Getenv("DISPLAY") == "" {
 		return nil, errors.New("x11: DISPLAY not set")
 	}
+	mods, key := SplitCombo(name)
 	sym, ok := x11Keysym(key)
 	if !ok {
 		return nil, errors.New("x11: key not supported")
@@ -82,30 +89,34 @@ func startX11(key string, onChange ChangeFunc) (Watcher, error) {
 		return nil, fmt.Errorf("x11: %w", err)
 	}
 	per := int(mapping.KeysymsPerKeycode)
-	var keycodes []xproto.Keycode
-	for i := 0; i < int(count); i++ {
-		for j := 0; j < per; j++ {
-			if mapping.Keysyms[i*per+j] == sym {
-				keycodes = append(keycodes, xproto.Keycode(int(setup.MinKeycode)+i))
-				break
+	keycodes := func(syms ...xproto.Keysym) []xproto.Keycode {
+		var out []xproto.Keycode
+		for i := 0; i < int(count); i++ {
+			for j := 0; j < per; j++ {
+				if slices.Contains(syms, mapping.Keysyms[i*per+j]) {
+					out = append(out, xproto.Keycode(int(setup.MinKeycode)+i))
+					break
+				}
 			}
 		}
+		return out
 	}
-	if len(keycodes) == 0 {
-		conn.Close()
-		return nil, errors.New("x11: key not present in keyboard layout")
+	groups := [][]xproto.Keycode{keycodes(sym)}
+	for _, m := range mods {
+		groups = append(groups, keycodes(x11Modifiers[m]...))
+	}
+	for _, g := range groups {
+		if len(g) == 0 {
+			conn.Close()
+			return nil, errors.New("x11: key not present in keyboard layout")
+		}
 	}
 	pressed := func() bool {
 		reply, err := xproto.QueryKeymap(conn).Reply()
 		if err != nil {
 			return false
 		}
-		for _, kc := range keycodes {
-			if reply.Keys[kc/8]&(1<<(kc%8)) != 0 {
-				return true
-			}
-		}
-		return false
+		return allHeld(groups, func(kc xproto.Keycode) bool { return reply.Keys[kc/8]&(1<<(kc%8)) != 0 })
 	}
 	return startPoller("X11", pressed, onChange, conn.Close), nil
 }
@@ -134,8 +145,20 @@ func (p *portalWatcher) Close() error {
 	return nil
 }
 
-// portalTrigger returns the XDG shortcut trigger (an xkb key name) for a canonical key name.
-func portalTrigger(key string) string {
+var portalModifiers = map[string]string{"Ctrl": "CTRL", "Alt": "ALT", "Shift": "SHIFT", "Cmd": "LOGO"}
+
+// portalTrigger returns the XDG shortcut trigger ("ALT+f": modifiers and an xkb key name) for
+// a canonical key name.
+func portalTrigger(name string) string {
+	mods, key := SplitCombo(name)
+	var prefix string
+	for _, m := range mods {
+		prefix += portalModifiers[m] + "+"
+	}
+	return prefix + portalKey(key)
+}
+
+func portalKey(key string) string {
 	if trigger := portalTriggers[key]; trigger != "" {
 		return trigger
 	}

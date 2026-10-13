@@ -19,7 +19,7 @@ func TestLinuxKeyMapping(t *testing.T) {
 			t.Errorf("no portal trigger for %s", key)
 		}
 	}
-	cases := map[string]string{"F9": "F9", "A": "a", "7": "7", "Space": "space", "RightAlt": "Alt_R", "Enter": "Return"}
+	cases := map[string]string{"F9": "F9", "A": "a", "7": "7", "Space": "space", "RightAlt": "Alt_R", "Enter": "Return", "Alt+F": "ALT+f", "Ctrl+Cmd+F9": "CTRL+LOGO+F9"}
 	for key, want := range cases {
 		if got := portalTrigger(key); got != want {
 			t.Errorf("portalTrigger(%s) = %q, want %q", key, got, want)
@@ -33,7 +33,7 @@ func TestLinuxKeyMapping(t *testing.T) {
 // Side mouse buttons are offered in the key list but Linux cannot watch them; the error
 // says so instead of asking the portal to bind a key named "mouse4".
 func TestLinuxRejectsMouseButtons(t *testing.T) {
-	for _, key := range []string{"Mouse4", "Mouse5"} {
+	for _, key := range []string{"Mouse4", "Mouse5", "Alt+Mouse4"} {
 		if _, err := Start(key, func(bool) {}); !errors.Is(err, errMouseUnsupported) {
 			t.Errorf("Start(%s) = %v, want errMouseUnsupported", key, err)
 		}

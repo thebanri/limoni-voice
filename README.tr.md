@@ -110,7 +110,7 @@
 - **Kapı Çalma**: `/knock` açıkken oda anahtarını bilen herkes, host onu içeri alana (`Y`) ya da geri çevirene (`N`) kadar bekler
 - **Oda Kilidi & PIN**: 4 haneli PIN koruması (`/lock <pin>`) ve host kilit yönetimi
 - **Atma & Yasaklama**: Host bir üyeyi `/kick <kullanıcı>` ile çıkarır ya da `/ban <kullanıcı>` ile oda açık kaldıkça dışarıda tutar. Çıkarma host'un anahtarıyla kanıtlanır, üyeler sahte çıkarma yapamaz; grup anahtarı anında yenilenir, çıkarılan üye odayı takip edemez
-- **Bas-Konuş (PTT)**: Ayarlanabilir bas-konuş tuşu ve konuşma algılama
+- **Bas-Konuş (PTT)**: Ayarlanabilir bas-konuş tuşu, Ctrl / Alt / Shift / Cmd ile birlikte de (örn. `Alt+F`), ve konuşma algılama
 - **Kişi Bazlı Ses Ayarı**: Katılımcı başına bağımsız ses seviyesi ve AGC güçlendirme
 
 </td>

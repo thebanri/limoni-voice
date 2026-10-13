@@ -110,7 +110,7 @@
 - **Knock to Join**: `/knock` makes everyone who has the room key wait until the host lets them in (`Y`) or turns them away (`N`)
 - **Room Lock & PIN**: 4-digit PIN protection (`/lock <pin>`) and host access control
 - **Kick & Ban**: The host removes a member with `/kick <user>` or keeps them out with `/ban <user>` (for as long as the room is open). The removal is proven with the host's key, so no member can fake one, and the group key is rotated at once so the removed member cannot follow the room
-- **Push-to-Talk (PTT)**: Configurable push-to-talk mode with voice activity detection
+- **Push-to-Talk (PTT)**: Configurable push-to-talk key, also with Ctrl / Alt / Shift / Cmd (e.g. `Alt+F`), and voice activity detection
 - **Per-User Volume**: Independent volume leveling and boost per participant
 
 </td>

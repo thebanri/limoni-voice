@@ -101,3 +101,31 @@ func TestMacKeysCoverEveryKey(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeKeyCombos(t *testing.T) {
+	cases := map[string]string{
+		"alt+f": "Alt+F", "Option+F": "Alt+F", "shift + ctrl + f9": "Ctrl+Shift+F9",
+		"cmd+alt+space": "Alt+Cmd+Space", "Ctrl+Alt+F": "Ctrl+Alt+F",
+	}
+	for in, want := range cases {
+		if got, ok := NormalizeKey(in); !ok || got != want {
+			t.Errorf("NormalizeKey(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"Hyper+F", "Alt+F13", "+", "Alt+"} {
+		if got, ok := NormalizeKey(bad); ok {
+			t.Errorf("NormalizeKey(%q) = %q, want rejected", bad, got)
+		}
+	}
+	if IsTypingKey("Alt+F") || !IsTypingKey("Shift+F") {
+		t.Error("a modifier other than Shift makes a key non-typing")
+	}
+}
+
+func TestAllHeld(t *testing.T) {
+	down := map[int]bool{1: true, 4: true}
+	held := func(k int) bool { return down[k] }
+	if !allHeld([][]int{{1}, {3, 4}}, held) || allHeld([][]int{{1}, {2, 3}}, held) || !allHeld(nil, held) {
+		t.Fatal("allHeld wants a key down in every group")
+	}
+}
