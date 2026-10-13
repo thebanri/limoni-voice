@@ -98,6 +98,7 @@ func (a *App) applySettings(cfg AppConfig) {
 	} else if s.OutputDeviceName != "" {
 		audio.WantDevice(false, s.OutputDevice, s.OutputDeviceName)
 	}
+	a.syncGlobalPTT() // a saved global PTT setting starts the system-wide watcher right away
 }
 
 // findDevice returns the index of the saved device in devices, or -1 (see engine.FindDevice).
