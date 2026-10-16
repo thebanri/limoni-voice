@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/thebanri/limoni-voice/internal/sysaudio"
 )
 
 // ListWindows returns active shareable screen and monitor targets
@@ -565,7 +567,24 @@ func listLinuxTargets() []WindowInfo {
 		}
 	}
 
-	// 6. Discover Running Graphical Applications (Wayland & X11 native apps: Zen, VS Code, Discord, etc.)
+	// 6. On Wayland the window itself is picked in the portal and only the entry chosen here
+	// says whose sound is shared, so list every program playing sound: players in a terminal
+	// (pikap, …) and ones the list below does not know (Haruna, …).
+	if isWayland() {
+		for _, app := range sysaudio.PlayingApps() {
+			title := "[Window] " + app.Name
+			if !seenWins[title] && !seenWins[strings.ToLower(app.Name)] {
+				seenWins[title] = true
+				seenWins[strings.ToLower(app.Name)] = true
+				windowTargets = append(windowTargets, WindowInfo{
+					ID:    fmt.Sprintf("app:%d:%s", app.PID, app.Name),
+					Title: title,
+				})
+			}
+		}
+	}
+
+	// 7. Discover Running Graphical Applications (Wayland & X11 native apps: Zen, VS Code, Discord, etc.)
 	guiApps := listRunningLinuxGUIApps()
 	for _, app := range guiApps {
 		if !seenWins[app.Title] && !seenWins[app.Name] {

@@ -258,3 +258,6 @@ func (s *wasapiStream) captureProcess(pid int, mode uint32, onFrame FrameFunc, s
 		}
 	})
 }
+
+// playingApps is not needed on Windows, where every window is listed with its process.
+func playingApps() []App { return nil }

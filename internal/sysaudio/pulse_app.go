@@ -200,6 +200,52 @@ func (s *pulseAppStream) record(input, monitorSource uint32) (*pulse.RecordStrea
 	return rec, nil
 }
 
+func playingApps() []App {
+	c, err := pulse.NewClient(pulse.ClientApplicationName(clientName), pulse.ClientTimeout(time.Second))
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	var inputs proto.GetSinkInputInfoListReply
+	if c.RawRequest(&proto.GetSinkInputInfoList{}, &inputs) != nil {
+		return nil
+	}
+	var clients proto.GetClientInfoListReply
+	_ = c.RawRequest(&proto.GetClientInfoList{}, &clients)
+	clientProps := map[uint32]proto.PropList{}
+	for _, cl := range clients {
+		clientProps[cl.ClientIndex] = cl.Properties
+	}
+	var apps []App
+	seen := map[string]bool{}
+	for _, in := range inputs {
+		if app, ok := streamApp(in.Properties, clientProps[in.ClientIndex]); ok && !seen[strings.ToLower(app.Name)] {
+			seen[strings.ToLower(app.Name)] = true
+			apps = append(apps, app)
+		}
+	}
+	return apps
+}
+
+// streamApp names the application behind a playback stream, from the stream's properties or,
+// for native PipeWire clients, its client's. ok is false for Limoni Voice's own streams.
+func streamApp(stream, client proto.PropList) (App, bool) {
+	if isSelf(stream) || isSelf(client) {
+		return App{}, false
+	}
+	for _, props := range []proto.PropList{stream, client} {
+		pid, _ := strconv.Atoi(propString(props, "application.process.id"))
+		name := propString(props, "application.name")
+		if name == "" {
+			name = propString(props, "application.process.binary")
+		}
+		if pid > 1 && name != "" {
+			return App{PID: pid, Name: name}, true
+		}
+	}
+	return App{}, false
+}
+
 func propString(props proto.PropList, k string) string {
 	if v, ok := props[k]; ok {
 		return v.String()

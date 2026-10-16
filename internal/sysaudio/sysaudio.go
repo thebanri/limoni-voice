@@ -134,6 +134,11 @@ func OpenApp(app App, onFrame FrameFunc) (Stream, error) {
 	return openApp(app, onFrame)
 }
 
+// PlayingApps lists the applications that have a playback stream open (Limoni Voice left
+// out), so a program that has no window of its own to pick, such as a player in a terminal,
+// can still be chosen. It is empty where streams cannot be listed.
+func PlayingApps() []App { return playingApps() }
+
 // maxMixBacklog bounds how much a stream that runs ahead of the clock stream may queue.
 const maxMixBacklog = 5 * FrameSamples
 
