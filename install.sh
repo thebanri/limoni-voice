@@ -180,12 +180,22 @@ Terminal=true
 Type=Application
 Categories=Network;AudioVideo;Chat;
 Keywords=voice;chat;p2p;terminal;limoni;
+EOF
+    # Opens limoni://join/<room key> invite links. No Terminal=true: the browser would pick a
+    # terminal of its own; the app hands the link to the open window, or opens in the user's.
+    cat <<EOF > "${DESKTOP_DIR}/limoni-voice-url.desktop"
+[Desktop Entry]
+Name=Limoni Voice
+Exec=${INSTALL_DIR}/${APP_NAME} %u
+Icon=limoni-voice
+Terminal=false
+NoDisplay=true
+Type=Application
 MimeType=x-scheme-handler/limoni;
 EOF
-    chmod +x "${DESKTOP_DIR}/limoni-voice.desktop" 2>/dev/null || true
-    # Open limoni://join/<room key> invite links with Limoni Voice.
+    chmod +x "${DESKTOP_DIR}/limoni-voice.desktop" "${DESKTOP_DIR}/limoni-voice-url.desktop" 2>/dev/null || true
     if command -v xdg-mime >/dev/null 2>&1; then
-        xdg-mime default limoni-voice.desktop x-scheme-handler/limoni 2>/dev/null || true
+        xdg-mime default limoni-voice-url.desktop x-scheme-handler/limoni 2>/dev/null || true
     fi
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true

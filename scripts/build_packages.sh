@@ -291,6 +291,16 @@ Exec=/usr/bin/limoni-voice %u
 Terminal=true
 Type=Application
 Categories=AudioVideo;Audio;Network;
+DESKTOP_EOF
+
+    # Invite links: no Terminal=true, the app opens in the user's own terminal.
+    cat <<DESKTOP_EOF > "${PKG_DIR}/usr/share/applications/limoni-voice-url.desktop"
+[Desktop Entry]
+Name=Limoni Voice
+Exec=/usr/bin/limoni-voice %u
+Terminal=false
+NoDisplay=true
+Type=Application
 MimeType=x-scheme-handler/limoni;
 DESKTOP_EOF
 

@@ -88,3 +88,76 @@ func withoutEnv(env []string, name string) []string {
 	}
 	return out
 }
+
+// inUserTerminalEnv marks the app openInUserTerminal started, so a terminal that gave it no
+// TTY after all does not start it again and again.
+const inUserTerminalEnv = "LIMONI_IN_TERMINAL"
+
+// openInUserTerminal starts this program with args in the user's own terminal and reports
+// whether it did. An invite link starts the app with no terminal (its URL handler entry has
+// Terminal=false): with Terminal=true the browser's launcher picked a terminal of its own,
+// Konsole where the user had chosen Alacritty, and opened one even when the app was open.
+func openInUserTerminal(args []string) bool {
+	self, err := os.Executable()
+	if err != nil || os.Getenv(inUserTerminalEnv) != "" {
+		return false
+	}
+	for _, term := range preferredTerminals(os.Getenv, kdeTerminal()) {
+		fields := strings.Fields(term)
+		path, err := exec.LookPath(fields[0])
+		if err != nil {
+			continue
+		}
+		argv := append(append(fields[1:], terminalExecArgs(filepath.Base(path))...), self)
+		cmd := exec.Command(path, append(argv, args...)...)
+		cmd.Env = append(os.Environ(), inUserTerminalEnv+"=1")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if cmd.Start() == nil {
+			_ = cmd.Process.Release()
+			return true
+		}
+	}
+	return false
+}
+
+// preferredTerminals lists the terminals to try: $TERMINAL, the one chosen in Plasma, then
+// xdg-terminal-exec (which follows the desktop's choice) and common ones.
+func preferredTerminals(getenv func(string) string, kde string) []string {
+	var list []string
+	for _, t := range []string{getenv("TERMINAL"), kde} {
+		if strings.TrimSpace(t) != "" {
+			list = append(list, t)
+		}
+	}
+	return append(list, "xdg-terminal-exec", "alacritty", "kitty", "foot", "wezterm", "ghostty",
+		"konsole", "gnome-terminal", "ptyxis", "kgx", "xfce4-terminal", "xterm")
+}
+
+// kdeTerminal is the terminal chosen in Plasma's Default Applications, or "".
+func kdeTerminal() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "kdeglobals"))
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "TerminalApplication="); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// terminalExecArgs is what goes between a terminal and the command it is to run.
+func terminalExecArgs(term string) []string {
+	switch term {
+	case "xdg-terminal-exec", "kitty":
+		return nil
+	case "gnome-terminal", "ptyxis", "kgx":
+		return []string{"--"}
+	case "wezterm":
+		return []string{"start", "--"}
+	}
+	return []string{"-e"}
+}

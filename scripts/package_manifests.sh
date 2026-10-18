@@ -227,7 +227,6 @@ package() {
   install -Dm755 limoni-voice "\${pkgdir}/usr/bin/limoni-voice"
   install -Dm644 LICENSE "\${pkgdir}/usr/share/licenses/\${pkgname}/LICENSE"
   install -Dm644 README.md "\${pkgdir}/usr/share/doc/\${pkgname}/README.md"
-  # Opens limoni://join/<room key> invite links in a terminal.
   install -Dm644 /dev/stdin "\${pkgdir}/usr/share/applications/limoni-voice.desktop" <<DESKTOP
 [Desktop Entry]
 Name=Limoni Voice
@@ -236,6 +235,16 @@ Exec=/usr/bin/limoni-voice %u
 Terminal=true
 Type=Application
 Categories=Network;AudioVideo;Chat;
+DESKTOP
+  # Opens limoni://join/<room key> invite links: no Terminal=true, the app opens in the
+  # user's own terminal.
+  install -Dm644 /dev/stdin "\${pkgdir}/usr/share/applications/limoni-voice-url.desktop" <<DESKTOP
+[Desktop Entry]
+Name=Limoni Voice
+Exec=/usr/bin/limoni-voice %u
+Terminal=false
+NoDisplay=true
+Type=Application
 MimeType=x-scheme-handler/limoni;
 DESKTOP
 }

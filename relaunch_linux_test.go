@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -42,5 +43,27 @@ func TestNeedsX11Relaunch(t *testing.T) {
 	got := withoutEnv([]string{"A=1", "WAYLAND_DISPLAY=wayland-0", "WAYLAND_DISPLAY_X=2"}, "WAYLAND_DISPLAY")
 	if !slices.Equal(got, []string{"A=1", "WAYLAND_DISPLAY_X=2"}) {
 		t.Fatalf("withoutEnv: %q", got)
+	}
+}
+
+// The invite link handler opens the app in the user's terminal: $TERMINAL, then Plasma's.
+func TestUserTerminalChoice(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kdeglobals"), []byte("[General]\nTerminalApplication=alacritty\nTerminalService=Alacritty.desktop\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if got := kdeTerminal(); got != "alacritty" {
+		t.Fatalf("kdeTerminal() = %q", got)
+	}
+	env := func(k string) string { return map[string]string{"TERMINAL": "foot"}[k] }
+	if got := preferredTerminals(env, "alacritty"); got[0] != "foot" || got[1] != "alacritty" {
+		t.Fatalf("order: %q", got[:3])
+	}
+	if got := preferredTerminals(func(string) string { return "" }, ""); got[0] != "xdg-terminal-exec" {
+		t.Fatalf("without a choice: %q", got[:3])
+	}
+	if a := terminalExecArgs("gnome-terminal"); len(a) != 1 || a[0] != "--" {
+		t.Fatalf("gnome-terminal args %q", a)
 	}
 }

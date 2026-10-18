@@ -136,6 +136,11 @@ func main() {
 	// validators (winget's) start the executable with no arguments and no console, and read
 	// a non-zero exit as a broken install.
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		// Started for an invite link with no app open: the link handler gives no terminal,
+		// so the app opens in the user's own.
+		if flag.Arg(0) != "" && openInUserTerminal(os.Args[1:]) {
+			os.Exit(0)
+		}
 		fmt.Fprintln(os.Stderr, "Limoni Voice is an interactive terminal application: run it in a terminal.")
 		fmt.Fprintln(os.Stderr, "See limoni-voice --help for the options.")
 		os.Exit(0)
