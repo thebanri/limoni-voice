@@ -2271,3 +2271,20 @@ func TestMemberGridSlots(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionShownTopRight(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("version_tag", "You", audio)
+	defer node.Close()
+	for name, render := range map[string]func(*terminal.Frame, cell.Rect){
+		"lobby": NewLobbyView().Render,
+		"room":  func(f *terminal.Frame, a cell.Rect) { NewRoomView().Render(f, a, node, audio) },
+	} {
+		buf := buffer.NewBuffer(cell.NewRect(0, 0, 200, 40))
+		render(terminal.NewFrame(buf, terminal.NewFocusManager()), cell.NewRect(0, 0, 200, 40))
+		top, _, _ := strings.Cut(buf.Snapshot(), "\n")
+		if !strings.Contains(top, " "+AppVersion+" ") {
+			t.Errorf("%s: version missing from the top row: %q", name, top)
+		}
+	}
+}

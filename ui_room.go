@@ -733,6 +733,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *p2p
 
 	inner := block.Inner(area)
 	frame.RenderWidget(block, area)
+	drawVersionTag(frame, area, block.Title)
 
 	buf := frame.Buffer
 	for y := inner.Y; y < inner.Y+inner.Height; y++ {

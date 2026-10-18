@@ -284,6 +284,18 @@ func (l *LobbyView) Render(frame *terminal.Frame, area cell.Rect) {
 	l.renderControls(frame, splits[1])
 }
 
+// drawVersionTag writes the app version at the right end of a block's top border, when the
+// block's title leaves room for it.
+func drawVersionTag(frame *terminal.Frame, area cell.Rect, title string) {
+	tag := " " + AppVersion + " "
+	w := uint16(len([]rune(tag)))
+	if area.Width < uint16(len([]rune(title)))+w+5 {
+		return
+	}
+	x := area.X + area.Width - w - 2
+	frame.Buffer.SetString(x, area.Y, tag, cell.Style{Fg: CurrentTheme().TextMuted, Bg: frame.Buffer.CellAt(x, area.Y).Style.Bg})
+}
+
 func (l *LobbyView) render3DMic(frame *terminal.Frame, area cell.Rect) {
 	theme := CurrentTheme()
 	block := widgets.Block{
@@ -370,6 +382,7 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 		Style:         cell.Style{Bg: theme.SurfaceBg},
 	}
 	frame.RenderWidget(mainBlock, area)
+	drawVersionTag(frame, area, mainTitle)
 	inner := mainBlock.Inner(area)
 
 	buf := frame.Buffer
