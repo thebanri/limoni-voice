@@ -147,6 +147,9 @@ func (a *App) handleKey(e driver.KeyEvent) {
 	case a.showDebugModal:
 		a.handleDebugModalKey(e)
 		return
+	case a.activeMedia() != nil:
+		a.handleMediaKey(e)
+		return
 	case a.activeFileOffer() != nil:
 		a.handleFileOfferKey(e)
 		return

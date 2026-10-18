@@ -181,6 +181,7 @@ func (a *App) render(now time.Time) {
 				a.closeScreenShareModal)
 		}
 		drawFileOffer(f)
+		a.drawMedia(f)
 		if r := a.activeKnock(); r != nil && a.activeFileOffer() == nil {
 			DrawKnockModal(f, f.Area(), r, p2p.KnockWindow-time.Since(r.at),
 				func() { a.answerKnock(true) }, func() { a.answerKnock(false) })

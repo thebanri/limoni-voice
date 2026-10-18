@@ -142,8 +142,8 @@ func OpenInEditor(filePath string) error {
 	}
 }
 
-// OpenFolder opens the system file manager at the specified directory
-func OpenFolder(dirPath string) error {
+// OpenPath opens a folder in the file manager, or a file in the program the system opens it with
+func OpenPath(dirPath string) error {
 	if testing.Testing() {
 		return nil
 	}

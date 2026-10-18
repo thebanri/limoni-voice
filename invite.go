@@ -90,15 +90,14 @@ func (a *App) openInvite(joinFlag, urlArg string) {
 }
 
 // receiveInvite takes an invite link that a process started for it handed over (see
-// instance.go): the app was already open, maybe in a room. Like a link the app was started
-// with, it only fills in the room and asks.
+// instance.go), or one clicked in the chat: the app is already open, maybe in a room. Like a
+// link the app was started with, it only fills in the room and asks.
 func (a *App) receiveInvite(link string) {
 	code, ok := parseJoinArg(link)
 	if !ok {
 		a.toast("Invalid room key or invite link")
 		return
 	}
-	a.notifier.NotifyNow(notifyTitle, T("Invite link opened: confirm in Limoni Voice"))
 	if a.currentScreen == ScreenRoom && code == a.node.RoomCode {
 		a.toast("You are already in this room")
 		return

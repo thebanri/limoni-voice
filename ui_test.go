@@ -1066,6 +1066,16 @@ func TestOpenBrowserURLSecurityValidation(t *testing.T) {
 			t.Fatalf("Expected security error for dangerous URL %q, but got nil", badURL)
 		}
 	}
+
+	// 3. Query strings and percent escapes are ordinary links
+	for _, goodURL := range []string{
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s",
+		"https://tr.wikipedia.org/wiki/%C4%B0stanbul",
+	} {
+		if err := OpenBrowserURL(goodURL); err != nil {
+			t.Fatalf("OpenBrowserURL(%q) = %v", goodURL, err)
+		}
+	}
 }
 
 func TestLobbyPinToggleAndHostHygiene(t *testing.T) {

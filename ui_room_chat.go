@@ -42,6 +42,9 @@ type roomDisplayLine struct {
 	RawMessage     string
 }
 
+// mediaLinkPrefix marks the click target of a picture or sound message; it is no web address.
+const mediaLinkPrefix = "media:"
+
 // chatTab is how a tab is shown: a tab cell has no width of its own, so it vanished.
 const chatTab = "    "
 
@@ -349,6 +352,7 @@ type lineCacheKey struct {
 	text     string
 	isChat   bool
 	isSelf   bool
+	mediaID  string
 	width    int
 	theme    string
 	lang     i18n.Lang
@@ -369,7 +373,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 	next := make(map[lineCacheKey][]roomDisplayLine, len(messages))
 	var lines []roomDisplayLine
 	for _, msg := range messages {
-		key := lineCacheKey{msg.Timestamp.UnixNano(), msg.Sender, msg.SenderID, msg.Text, msg.IsChat, msg.IsSelf, maxW, theme.ID, lang}
+		key := lineCacheKey{msg.Timestamp.UnixNano(), msg.Sender, msg.SenderID, msg.Text, msg.IsChat, msg.IsSelf, msg.MediaID, maxW, theme.ID, lang}
 		ml, ok := r.lineCache[key]
 		if !ok {
 			ml = messageDisplayLines(msg, maxW, theme)
@@ -415,6 +419,9 @@ func messageDisplayLines(msg RoomMessage, maxW int, theme ThemePalette) []roomDi
 
 			indentSpaces := strings.Repeat(" ", badgeLen)
 			rawSpans := parseMessageSpans(msg.Text)
+			if msg.MediaID != "" {
+				rawSpans = []chatSpan{{Text: msg.Text, IsLink: true, ClickURL: mediaLinkPrefix + msg.MediaID}}
+			}
 
 			var paragraphs [][]chatSpan
 			var curPara []chatSpan
@@ -579,6 +586,8 @@ func (r *RoomView) renderChatSpans(frame *terminal.Frame, buf *buffer.Buffer, st
 			buf.SetString(curX, rowY, string(sRunes), copyStyle)
 		} else if span.IsNote {
 			buf.SetString(curX, rowY, string(sRunes), noteStyle)
+		} else if span.IsLink && strings.HasPrefix(span.ClickURL, mediaLinkPrefix) {
+			buf.SetString(curX, rowY, string(sRunes), linkStyle)
 		} else if span.IsLink {
 			// Also an OSC 8 hyperlink where the terminal supports them: it opens the
 			// address on the user's own machine, even through SSH.
@@ -722,11 +731,28 @@ func (r *RoomView) HandleChatClick(x, y uint16) bool {
 		r.SetToast(copiedToast) // the copied text itself stays out of the chat
 		return true
 	}
+	if id, ok := strings.CutPrefix(clickURLToUse, mediaLinkPrefix); ok {
+		r.ClearSelection()
+		if r.OnOpenMedia != nil {
+			r.OnOpenMedia(id)
+		}
+		return true
+	}
+	// An invite link goes straight to the open app, not through the browser and a new
+	// process started in a terminal for limoni://.
+	if _, ok := parseJoinArg(clickURLToUse); ok && strings.HasPrefix(strings.ToLower(clickURLToUse), "http") && r.OnOpenInvite != nil {
+		r.ClearSelection()
+		r.OnOpenInvite(clickURLToUse)
+		return true
+	}
 	if clickURLToUse != "" {
 		r.ClearSelection()
-		_ = OpenBrowserURL(clickURLToUse)
 		CopyToClipboard(clickURLToUse)
-		r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURLToUse))
+		if err := OpenBrowserURL(clickURLToUse); err != nil {
+			r.SetToast(Tf("Could not open the link (copied instead): %v", err))
+		} else {
+			r.SetToast(fmt.Sprintf("🔗 Link opened: %s", clickURLToUse))
+		}
 		return true
 	}
 	return false

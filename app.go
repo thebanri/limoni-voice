@@ -90,6 +90,13 @@ type App struct {
 	currentFileOffer  *p2p.FileOffer
 	pendingFileOffers []*p2p.FileOffer
 
+	// Pictures and sounds from the chat (media.go), under fileOfferMu
+	media      map[string]*p2p.FileOffer
+	mediaOrder []string
+	mediaView  *p2p.FileOffer
+	mediaImage *widgets.Image
+	mediaNote  string
+
 	// Global push-to-talk
 	pttMu      sync.Mutex
 	pttWatcher ptt.Watcher
@@ -409,6 +416,11 @@ func (a *App) wireRoomCallbacks() {
 				room.AddLog(fmt.Sprintf("[FILE] Error sending %s: %v", filePath, err))
 			} else {
 				room.SetToast("File transfer started")
+				if mediaLabel(filePath) != "" {
+					if data, err := os.ReadFile(filePath); err == nil {
+						a.addSentMedia(filepath.Base(filePath), data)
+					}
+				}
 			}
 		}()
 	}
@@ -439,6 +451,7 @@ func (a *App) wireRoomCallbacks() {
 			room.AddLog(fmt.Sprintf("[FILE] Error sending %s: %v", name, err))
 		} else {
 			room.SetToast("File transfer started")
+			a.addSentMedia(name, data)
 		}
 	}
 	room.OnSendCode = func(title, code string) {
@@ -489,8 +502,10 @@ func (a *App) wireRoomCallbacks() {
 		room.SetToast("Invite link copied: " + link)
 		room.AddLog("[ROOM] Invite link copied. Clicked, it opens Limoni Voice with this room filled in (installed on Linux, Windows or macOS); anyone with it can join, like the room key.")
 	}
+	room.OnOpenMedia = a.openMedia
+	room.OnOpenInvite = a.receiveInvite
 	room.OnOpenFolder = func(dirPath string) {
-		if err := OpenFolder(dirPath); err != nil {
+		if err := OpenPath(dirPath); err != nil {
 			room.SetToast(fmt.Sprintf("Could not open folder: %v", err))
 		} else {
 			room.SetToast(fmt.Sprintf("Opened folder: %s", dirPath))
@@ -617,7 +632,9 @@ func (a *App) resetToLobby() {
 	a.fileOfferMu.Lock()
 	a.currentFileOffer = nil
 	a.pendingFileOffers = nil
+	a.media, a.mediaOrder = nil, nil
 	a.fileOfferMu.Unlock()
+	a.closeMedia()
 	a.closeScreenShareModal()
 	a.closeDebugModal()
 	a.closeTestModal()
@@ -724,6 +741,7 @@ func (a *App) Run() {
 				a.notifier.SetFocused(ev.Focus.Gained)
 			}
 		case link := <-a.invites:
+			a.notifier.NotifyNow(notifyTitle, T("Invite link opened: confirm in Limoni Voice"))
 			a.receiveInvite(link)
 		case now := <-renderTicker.C:
 			a.applyKicked()

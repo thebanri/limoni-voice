@@ -242,6 +242,11 @@ func (a *App) showNextFileOffer() {
 }
 
 func (a *App) enqueueFileOffer(offer *p2p.FileOffer) {
+	if a.addMedia(offer, false) {
+		a.audio.PlaySound(engine.SoundChat)
+		a.notifier.Notify(offer.SenderNick, mediaLabel(offer.FileName))
+		return
+	}
 	a.fileOfferMu.Lock()
 	a.pendingFileOffers = append(a.pendingFileOffers, offer)
 	if a.currentFileOffer == nil {

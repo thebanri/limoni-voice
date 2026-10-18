@@ -402,8 +402,10 @@ func OpenBrowserURL(urlStr string) error {
 		return nil
 	}
 
-	// Prevent shell/argument injection: reject control chars, quotes, and shell operators
-	if strings.ContainsAny(urlStr, " \t\r\n\x00\"'`;&|$><^%") {
+	// Prevent shell/argument injection: reject control chars, quotes, and shell operators.
+	// & and % are let through: query strings and percent escapes need them, the URL reaches
+	// no shell, and url.Parse below rejects a % that is no valid escape (%USERPROFILE%).
+	if strings.ContainsAny(urlStr, " \t\r\n\x00\"'`;|$><^") {
 		return fmt.Errorf("URL contains disallowed characters: %s", urlStr)
 	}
 

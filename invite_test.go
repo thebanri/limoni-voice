@@ -11,6 +11,7 @@ import (
 	"github.com/thebanri/limoni-voice/internal/p2p"
 	"github.com/thebanri/limoni/animation"
 	"github.com/thebanri/limoni/core/buffer"
+	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
 )
@@ -243,4 +244,35 @@ func shortTempDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
+}
+
+// An invite link clicked in the chat goes to the open app, not to the browser (which starts
+// a new copy in a terminal for limoni://); any other link still opens in the browser.
+func TestChatInviteLinkOpensInTheApp(t *testing.T) {
+	room := NewRoomView()
+	var got string
+	room.OnOpenInvite = func(link string) { got = link }
+	link := inviteLink("8282-amber-falcon-river")
+	room.AddChatMessage("Ayşe", "a", link, false, time.Now())
+	room.AddChatMessage("Ayşe", "a", "https://example.com/a?b=1&c=2", false, time.Now())
+
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("me", "You", audio)
+	defer node.Close()
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 100, 40))
+	room.Render(terminal.NewFrame(buf, terminal.NewFocusManager()), cell.NewRect(0, 0, 100, 40), node, audio)
+	room.mu.Lock()
+	rows := room.renderedLines
+	room.mu.Unlock()
+	for _, rl := range rows {
+		if rl.ClickURL != "" {
+			room.HandleChatClick(rl.StartX+20, rl.RowY)
+		}
+	}
+	if got != link {
+		t.Fatalf("invite link handed to the app: %q, want %q", got, link)
+	}
+	if !strings.HasPrefix(room.ToastMsg, "🔗 Link opened: https://example.com") {
+		t.Fatalf("the other link was not opened as a link: toast %q", room.ToastMsg)
+	}
 }

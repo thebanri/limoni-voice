@@ -253,6 +253,7 @@ type AudioEngine struct {
 	mixScratch        []int16
 	mixAccum          []float64
 	sfxQueue          [][]byte
+	clipQueue         [][]byte // a sound file opened from the chat, stopped when its window closes
 	lastSFXTime       map[SoundEffect]time.Time
 	SFXMuted          bool
 	stopChan          chan struct{}
@@ -394,6 +395,30 @@ func (a *AudioEngine) PlaySound(sfx SoundEffect) {
 	for i := 0; i+AudioChunkSize <= len(raw); i += AudioChunkSize {
 		a.sfxQueue = append(a.sfxQueue, raw[i:i+AudioChunkSize])
 	}
+}
+
+// PlayClip plays mono 16-bit PCM (a sound file opened from the chat) in place of the one playing.
+func (a *AudioEngine) PlayClip(pcm []byte) {
+	if a == nil {
+		return
+	}
+	pcm = padToChunks(pcm)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.clipQueue = a.clipQueue[:0]
+	for i := 0; i+AudioChunkSize <= len(pcm); i += AudioChunkSize {
+		a.clipQueue = append(a.clipQueue, pcm[i:i+AudioChunkSize])
+	}
+}
+
+// StopClip stops the sound PlayClip started.
+func (a *AudioEngine) StopClip() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.clipQueue = nil
+	a.mu.Unlock()
 }
 
 func NewAudioEngine() *AudioEngine {
@@ -1548,6 +1573,10 @@ func (a *AudioEngine) renderFrame(out []int16) {
 		if len(a.sfxQueue) > 0 {
 			addPCM(a.sfxQueue[0])
 			a.sfxQueue = a.sfxQueue[1:]
+		}
+		if len(a.clipQueue) > 0 {
+			addPCM(a.clipQueue[0])
+			a.clipQueue = a.clipQueue[1:]
 		}
 	}
 

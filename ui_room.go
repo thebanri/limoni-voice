@@ -28,6 +28,7 @@ type RoomMessage struct {
 	Text      string
 	IsChat    bool
 	IsSelf    bool
+	MediaID   string // a picture or sound sent in the chat: a click opens it
 }
 
 type RoomView struct {
@@ -66,6 +67,8 @@ type RoomView struct {
 	OnAdjustPeerVolume     func(peerID string, delta float64)
 	OnOpenEditor           func(filePath string)
 	OnOpenFolder           func(dirPath string)
+	OnOpenMedia            func(id string)
+	OnOpenInvite           func(link string)
 	OnCopyInvite           func()
 	OnToggleKnock          func()
 	OnKickMember           func(target string, ban bool)
@@ -171,6 +174,16 @@ func (r *RoomView) AddLog(msg string) {
 }
 
 func (r *RoomView) AddChatMessage(nickname string, senderID string, text string, isSelf bool, ts time.Time) {
+	r.addChatMessage(nickname, senderID, text, "", isSelf, ts)
+}
+
+// AddMediaMessage shows a picture or sound file as a chat message (label, e.g. "/image a.png")
+// that opens it when clicked.
+func (r *RoomView) AddMediaMessage(nickname, senderID, label, mediaID string, isSelf bool) {
+	r.addChatMessage(nickname, senderID, label, mediaID, isSelf, time.Time{})
+}
+
+func (r *RoomView) addChatMessage(nickname, senderID, text, mediaID string, isSelf bool, ts time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if ts.IsZero() {
@@ -192,6 +205,7 @@ func (r *RoomView) AddChatMessage(nickname string, senderID string, text string,
 		Text:      text,
 		IsChat:    true,
 		IsSelf:    isSelf,
+		MediaID:   mediaID,
 	})
 	if len(r.Messages) > 300 {
 		r.Messages = r.Messages[len(r.Messages)-200:]
@@ -374,7 +388,7 @@ func (r *RoomView) SendCurrentChat() {
 			if openFolderCb != nil {
 				openFolderCb(p2p.GetLimoniTransfersDir())
 			} else {
-				_ = OpenFolder(p2p.GetLimoniTransfersDir())
+				_ = OpenPath(p2p.GetLimoniTransfersDir())
 			}
 			return
 
