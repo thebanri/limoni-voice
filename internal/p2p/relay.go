@@ -813,7 +813,7 @@ func (n *P2PNode) handleRelaySignal(msg protocol.Signal) {
 		go n.failJoin(reason)
 
 	case protocol.SigRoomFull:
-		go n.failJoin("This room is full! (Maximum 4 people)")
+		go n.failJoin("This room is full!")
 
 	case protocol.SigRoomNotFound:
 		if next, ok := n.nextJoinRelayLocked(); ok {

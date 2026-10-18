@@ -121,8 +121,8 @@ func (r *RoomView) hudStatusItems(node *p2p.P2PNode, peers []*p2p.PeerInfo) []fl
 		items = append(items, lock)
 	}
 	items = append(items, flowItem{
-		label: Tf("%d/4 members", len(peers)+1),
-		short: fmt.Sprintf("%d/4", len(peers)+1),
+		label: Tf("%d/%d members", len(peers)+1, node.RoomLimit()),
+		short: fmt.Sprintf("%d/%d", len(peers)+1, node.RoomLimit()),
 		style: cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold},
 	})
 	if node.IsHost {

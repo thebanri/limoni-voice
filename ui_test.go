@@ -1510,7 +1510,7 @@ func TestWindowTitle(t *testing.T) {
 	a.room.AddChatMessage("Bob", "p1", "hi", false, time.Time{})
 	a.updateWindowTitle()
 
-	want := []string{"Limoni Voice", "Limoni Voice · 2/4", "(1) Limoni Voice · 2/4"}
+	want := []string{"Limoni Voice", "Limoni Voice · 2/10", "(1) Limoni Voice · 2/10"}
 	if got := titles(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("titles %q, want %q", got, want)
 	}
@@ -2249,6 +2249,25 @@ func TestPTTKeyNameCombos(t *testing.T) {
 		}
 		if strings.Contains(name, "+") && key != 0 {
 			t.Errorf("combination %q kept the rune %q", name, key)
+		}
+	}
+}
+
+// The member grid keeps its four cards up to four members, then grows by rows of three or
+// four, with one empty card to invite into until the room is full.
+func TestMemberGridSlots(t *testing.T) {
+	for _, c := range []struct{ members, limit, slots, rows, cols int }{
+		{1, 10, 4, 2, 2},
+		{4, 4, 4, 2, 2},
+		{4, 10, 5, 2, 3},
+		{9, 10, 10, 3, 4},
+		{10, 10, 10, 3, 4},
+		{1, 2, 2, 1, 2},
+	} {
+		s := gridSlots(c.members, c.limit)
+		r, k := gridShape(s)
+		if s != c.slots || r != c.rows || k != c.cols {
+			t.Errorf("%d of %d: %d slots %dx%d, want %d %dx%d", c.members, c.limit, s, r, k, c.slots, c.rows, c.cols)
 		}
 	}
 }

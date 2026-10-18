@@ -17,7 +17,7 @@ import (
 func (a *App) updateWindowTitle() {
 	title := "Limoni Voice"
 	if a.currentScreen == ScreenRoom {
-		title = fmt.Sprintf("Limoni Voice · %d/4", len(a.node.GetPeersList())+1)
+		title = fmt.Sprintf("Limoni Voice · %d/%d", len(a.node.GetPeersList())+1, a.node.RoomLimit())
 		a.room.mu.Lock()
 		unread := a.room.UnreadChatCount
 		a.room.mu.Unlock()

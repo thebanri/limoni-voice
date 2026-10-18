@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -133,6 +134,7 @@ func NewApp(b *driver.Backend, t *terminal.Terminal, node *p2p.P2PNode, audio *e
 	// own notification reaches the user, where the terminal can show one.
 	app.notifier.viaTerminal.Store(remoteSession() && t.Capabilities().Notify != terminal.NotifyNone)
 	app.applySettings(cfg)
+	app.lobby.RoomLimit = node.SetRoomLimit(cfg.RoomLimit)
 	app.wireNodeCallbacks()
 	app.wireLobbyCallbacks()
 	app.probeRelayStatus(node.RelayURL, node.RelayToken)
@@ -287,6 +289,7 @@ func (a *App) wireLobbyCallbacks() {
 		CopyToClipboard(code)
 		a.lobby.SetToast(fmt.Sprintf("Room key copied: %s", code))
 	}
+	a.lobby.OnRoomLimit = func(delta int) { a.setRoomLimit(a.lobby.RoomLimit + delta) }
 	a.lobby.OnNewCode = func() {
 		a.lobby.CurrentCode = GenerateRoomCode()
 		a.lobby.SetToast("New room key generated!")
@@ -311,6 +314,10 @@ func (a *App) wireRoomCallbacks() {
 		}
 		if f := strings.Fields(trimmed); len(f) > 0 && strings.EqualFold(f[0], "/history") {
 			a.setChatHistory(f[1:])
+			return
+		}
+		if f := strings.Fields(trimmed); len(f) > 0 && (strings.EqualFold(f[0], "/limit") || strings.EqualFold(f[0], "/max")) {
+			a.roomLimitCommand(f[1:])
 			return
 		}
 		if strings.EqualFold(trimmed, "/net") || strings.EqualFold(trimmed, "/stats") {
@@ -529,6 +536,7 @@ func (a *App) startHost() {
 		fallback = "User_" + a.lobby.CurrentCode[:4]
 	}
 	a.node.Nickname = a.nickname(fallback)
+	a.node.SetRoomLimit(a.lobby.RoomLimit)
 	a.node.HostRoom(a.lobby.CurrentCode)
 	if a.lobby.IsPinProtected {
 		pinVal := strings.TrimSpace(a.lobby.PinState.Value())
@@ -562,6 +570,34 @@ func (a *App) setChatHistory(args []string) {
 	a.node.SetChatHistory(on)
 	_ = UpdateAppConfig(func(c *AppConfig) { c.NoChatHistory = !on })
 	a.chatHistoryNotice(!on)
+}
+
+// setRoomLimit sets how many members the rooms this user hosts hold, the room it hosts now
+// included, and keeps the choice.
+func (a *App) setRoomLimit(limit int) {
+	a.lobby.RoomLimit = a.node.SetRoomLimit(limit)
+	_ = UpdateAppConfig(func(c *AppConfig) { c.RoomLimit = a.lobby.RoomLimit })
+	a.toast(Tf("Room limit: %d members", a.lobby.RoomLimit))
+}
+
+// roomLimitCommand handles /limit [2-10]: the host sets the room's member limit; alone it
+// shows the limit. Members already in stay when it is set below their number.
+func (a *App) roomLimitCommand(args []string) {
+	if len(args) == 0 {
+		a.room.SetToast(Tf("Room limit: %d members (the host sets it with /limit %d-%d)", a.node.RoomLimit(), p2p.MinRoomLimit, p2p.MaxPeers))
+		return
+	}
+	if !a.node.IsHost {
+		a.room.SetToast("Only the room host can change the room limit")
+		return
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil {
+		a.room.SetToast(Tf("Usage: /limit <%d-%d>", p2p.MinRoomLimit, p2p.MaxPeers))
+		return
+	}
+	a.setRoomLimit(n)
+	a.room.AddLog(Tf("[ROOM] Room limit set to %d members", a.lobby.RoomLimit))
 }
 
 func (a *App) chatHistoryNotice(off bool) {

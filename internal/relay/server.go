@@ -27,7 +27,7 @@ type Config struct {
 	AuthTokens     []string      // more accepted secrets, e.g. the old and new one while rotating
 	UDPPublicAddr  string        // advertised host:port for the UDP relay (optional)
 	UDPPort        int           // advertised UDP port on the WebSocket host when UDPPublicAddr is empty
-	MaxRoomMembers int           // default 4
+	MaxRoomMembers int           // default 10, the most a host can set
 	GracePeriod    time.Duration // member reconnect grace (default 30s)
 	PendingTimeout time.Duration // how long a joiner may wait for host approval (default 30s)
 	TrustProxy     bool          // always trust CF-Connecting-IP / X-Forwarded-For
@@ -105,7 +105,7 @@ type ipState struct {
 // New creates a relay server.
 func New(cfg Config) *Server {
 	if cfg.MaxRoomMembers <= 0 {
-		cfg.MaxRoomMembers = 4
+		cfg.MaxRoomMembers = 10
 	}
 	if cfg.GracePeriod <= 0 {
 		cfg.GracePeriod = 30 * time.Second
@@ -620,7 +620,7 @@ func (s *Server) joinRoom(c *client, msg protocol.Signal) {
 	}
 	if len(rm.members) >= s.cfg.MaxRoomMembers {
 		s.mu.Unlock()
-		c.sendSignal(protocol.Signal{Type: protocol.SigRoomFull, Message: "Room is full (Max 4 members)"})
+		c.sendSignal(protocol.Signal{Type: protocol.SigRoomFull, Message: "Room is full"})
 		return
 	}
 	host := rm.members[rm.hostID]
@@ -720,7 +720,7 @@ func (s *Server) admit(c *client, target string) {
 	joiner.pendingRoom = ""
 	if len(rm.members) >= s.cfg.MaxRoomMembers {
 		s.mu.Unlock()
-		joiner.sendSignal(protocol.Signal{Type: protocol.SigRoomFull, Message: "Room is full (Max 4 members)"})
+		joiner.sendSignal(protocol.Signal{Type: protocol.SigRoomFull, Message: "Room is full"})
 		return
 	}
 	m := &member{id: joiner.id, nickname: joiner.nickname, token: randomHex(16), endpoint: joiner.endpoint, client: joiner, ip: joiner.ip, joinedOrder: len(rm.order)}

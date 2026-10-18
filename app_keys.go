@@ -679,6 +679,10 @@ func (a *App) handleLobbyKey(e driver.KeyEvent) {
 				lobby.ActiveInput = 2
 				lobby.SetToast("PIN Protection Disabled")
 			}
+		case '+', '=':
+			a.setRoomLimit(lobby.RoomLimit + 1)
+		case '-', '_':
+			a.setRoomLimit(lobby.RoomLimit - 1)
 		case 'c', 'C':
 			CopyToClipboard(lobby.CurrentCode)
 			lobby.SetToast(fmt.Sprintf("Room key copied: %s", lobby.CurrentCode))

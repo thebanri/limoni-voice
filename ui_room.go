@@ -320,7 +320,7 @@ func (r *RoomView) SendCurrentChat() {
 		case "/help", "/?":
 			r.Messages = append(r.Messages, RoomMessage{
 				Timestamp: time.Now(),
-				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send [path], /code <snippet>, /folder, /lock [pin], /unlock, /history [on|off], /kick <user>, /ban <user>, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
+				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send [path], /image <path>, /sound <path>, /code <snippet>, /folder, /lock [pin], /unlock, /history [on|off], /limit [2-10], /kick <user>, /ban <user>, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
 				IsChat:    false,
 			})
 			r.mu.Unlock()
@@ -436,7 +436,7 @@ func (r *RoomView) SendCurrentChat() {
 			}
 			return
 
-		case "/send", "/file":
+		case "/send", "/file", "/image":
 			if len(parts) < 2 {
 				if sendImage := r.OnSendClipboardImage; sendImage != nil {
 					r.mu.Unlock()
@@ -567,6 +567,14 @@ func (r *RoomView) SendCurrentChat() {
 			return
 
 		case "/sound", "/sfx":
+			if cmd == "/sound" && len(parts) > 1 { // /sound <path> sends a sound file; alone it toggles the effects
+				sendFileCb := r.OnSendFile
+				r.mu.Unlock()
+				if sendFileCb != nil {
+					go sendFileCb(cleanFilePath(strings.TrimPrefix(text, parts[0])))
+				}
+				return
+			}
 			sfxCb := r.OnTriggerSFX
 			r.mu.Unlock()
 			if sfxCb != nil {
@@ -811,7 +819,7 @@ func (r *RoomView) renderHeader(frame *terminal.Frame, area cell.Rect, node *p2p
 	}
 
 	// 4. Member Count
-	countStr := Tf("Members: %d/4", totalCount)
+	countStr := Tf("Members: %d/%d", totalCount, node.RoomLimit())
 	countLen := uint16(len([]rune(countStr)))
 	if curX+countLen <= limitX {
 		buf.SetString(curX, inner.Y, countStr, cell.Style{

@@ -32,9 +32,10 @@ func TestPacketRoundTrip(t *testing.T) {
 			{ID: "p2", Nickname: "Bob", AddrStr: "[2001:db8::1]:50000", LocalPort: 50000, IsMuted: true, VideoPort: 1, VideoFPS: 60},
 			{ID: "p3", Nickname: "Eve", IsSharingScreen: true},
 		},
-		Epoch:    7,
-		LossPct:  12,
-		JitterMs: 31,
+		Epoch:     7,
+		LossPct:   12,
+		JitterMs:  31,
+		RoomLimit: 7,
 	}
 	data, err := pkt.MarshalBinary()
 	if err != nil {

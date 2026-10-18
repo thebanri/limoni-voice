@@ -26,7 +26,7 @@ const (
 	PacketMuteState
 	PacketLeave
 	PacketJoinRequest // Client probes network to request joining an open host's room
-	PacketRoomFull    // Host rejects join request because room reached 4-peer capacity
+	PacketRoomFull    // Host rejects join request because the room is at the host's member limit
 	PacketScreenShareStart
 	PacketScreenShareStop
 	PacketScreenShareData
@@ -103,6 +103,7 @@ type Packet struct {
 	HasAudio        bool          `json:"has_audio,omitempty"`       // screen share carries system audio
 	NoChatHistory   bool          `json:"no_chat_history,omitempty"` // host's ping: members keep no chat history for joiners
 	Vouch           []byte        `json:"vouch,omitempty"`           // new member's host vouch for its identity key (e2ee.MarshalVouch)
+	RoomLimit       uint8         `json:"room_limit,omitempty"`      // host's ping: members the room holds, the host included
 }
 
 // Fixed header layout (20 bytes):
@@ -138,6 +139,7 @@ const (
 	tagTargetID
 	tagVideoKbps
 	tagVouch
+	tagRoomLimit
 )
 
 const (
@@ -219,6 +221,7 @@ func (p *Packet) AppendBinary(dst []byte) []byte {
 	dst = appendUint(dst, tagEpoch, uint64(p.Epoch))
 	dst = appendUint(dst, tagLossPct, uint64(p.LossPct))
 	dst = appendUint(dst, tagJitterMs, uint64(p.JitterMs))
+	dst = appendUint(dst, tagRoomLimit, uint64(p.RoomLimit))
 	dst = appendString(dst, tagTargetID, p.TargetID)
 	dst = appendUint(dst, tagVideoKbps, uint64(p.VideoKbps))
 	if len(p.Vouch) > 0 {
@@ -301,6 +304,8 @@ func (p *Packet) UnmarshalBinary(data []byte) error {
 			p.LossPct = uint8(clampUvarint(val, 100))
 		case tagJitterMs:
 			p.JitterMs = uint16(clampUvarint(val, math.MaxUint16))
+		case tagRoomLimit:
+			p.RoomLimit = uint8(clampUvarint(val, math.MaxUint8))
 		case tagTargetID:
 			p.TargetID = string(val)
 		case tagVideoKbps:

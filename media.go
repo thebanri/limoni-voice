@@ -219,12 +219,22 @@ func (a *App) downloadMedia() {
 	a.toast(Tf("✓ Saved: %s", path))
 }
 
+// openMediaOnComputer opens the file in the system's own viewer or player, in full
+// resolution, without saving it to Downloads.
+func (a *App) openMediaOnComputer() {
+	if m := a.activeMedia(); m != nil {
+		a.toast(openMediaExternally(m, Tf("Opened on your computer: %s", m.FileName)))
+	}
+}
+
 func (a *App) handleMediaKey(e driver.KeyEvent) {
 	switch {
 	case e.Type == driver.KeyEsc || e.Type == driver.KeyRune && (e.Ch == 'q' || e.Ch == 'Q'):
 		a.closeMedia()
 	case e.Type == driver.KeyEnter || e.Type == driver.KeyRune && (e.Ch == 'd' || e.Ch == 'D'):
 		a.downloadMedia()
+	case e.Type == driver.KeyRune && (e.Ch == 'o' || e.Ch == 'O'):
+		a.openMediaOnComputer()
 	}
 }
 
@@ -233,7 +243,7 @@ func (a *App) drawMedia(f *terminal.Frame) {
 	m, img, note := a.mediaView, a.mediaImage, a.mediaNote
 	a.fileOfferMu.Unlock()
 	if m != nil {
-		DrawMediaModal(f, f.Area(), m, img, note, a.downloadMedia, a.closeMedia)
+		DrawMediaModal(f, f.Area(), m, img, note, a.openMediaOnComputer, a.downloadMedia, a.closeMedia)
 	}
 }
 
@@ -250,9 +260,9 @@ func fitImageCells(w, h, cols, rows int) (int, int) {
 	return max(c, 1), max(r, 1)
 }
 
-// DrawMediaModal draws the window of a picture or sound from the chat, with its Download and
-// Close buttons.
-func DrawMediaModal(frame *terminal.Frame, screen cell.Rect, m *p2p.FileOffer, img *widgets.Image, note string, onDownload, onClose func()) {
+// DrawMediaModal draws the window of a picture or sound from the chat, with its Open on
+// computer, Download and Close buttons.
+func DrawMediaModal(frame *terminal.Frame, screen cell.Rect, m *p2p.FileOffer, img *widgets.Image, note string, onOpen, onDownload, onClose func()) {
 	isImage := imageFileExts[strings.ToLower(filepath.Ext(m.FileName))]
 	w, h := 64, 8
 	if isImage && img != nil {
@@ -314,7 +324,7 @@ func DrawMediaModal(frame *terminal.Frame, screen cell.Rect, m *p2p.FileOffer, i
 		label string
 		color cell.Color
 		do    func()
-	}{{T(" [D] Download "), theme.Success, onDownload}, {T(" [Esc] Close "), theme.Danger, onClose}} {
+	}{{T(" [O] Open on computer "), theme.Accent, onOpen}, {T(" [D] Download "), theme.Success, onDownload}, {T(" [Esc] Close "), theme.Danger, onClose}} {
 		bw := uint16(cell.StringWidth(btn.label))
 		if btnX+bw > inner.X+inner.Width {
 			break

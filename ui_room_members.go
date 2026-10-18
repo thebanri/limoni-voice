@@ -15,7 +15,6 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
-	"github.com/thebanri/limoni/layout"
 	"github.com/thebanri/limoni/widgets"
 )
 
@@ -23,55 +22,54 @@ import (
 const minCardHeight = 4
 
 func (r *RoomView) renderClassicGrid(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine, peers []*p2p.PeerInfo) {
-	if area.Height < 2*minCardHeight {
+	slots := gridSlots(len(peers)+1, node.RoomLimit())
+	rows, cols := gridShape(slots)
+	if int(area.Height) < rows*minCardHeight {
 		r.renderMemberList(frame, area, node, audio, peers)
 		return
 	}
-	rowFl := layout.NewFlexLayout(layout.Vertical, 0,
-		layout.Percentage(50),
-		layout.Percentage(50),
-	)
-	rowSplits := rowFl.Split(area)
-	if len(rowSplits) < 2 {
-		return
+	for i := range slots {
+		slot := gridCell(area, rows, cols, i)
+		switch {
+		case i == 0:
+			r.renderLocalSlot(frame, slot, node, audio)
+		case i <= len(peers):
+			r.renderPeerSlot(frame, slot, peers[i-1], node, audio, i+1)
+		default:
+			r.renderEmptySlot(frame, slot, node.RoomCode, i+1)
+		}
 	}
+}
 
-	topRow := rowSplits[0]
-	botRow := rowSplits[1]
-
-	colFl := layout.NewFlexLayout(layout.Horizontal, 0,
-		layout.Percentage(50),
-		layout.Percentage(50),
-	)
-	topCols := colFl.Split(topRow)
-	botCols := colFl.Split(botRow)
-	if len(topCols) < 2 || len(botCols) < 2 {
-		return
+// gridSlots is how many cards the member grid shows: the members and, while the room has
+// room, one empty card to invite into; at least four, as the grid always had.
+func gridSlots(members, limit int) int {
+	slots := members
+	if members < limit {
+		slots++
 	}
+	return max(slots, min(4, limit))
+}
 
-	// Slot 0 (Top-Left): Local User (Self)
-	r.renderLocalSlot(frame, topCols[0], node, audio)
-
-	// Slot 1 (Top-Right): Peer 1
-	if len(peers) > 0 {
-		r.renderPeerSlot(frame, topCols[1], peers[0], node, audio, 2)
-	} else {
-		r.renderEmptySlot(frame, topCols[1], node.RoomCode, 2)
+// gridShape lays slots out two, three or four to a row.
+func gridShape(slots int) (rows, cols int) {
+	cols = 2
+	if slots > 4 {
+		cols = 3
 	}
-
-	// Slot 2 (Bottom-Left): Peer 2
-	if len(peers) > 1 {
-		r.renderPeerSlot(frame, botCols[0], peers[1], node, audio, 3)
-	} else {
-		r.renderEmptySlot(frame, botCols[0], node.RoomCode, 3)
+	if slots > 9 {
+		cols = 4
 	}
+	return (slots + cols - 1) / cols, cols
+}
 
-	// Slot 3 (Bottom-Right): Peer 3
-	if len(peers) > 2 {
-		r.renderPeerSlot(frame, botCols[1], peers[2], node, audio, 4)
-	} else {
-		r.renderEmptySlot(frame, botCols[1], node.RoomCode, 4)
-	}
+// gridCell is the area of card i in a rows×cols grid.
+func gridCell(area cell.Rect, rows, cols, i int) cell.Rect {
+	r, c := i/cols, i%cols
+	w, h := int(area.Width), int(area.Height)
+	x0, x1 := w*c/cols, w*(c+1)/cols
+	y0, y1 := h*r/rows, h*(r+1)/rows
+	return cell.NewRect(area.X+uint16(x0), area.Y+uint16(y0), uint16(x1-x0), uint16(y1-y0))
 }
 
 func (r *RoomView) renderSidebarMembers(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine, peers []*p2p.PeerInfo) {
@@ -1050,7 +1048,7 @@ func (r *RoomView) renderEmptySlot(frame *terminal.Frame, area cell.Rect, roomCo
 func (r *RoomView) renderMemberList(frame *terminal.Frame, area cell.Rect, node *p2p.P2PNode, audio *engine.AudioEngine, peers []*p2p.PeerInfo) {
 	theme := CurrentTheme()
 	block := widgets.Block{
-		Title:         Tf(" VOICE CHANNEL MEMBERS (%d/4) ", len(peers)+1),
+		Title:         Tf(" VOICE CHANNEL MEMBERS (%d/%d) ", len(peers)+1, node.RoomLimit()),
 		Borders:       widgets.BorderAll,
 		BorderSymbols: widgets.SymbolsRounded,
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused},

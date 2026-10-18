@@ -35,6 +35,8 @@ type AppConfig struct {
 	ChatWidth int `json:"chat_width,omitempty"`
 	// NoChatHistory keeps the chat of the rooms this user hosts from members who join later.
 	NoChatHistory bool `json:"no_chat_history,omitempty"`
+	// RoomLimit is how many members the rooms this user hosts hold, the host included (0 = the most).
+	RoomLimit int `json:"room_limit,omitempty"`
 }
 
 // ScreenSettings are the persisted screen share preferences.

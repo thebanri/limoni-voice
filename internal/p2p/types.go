@@ -11,7 +11,12 @@ import (
 	"github.com/thebanri/limoni-voice/internal/protocol"
 )
 
-const MaxPeers = 4
+// MaxPeers is the most members a room can be set to hold, the host included; MinRoomLimit
+// the least.
+const (
+	MaxPeers     = 10
+	MinRoomLimit = 2
+)
 
 // DefaultRelayURL is the default public WebSocket relay server URL
 const DefaultRelayURL = "wss://relay.thebanri.dpdns.org/ws"

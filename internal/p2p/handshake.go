@@ -157,7 +157,7 @@ func handshakeStatusReason(status byte) string {
 	case e2ee.StatusLocked:
 		return "Room is locked by host"
 	case e2ee.StatusFull:
-		return "This room is full! (Maximum 4 people)"
+		return "This room is full!"
 	case e2ee.StatusBusy:
 		return "Host is temporarily refusing joins after repeated failed attempts, try again shortly"
 	case e2ee.StatusDenied:
@@ -267,7 +267,7 @@ func (n *P2PNode) decideAdmissionLocked(pin string) byte {
 		return e2ee.StatusLocked
 	case n.IsLocked && pin != n.RoomPIN:
 		return e2ee.StatusPinRequired
-	case len(n.Peers) >= MaxPeers-1:
+	case len(n.Peers) >= n.RoomLimit()-1:
 		return e2ee.StatusFull
 	default:
 		return e2ee.StatusOK

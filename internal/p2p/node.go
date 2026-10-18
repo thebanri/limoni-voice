@@ -175,6 +175,7 @@ type P2PNode struct {
 	chatParts            map[string]*chatAssembly // long messages whose parts are arriving
 	chatPartsDone        map[string]time.Time     // long messages put together lately: their late copies are dropped
 	chatHistoryOff       bool                     // the host turned the room's chat history off: none is kept, sent or taken
+	roomLimit            atomic.Int32             // members the room holds, the host included (0: MaxPeers); the host's pings carry it
 	OnChatHistoryToggled func(off bool)           // the host turned the room's chat history on or off
 	OnDebugLog           func(msg string)
 
@@ -1119,6 +1120,10 @@ func (n *P2PNode) sendPingToPeer(peerID string) {
 
 	muted, deafened := n.audioState()
 	pingSeq := atomic.AddUint32(&n.pingSeq, 1)
+	var hostRoomLimit uint8
+	if isHost {
+		hostRoomLimit = uint8(n.RoomLimit())
+	}
 	pingPkt := P2PPacket{
 		Type:            PacketPing,
 		RoomCode:        roomID,
@@ -1132,6 +1137,7 @@ func (n *P2PNode) sendPingToPeer(peerID string) {
 		VideoFPS:        videoFPS,
 		Vouch:           vouch,
 		NoChatHistory:   isHost && !n.ChatHistoryOn(),
+		RoomLimit:       hostRoomLimit,
 		Timestamp:       time.Now().UnixMilli(),
 	}
 	if viaRelay || peerAddr == nil {
@@ -1551,8 +1557,8 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			}
 		}
 
-		// Check peer limit (Max 4 people: Host + 3 peers)
-		if len(n.Peers) >= MaxPeers-1 && n.Peers[pkt.SenderID] == nil {
+		// The host's room limit counts the host itself.
+		if len(n.Peers) >= n.RoomLimit()-1 && n.Peers[pkt.SenderID] == nil {
 			fullPkt := P2PPacket{
 				Type:      PacketRoomFull,
 				RoomCode:  n.roomID,
@@ -1691,9 +1697,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 		if n.Connecting && !n.IsConnected {
 			failedCb := n.OnJoinFailed
 			n.resetJoinStateLocked()
-			n.log("❌ Room join rejected: Room full (Max 4 people).")
+			n.log("❌ Room join rejected: the room is full.")
 			if failedCb != nil {
-				go failedCb("This room is full! (Maximum 4 people)")
+				go failedCb("This room is full!")
 			}
 		}
 
@@ -1704,6 +1710,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if pkt.VideoFPS > 0 {
 				peer.VideoFPS = pkt.VideoFPS
 			}
+		}
+		if pkt.SenderID == n.HostID && pkt.RoomLimit > 0 {
+			n.SetRoomLimit(int(pkt.RoomLimit))
 		}
 		if pkt.SenderID == n.HostID && n.SetChatHistory(!pkt.NoChatHistory) && n.OnChatHistoryToggled != nil {
 			go n.OnChatHistoryToggled(pkt.NoChatHistory)
@@ -2043,4 +2052,20 @@ func (n *P2PNode) rememberNickLocked(id, nick string) {
 func placeholderNick(id string) string {
 	short := strings.TrimPrefix(id, "peer_")
 	return "User_" + short[:min(len(short), 4)]
+}
+
+// RoomLimit is how many members the room holds, the host included.
+func (n *P2PNode) RoomLimit() int {
+	if l := int(n.roomLimit.Load()); l > 0 {
+		return l
+	}
+	return MaxPeers
+}
+
+// SetRoomLimit sets how many members the room holds, from MinRoomLimit to MaxPeers, and
+// returns the limit set. Members already in stay; the host's pings tell the others.
+func (n *P2PNode) SetRoomLimit(limit int) int {
+	limit = min(max(limit, MinRoomLimit), MaxPeers)
+	n.roomLimit.Store(int32(limit))
+	return limit
 }

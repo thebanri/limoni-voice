@@ -38,6 +38,7 @@ type LobbyView struct {
 	CodeState        *widgets.TextInputState
 	PinState         *widgets.TextInputState
 	IsPinProtected   bool
+	RoomLimit        int // members the room to host holds, the host included
 	ToastMsg         string
 	ToastTimer       int
 	ActiveInput      int // 0: Nickname, 1: RoomCode to Join, 2: Host / General, 3: Host PIN
@@ -50,6 +51,7 @@ type LobbyView struct {
 	OnCancelJoin     func()
 	OnCopyCode       func(code string)
 	OnNewCode        func()
+	OnRoomLimit      func(delta int) // − / + beside the room limit
 	OnOpenTestModal  func()
 	OnOpenRelayModal func()
 	OnCycleLanguage  func()
@@ -522,6 +524,25 @@ func (l *LobbyView) renderControls(frame *terminal.Frame, area cell.Rect) {
 			l.OnCopyCode(l.CurrentCode)
 		}
 	})
+
+	// Room limit row: [−] n [+]
+	limitStyle := cell.Style{Fg: theme.TextMuted, Bg: hostBgStyle.Bg}
+	if isHostFocused {
+		limitStyle = cell.Style{Fg: theme.Text, Bg: hostBgStyle.Bg}
+	}
+	lx := int(hostInner.X)
+	for i, part := range []string{Tf("Max members: %d", l.RoomLimit), "  [−]", " [+]"} {
+		w := putClipped(buf, uint16(lx), hostInner.Y+2, int(hostInner.X+hostInner.Width)-lx, part, limitStyle)
+		if delta := [...]int{0, -1, 1}[i]; delta != 0 && w > 0 {
+			clickable(frame, cell.NewRect(uint16(lx), hostInner.Y+2, uint16(w), 1), func(_ driver.MouseEvent) {
+				l.ActiveInput = 2
+				if l.OnRoomLimit != nil {
+					l.OnRoomLimit(delta)
+				}
+			})
+		}
+		lx += w
+	}
 
 	// PIN Protection Checkbox row
 	pinCheckStr := T("[ ] PIN Protected (4 Digits)")

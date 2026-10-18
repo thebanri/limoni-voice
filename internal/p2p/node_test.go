@@ -1568,3 +1568,20 @@ func TestPeerHeardAgainKeepsNickname(t *testing.T) {
 		t.Errorf("unknown member is named %q, want User_9876", got)
 	}
 }
+
+// The host admits members up to the limit it set, itself included, and no further.
+func TestRoomLimitAdmission(t *testing.T) {
+	n := &P2PNode{Peers: map[string]*PeerInfo{}}
+	if n.RoomLimit() != MaxPeers || n.SetRoomLimit(1) != MinRoomLimit || n.SetRoomLimit(99) != MaxPeers {
+		t.Fatal("room limit not kept between MinRoomLimit and MaxPeers")
+	}
+	n.SetRoomLimit(3)
+	n.Peers["a"] = &PeerInfo{ID: "a"}
+	if got := n.decideAdmissionLocked(""); got != e2ee.StatusOK {
+		t.Fatalf("2 of 3: status %d", got)
+	}
+	n.Peers["b"] = &PeerInfo{ID: "b"}
+	if got := n.decideAdmissionLocked(""); got != e2ee.StatusFull {
+		t.Fatalf("3 of 3: status %d, want full", got)
+	}
+}
