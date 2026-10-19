@@ -2246,11 +2246,7 @@ func TestStreamStageShowsATileForEachShare(t *testing.T) {
 	area := cell.NewRect(0, 0, 120, 30)
 	buf := buffer.NewBuffer(area)
 	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
-	var streaming []*p2p.PeerInfo
-	for _, p := range node.GetPeersList() {
-		streaming = append(streaming, p)
-	}
-	room.renderStreamStage(frame, area, streaming, node, audio)
+	room.renderStreamStage(frame, area, node.GetPeersList(), node, audio)
 	var sb strings.Builder
 	for y := area.Y; y < area.Height; y++ {
 		for x := area.X; x < area.Width; x++ {
