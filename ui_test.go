@@ -2336,3 +2336,19 @@ func TestVersionShownTopRight(t *testing.T) {
 		}
 	}
 }
+
+// The debug view is a modal: pictures in windows over the terminal (the stage's previews)
+// are hidden under it, and the wheel still scrolls it.
+func TestDebugViewIsAModal(t *testing.T) {
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 120, 40))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	DrawDebugModal(frame, frame.Area(), NewDebugView(), nil, func() {}, func() {}, func() {})
+	if m := frame.TopmostModal(); m == nil || m.ID != "debug_dialog" {
+		t.Fatalf("topmost modal %+v, want the debug view", m)
+	}
+	a := &App{room: NewRoomView(), showDebugModal: true, debugView: NewDebugView()}
+	a.handleMouse(driver.MouseEvent{X: 50, Y: 20, Button: driver.MouseScrollUp})
+	if a.debugView.Scroll != chatWheelLines {
+		t.Fatalf("scrolled to %d, want %d", a.debugView.Scroll, chatWheelLines)
+	}
+}

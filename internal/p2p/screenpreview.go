@@ -21,7 +21,10 @@ import (
 // so it is what viewers would see, from any capture (screen, window, camera) on any system,
 // without a second capture of the screen.
 const (
-	previewEvery    = time.Minute
+	previewEvery = time.Minute
+	// The first is taken this long after the share starts: the encoder's first keyframe is
+	// blurred while its rate control settles, and a capture may fade in.
+	previewSettle   = 3 * time.Second
 	previewRetry    = 5 * time.Second
 	previewMaxBytes = 15 * 1024 // one packet, as a chat part is
 	previewWidth    = 480

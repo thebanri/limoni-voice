@@ -267,15 +267,16 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 	localPort := captureConn.LocalAddr().(*net.UDPAddr).Port
 
 	tx := &screenTx{
-		n:         n,
-		conn:      captureConn,
-		preset:    preset,
-		history:   video.NewHistory(screenHistorySize),
-		abr:       video.NewController(preset.FloorKbps(), max(opts.BitrateKbps, preset.FloorKbps())),
-		watchers:  map[string]*screenWatcher{},
-		retxAt:    map[retxKey]time.Time{},
-		withAudio: withAudio,
-		stop:      make(chan struct{}),
+		n:          n,
+		conn:       captureConn,
+		preset:     preset,
+		history:    video.NewHistory(screenHistorySize),
+		abr:        video.NewController(preset.FloorKbps(), max(opts.BitrateKbps, preset.FloorKbps())),
+		watchers:   map[string]*screenWatcher{},
+		retxAt:     map[retxKey]time.Time{},
+		withAudio:  withAudio,
+		stop:       make(chan struct{}),
+		previewDue: time.Now().Add(previewSettle),
 	}
 	tx.pacer = video.NewPacer(pacerRate(tx.abr.Current, 1), tx.deliver)
 	if withAudio {

@@ -27,20 +27,21 @@ func (a *App) handleMouse(m driver.MouseEvent) {
 	if roomInteractive && a.handleChatResize(m) {
 		return
 	}
+	// Before the click regions: the debug view is a modal, which takes every event inside it.
+	if a.showDebugModal && a.debugView != nil && (m.Button == driver.MouseScrollUp || m.Button == driver.MouseScrollDown) {
+		if m.Button == driver.MouseScrollUp {
+			a.debugView.ScrollBy(chatWheelLines)
+		} else {
+			a.debugView.ScrollBy(-chatWheelLines)
+		}
+		return
+	}
 	if a.term.RouteMouseEvent(m) {
 		return
 	}
 
 	switch {
 	case a.showDebugModal:
-		if a.debugView == nil {
-			break
-		}
-		if m.Button == driver.MouseScrollUp {
-			a.debugView.ScrollBy(chatWheelLines)
-		} else if m.Button == driver.MouseScrollDown {
-			a.debugView.ScrollBy(-chatWheelLines)
-		}
 	case a.currentScreen == ScreenLobby && !a.showTestModal && !a.showExitModal && a.pendingInvite == "":
 		a.handleLobbyMouse(m)
 	case a.currentScreen == ScreenRoom && !a.showTestModal && !a.showLeaveModal && !a.showExitModal && !a.showScreenShareModal && a.pendingInvite == "":

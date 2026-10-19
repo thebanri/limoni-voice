@@ -1897,6 +1897,10 @@ func DrawDebugModal(frame *terminal.Frame, area cell.Rect, view *DebugView, netL
 		BorderStyle:   cell.Style{Fg: theme.BorderFocused, Modifier: cell.ModifierBold},
 		Style:         cell.Style{Bg: dialogBg},
 	}
+	// A modal like the other dialogs: pictures shown in windows over the terminal (the stage's
+	// previews) are hidden under it, or they would cover the logs.
+	openModal(frame, "debug_dialog", dialogArea, nil)
+	defer frame.EndLayer()
 	frame.RenderWidget(block, dialogArea)
 	inner := block.Inner(dialogArea)
 
