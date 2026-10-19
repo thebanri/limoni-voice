@@ -152,6 +152,9 @@ func (a *App) render(now time.Time) {
 	if a.showRelayModal {
 		focusRelayInputs()
 	}
+	if w, h, err := a.backend.CellPixelSize(); err == nil {
+		setCellAspect(w, h)
+	}
 	_ = a.term.Draw(func(f *terminal.Frame) {
 		a.lastScreen = f.Area()
 		a.room.Render(f, f.Area(), a.node, a.audio)

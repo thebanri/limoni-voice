@@ -265,18 +265,80 @@ func (a *App) drawMedia(f *terminal.Frame) {
 	}
 }
 
+// cellAspect is a cell's width over its height in pixels: a half, until the terminal says
+// (setCellAspect, every frame).
+var cellAspect = 0.5
+
+func setCellAspect(w, h uint16) {
+	if w > 0 && h > 0 {
+		cellAspect = float64(w) / float64(h)
+	}
+}
+
 // fitImageCells is the size in cells a w×h picture takes in at most cols×rows, keeping its
-// shape: a cell is about twice as tall as it is wide.
+// shape.
 func fitImageCells(w, h, cols, rows int) (int, int) {
 	if w <= 0 || h <= 0 {
 		return 0, 0
 	}
-	c, r := cols, cols*h/(w*2)
+	c, r := cols, int(float64(cols)*cellAspect*float64(h)/float64(w))
 	if r > rows {
-		c, r = rows*w*2/h, rows
+		c, r = int(float64(rows)*float64(w)/(float64(h)*cellAspect)), rows
 	}
 	return max(c, 1), max(r, 1)
 }
+
+type cropKey struct {
+	img    image.Image
+	c, r   int
+	aspect float64
+}
+
+// cropCache keeps each picture as cut for its cells, so the same picture is the same value
+// frame after frame, and the terminal is not sent it again.
+var cropCache = map[cropKey]image.Image{}
+
+// cropToCells cuts the edges of img so it has the shape of c×r cells. A picture of another
+// shape is padded out to its cells by the native protocols (Sixel, kitty), in a band of its
+// corner's colour beside it; a few pixels cut off are not missed.
+func cropToCells(img image.Image, c, r int) image.Image {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 || c <= 0 || r <= 0 {
+		return img
+	}
+	want := float64(c) * cellAspect / float64(r) // width over height
+	cw, ch := w, h
+	if float64(w)/float64(h) > want {
+		cw = int(float64(h)*want + 0.5)
+	} else {
+		ch = int(float64(w)/want + 0.5)
+	}
+	if cw >= w-1 && ch >= h-1 {
+		return img
+	}
+	key := cropKey{img, c, r, cellAspect}
+	if out, ok := cropCache[key]; ok {
+		return out
+	}
+	sub, ok := img.(interface {
+		SubImage(image.Rectangle) image.Image
+	})
+	if !ok {
+		return img
+	}
+	x0, y0 := b.Min.X+(w-cw)/2, b.Min.Y+(h-ch)/2
+	out := sub.SubImage(image.Rect(x0, y0, x0+cw, y0+ch))
+	if len(cropCache) >= 64 {
+		clear(cropCache)
+	}
+	cropCache[key] = out
+	return out
+}
+
+// mediaShown is the picture window's picture as shown, cut to its cells; kept between frames
+// as half blocks keep what they drew.
+var mediaShown widgets.Image
 
 // DrawMediaModal draws the window of a picture or sound from the chat, with its Open on
 // computer, Download and Close buttons.
@@ -327,14 +389,13 @@ func DrawMediaModal(frame *terminal.Frame, screen cell.Rect, m *p2p.FileOffer, i
 
 	btnRow := inner.Y + inner.Height - 1
 	if img != nil {
-		// Transparent pixels show the window, not the terminal's own background.
-		img.Background, img.OpaqueBackground = bg, true
 		b := img.Img.Bounds()
 		boxW, boxH := textW, int(btnRow-inner.Y)-2
 		c, r := fitImageCells(b.Dx(), b.Dy(), boxW, boxH)
 		x := inner.X + 1 + uint16((boxW-c)/2)
 		y := inner.Y + 1 + uint16((boxH-r)/2)
-		frame.RenderWidget(img, cell.NewRect(x, y, uint16(c), uint16(r)))
+		mediaShown.Img, mediaShown.Background, mediaShown.OpaqueBackground = cropToCells(img.Img, c, r), bg, true
+		frame.RenderWidget(&mediaShown, cell.NewRect(x, y, uint16(c), uint16(r)))
 	} else if note != "" {
 		buf.SetString(inner.X+1, inner.Y+2, clipToWidth(note, textW), cell.Style{Fg: theme.Secondary, Bg: bg})
 	}

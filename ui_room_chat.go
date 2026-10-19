@@ -399,6 +399,7 @@ type lineCacheKey struct {
 	isSelf   bool
 	mediaID  string
 	preview  image.Image
+	aspect   float64 // of a cell: a preview's rows follow it
 	width    int
 	theme    string
 	lang     i18n.Lang
@@ -419,7 +420,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 	next := make(map[lineCacheKey][]roomDisplayLine, len(messages))
 	var lines []roomDisplayLine
 	for _, msg := range messages {
-		key := lineCacheKey{msg.Timestamp.UnixNano(), msg.Sender, msg.SenderID, msg.Text, msg.IsChat, msg.IsSelf, msg.MediaID, msg.Preview, maxW, theme.ID, lang}
+		key := lineCacheKey{msg.Timestamp.UnixNano(), msg.Sender, msg.SenderID, msg.Text, msg.IsChat, msg.IsSelf, msg.MediaID, msg.Preview, cellAspect, maxW, theme.ID, lang}
 		ml, ok := r.lineCache[key]
 		if !ok {
 			ml = messageDisplayLines(msg, maxW, theme)
@@ -534,7 +535,7 @@ func messageDisplayLines(msg RoomMessage, maxW int, theme ThemePalette) []roomDi
 			if msg.MediaID != "" && msg.Preview != nil {
 				b := msg.Preview.Bounds()
 				cols, rows := fitImageCells(b.Dx(), b.Dy(), min(availFirst, previewCols), previewRows)
-				p := &chatPreview{img: msg.Preview, cols: cols, rows: rows, link: mediaLinkPrefix + msg.MediaID}
+				p := &chatPreview{img: cropToCells(msg.Preview, cols, rows), cols: cols, rows: rows, link: mediaLinkPrefix + msg.MediaID}
 				for row := range rows {
 					lines = append(lines, roomDisplayLine{Timestamp: indentSpaces, IsChat: true, Preview: p, PreviewRow: row})
 				}

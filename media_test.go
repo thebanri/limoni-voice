@@ -132,3 +132,25 @@ func TestPicturePreviewShowsUnderItsMessage(t *testing.T) {
 		t.Fatalf("%d rows open the picture, want its line and 8 of preview", n)
 	}
 }
+
+// A picture is cut to the shape of the cells it is shown in, from the middle; the same cut is
+// the same value, and a picture of the right shape is left alone.
+func TestCropToCells(t *testing.T) {
+	old := cellAspect
+	defer func() { cellAspect = old }()
+	setCellAspect(10, 25) // a cell of 10×25 pixels: 8×2 cells are 80×50
+	img := image.NewRGBA(image.Rect(0, 0, 160, 80))
+	got := cropToCells(img, 8, 2)
+	if b := got.Bounds(); b.Dx() != 128 || b.Dy() != 80 || b.Min.X != 16 {
+		t.Fatalf("cut to %v, want 128×80 from x 16", b)
+	}
+	if cropToCells(img, 8, 2) != got {
+		t.Fatal("the same cut is a new picture")
+	}
+	if right := image.NewRGBA(image.Rect(0, 0, 80, 50)); cropToCells(right, 8, 2) != image.Image(right) {
+		t.Fatal("a picture of the cells' shape was cut")
+	}
+	if c, r := fitImageCells(160, 100, 40, 40); c != 40 || r != 10 {
+		t.Fatalf("fitImageCells with tall cells: %dx%d, want 40x10", c, r)
+	}
+}

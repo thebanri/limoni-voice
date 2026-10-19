@@ -459,7 +459,7 @@ func (r *RoomView) drawStreamTile(frame *terminal.Frame, area cell.Rect, t strea
 		b := shown.Bounds()
 		c, rr := fitImageCells(b.Dx(), b.Dy(), int(pic.Width), int(pic.Height))
 		w := &st.img
-		w.Img, w.Background, w.OpaqueBackground = shown, theme.SurfaceBg, true
+		w.Img, w.Background, w.OpaqueBackground = cropToCells(shown, c, rr), theme.SurfaceBg, true
 		frame.RenderWidget(w, cell.NewRect(pic.X+uint16((int(pic.Width)-c)/2), pic.Y+uint16((int(pic.Height)-rr)/2), uint16(c), uint16(rr)))
 	} else {
 		note := T("Preview coming…")
