@@ -96,7 +96,8 @@ type App struct {
 	mediaOrder []string
 	mediaView  *p2p.FileOffer
 	mediaImage *widgets.Image
-	imhaAt     time.Time // the /imha easter egg started, zero when none plays
+	imhaAt     time.Time // the /imha easter egg started
+	imha       *imhaPlay // the /imha easter egg, nil when none plays
 	mediaNote  string
 
 	// Global push-to-talk
