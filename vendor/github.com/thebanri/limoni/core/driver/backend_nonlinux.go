@@ -35,6 +35,10 @@ func (b *Backend) SetSize(w, h uint16) {
 	b.width, b.height = w, h
 }
 
+// Portable reports whether the backend runs over an injected TerminalIO (a
+// test, an SSH channel) instead of the terminal this process runs in.
+func (b *Backend) Portable() bool { return true }
+
 func (b *Backend) Setup() error { return nil }
 func (b *Backend) Close() error {
 	select {

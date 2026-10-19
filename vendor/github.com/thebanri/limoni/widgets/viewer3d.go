@@ -383,11 +383,18 @@ func (v *Viewer3D) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if !ctx.RegisterImage(area, img, 0, true) {
 		return
 	}
+	// From the context alone: detecting from the environment allocates on
+	// Windows, and the overlay is only ever the protocol a terminal settled on.
+	overlay := graphics.Protocol(ctx.ImageProtocol) == graphics.ProtocolOverlay
 	// The picture covers the area: mark the cells so no text is drawn
 	// through it, keeping the background the picture's transparency shows.
 	for y := area.Y; y < area.Y+area.Height; y++ {
 		for x := area.X; x < area.X+area.Width; x++ {
 			if c := buf.Get(x, y); c != nil {
+				if overlay {
+					overlayCell(c)
+					continue
+				}
 				c.Content = cell.RuneImage
 				c.Style.Reset()
 				c.Style.Bg = ctx.Style.Bg

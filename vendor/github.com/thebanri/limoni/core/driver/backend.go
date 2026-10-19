@@ -303,6 +303,10 @@ func (b *Backend) Size() (uint16, uint16, error) {
 	return ws.Col, ws.Row, nil
 }
 
+// Portable reports whether the backend runs over an injected TerminalIO (a
+// test, an SSH channel) instead of the terminal this process runs in.
+func (b *Backend) Portable() bool { return b.portableIO != nil }
+
 // CellPixelSize returns the width and height of a terminal cell in pixels.
 // If the terminal does not report pixel sizes, or an error occurs, it returns (10, 20).
 func (b *Backend) CellPixelSize() (uint16, uint16, error) {

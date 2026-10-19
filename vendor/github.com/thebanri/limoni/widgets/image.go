@@ -126,6 +126,10 @@ func (im *Image) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		for y := ctx.Area.Y; y < ctx.Area.Y+ctx.Area.Height; y++ {
 			for x := ctx.Area.X; x < ctx.Area.X+ctx.Area.Width; x++ {
 				if c := buf.Get(x, y); c != nil {
+					if proto == graphics.ProtocolOverlay {
+						overlayCell(c)
+						continue
+					}
 					c.Content = cell.RuneImage
 					c.Style.Reset()
 					if im.Transparent {
@@ -141,6 +145,15 @@ func (im *Image) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		// Without an image protocol, fall back to half-block mode
 		im.drawHalfBlock(ctx, buf, img)
 	}
+}
+
+// overlayCell blanks a cell under an overlay picture. The overlay's window
+// lies over the cells, in the picture's shape, so the cells need no marker
+// keeping text off a picture; what the window leaves uncovered shows them,
+// and they keep the background under them, where cell.RuneImage would be
+// erased to the terminal's default.
+func overlayCell(c *cell.Cell) {
+	c.Content, c.Style = ' ', cell.Style{Bg: c.Style.Bg}
 }
 
 func (im *Image) drawHalfBlock(ctx cell.Context, buf *buffer.Buffer, img image.Image) {

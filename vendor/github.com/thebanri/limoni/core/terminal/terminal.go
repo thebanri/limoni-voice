@@ -10,6 +10,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/graphics"
+	"github.com/thebanri/limoni/internal/overlay"
 )
 
 // Terminal is the main controller of the TUI engine.
@@ -48,6 +49,14 @@ type Terminal struct {
 
 	// kitty is what kitty has been sent: see kittyImages.
 	kitty kittyImages
+
+	// overlay shows the pictures for graphics.ProtocolOverlay; overlayFailed
+	// is set once opening it failed, so it is not tried every frame.
+	overlay         *overlay.Overlay
+	overlayFailed   bool
+	overlayPics     []overlay.Picture
+	overlayFallback bool   // SetOverlayPictures
+	overlayGen      uint64 // graphics.Generation when the overlay was last trimmed
 
 	// Dither transition state
 	transitionActive   bool
@@ -198,6 +207,10 @@ func (t *Terminal) Close() error {
 		t.RestoreModes()
 		if len(t.kitty.ids) > 0 {
 			_, _ = t.driver.Write(t.kitty.freeAll(nil))
+		}
+		if t.overlay != nil {
+			_ = t.overlay.Close()
+			t.overlay = nil
 		}
 		if err := t.driver.Close(); err != nil {
 			return err
@@ -350,6 +363,7 @@ func (t *Terminal) Suspend() error {
 	// The shell should not inherit a resize arrow or the kitty keyboard
 	// flags; the next mouse move and the next frame set them again.
 	t.RestoreModes()
+	t.hideOverlay()
 	if err := t.driver.Suspend(); err != nil {
 		return err
 	}
@@ -382,6 +396,7 @@ func (t *Terminal) Release(fn func() error) error {
 		return driver.ErrReleaseUnsupported
 	}
 	t.RestoreModes()
+	t.hideOverlay()
 	err := t.driver.Release(fn)
 	if errors.Is(err, driver.ErrReleaseUnsupported) {
 		return err
@@ -398,6 +413,7 @@ func (t *Terminal) Release(fn func() error) error {
 func (t *Terminal) Draw(fn func(f *Frame)) error {
 	t0 := time.Now()
 	t.refreshCapabilities()
+	t.syncOverlay()
 	t.syncKeyboardMode()
 	// Query the current screen size
 	w, h, err := t.driver.Size()
@@ -508,67 +524,7 @@ func (t *Terminal) present(t0 time.Time) error {
 		}
 	}
 
-	// ── STEP 1: add Kitty/Sixel images to the buffer (the pixel layer at the back) ──
-	// The protocol detected when the terminal was created (or set with
-	// SetCapabilities). Detecting it again here read a dozen environment
-	// variables on every frame, and on Windows each read allocates.
-	proto := t.caps.GraphicsProto
-	if proto != graphics.ProtocolHalfBlock {
-		imageRegions := t.clippedImageRegions()
-		if len(imageRegions) > 0 {
-			cellW, cellH, _ := t.driver.CellPixelSize()
-
-			imagesChanged := needsFullClear || layersChanged
-			if !imagesChanged {
-				if len(imageRegions) != len(t.lastDrawnImages) {
-					imagesChanged = true
-				} else {
-					for i, reg := range imageRegions {
-						prev := t.lastDrawnImages[i]
-						if reg.Img != prev.Img || reg.Area != prev.Area || reg.ZIndex != prev.ZIndex {
-							imagesChanged = true
-							break
-						}
-					}
-				}
-			}
-
-			if imagesChanged && proto == graphics.ProtocolKitty {
-				t.writeBuf = t.kitty.place(t.writeBuf, imageRegions, cellW, cellH)
-			} else if imagesChanged {
-				for _, reg := range imageRegions {
-					zIndex := reg.ZIndex
-					if proto == graphics.ProtocolKitty && zIndex == 0 {
-						zIndex = -1
-					}
-					escSeq := graphics.GetCachedEscapeSequence(reg.Img, reg.Area.Width, reg.Area.Height, cellW, cellH, proto, zIndex, reg.Transparent)
-					if escSeq != "" {
-						t.writeBuf = buffer.AppendCursor(t.writeBuf, reg.Area.X, reg.Area.Y)
-						t.writeBuf = append(t.writeBuf, escSeq...)
-					}
-				}
-			}
-			if imagesChanged {
-				if cap(t.lastDrawnImages) >= len(imageRegions) {
-					t.lastDrawnImages = t.lastDrawnImages[:len(imageRegions)]
-				} else {
-					t.lastDrawnImages = make([]ImageRegion, len(imageRegions))
-				}
-				copy(t.lastDrawnImages, imageRegions)
-			}
-			t.lastImageCount = len(imageRegions)
-		} else {
-			if t.lastImageCount > 0 {
-				if proto == graphics.ProtocolKitty {
-					t.writeBuf = t.kitty.freeAll(t.writeBuf)
-				}
-				t.lastImageCount = 0
-				t.lastDrawnImages = nil
-			}
-		}
-	}
-
-	// ── STEP 2: draw the ASCII buffer (ON TOP of the pixel layer) ──
+	// ── STEP 1: the cells ──
 	var diffErr error
 	diffOpts := buffer.DiffOptions{
 		TrueColor:  t.caps.TrueColor,
@@ -594,6 +550,78 @@ func (t *Terminal) present(t0 time.Time) error {
 	}
 	if diffErr != nil {
 		return diffErr
+	}
+
+	// ── STEP 2: the images, after the cells ──
+	// A Sixel or iTerm2 picture lives in the terminal's cells: sent before
+	// the diff, it was erased by the ECH for cells turning into RuneImage.
+	// The protocol detected when the terminal was created (or set with
+	// SetCapabilities). Detecting it again here read a dozen environment
+	// variables on every frame, and on Windows each read allocates.
+	proto := t.caps.GraphicsProto
+	if proto != graphics.ProtocolHalfBlock {
+		imageRegions := t.clippedImageRegions()
+		if len(imageRegions) > 0 {
+			cellW, cellH, _ := t.driver.CellPixelSize()
+
+			imagesChanged := needsFullClear || layersChanged
+			if !imagesChanged {
+				if len(imageRegions) != len(t.lastDrawnImages) {
+					imagesChanged = true
+				} else {
+					for i, reg := range imageRegions {
+						prev := t.lastDrawnImages[i]
+						if reg.Img != prev.Img || reg.Area != prev.Area || reg.ZIndex != prev.ZIndex {
+							imagesChanged = true
+							break
+						}
+					}
+				}
+			}
+
+			if imagesChanged && proto == graphics.ProtocolOverlay {
+				t.placeOverlay(imageRegions)
+			} else if imagesChanged && proto == graphics.ProtocolKitty {
+				t.writeBuf = t.kitty.place(t.writeBuf, imageRegions, cellW, cellH)
+			} else if imagesChanged {
+				for _, reg := range imageRegions {
+					zIndex := reg.ZIndex
+					if proto == graphics.ProtocolKitty && zIndex == 0 {
+						zIndex = -1
+					}
+					escSeq := graphics.GetCachedEscapeSequence(reg.Img, reg.Area.Width, reg.Area.Height, cellW, cellH, proto, zIndex, reg.Transparent)
+					if escSeq != "" {
+						t.writeBuf = buffer.AppendCursor(t.writeBuf, reg.Area.X, reg.Area.Y)
+						t.writeBuf = append(t.writeBuf, escSeq...)
+					}
+				}
+				// Text drawn over a picture stays over it: sent again, after it.
+				if t.inline == 0 && t.repaintOver(imageRegions) {
+					t.front.IsDirty = true
+					if t.writeBuf, diffErr = buffer.DiffWithOptions(t.front, t.back, t.writeBuf, diffOpts); diffErr != nil {
+						return diffErr
+					}
+				}
+			}
+			if imagesChanged {
+				if cap(t.lastDrawnImages) >= len(imageRegions) {
+					t.lastDrawnImages = t.lastDrawnImages[:len(imageRegions)]
+				} else {
+					t.lastDrawnImages = make([]ImageRegion, len(imageRegions))
+				}
+				copy(t.lastDrawnImages, imageRegions)
+			}
+			t.lastImageCount = len(imageRegions)
+		} else {
+			if t.lastImageCount > 0 {
+				if proto == graphics.ProtocolKitty {
+					t.writeBuf = t.kitty.freeAll(t.writeBuf)
+				}
+				t.hideOverlay()
+				t.lastImageCount = 0
+				t.lastDrawnImages = nil
+			}
+		}
 	}
 
 	if len(t.writeBuf) == bodyStart {
@@ -632,6 +660,24 @@ func (t *Terminal) copyWidgetStats() {
 	}
 	t.lastWidgetStats = make([]WidgetStat, len(t.frame.WidgetStats))
 	copy(t.lastWidgetStats, t.frame.WidgetStats)
+}
+
+// repaintOver marks for the diff the cells in the pictures' areas that are
+// not RuneImage, and says whether there were any.
+func (t *Terminal) repaintOver(regions []ImageRegion) bool {
+	w, h := int(t.front.Area.Width), int(t.front.Area.Height)
+	found := false
+	for _, reg := range regions {
+		for y := int(reg.Area.Y); y < min(h, int(reg.Area.Y)+int(reg.Area.Height)); y++ {
+			for x := int(reg.Area.X); x < min(w, int(reg.Area.X)+int(reg.Area.Width)); x++ {
+				if i := y*w + x; t.front.Content[i].Content != cell.RuneImage {
+					t.back.Content[i].Content = cell.RuneInvalid
+					found = true
+				}
+			}
+		}
+	}
+	return found
 }
 
 // clippedImageRegions intentionally preserves native image placements.
