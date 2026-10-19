@@ -42,8 +42,9 @@ const (
 	ProtocolHalfBlock
 	// ProtocolOverlay shows pictures in windows laid over the terminal
 	// (internal/overlay), for terminals with no protocol of their own. It is
-	// only chosen with LIMONI_GRAPHICS=overlay; where no overlay can be
-	// opened the terminal falls back to half blocks.
+	// chosen with LIMONI_GRAPHICS=overlay, or by Terminal.SetOverlayPictures
+	// where the terminal reports no protocol; where no overlay can be opened
+	// the terminal falls back to half blocks.
 	ProtocolOverlay
 )
 

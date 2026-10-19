@@ -55,7 +55,8 @@ type Terminal struct {
 	overlay         *overlay.Overlay
 	overlayFailed   bool
 	overlayPics     []overlay.Picture
-	overlayFallback bool   // SetOverlayPictures
+	overlayFallback bool // SetOverlayPictures
+	cellPicturesBuf []ImageRegion
 	overlayGen      uint64 // graphics.Generation when the overlay was last trimmed
 
 	// Dither transition state
@@ -561,6 +562,9 @@ func (t *Terminal) present(t0 time.Time) error {
 	proto := t.caps.GraphicsProto
 	if proto != graphics.ProtocolHalfBlock {
 		imageRegions := t.clippedImageRegions()
+		if proto == graphics.ProtocolSixel || proto == graphics.ProtocolIterm2 || proto == graphics.ProtocolKitty {
+			imageRegions = t.visiblePictures(imageRegions, proto)
+		}
 		if len(imageRegions) > 0 {
 			cellW, cellH, _ := t.driver.CellPixelSize()
 
@@ -678,6 +682,30 @@ func (t *Terminal) repaintOver(regions []ImageRegion) bool {
 		}
 	}
 	return found
+}
+
+// visiblePictures leaves out what a native protocol should not be sent.
+//
+// A Sixel or iTerm2 picture lives in the cells, so a dialog's own cells cover it, sent again
+// after it by repaintOver: the solid pictures opaque blocks and dialogs register behind
+// themselves (z -2 and -4) are left out. Encoded again every frame a dialog animated, they
+// cost time, and Windows Terminal drew them over the dialog's text.
+//
+// A kitty picture floats over the text, so a dialog would show it through: a picture behind
+// a modal or a layer (z -3) is left out, as the overlay leaves it out. A dialog's own solid
+// picture did not hide it either: kitty 0.49 showed the picture through it, dimmed.
+func (t *Terminal) visiblePictures(regions []ImageRegion, proto graphics.Protocol) []ImageRegion {
+	kept := t.cellPicturesBuf[:0]
+	for _, reg := range regions {
+		switch {
+		case proto == graphics.ProtocolKitty && reg.ZIndex == -3 && t.underLayer(reg.Area):
+		case proto != graphics.ProtocolKitty && (reg.ZIndex == -2 || reg.ZIndex == -4):
+		default:
+			kept = append(kept, reg)
+		}
+	}
+	t.cellPicturesBuf = kept
+	return kept
 }
 
 // clippedImageRegions intentionally preserves native image placements.
