@@ -9,6 +9,7 @@ import (
 )
 
 func (a *App) handleMouse(m driver.MouseEvent) {
+	a.room.SetPointer(m.X, m.Y)
 	if a.showRelayModal {
 		a.handleRelayModalMouse(m)
 	}

@@ -300,6 +300,22 @@ func (r *RoomView) renderFooter(frame *terminal.Frame, area cell.Rect, node *p2p
 			if hasInputLine && rowY >= inputY {
 				break
 			}
+			if p := line.Preview; p != nil {
+				// The picture is drawn once, from its first row in view, over
+				// as many of its rows as fit; each row opens it on a click.
+				if i == 0 || line.PreviewRow == 0 {
+					shown := min(p.rows-line.PreviewRow, len(visibleLines)-i)
+					if hasInputLine {
+						shown = min(shown, int(inputY)-int(rowY))
+					}
+					x := logInner.X + 1 + uint16(cell.StringWidth(line.Timestamp))
+					p.widget.Img = p.slice(line.PreviewRow, line.PreviewRow+shown)
+					p.widget.Background, p.widget.OpaqueBackground = theme.SurfaceBg, true
+					frame.RenderWidget(&p.widget, cell.NewRect(x, rowY, uint16(min(p.cols, int(logInner.X+logInner.Width)-int(x)-1)), uint16(shown)))
+				}
+				currentRenderedLines = append(currentRenderedLines, renderedChatLine{RowY: rowY, StartX: logInner.X + 1, EndX: logInner.X + 1, ClickURL: p.link})
+				continue
+			}
 			timeStyle := cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg}
 
 			curX := logInner.X + 1

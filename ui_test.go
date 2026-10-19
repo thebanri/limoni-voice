@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"os"
 	"path/filepath"
@@ -2225,6 +2226,57 @@ func TestStreamStageShowsOwnShareWhileWatching(t *testing.T) {
 	}
 	if strings.Contains(sb.String(), "STOP BROADCAST") {
 		t.Error("broadcast controls shown while not sharing")
+	}
+}
+
+// Every live share is a tile on the stage, as on Discord: in its own live border, with its
+// preview in the middle once one came, and a click on it opens the stream.
+func TestStreamStageShowsATileForEachShare(t *testing.T) {
+	audio := engine.NewAudioEngine()
+	node := p2p.NewP2PNode("me", "Ben", audio)
+	defer node.Close()
+	preview := image.NewRGBA(image.Rect(0, 0, 160, 90))
+	for i := range preview.Pix {
+		preview.Pix[i] = 0xff // white
+	}
+	node.Peers["a"] = &p2p.PeerInfo{ID: "a", Nickname: "Ayşe", IsSharingScreen: true, VideoFPS: 30, ScreenPreview: preview}
+	node.Peers["b"] = &p2p.PeerInfo{ID: "b", Nickname: "Mert", IsSharingScreen: true, VideoFPS: 60}
+
+	room := NewRoomView()
+	area := cell.NewRect(0, 0, 120, 30)
+	buf := buffer.NewBuffer(area)
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	var streaming []*p2p.PeerInfo
+	for _, p := range node.GetPeersList() {
+		streaming = append(streaming, p)
+	}
+	room.renderStreamStage(frame, area, streaming, node, audio)
+	var sb strings.Builder
+	for y := area.Y; y < area.Height; y++ {
+		for x := area.X; x < area.Width; x++ {
+			if c := buf.Get(x, y); c != nil && c.Content != 0 {
+				sb.WriteRune(c.Content)
+			}
+		}
+		sb.WriteByte('\n')
+	}
+	screen := sb.String()
+	for _, want := range []string{"LIVE · Ayşe", "LIVE · Mert", "Preview coming…", "Click to watch · 30 FPS", "2 member(s) live"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("%q missing from the stage:\n%s", want, screen)
+		}
+	}
+	// Ayşe's preview is drawn in her tile: white half blocks somewhere on the left.
+	white := 0
+	for y := area.Y; y < area.Height; y++ {
+		for x := area.X; x < area.Width/2; x++ {
+			if c := buf.Get(x, y); c != nil && c.Style.Bg == cell.NewColorRGB(0xff, 0xff, 0xff) {
+				white++
+			}
+		}
+	}
+	if white < 20 {
+		t.Errorf("the preview took %d cells, want a picture:\n%s", white, screen)
 	}
 }
 

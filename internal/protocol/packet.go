@@ -48,6 +48,8 @@ const (
 	PacketKick        // Host → room: TargetID was removed; Payload = [ban flag] + host kick proof
 	PacketChatHistory // Member → new member (TargetID): earlier chat messages (see p2p.encodeChatHistory)
 	PacketChatPart    // One part of a chat message too long for one packet (see p2p.encodeChatPart)
+
+	PacketScreenPreview // Sharer → room: Payload = a JPEG of the share, sent as it starts and once a minute
 )
 
 // FileMetadata describes a chunked file / code snippet transfer.

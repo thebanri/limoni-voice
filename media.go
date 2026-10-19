@@ -24,6 +24,7 @@ import (
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/driver"
 	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni/graphics"
 	"github.com/thebanri/limoni/widgets"
 )
 
@@ -70,7 +71,24 @@ func (a *App) addMedia(m *p2p.FileOffer, isSelf bool) bool {
 	}
 	a.fileOfferMu.Unlock()
 	a.room.AddMediaMessage(m.SenderNick, m.SenderID, label, m.TransferID, isSelf)
+	if imageFileExts[strings.ToLower(filepath.Ext(m.FileName))] {
+		go func() {
+			if img, err := decodeImage(m.Data); err == nil {
+				a.room.SetMediaPreview(m.TransferID, previewImage(img))
+			}
+		}()
+	}
 	return true
+}
+
+// previewImage is img made small enough to keep under its message: the
+// pixels of a preview's cells at full resolution, and no more.
+func previewImage(img image.Image) image.Image {
+	w, h := graphics.ContainSize(img, 2*previewCols*10, 2*previewRows*20)
+	if b := img.Bounds(); b.Dx() <= w && b.Dy() <= h {
+		return img
+	}
+	return graphics.ResizeImage(img, w, h)
 }
 
 func (a *App) keptMediaBytes() int {
@@ -309,6 +327,8 @@ func DrawMediaModal(frame *terminal.Frame, screen cell.Rect, m *p2p.FileOffer, i
 
 	btnRow := inner.Y + inner.Height - 1
 	if img != nil {
+		// Transparent pixels show the window, not the terminal's own background.
+		img.Background, img.OpaqueBackground = bg, true
 		b := img.Img.Bounds()
 		boxW, boxH := textW, int(btnRow-inner.Y)-2
 		c, r := fitImageCells(b.Dx(), b.Dy(), boxW, boxH)

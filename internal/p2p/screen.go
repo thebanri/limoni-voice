@@ -115,8 +115,14 @@ type screenTx struct {
 	silentRun   int
 	restarting  atomic.Bool
 	preview     *screenRx // local preview player fed straight from the encoder, if open
-	stop        chan struct{}
-	stopOnce    sync.Once
+	// The room's preview picture: stream from a keyframe on, gathered while previewBuf is
+	// not nil, then decoded in the background (previewBusy); the next is due at previewDue.
+	previewBuf   []byte
+	previewStart time.Time
+	previewBusy  bool
+	previewDue   time.Time
+	stop         chan struct{}
+	stopOnce     sync.Once
 
 	sentChunks, sentBytes, retransmits uint64
 	retxAt                             map[retxKey]time.Time
@@ -417,6 +423,9 @@ func (n *P2PNode) StopScreenShare() error {
 		tx.pacer.Stop()
 	}
 	_ = n.StopScreenPreview()
+	n.mu.Lock()
+	n.ownScreenPreview = nil
+	n.mu.Unlock()
 	n.announceScreenShare(false)
 	if tx != nil {
 		tx.shutdown()
@@ -515,6 +524,7 @@ func (tx *screenTx) readLoop() {
 		}
 		tx.mu.Lock()
 		tx.chunker.Push(buf[:size], func(chunk []byte, keyframe bool) {
+			tx.collectPreviewLocked(chunk, keyframe)
 			if tx.preview != nil {
 				tx.preview.feedLocal(append([]byte(nil), chunk...))
 			}
@@ -1358,7 +1368,7 @@ func (rx *screenRx) feedLocal(chunk []byte) {
 // handleScreenPacket processes screen share transport packets; it reports whether pkt was one.
 func (n *P2PNode) handleScreenPacket(pkt *P2PPacket) bool {
 	switch pkt.Type {
-	case PacketScreenShareData, PacketScreenAudio, PacketScreenWatch, PacketScreenUnwatch, PacketScreenNack:
+	case PacketScreenShareData, PacketScreenAudio, PacketScreenWatch, PacketScreenUnwatch, PacketScreenNack, PacketScreenPreview:
 	default:
 		return false
 	}
@@ -1402,6 +1412,8 @@ func (n *P2PNode) handleScreenPacket(pkt *P2PPacket) bool {
 		if tx != nil && pkt.TargetID == n.LocalID {
 			tx.onUnwatch(pkt.SenderID)
 		}
+	case PacketScreenPreview:
+		n.onScreenPreview(pkt.SenderID, pkt.Payload)
 	case PacketScreenNack:
 		if tx != nil && pkt.TargetID == n.LocalID {
 			if seqs, err := protocol.ParseSeqList(pkt.Payload); err == nil {

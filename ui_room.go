@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thebanri/limoni-voice/internal/engine"
@@ -28,7 +30,8 @@ type RoomMessage struct {
 	Text      string
 	IsChat    bool
 	IsSelf    bool
-	MediaID   string // a picture or sound sent in the chat: a click opens it
+	MediaID   string      // a picture or sound sent in the chat: a click opens it
+	Preview   image.Image // a picture's preview, shown under it once decoded
 }
 
 type RoomView struct {
@@ -78,6 +81,8 @@ type RoomView struct {
 	OnTriggerDeafen        func()
 	OnTriggerSFX           func()
 	LastStageArea          cell.Rect
+	stageTiles             map[string]*stageTile // the stage's stream tiles, by member
+	pointer                atomic.Uint32         // the mouse's cell, x<<16 | y, for hover
 	LastLogArea            cell.Rect
 	// ChatHeight is the footer's inner height the user chose by dragging its top border or
 	// with the chat panel's ▲/▼ buttons (0 = default). Render keeps it within the window.
@@ -215,6 +220,25 @@ func (r *RoomView) addChatMessage(nickname, senderID, text, mediaID string, isSe
 	}
 	if isSelf {
 		r.ChatScrollOffset = 0 // what you send shows; others' messages leave a scrolled view alone
+	}
+}
+
+// SetPointer notes where the mouse is, for what it hovers.
+func (r *RoomView) SetPointer(x, y uint16) { r.pointer.Store(uint32(x)<<16 | uint32(y)) }
+
+func (r *RoomView) pointerAt() (x, y uint16) {
+	p := r.pointer.Load()
+	return uint16(p >> 16), uint16(p)
+}
+
+// SetMediaPreview shows a picture's preview under its message.
+func (r *RoomView) SetMediaPreview(mediaID string, img image.Image) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.Messages {
+		if r.Messages[i].MediaID == mediaID {
+			r.Messages[i].Preview = img
+		}
 	}
 }
 

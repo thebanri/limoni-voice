@@ -3,6 +3,7 @@ package p2p
 import (
 	"errors"
 	"fmt"
+	"image"
 	"math"
 	"net"
 	"os"
@@ -157,8 +158,9 @@ type P2PNode struct {
 	screenTx             *screenTx
 	screenStarting       bool // a share is being set up (the picker may be open); see startScreenShare
 	screenRx             *screenRx
-	previewRx            *screenRx // local preview of our own share
-	relayTargeted        bool      // relay forwards frames to single members
+	previewRx            *screenRx   // local preview of our own share
+	ownScreenPreview     image.Image // our share's latest preview, as the room sees it
+	relayTargeted        bool        // relay forwards frames to single members
 	audioDedup           AudioDeduplicator
 	chatDedup            ChatDeduplicator
 	ctrlDedup            ControlDeduplicator
@@ -1807,6 +1809,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			if wasSharing {
 				break // bitrate / audio update of an ongoing share
 			}
+			peer.ScreenPreview = nil // a new share's picture comes with it
 			audio := ""
 			if pkt.HasAudio {
 				audio = " with system audio"
@@ -1824,6 +1827,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 			peer.VideoFPS = 0
 			peer.VideoKbps = 0
 			peer.ScreenAudio = false
+			peer.ScreenPreview = nil
 			n.log(fmt.Sprintf("[SCREEN] %s stopped screen sharing.", peer.Nickname))
 			if n.OnScreenShare != nil {
 				go n.OnScreenShare(pkt.SenderID, false, 0)

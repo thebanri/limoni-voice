@@ -162,11 +162,14 @@ func main() {
 	if os.Getenv("TERM_PROGRAM") == "Apple_Terminal" && os.Getenv("LIMONI_REP") == "" {
 		_ = os.Setenv("LIMONI_REP", "0")
 	}
-	// The app draws no images, but on a terminal that answers DA1 with Sixel (Windows
-	// Terminal 1.22+) Limoni puts a solid Sixel picture behind every dialog. Windows Terminal
-	// paints it over the dialog's text and leaves black blocks when the dialog animates.
+	// On a terminal that answers DA1 with Sixel (Windows Terminal 1.22+) Limoni puts a solid
+	// Sixel picture behind every dialog. Windows Terminal paints it over the dialog's text and
+	// leaves black blocks when the dialog animates. So pictures are never sent as Sixel or
+	// kitty images: they show in windows laid over the terminal's X11 window, at full
+	// resolution, which draw no dialog backgrounds; where none can be opened (Windows, macOS,
+	// Wayland-only terminals) they are half blocks, as before.
 	if os.Getenv("LIMONI_GRAPHICS") == "" {
-		_ = os.Setenv("LIMONI_GRAPHICS", "halfblock")
+		_ = os.Setenv("LIMONI_GRAPHICS", "overlay")
 	}
 
 	setupConsole()

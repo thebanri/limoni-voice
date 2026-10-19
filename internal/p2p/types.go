@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"fmt"
+	"image"
 	"net"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,7 @@ const (
 	PacketChatMessage      = protocol.PacketChatMessage
 	PacketChatHistory      = protocol.PacketChatHistory
 	PacketChatPart         = protocol.PacketChatPart
+	PacketScreenPreview    = protocol.PacketScreenPreview
 	PacketPortHop          = protocol.PacketPortHop
 	PacketRoomLocked       = protocol.PacketRoomLocked
 	PacketFileHeader       = protocol.PacketFileHeader
@@ -109,10 +111,11 @@ type PeerInfo struct {
 	IsSharingScreen bool
 	VideoPort       int
 	VideoFPS        int
-	VideoKbps       int       // sharer's current video bitrate
-	ScreenAudio     bool      // screen share includes system audio
-	ViaRelay        bool      // True if routing through the relay, false if direct P2P/LAN
-	LastDirectSeen  time.Time // Last time a direct UDP packet arrived from this peer
+	VideoKbps       int         // sharer's current video bitrate
+	ScreenAudio     bool        // screen share includes system audio
+	ScreenPreview   image.Image // the share's latest preview, nil until one came
+	ViaRelay        bool        // True if routing through the relay, false if direct P2P/LAN
+	LastDirectSeen  time.Time   // Last time a direct UDP packet arrived from this peer
 
 	// Network diagnostics
 	NAT           string            // remote NAT mapping behaviour reported via relay ("eim"/"edm")

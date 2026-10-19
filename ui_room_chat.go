@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"image"
+	"image/draw"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,6 +16,8 @@ import (
 	"github.com/thebanri/limoni/core/buffer"
 	"github.com/thebanri/limoni/core/cell"
 	"github.com/thebanri/limoni/core/terminal"
+	"github.com/thebanri/limoni/graphics"
+	"github.com/thebanri/limoni/widgets"
 )
 
 type chatSpan struct {
@@ -40,6 +44,47 @@ type roomDisplayLine struct {
 	IsContinuation bool
 	Glue           string // whitespace dropped where a continuation was wrapped, put back when copied
 	RawMessage     string
+	// Preview is set on the rows a picture's preview takes, PreviewRow being
+	// which of its rows this is.
+	Preview    *chatPreview
+	PreviewRow int
+}
+
+// Previews are at most this many cells, in a terminal's usual 1:2 cells.
+const previewCols, previewRows = 32, 8
+
+// chatPreview is a picture shown under its /image message, over cols×rows
+// cells. A click on it opens the picture's window.
+type chatPreview struct {
+	img        image.Image
+	cols, rows int
+	link       string
+	widget     widgets.Image
+	slices     map[[2]int]image.Image
+}
+
+// slice is the part of the picture in rows v0 to v1, for one scrolled half
+// out of view: a graphics.Clip, kept so the same part is the same picture to
+// the terminal (and to kitty, the whole picture and which rows of it show).
+func (p *chatPreview) slice(v0, v1 int) image.Image {
+	if v0 == 0 && v1 == p.rows {
+		return p.img
+	}
+	key := [2]int{v0, v1}
+	if s, ok := p.slices[key]; ok {
+		return s
+	}
+	b := p.img.Bounds()
+	y0 := b.Min.Y + v0*b.Dy()/p.rows
+	y1 := max(b.Min.Y+v1*b.Dy()/p.rows, y0+1)
+	part := image.NewRGBA(image.Rect(0, 0, b.Dx(), y1-y0))
+	draw.Draw(part, part.Bounds(), p.img, image.Pt(b.Min.X, y0), draw.Src)
+	if p.slices == nil {
+		p.slices = map[[2]int]image.Image{}
+	}
+	s := &graphics.Clip{Image: part, Full: p.img, Cols: p.cols, Rows: p.rows, Top: v0, Bottom: v1}
+	p.slices[key] = s
+	return s
 }
 
 // mediaLinkPrefix marks the click target of a picture or sound message; it is no web address.
@@ -353,6 +398,7 @@ type lineCacheKey struct {
 	isChat   bool
 	isSelf   bool
 	mediaID  string
+	preview  image.Image
 	width    int
 	theme    string
 	lang     i18n.Lang
@@ -373,7 +419,7 @@ func (r *RoomView) buildDisplayLines(messages []RoomMessage, maxW int) []roomDis
 	next := make(map[lineCacheKey][]roomDisplayLine, len(messages))
 	var lines []roomDisplayLine
 	for _, msg := range messages {
-		key := lineCacheKey{msg.Timestamp.UnixNano(), msg.Sender, msg.SenderID, msg.Text, msg.IsChat, msg.IsSelf, msg.MediaID, maxW, theme.ID, lang}
+		key := lineCacheKey{msg.Timestamp.UnixNano(), msg.Sender, msg.SenderID, msg.Text, msg.IsChat, msg.IsSelf, msg.MediaID, msg.Preview, maxW, theme.ID, lang}
 		ml, ok := r.lineCache[key]
 		if !ok {
 			ml = messageDisplayLines(msg, maxW, theme)
@@ -484,6 +530,14 @@ func messageDisplayLines(msg RoomMessage, maxW int, theme ThemePalette) []roomDi
 			}
 			if len(lines) > maxShownMessageLines {
 				lines = append(lines[:maxShownMessageLines], tooLongNote(msg.Text, indentSpaces))
+			}
+			if msg.MediaID != "" && msg.Preview != nil {
+				b := msg.Preview.Bounds()
+				cols, rows := fitImageCells(b.Dx(), b.Dy(), min(availFirst, previewCols), previewRows)
+				p := &chatPreview{img: msg.Preview, cols: cols, rows: rows, link: mediaLinkPrefix + msg.MediaID}
+				for row := range rows {
+					lines = append(lines, roomDisplayLine{Timestamp: indentSpaces, IsChat: true, Preview: p, PreviewRow: row})
+				}
 			}
 		} else {
 			logColor := theme.TextMuted

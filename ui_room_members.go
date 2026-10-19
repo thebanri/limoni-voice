@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"strings"
 	"time"
@@ -318,264 +319,190 @@ func (r *RoomView) renderStreamStage(frame *terminal.Frame, area cell.Rect, stre
 		}
 	}
 
-	// Keep rows laid out for more height inside the border.
+	// Every live share is a tile on the stage, our own first, under the controls of what we
+	// watch or share.
 	drawClipped(frame, inner, func() {
-		buf := frame.Buffer
-		_ = buf
-		// 1. Case: We are watching a peer's stream (Active in native HD player window)
+		buf := frame.Buffer // drawClipped's own while it runs
+		maxW := int(inner.Width) - 4
+		nextY := inner.Y + 1
 		if node.IsWatchingScreen {
 			watchedNick := node.WatchingPeerNick
 			if watchedNick == "" {
 				if p := node.GetPeer(node.WatchingPeerID); p != nil {
 					watchedNick = p.Nickname
-				} else if len(streamingPeers) > 0 {
-					watchedNick = streamingPeers[0].Nickname
 				} else {
 					watchedNick = T("Stream")
 				}
 			}
-
 			streamFPS := 60
-			if p, ok := node.Peers[node.WatchingPeerID]; ok && p.VideoFPS > 0 {
+			if p := node.GetPeer(node.WatchingPeerID); p != nil && p.VideoFPS > 0 {
 				streamFPS = p.VideoFPS
 			}
 			topBarText := Tf(" %s'S LIVE STREAM ACTIVE (%d FPS) ", strings.ToUpper(watchedNick), streamFPS)
-			buf.SetString(inner.X+3, inner.Y+1, clipToWidth(topBarText, int(inner.Width)-4), cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-
-			msg1 := T("Playing in high-performance hardware-accelerated video window.")
-			msg2 := T("Press [W] / [Esc] to close viewer, or click the stop button below.")
-			buf.SetString(inner.X+3, inner.Y+3, clipToWidth(msg1, int(inner.Width)-4), cell.Style{Fg: theme.Success, Bg: theme.SurfaceBg})
-			buf.SetString(inner.X+3, inner.Y+4, clipToWidth(msg2, int(inner.Width)-4), cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
+			buf.SetString(inner.X+3, nextY, clipToWidth(topBarText, maxW), cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
 
 			btnText := T("   [W] STOP WATCHING (Click)   ")
 			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold}
-			buf.SetString(inner.X+3, inner.Y+6, clipToWidth(btnText, int(inner.Width)-4), btnStyle)
-
-			clickable(frame, cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
+			buf.SetString(inner.X+3, nextY+1, clipToWidth(btnText, maxW), btnStyle)
+			clickable(frame, cell.NewRect(inner.X+3, nextY+1, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
 				_ = node.StopWatchingScreen()
 				r.SetToast("Screen viewer closed")
 			})
 			// The stream's own sound, next to the stop button, or below it when narrow.
-			volX, volY := inner.X+3+uint16(cell.StringWidth(btnText))+2, inner.Y+6
+			volX, volY := inner.X+3+uint16(cell.StringWidth(btnText))+2, nextY+1
 			if int(volX)+streamVolumeWidth() > int(inner.X+inner.Width) {
-				volX, volY = inner.X+3, inner.Y+7
+				volX, volY = inner.X+3, nextY+2
 			}
 			r.drawStreamVolume(frame, volX, volY, inner.X+inner.Width, audio, node.WatchingPeerID, watchedNick)
-
-			// Show other streams in room to switch easily
-			otherPeers := make([]*p2p.PeerInfo, 0)
-			for _, p := range streamingPeers {
-				if p.ID != node.WatchingPeerID {
-					otherPeers = append(otherPeers, p)
-				}
-			}
-
-			// Sharing too while watching: your own broadcast's controls stay at hand.
-			nextY := inner.Y + 8
-			if node.IsSharingScreen {
-				nextY = r.drawOwnShareControls(frame, inner, nextY, node)
-			}
-
-			if len(otherPeers) > 0 {
-				switchY := nextY
-				buf.SetString(inner.X+3, switchY, clipToWidth(T("Switch to another live stream:"), int(inner.Width)-4), cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-				switchY += 1
-				for idx, p := range otherPeers {
-					btnRowY := switchY + uint16(idx*2)
-					if btnRowY >= inner.Y+inner.Height {
-						break
-					}
-					targetPeer := p
-					fps := targetPeer.VideoFPS
-					if fps <= 0 {
-						fps = 60
-					}
-					swBtnText := Tf("   ► Switch to %s's Stream (%d FPS)   ", p.Nickname, fps)
-					if audio != nil {
-						if v := audio.ScreenAudioVolumeFor(p.ID); v != 1 {
-							swBtnText = strings.TrimRight(swBtnText, " ") + Tf(" · sound %d%%   ", int(math.Round(v*100)))
-						}
-					}
-					swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Secondary, Modifier: cell.ModifierBold}
-					buf.SetString(inner.X+3, btnRowY, clipToWidth(swBtnText, int(inner.Width)-4), swBtnStyle)
-
-					clickable(frame, cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(swBtnText))), 1), func(_ driver.MouseEvent) {
-						port := targetPeer.VideoPort
-						if port <= 0 {
-							port = 50100
-						}
-						opts := screenshare.DefaultReceiverOptions(fps)
-						opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
-						r.SetToast(fmt.Sprintf("Switching to %s...", targetPeer.Nickname))
-						go func() {
-							err := node.StartWatchingScreen(targetPeer.ID, port, opts)
-							if err != nil {
-								r.SetToast(fmt.Sprintf("Error: %v", err))
-							} else {
-								r.SetToast(fmt.Sprintf("Switched to %s (%d FPS)", targetPeer.Nickname, fps))
-							}
-						}()
-					})
-				}
-			}
-			return
+			nextY = volY + 2
 		}
-
-		// 2. Case: Local User is Broadcasting
 		if node.IsSharingScreen {
-			localFPS := node.ActiveScreenShareFPS
-			if localFPS <= 0 {
-				localFPS = 60
-			}
-			stats := node.ScreenStats()
-			msg1 := Tf("YOUR SCREEN IS LIVE (%d FPS)", localFPS)
-			msg2 := T("Nobody is watching yet: no video is uploaded until someone opens your stream.")
-			if stats.Watchers > 0 {
-				msg2 = Tf("%d viewer(s) · %s · %.1f Mbps (adapts to their connection)", stats.Watchers, stats.Preset, float64(stats.Kbps)/1000)
-			}
-			if stats.Audio {
-				msg1 += T(" + SYSTEM AUDIO")
-			}
-			btnText := T("   [V] STOP BROADCAST (Click)   ")
-
-			buf.SetString(inner.X+3, inner.Y+2, clipToWidth(msg1, int(inner.Width)-4), cell.Style{Fg: theme.Danger, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-			buf.SetString(inner.X+3, inner.Y+4, clipToWidth(msg2, int(inner.Width)-4), cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg})
-
-			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Danger, Modifier: cell.ModifierBold}
-			buf.SetString(inner.X+3, inner.Y+6, clipToWidth(btnText, int(inner.Width)-4), btnStyle)
-
-			clickable(frame, cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
-				_ = node.StopScreenShare()
-				r.SetToast("Screen share stopped")
-			})
-
-			previewText := T("   [O] PREVIEW MY SCREEN (Click)   ")
-			if node.IsPreviewingScreen() {
-				previewText = T("   [O] CLOSE PREVIEW (Click)   ")
-			}
-			previewStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
-			buf.SetString(inner.X+3, inner.Y+7, clipToWidth(previewText, int(inner.Width)-4), previewStyle)
-			clickable(frame, cell.NewRect(inner.X+3, inner.Y+7, uint16(len([]rune(previewText))), 1), func(_ driver.MouseEvent) {
-				go toggleScreenPreview(node, r)
-			})
-
-			// If other peers are ALSO broadcasting, allow watching them too
-			if len(streamingPeers) > 0 {
-				switchY := inner.Y + 9
-				buf.SetString(inner.X+3, switchY, clipToWidth(T("Other Members Streaming in Room (Click to watch):"), int(inner.Width)-4), cell.Style{Fg: theme.Warning, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-				switchY += 1
-				for idx, p := range streamingPeers {
-					if switchY+uint16(idx*2) >= inner.Y+inner.Height {
-						break
-					}
-					btnRowY := switchY + uint16(idx*2)
-					swBtnText := Tf("   ► Watch %s's Stream   ", p.Nickname)
-					swBtnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
-					buf.SetString(inner.X+3, btnRowY, clipToWidth(swBtnText, int(inner.Width)-4), swBtnStyle)
-
-					targetPeer := p
-					clickable(frame, cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(swBtnText))), 1), func(_ driver.MouseEvent) {
-						port := targetPeer.VideoPort
-						if port <= 0 {
-							port = 50100
-						}
-						fps := targetPeer.VideoFPS
-						if fps <= 0 {
-							fps = 60
-						}
-						opts := screenshare.DefaultReceiverOptions(fps)
-						opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
-						r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
-						go func() {
-							err := node.StartWatchingScreen(targetPeer.ID, port, opts)
-							if err != nil {
-								r.SetToast(fmt.Sprintf("Error: %v", err))
-							} else {
-								r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", targetPeer.Nickname, fps))
-							}
-						}()
-					})
-				}
-			}
-			return
+			nextY = r.drawOwnShareControls(frame, inner, nextY, node)
+		}
+		if !node.IsWatchingScreen && !node.IsSharingScreen {
+			msg := Tf("%d member(s) live · click a stream to watch", len(streamingPeers))
+			buf.SetString(inner.X+3, nextY, clipToWidth(msg, maxW), cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+			nextY += 2
 		}
 
-		// 3. Case: One or More Peers are Broadcasting (Idle watcher)
-		if len(streamingPeers) == 1 {
-			p := streamingPeers[0]
-			streamFPS := p.VideoFPS
-			if streamFPS <= 0 {
-				streamFPS = 60
+		var tiles []streamTile
+		if node.IsSharingScreen {
+			tiles = append(tiles, streamTile{id: node.LocalID, nick: T("You"), fps: node.ActiveScreenShareFPS, preview: node.OwnScreenPreview(), self: true})
+		}
+		for _, p := range streamingPeers {
+			tiles = append(tiles, streamTile{id: p.ID, nick: p.Nickname, fps: p.VideoFPS, preview: p.ScreenPreview, peer: p,
+				watching: node.IsWatchingScreen && node.WatchingPeerID == p.ID})
+		}
+		if bottom := inner.Y + inner.Height; nextY < bottom {
+			r.drawStreamTiles(frame, cell.NewRect(inner.X+1, nextY, inner.Width-2, bottom-nextY), tiles, node)
+		}
+	})
+}
+
+// streamTile is one live share on the stage.
+type streamTile struct {
+	id, nick string
+	fps      int
+	preview  image.Image
+	self     bool
+	watching bool // open in our viewer
+	peer     *p2p.PeerInfo
+}
+
+// streamAspect is the shape a tile is laid out for: a 16:9 picture in cells half as wide as
+// they are tall.
+const streamAspect = 16.0 / 9 * 2
+
+// drawStreamTiles lays the tiles out in area, one to three to a row, each as large as fits.
+func (r *RoomView) drawStreamTiles(frame *terminal.Frame, area cell.Rect, tiles []streamTile, node *p2p.P2PNode) {
+	if len(tiles) == 0 || area.Width < 12 || area.Height < 5 {
+		return
+	}
+	cols := min(len(tiles), 2)
+	if len(tiles) > 4 {
+		cols = 3
+	}
+	rows := (len(tiles) + cols - 1) / cols
+	for i, t := range tiles {
+		slot := gridCell(area, rows, cols, i)
+		// The picture's shape, plus its border and its label row, centred in the slot.
+		w, h := int(slot.Width), int(slot.Height)
+		if fitW := int(float64(h-3)*streamAspect) + 2; fitW < w {
+			w = max(fitW, 12)
+		} else {
+			h = min(h, int(float64(w-2)/streamAspect)+3)
+		}
+		tile := cell.NewRect(slot.X+uint16((int(slot.Width)-w)/2), slot.Y+uint16((int(slot.Height)-h)/2), uint16(w), uint16(h))
+		r.drawStreamTile(frame, tile, t, node)
+	}
+}
+
+// drawStreamTile draws a share in a live border: its preview, or a note while none came, and
+// a label saying what a click does — watch it, stop watching, or preview our own.
+func (r *RoomView) drawStreamTile(frame *terminal.Frame, area cell.Rect, t streamTile, node *p2p.P2PNode) {
+	theme := CurrentTheme()
+	if r.stageTiles == nil {
+		r.stageTiles = map[string]*stageTile{}
+	}
+	st := r.stageTiles[t.id]
+	if st == nil {
+		st = &stageTile{}
+		r.stageTiles[t.id] = st
+	}
+	px, py := r.pointerAt()
+	hovered := area.Contains(px, py)
+	var shown image.Image
+	if t.preview != nil {
+		shown, _ = st.fx.step(t.preview, hovered)
+	} else {
+		st.fx.step(nil, hovered)
+	}
+	borderCol := mixColor(theme.Danger, theme.Accent, st.fx.hover)
+	if t.watching {
+		borderCol = theme.Accent
+	}
+	block := widgets.Block{
+		Title:         clipToWidth(Tf(" 🔴 LIVE · %s ", t.nick), int(area.Width)-4),
+		Borders:       widgets.BorderAll,
+		BorderSymbols: widgets.SymbolsRounded,
+		BorderStyle:   cell.Style{Fg: borderCol, Modifier: cell.ModifierBold},
+		Style:         cell.Style{Bg: theme.SurfaceBg},
+	}
+	frame.RenderWidget(block, area)
+	inner := block.Inner(area)
+	if inner.Width < 4 || inner.Height < 2 {
+		return
+	}
+	buf := frame.Buffer
+	pic := cell.NewRect(inner.X, inner.Y, inner.Width, inner.Height-1)
+	if shown != nil {
+		b := shown.Bounds()
+		c, rr := fitImageCells(b.Dx(), b.Dy(), int(pic.Width), int(pic.Height))
+		w := &st.img
+		w.Img, w.Background, w.OpaqueBackground = shown, theme.SurfaceBg, true
+		frame.RenderWidget(w, cell.NewRect(pic.X+uint16((int(pic.Width)-c)/2), pic.Y+uint16((int(pic.Height)-rr)/2), uint16(c), uint16(rr)))
+	} else {
+		note := T("Preview coming…")
+		buf.SetString(pic.X+uint16(max(0, (int(pic.Width)-cell.StringWidth(note))/2)), pic.Y+pic.Height/2, clipToWidth(note, int(pic.Width)), cell.Style{Fg: theme.TextMuted, Bg: theme.SurfaceBg, Modifier: cell.ModifierItalic})
+	}
+
+	fps := t.fps
+	if fps <= 0 {
+		fps = 60
+	}
+	label := Tf("► Click to watch · %d FPS", fps)
+	switch {
+	case t.self:
+		label = T("Your stream · click to preview")
+	case t.watching:
+		label = T("■ Watching · click to stop")
+	}
+	buf.SetString(inner.X+1, inner.Y+inner.Height-1, clipToWidth(label, int(inner.Width)-2), cell.Style{Fg: borderCol, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
+
+	clickable(frame, area, func(_ driver.MouseEvent) {
+		switch {
+		case t.self:
+			go toggleScreenPreview(node, r)
+		case t.watching:
+			go func() {
+				_ = node.StopWatchingScreen()
+				r.SetToast("Screen viewer closed")
+			}()
+		default:
+			port := t.peer.VideoPort
+			if port <= 0 {
+				port = 50100
 			}
-			msg1 := Tf("%s IS SHARING SCREEN (%d FPS)", strings.ToUpper(p.Nickname), streamFPS)
-			msg2 := T("Click the button below to watch with 20ms ultra-low latency:")
-			btnText := Tf("   ► [W] WATCH %s STREAM (Click)   ", strings.ToUpper(p.Nickname))
-
-			buf.SetString(inner.X+3, inner.Y+2, clipToWidth(msg1, int(inner.Width)-4), cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-			buf.SetString(inner.X+3, inner.Y+4, clipToWidth(msg2, int(inner.Width)-4), cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
-
-			btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
-			buf.SetString(inner.X+3, inner.Y+6, clipToWidth(btnText, int(inner.Width)-4), btnStyle)
-
-			clickable(frame, cell.NewRect(inner.X+3, inner.Y+6, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
-				port := p.VideoPort
-				if port <= 0 {
-					port = 50100
+			opts := screenshare.DefaultReceiverOptions(fps)
+			opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", t.nick, fps)
+			r.SetToast(fmt.Sprintf("Starting %s stream...", t.nick))
+			go func() {
+				if err := node.StartWatchingScreen(t.id, port, opts); err != nil {
+					r.SetToast(fmt.Sprintf("Error: %v", err))
+				} else {
+					r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", t.nick, fps))
 				}
-				opts := screenshare.DefaultReceiverOptions(streamFPS)
-				opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", p.Nickname, streamFPS)
-				r.SetToast("Starting stream viewer...")
-				go func() {
-					err := node.StartWatchingScreen(p.ID, port, opts)
-					if err != nil {
-						r.SetToast(fmt.Sprintf("Error: %v", err))
-					} else {
-						r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", p.Nickname, streamFPS))
-					}
-				}()
-			})
-			return
-		} else if len(streamingPeers) > 1 {
-			msg1 := Tf("%d MEMBERS ARE SHARING SCREEN IN THIS ROOM", len(streamingPeers))
-			msg2 := T("Select which member's live stream you want to watch:")
-
-			buf.SetString(inner.X+3, inner.Y+2, clipToWidth(msg1, int(inner.Width)-4), cell.Style{Fg: theme.Accent, Bg: theme.SurfaceBg, Modifier: cell.ModifierBold})
-			buf.SetString(inner.X+3, inner.Y+3, clipToWidth(msg2, int(inner.Width)-4), cell.Style{Fg: theme.Text, Bg: theme.SurfaceBg})
-
-			listY := inner.Y + 5
-			for idx, p := range streamingPeers {
-				if listY+uint16(idx*2) >= inner.Y+inner.Height {
-					break
-				}
-				btnRowY := listY + uint16(idx*2)
-				targetPeer := p
-				fps := targetPeer.VideoFPS
-				if fps <= 0 {
-					fps = 60
-				}
-				btnText := Tf("   ► WATCH %s'S LIVE STREAM (%d FPS)   ", strings.ToUpper(p.Nickname), fps)
-				btnStyle := cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Accent, Modifier: cell.ModifierBold}
-				buf.SetString(inner.X+3, btnRowY, clipToWidth(btnText, int(inner.Width)-4), btnStyle)
-
-				clickable(frame, cell.NewRect(inner.X+3, btnRowY, uint16(len([]rune(btnText))), 1), func(_ driver.MouseEvent) {
-					port := targetPeer.VideoPort
-					if port <= 0 {
-						port = 50100
-					}
-					opts := screenshare.DefaultReceiverOptions(fps)
-					opts.WindowTitle = Tf("Limoni Voice - %s Live Stream (%d FPS)", targetPeer.Nickname, fps)
-					r.SetToast(fmt.Sprintf("Starting %s stream...", targetPeer.Nickname))
-					go func() {
-						err := node.StartWatchingScreen(targetPeer.ID, port, opts)
-						if err != nil {
-							r.SetToast(fmt.Sprintf("Error: %v", err))
-						} else {
-							r.SetToast(fmt.Sprintf("%s stream opened (%d FPS)", targetPeer.Nickname, fps))
-						}
-					}()
-				})
-			}
-			return
+			}()
 		}
 	})
 }
