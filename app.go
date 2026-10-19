@@ -96,6 +96,7 @@ type App struct {
 	mediaOrder []string
 	mediaView  *p2p.FileOffer
 	mediaImage *widgets.Image
+	imhaAt     time.Time // the /imha easter egg started, zero when none plays
 	mediaNote  string
 
 	// Global push-to-talk
@@ -310,6 +311,10 @@ func (a *App) wireRoomCallbacks() {
 		trimmed := strings.TrimSpace(text)
 		if strings.EqualFold(trimmed, "/relay") || strings.EqualFold(trimmed, "/server") {
 			a.openRelayModal()
+			return
+		}
+		if strings.EqualFold(trimmed, "/imha") {
+			a.startImha()
 			return
 		}
 		if f := strings.Fields(trimmed); len(f) > 0 && strings.EqualFold(f[0], "/history") {

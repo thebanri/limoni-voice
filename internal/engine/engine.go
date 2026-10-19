@@ -266,12 +266,14 @@ const (
 	SoundJoin SoundEffect = iota + 1
 	SoundLeave
 	SoundChat
+	SoundBoom // the /imha easter egg's explosion
 )
 
 var (
 	cachedJoinPCM  []byte
 	cachedLeavePCM []byte
 	cachedChatPCM  []byte
+	cachedBoomPCM  []byte
 	sfxOnce        sync.Once
 )
 
@@ -279,6 +281,33 @@ func initSFXCache() {
 	cachedJoinPCM = generateJoinSoundPCM()
 	cachedLeavePCM = generateLeaveSoundPCM()
 	cachedChatPCM = generateChatSoundPCM()
+	cachedBoomPCM = generateBoomSoundPCM()
+}
+
+// generateBoomSoundPCM is an explosion: a falling low thump under a crack of noise that
+// darkens as it dies away, 1.4 s.
+func generateBoomSoundPCM() []byte {
+	numSamples := AudioSampleRate * 14 / 10
+	pcm := make([]byte, numSamples*2)
+	seed := uint32(0x9e3779b9)
+	var low, phase float64
+	for i := 0; i < numSamples; i++ {
+		t := float64(i) / AudioSampleRate
+		seed ^= seed << 13
+		seed ^= seed >> 17
+		seed ^= seed << 5
+		noise := float64(seed)/float64(1<<31) - 1
+		// A one-pole low pass whose cutoff falls: the crack, then the rumble.
+		k := 0.02 + 0.5*math.Exp(-9*t)
+		low += k * (noise - low)
+		phase += 2 * math.Pi * (38 + 70*math.Exp(-6*t)) / AudioSampleRate
+		thump := math.Sin(phase) * math.Exp(-3.2*t)
+		attack := math.Min(1, t/0.003)
+		val := attack * (thump*0.75 + low*1.6*math.Exp(-2.4*t))
+		amp := math.Max(-32768, math.Min(32767, val*20000))
+		binary.LittleEndian.PutUint16(pcm[i*2:i*2+2], uint16(int16(amp)))
+	}
+	return padToChunks(pcm)
 }
 
 func padToChunks(pcm []byte) []byte {
@@ -374,6 +403,8 @@ func (a *AudioEngine) PlaySound(sfx SoundEffect) {
 		raw = cachedLeavePCM
 	case SoundChat:
 		raw = cachedChatPCM
+	case SoundBoom:
+		raw = cachedBoomPCM
 	default:
 		return
 	}

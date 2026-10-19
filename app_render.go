@@ -186,5 +186,6 @@ func (a *App) render(now time.Time) {
 			DrawKnockModal(f, f.Area(), r, p2p.KnockWindow-time.Since(r.at),
 				func() { a.answerKnock(true) }, func() { a.answerKnock(false) })
 		}
+		a.drawImha(f)
 	})
 }
