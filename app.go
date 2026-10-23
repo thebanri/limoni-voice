@@ -318,6 +318,13 @@ func (a *App) wireRoomCallbacks() {
 			a.startImha()
 			return
 		}
+		if f := strings.Fields(trimmed); len(f) > 0 && strings.EqualFold(f[0], "/music") {
+			a.musicCommand(trimmed)
+			return
+		}
+		if a.playSound(trimmed) {
+			return
+		}
 		if f := strings.Fields(trimmed); len(f) > 0 && strings.EqualFold(f[0], "/history") {
 			a.setChatHistory(f[1:])
 			return

@@ -65,6 +65,7 @@ const (
 	PacketChatHistory      = protocol.PacketChatHistory
 	PacketChatPart         = protocol.PacketChatPart
 	PacketScreenPreview    = protocol.PacketScreenPreview
+	PacketSoundboard       = protocol.PacketSoundboard
 	PacketPortHop          = protocol.PacketPortHop
 	PacketRoomLocked       = protocol.PacketRoomLocked
 	PacketFileHeader       = protocol.PacketFileHeader

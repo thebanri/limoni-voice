@@ -156,7 +156,7 @@ func loadMedia(m *p2p.FileOffer) (image.Image, []byte, string) {
 		}
 		return nil, nil, openMediaExternally(m, Tf("Could not show it here (%v); opened in the system's viewer", err))
 	}
-	pcm, err := decodeSound(m.Data)
+	pcm, err := decodeSound(m.Data, maxSoundSeconds)
 	if err == nil {
 		return nil, pcm, T("▶ Playing")
 	}
@@ -175,13 +175,14 @@ func decodeImage(data []byte) (image.Image, error) {
 	return img, err
 }
 
-// decodeSound turns any sound file into the engine's mono 16-bit PCM with ffmpeg.
-func decodeSound(data []byte) ([]byte, error) {
+// decodeSound turns the first seconds of any sound file into the engine's mono 16-bit PCM
+// with ffmpeg.
+func decodeSound(data []byte, seconds int) ([]byte, error) {
 	ffmpeg := audioio.FindTool("ffmpeg")
 	if ffmpeg == "" {
 		return nil, errors.New(T("ffmpeg not found"))
 	}
-	cmd := exec.Command(ffmpeg, "-v", "error", "-i", "pipe:0", "-t", strconv.Itoa(maxSoundSeconds),
+	cmd := exec.Command(ffmpeg, "-v", "error", "-i", "pipe:0", "-t", strconv.Itoa(seconds),
 		"-f", "s16le", "-ac", "1", "-ar", strconv.Itoa(engine.AudioSampleRate), "pipe:1")
 	cmd.Stdin = bytes.NewReader(data)
 	pcm, err := cmd.Output()

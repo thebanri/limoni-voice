@@ -428,6 +428,26 @@ func (a *AudioEngine) PlaySound(sfx SoundEffect) {
 	}
 }
 
+// soundboardQueueMax is how much sound effect may still be queued for a /music sound to
+// play: one sent while more is waiting is dropped, so nobody can stack them up.
+const soundboardQueueMax = 50 // 1 second
+
+// PlaySoundboard plays a /music sound (mono 16-bit PCM) with the sound effects.
+func (a *AudioEngine) PlaySoundboard(pcm []byte) {
+	if a == nil {
+		return
+	}
+	pcm = padToChunks(pcm)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Deafened || a.SFXMuted || len(a.sfxQueue) > soundboardQueueMax {
+		return
+	}
+	for i := 0; i+AudioChunkSize <= len(pcm); i += AudioChunkSize {
+		a.sfxQueue = append(a.sfxQueue, pcm[i:i+AudioChunkSize])
+	}
+}
+
 // PlayClip plays mono 16-bit PCM (a sound file opened from the chat) in place of the one playing.
 func (a *AudioEngine) PlayClip(pcm []byte) {
 	if a == nil {

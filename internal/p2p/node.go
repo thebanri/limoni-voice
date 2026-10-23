@@ -1403,7 +1403,7 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 
 	// Verify packet timestamp freshness and deduplication for state control packets to prevent Replay Attacks
 	switch pkt.Type {
-	case PacketLeave, PacketKick, PacketRoomLocked, PacketRoomFull, PacketScreenShareStart, PacketScreenShareStop, PacketPortHop, PacketJoinRequest, PacketMuteState, PacketRekey:
+	case PacketLeave, PacketKick, PacketRoomLocked, PacketRoomFull, PacketScreenShareStart, PacketScreenShareStop, PacketPortHop, PacketJoinRequest, PacketMuteState, PacketRekey, PacketSoundboard:
 		if pkt.Timestamp > 0 {
 			nowMs := time.Now().UnixMilli()
 			diff := nowMs - pkt.Timestamp
@@ -1865,6 +1865,9 @@ func (n *P2PNode) handlePacket(pkt *P2PPacket, raddr *net.UDPAddr) {
 
 	case PacketChatPart:
 		n.handleChatPartLocked(pkt)
+
+	case PacketSoundboard:
+		go n.playSoundboard(pkt.Nickname, pkt.Payload)
 
 	case PacketPortHop:
 		if peer, exists := n.Peers[pkt.SenderID]; exists {

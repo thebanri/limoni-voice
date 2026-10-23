@@ -344,7 +344,7 @@ func (r *RoomView) SendCurrentChat() {
 		case "/help", "/?":
 			r.Messages = append(r.Messages, RoomMessage{
 				Timestamp: time.Now(),
-				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send [path], /image <path>, /sound <path>, /code <snippet>, /folder, /lock [pin], /unlock, /history [on|off], /limit [2-10], /kick <user>, /ban <user>, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
+				Text:      "Commands: /invite, /knock, /copy <text>, /vol [user] [0-200], /send [path], /image <path>, /sound <path>, /music [name path], /code <snippet>, /folder, /lock [pin], /unlock, /history [on|off], /limit [2-10], /kick <user>, /ban <user>, /compact, /mute, /deafen, /sfx, /hop, /nick <name>, /clear",
 				IsChat:    false,
 			})
 			r.mu.Unlock()

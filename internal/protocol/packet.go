@@ -50,6 +50,8 @@ const (
 	PacketChatPart    // One part of a chat message too long for one packet (see p2p.encodeChatPart)
 
 	PacketScreenPreview // Sharer → room: Payload = a JPEG of the share, sent as it starts and once a minute
+
+	PacketSoundboard // Member → room: a /music sound (see p2p.encodeSoundboard)
 )
 
 // FileMetadata describes a chunked file / code snippet transfer.
