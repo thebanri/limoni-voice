@@ -224,6 +224,39 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" * --title "Limoni Voice ${GITHUB_REF_NAME}" --generate-notes
           fi
 
+      # winget: a pull request to microsoft/winget-pkgs from the thebanri/winget-pkgs fork with
+      # the manifests package_manifests.sh wrote. It runs after the GitHub release because
+      # winget's validation downloads the installers. WINGET_PKGS_TOKEN is a classic token with
+      # public_repo; leave it unset until Thebanri.LimoniVoice is in winget, since an update
+      # pull request for a package that is not there yet is a second new-package request.
+      - name: Publish to winget
+        if: startsWith(github.ref, 'refs/tags/') && env.WINGET_PKGS_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+        run: |
+          set -e
+          raw="${GITHUB_REF_NAME#v}"
+          dir="manifests/t/Thebanri/LimoniVoice/${raw}"
+          branch="Thebanri.LimoniVoice-${raw}"
+          gh repo sync thebanri/winget-pkgs --branch master
+          git clone -q --depth 1 --filter=blob:none --no-checkout \
+            "https://x-access-token:${WINGET_PKGS_TOKEN}@github.com/thebanri/winget-pkgs.git" /tmp/winget
+          cd /tmp/winget
+          git sparse-checkout set --no-cone "/manifests/t/Thebanri/"
+          git checkout -q -b "${branch}"
+          mkdir -p "${dir}"
+          cp "${GITHUB_WORKSPACE}/dist/manifests/winget/${dir}/"*.yaml "${dir}/"
+          git config user.name "thebanri"
+          git config user.email "thebanri@users.noreply.github.com"
+          git add "${dir}"
+          git commit -q -m "New version: Thebanri.LimoniVoice version ${raw}"
+          git push -q --force origin "${branch}"
+          if [ -z "$(gh pr list --repo microsoft/winget-pkgs --head "${branch}" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --repo microsoft/winget-pkgs --base master --head "thebanri:${branch}" \
+              --title "New version: Thebanri.LimoniVoice version ${raw}" \
+              --body "Limoni Voice ${GITHUB_REF_NAME}: https://github.com/thebanri/limoni-voice/releases/tag/${GITHUB_REF_NAME}. Manifests written by the release workflow; installer hashes are the release's checksums."
+          fi
+
   mac-verify:
     name: Verify macOS App on a Mac
     runs-on: macos-latest
