@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -155,27 +156,53 @@ func cameraFFmpegTail(opt BroadcastOptions, encoder []string, targetURL string) 
 	)
 }
 
+// cameraFFmpegInput is the ffmpeg input that captures a camera device. On macOS the frame
+// rate must be one the camera offers; 30 is offered by all of them, ffmpeg's default 29.97 by
+// few.
+func cameraFFmpegInput(device string) []string {
+	switch runtime.GOOS {
+	case "windows":
+		return []string{"-f", "dshow", "-rtbufsize", "64M", "-i", "video=" + device}
+	case "darwin":
+		return []string{"-f", "avfoundation", "-framerate", "30", "-i", device + ":none"}
+	}
+	return []string{"-f", "v4l2", "-framerate", "30", "-video_size", "640x480", "-i", device}
+}
+
 // buildWindowsCameraArgs captures a DirectShow camera with ffmpeg.
 func buildWindowsCameraArgs(opt BroadcastOptions, targetURL, ffmpegBin string) []string {
 	kbps := fmt.Sprintf("%dk", opt.BitrateKbps)
 	encoder := buildWindowsEncoderArgs(getBestWindowsEncoder(ffmpegBin), kbps, kbps, kbps, max(opt.FPS, 30))
-	args := []string{
-		"-fflags", "nobuffer+flush_packets",
-		"-f", "dshow",
-		"-rtbufsize", "64M",
-		"-i", "video=" + cameraDevice(opt.WindowID),
-	}
+	args := append([]string{"-fflags", "nobuffer+flush_packets"}, cameraFFmpegInput(cameraDevice(opt.WindowID))...)
 	return append(args, cameraFFmpegTail(opt, encoder, targetURL)...)
 }
 
-// buildMacCameraArgs captures an AVFoundation camera with ffmpeg. The frame rate must be one
-// the camera offers; 30 is offered by all of them, ffmpeg's default 29.97 by few.
+// buildMacCameraArgs captures an AVFoundation camera with ffmpeg.
 func buildMacCameraArgs(opt BroadcastOptions, targetURL, ffmpegBin string) []string {
 	encoder := buildMacEncoderArgs(bestMacEncoder(ffmpegBin), fmt.Sprintf("%dk", opt.BitrateKbps), opt.FPS)
-	args := []string{
-		"-f", "avfoundation",
-		"-framerate", "30",
-		"-i", cameraDevice(opt.WindowID) + ":none",
+	return append(cameraFFmpegInput(cameraDevice(opt.WindowID)), cameraFFmpegTail(opt, encoder, targetURL)...)
+}
+
+// The camera shown over a screen share sits in the bottom right corner, a quarter of the
+// frame high.
+const cameraOverlayMargin = 16
+
+func cameraOverlayHeight(frameH int) int { return frameH / 4 / 2 * 2 }
+
+// withCameraOverlay adds opt.Camera to an ffmpeg screen capture whose picture goes through
+// one -vf. Both inputs are stamped with the wall clock: a screen that only sends frames when
+// it changes must not leave the camera behind.
+func withCameraOverlay(args []string, opt BroadcastOptions) []string {
+	vf := slices.Index(args, "-vf")
+	if opt.Camera == "" || vf < 0 || vf+1 >= len(args) {
+		return args
 	}
-	return append(args, cameraFFmpegTail(opt, encoder, targetURL)...)
+	_, h := parseResolution(opt.Resolution, 1920, 1080)
+	graph := fmt.Sprintf("[0:v]setpts=PTS-STARTPTS,%s[screen];[1:v]setpts=PTS-STARTPTS,scale=-2:%d[cam];[screen][cam]overlay=W-w-%d:H-h-%d:eof_action=pass,format=yuv420p[v]",
+		args[vf+1], cameraOverlayHeight(h), cameraOverlayMargin, cameraOverlayMargin)
+	out := append([]string{"-use_wallclock_as_timestamps", "1"}, args[:vf]...)
+	out = append(out, "-use_wallclock_as_timestamps", "1")
+	out = append(out, cameraFFmpegInput(cameraDevice(opt.Camera))...)
+	out = append(out, "-filter_complex", graph, "-map", "[v]")
+	return append(out, args[vf+2:]...)
 }

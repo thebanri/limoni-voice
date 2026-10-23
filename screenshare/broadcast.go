@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -48,6 +49,11 @@ var planBuilder = buildBroadcastPlan
 
 func buildBroadcastPlan(opt BroadcastOptions, targetURL string, src *pipewireSource, onSourceClosed func()) (*broadcastPlan, error) {
 	plan := &broadcastPlan{}
+	if runtime.GOOS == "darwin" && (IsCameraTarget(opt.WindowID) || opt.Camera != "") {
+		if err := checkMacCamera(); err != nil {
+			return nil, err
+		}
+	}
 	if IsCameraTarget(opt.WindowID) {
 		return buildCameraPlan(cameraOptions(opt), targetURL)
 	}
@@ -126,6 +132,12 @@ func buildBroadcastPlan(opt BroadcastOptions, targetURL string, src *pipewireSou
 
 	default:
 		return nil, fmt.Errorf("unsupported platform for screen broadcasting: %s", runtime.GOOS)
+	}
+	// GStreamer draws the camera itself (buildGstreamerCommand).
+	if opt.Camera != "" && strings.Contains(filepath.Base(plan.bin), "ffmpeg") {
+		plan.args = withCameraOverlay(plan.args, opt)
+	} else if opt.Camera != "" && !strings.Contains(filepath.Base(plan.bin), "gst-launch") {
+		logMsg("[BROADCAST] %s cannot show the camera over the screen", filepath.Base(plan.bin))
 	}
 	return plan, nil
 }

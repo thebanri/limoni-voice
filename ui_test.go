@@ -85,7 +85,7 @@ func TestVerticalMeterAndDialogs(t *testing.T) {
 	DrawExitModal(frame, cell.NewRect(0, 0, 80, 24), 1.0, func() {}, func() {})
 	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), ScreenShareDialogState{Progress: 1.0, Preset: 1, Targets: []screenshare.WindowInfo{
 		{ID: "desktop", Title: "[Desktop] Entire Screen (Primary View)"},
-	}}, func(int) {}, func() {}, func(_ screenshare.WindowInfo) {}, func() {})
+	}}, func(int) {}, func() {}, func() {}, func(_ screenshare.WindowInfo) {}, func() {})
 }
 
 func TestRoomViewChatAndLogs(t *testing.T) {
@@ -1177,7 +1177,7 @@ func TestScreenShareModalResponsivePresets(t *testing.T) {
 			Progress: 1.0, Preset: 4, SystemAudio: true,
 			Deps:    screenshare.DependencyStatus{MissingRecommended: "ffmpeg (to share)", InstallHint: "sudo pacman -S ffmpeg"},
 			Targets: []screenshare.WindowInfo{{ID: "desktop", Title: "Desktop 1"}},
-		}, func(int) {}, func() {}, func(_ screenshare.WindowInfo) {}, func() {})
+		}, func(int) {}, func() {}, func() {}, func(_ screenshare.WindowInfo) {}, func() {})
 
 		var screen strings.Builder
 		for y := uint16(0); y < 24; y++ {
@@ -2350,5 +2350,26 @@ func TestDebugViewIsAModal(t *testing.T) {
 	a.handleMouse(driver.MouseEvent{X: 50, Y: 20, Button: driver.MouseScrollUp})
 	if a.debugView.Scroll != chatWheelLines {
 		t.Fatalf("scrolled to %d, want %d", a.debugView.Scroll, chatWheelLines)
+	}
+}
+
+// With a camera to choose, the dialog offers it over the screen, and names the chosen one.
+func TestScreenShareModalCameraToggle(t *testing.T) {
+	buf := buffer.NewBuffer(cell.NewRect(0, 0, 80, 24))
+	frame := terminal.NewFrame(buf, terminal.NewFocusManager())
+	DrawScreenShareModal(frame, cell.NewRect(0, 0, 80, 24), ScreenShareDialogState{
+		Progress: 1.0, Preset: 1, Camera: "FaceTime",
+		Targets: []screenshare.WindowInfo{{ID: "desktop", Title: "Desktop 1"}, {ID: screenshare.CameraPrefix + "0", Title: "[Camera] FaceTime"}},
+	}, func(int) {}, func() {}, func() {}, func(_ screenshare.WindowInfo) {}, func() {})
+	var screen strings.Builder
+	for y := uint16(0); y < 24; y++ {
+		for x := uint16(0); x < 80; x++ {
+			if c := buf.Get(x, y); c != nil {
+				screen.WriteRune(c.Content)
+			}
+		}
+	}
+	if !strings.Contains(screen.String(), "[C] Camera: FaceTime") {
+		t.Fatalf("camera toggle missing:\n%s", screen.String())
 	}
 }

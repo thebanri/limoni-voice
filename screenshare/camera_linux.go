@@ -123,6 +123,11 @@ func buildGstreamerCameraCommand(opt BroadcastOptions, targetURL string) (string
 		return "", nil, err
 	}
 	w, h := parseResolution(opt.Resolution, cameraMaxWidth, cameraMaxHeight)
+	return buildGstreamerCommand(gstCameraSource(cameraDevice(opt.WindowID), w, h), targetURL, opt, true)
+}
+
+// gstCameraSource reads a V4L2 camera at w×h or less.
+func gstCameraSource(device string, w, h int) []string {
 	formats := ""
 	for i, kind := range []string{"image/jpeg", "video/x-raw"} {
 		if i > 0 {
@@ -130,10 +135,9 @@ func buildGstreamerCameraCommand(opt BroadcastOptions, targetURL string) (string
 		}
 		formats += kind + ",width=[1," + strconv.Itoa(w) + "],height=[1," + strconv.Itoa(h) + "],framerate=[15/1," + strconv.Itoa(cameraMaxFPS) + "/1]"
 	}
-	source := []string{
-		"v4l2src", "device=" + cameraDevice(opt.WindowID), "do-timestamp=true",
+	return []string{
+		"v4l2src", "device=" + device, "do-timestamp=true",
 		"!", formats,
 		"!", "decodebin",
 	}
-	return buildGstreamerCommand(source, targetURL, opt, true)
 }

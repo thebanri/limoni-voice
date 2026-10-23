@@ -169,8 +169,9 @@ type screenRx struct {
 // ScreenShareConfig selects what and how to share.
 type ScreenShareConfig struct {
 	TargetID    string
-	Preset      int  // index into screenshare.Presets
-	SystemAudio bool // share what the computer plays
+	Preset      int    // index into screenshare.Presets
+	SystemAudio bool   // share what the computer plays
+	Camera      string // a camera shown in a corner of the screen (a camera target ID), or ""
 }
 
 // StartScreenShare starts sharing with explicit broadcast options (legacy entry point: default
@@ -209,7 +210,9 @@ func (n *P2PNode) StartScreenShareWith(cfg ScreenShareConfig) error {
 	n.ScreenPreset = cfg.Preset
 	n.ShareSystemAudio = cfg.SystemAudio
 	n.mu.Unlock()
-	return n.startScreenShare(preset.Options(cfg.TargetID), preset, cfg.SystemAudio)
+	opts := preset.Options(cfg.TargetID)
+	opts.Camera = cfg.Camera
+	return n.startScreenShare(opts, preset, cfg.SystemAudio)
 }
 
 func parseKbps(s string, fallback int) int {
@@ -347,6 +350,9 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 	audioNote := ""
 	if tx.audioOn {
 		audioNote = " + system audio"
+	}
+	if opts.Camera != "" {
+		audioNote += " + camera"
 	}
 	n.log(fmt.Sprintf("[SCREEN] Screen share started (%s, %s @ %d FPS, %d kbps%s)", preset.Name, opts.Resolution, opts.FPS, tx.abr.Current, audioNote))
 	return nil

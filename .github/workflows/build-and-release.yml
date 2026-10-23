@@ -72,7 +72,7 @@ jobs:
           set -e
           for arch in arm64 x86_64; do
             swiftc -O -target ${arch}-apple-macos12.3 \
-              -framework ScreenCaptureKit -framework CoreMedia -framework CoreVideo -framework CoreAudio \
+              -framework ScreenCaptureKit -framework CoreMedia -framework CoreVideo -framework CoreAudio -framework AVFoundation \
               screenshare/mac_capture.swift -o limoni-sck-${arch}
           done
           lipo -create -output limoni-sck limoni-sck-arm64 limoni-sck-x86_64

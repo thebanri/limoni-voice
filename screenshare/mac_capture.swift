@@ -5,6 +5,7 @@ import CoreMedia
 import CoreVideo
 import CoreAudio
 import CoreGraphics
+import AVFoundation
 
 _ = Darwin.signal(SIGPIPE, SIG_IGN)
 
@@ -298,6 +299,24 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         logToFile("[STOP] Stream stopped with error: \(error)")
         exit(1)
     }
+}
+
+// --camera-access asks for the camera, which ffmpeg never does: macOS then refuses it without
+// showing its prompt. Prints granted, denied or restricted.
+if CommandLine.arguments.contains("--camera-access") {
+    var status = AVCaptureDevice.authorizationStatus(for: .video)
+    if status == .notDetermined {
+        let sem = DispatchSemaphore(value: 0)
+        AVCaptureDevice.requestAccess(for: .video) { _ in sem.signal() }
+        sem.wait()
+        status = AVCaptureDevice.authorizationStatus(for: .video)
+    }
+    switch status {
+    case .authorized: print("granted")
+    case .restricted: print("restricted")
+    default: print("denied")
+    }
+    exit(0)
 }
 
 var globalRecorder: AnyObject?

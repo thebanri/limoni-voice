@@ -227,6 +227,9 @@ func (s *Session) wait(g *generation) {
 			err = fmt.Errorf("%w: %s", err, strings.Join(errLines, " | "))
 		}
 	}
+	if err != nil && strings.Contains(err.Error(), "Failed to create AV capture input device") {
+		err = fmt.Errorf("%s (%w)", MacCameraPermissionHint, err)
+	}
 	if g.extraLog != nil && strings.Contains(g.extraLog.String(), "PERMISSION|screen") {
 		setMacScreenPermissionMissing(true)
 		if err != nil {

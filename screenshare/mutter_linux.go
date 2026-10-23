@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -345,5 +346,39 @@ func buildGstreamerCommand(source []string, targetURL string, opt BroadcastOptio
 		)
 	}
 
+	if opt.Camera != "" && !letterbox {
+		if err := gstCameraDepsError(); err != nil {
+			return "", nil, err
+		}
+		args = withGstCameraOverlay(args, caps, opt.Camera, outWidth, outHeight)
+	}
 	return gstBin, args, nil
+}
+
+// withGstCameraOverlay turns "-q <source> ! … ! caps ! <encoder>" into a compositor that
+// lays the camera over the source's picture before the encoder. The camera is fitted into a
+// 4:3 box, which the compositor needs up front; what it leaves of the box stays see-through.
+func withGstCameraOverlay(args []string, caps, camera string, w, h int) []string {
+	i := slices.Index(args, caps)
+	src, enc := args[1:i+1], args[i+1:]
+	camH := cameraOverlayHeight(h)
+	camW := camH * 4 / 3 / 2 * 2
+	out := []string{"-q",
+		"compositor", "name=pip", "background=black",
+		fmt.Sprintf("sink_1::xpos=%d", w-camW-cameraOverlayMargin),
+		fmt.Sprintf("sink_1::ypos=%d", h-camH-cameraOverlayMargin),
+		fmt.Sprintf("sink_1::width=%d", camW),
+		fmt.Sprintf("sink_1::height=%d", camH),
+		"sink_1::sizing-policy=keep-aspect-ratio",
+		"!", "videoconvert", "!", caps,
+	}
+	out = append(out, enc...)
+	out = append(out, src...)
+	out = append(out, "!", "pip.sink_0")
+	out = append(out, gstCameraSource(cameraDevice(camera), 640, 480)...)
+	return append(out,
+		"!", "videoconvert",
+		"!", "queue", "leaky=downstream", "max-size-buffers=2",
+		"!", "pip.sink_1",
+	)
 }

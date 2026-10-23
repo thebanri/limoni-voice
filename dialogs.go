@@ -1497,6 +1497,7 @@ type ScreenShareDialogState struct {
 	SelectedIdx int
 	Preset      int // index into screenshare.Presets
 	SystemAudio bool
+	Camera      string // name of the camera shown over the screen, or ""
 	Deps        screenshare.DependencyStatus
 	Targets     []screenshare.WindowInfo
 }
@@ -1509,6 +1510,7 @@ func DrawScreenShareModal(
 	st ScreenShareDialogState,
 	onSelectPreset func(idx int),
 	onToggleAudio func(),
+	onCycleCamera func(),
 	onSelectTarget func(target screenshare.WindowInfo),
 	onCancel func(),
 ) {
@@ -1636,8 +1638,22 @@ func DrawScreenShareModal(
 	if onToggleAudio != nil {
 		clickable(frame, cell.NewRect(inner.X+1, row, uint16(len([]rune(audioText))), 1), func(_ driver.MouseEvent) { onToggleAudio() })
 	}
-	hint := T("shares what your computer plays (your voice chat is left out)")
 	hx := inner.X + 2 + uint16(len([]rune(audioText)))
+	if slices.ContainsFunc(targets, func(t screenshare.WindowInfo) bool { return screenshare.IsCameraTarget(t.ID) }) {
+		camText := T(" [C] Camera: OFF ")
+		camStyle := cell.Style{Fg: theme.Text, Bg: theme.InputBg}
+		if st.Camera != "" {
+			camText = Tf(" [C] Camera: %s ", st.Camera)
+			camStyle = cell.Style{Fg: cell.NewColorRGB(0x00, 0x00, 0x00), Bg: theme.Success, Modifier: cell.ModifierBold}
+		}
+		camText = clip(camText, max(int(inner.X+inner.Width)-int(hx)-1, 0))
+		buf.SetString(hx, row, camText, camStyle)
+		if onCycleCamera != nil {
+			clickable(frame, cell.NewRect(hx, row, uint16(len([]rune(camText))), 1), func(_ driver.MouseEvent) { onCycleCamera() })
+		}
+		hx += uint16(len([]rune(camText))) + 1
+	}
+	hint := T("shares what your computer plays (your voice chat is left out)")
 	if int(inner.X+inner.Width)-int(hx)-1 > 10 {
 		buf.SetString(hx, row, clip(hint, int(inner.X+inner.Width)-int(hx)-1), cell.Style{Fg: theme.TextMuted, Bg: dialogBg})
 	}

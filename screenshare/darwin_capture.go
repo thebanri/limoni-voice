@@ -1,6 +1,7 @@
 package screenshare
 
 import (
+	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/binary"
@@ -13,7 +14,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 )
+
+// MacCameraPermissionHint tells the user how to give the camera back.
+const MacCameraPermissionHint = "macOS is blocking the camera: System Settings → Privacy & Security → Camera, turn on your terminal app, then restart it"
+
+// checkMacCamera asks macOS for the camera before ffmpeg opens it. ffmpeg never asks, so
+// without this the camera is refused ("Cannot use FaceTime HD Camera") and no prompt shows.
+func checkMacCamera() error {
+	helper, err := getOrBuildMacCaptureBinary()
+	if err != nil {
+		return nil // no helper: ffmpeg reports the camera itself
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute) // the prompt waits for the user
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, helper, "--camera-access").Output()
+	if s := strings.TrimSpace(string(out)); s == "denied" || s == "restricted" {
+		return errors.New(MacCameraPermissionHint)
+	}
+	return nil
+}
 
 // MacWindowTarget reports whether a macOS target is a single window. The capture helper then
 // shares only the sound of the window's application instead of the whole system.
@@ -73,7 +95,7 @@ func getOrBuildMacCaptureBinary() (string, error) {
 	defer os.Remove(srcFile)
 
 	logMsg("[DARWIN] Compiling native ScreenCaptureKit engine with swiftc...")
-	cmd := exec.Command(swiftc, "-O", "-framework", "ScreenCaptureKit", "-framework", "CoreMedia", "-framework", "CoreVideo", "-framework", "CoreAudio", srcFile, "-o", binPath)
+	cmd := exec.Command(swiftc, "-O", "-framework", "ScreenCaptureKit", "-framework", "CoreMedia", "-framework", "CoreVideo", "-framework", "CoreAudio", "-framework", "AVFoundation", srcFile, "-o", binPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("swiftc compilation failed: %w (output: %s)", err, string(out))
 	}

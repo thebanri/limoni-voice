@@ -87,11 +87,15 @@ func (a *App) startSelectedScreenShare(target screenshare.WindowInfo) {
 	presetIdx := a.screenPreset
 	preset := screenshare.PresetByIndex(presetIdx)
 	withAudio := a.shareSystemAudio
+	camera := a.shareCamera
+	if screenshare.IsCameraTarget(target.ID) {
+		camera = ""
+	}
 	a.closeScreenShareModal()
 	a.saveScreenSettings()
 	a.room.SetToast(fmt.Sprintf("🎬 Starting %s (%s)...", target.Title, preset.Name))
 	go func() {
-		cfg := p2p.ScreenShareConfig{TargetID: target.ID, Preset: presetIdx, SystemAudio: withAudio}
+		cfg := p2p.ScreenShareConfig{TargetID: target.ID, Preset: presetIdx, SystemAudio: withAudio, Camera: camera}
 		if err := a.node.StartScreenShareWith(cfg); err != nil {
 			if errors.Is(err, screenshare.ErrPickerCancelled) {
 				a.room.SetToast("Screen share cancelled")
@@ -118,6 +122,31 @@ func (a *App) toggleShareSystemAudio() {
 	a.shareSystemAudio = !a.shareSystemAudio
 }
 
+// cycleShareCamera picks the camera shown over the screen: none, then each camera in turn.
+func (a *App) cycleShareCamera() {
+	var cams []string
+	for _, t := range a.screenShareTargets {
+		if screenshare.IsCameraTarget(t.ID) {
+			cams = append(cams, t.ID)
+		}
+	}
+	if len(cams) == 0 {
+		return
+	}
+	order := append(cams, "") // after the last camera comes none
+	a.shareCamera = order[(slices.Index(order, a.shareCamera)+1)%len(order)]
+}
+
+// shareCameraName is the name of the camera shown over the screen, or "".
+func (a *App) shareCameraName() string {
+	for _, t := range a.screenShareTargets {
+		if t.ID == a.shareCamera && a.shareCamera != "" {
+			return strings.TrimPrefix(t.Title, "[Camera] ")
+		}
+	}
+	return ""
+}
+
 func (a *App) saveScreenSettings() {
 	preset, audio := a.screenPreset, a.shareSystemAudio
 	_ = UpdateAppConfig(func(c *AppConfig) { c.Screen = &ScreenSettings{Preset: preset, SystemAudio: audio} })
@@ -142,6 +171,9 @@ func (a *App) openScreenShareModal() {
 	// Cameras right under the first entry (the whole screen), which stays the default.
 	if cams := screenshare.ListCameras(); len(cams) > 0 {
 		a.screenShareTargets = slices.Insert(a.screenShareTargets, 1, cams...)
+	}
+	if !slices.ContainsFunc(a.screenShareTargets, func(t screenshare.WindowInfo) bool { return t.ID == a.shareCamera }) {
+		a.shareCamera = "" // unplugged since
 	}
 	a.selectedScreenShareIdx = 0
 	a.screenShareDeps = screenshare.CheckDependencies()

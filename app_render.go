@@ -175,11 +175,13 @@ func (a *App) render(now time.Time) {
 				SelectedIdx: a.selectedScreenShareIdx,
 				Preset:      a.screenPreset,
 				SystemAudio: a.shareSystemAudio,
+				Camera:      a.shareCameraName(),
 				Deps:        a.screenShareDeps,
 				Targets:     a.screenShareTargets,
 			},
 				a.selectScreenPreset,
 				a.toggleShareSystemAudio,
+				a.cycleShareCamera,
 				func(target screenshare.WindowInfo) { a.startSelectedScreenShare(target) },
 				a.closeScreenShareModal)
 		}

@@ -64,6 +64,7 @@ type App struct {
 	selectedScreenShareIdx int
 	screenPreset           int
 	shareSystemAudio       bool
+	shareCamera            string // camera target shown over a screen share, or ""
 	screenShareDeps        screenshare.DependencyStatus
 	screenShareDepsFresh   atomic.Pointer[screenshare.DependencyStatus] // result of a background recheck
 	screenShareDepsBusy    atomic.Bool

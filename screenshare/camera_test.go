@@ -88,3 +88,32 @@ func TestCameraFFmpegTail(t *testing.T) {
 		}
 	}
 }
+
+// The camera over a screen share is a second ffmpeg input, laid over the screen's own filter
+// in the bottom right corner; without a camera the command stays as it was.
+func TestCameraOverlayFFmpeg(t *testing.T) {
+	args := []string{"-f", "x11grab", "-i", ":0", "-vf", "scale=1280:720,format=yuv420p", "-c:v", "libx264", "out"}
+	opt := BroadcastOptions{Resolution: "1280x720"}
+	if got := withCameraOverlay(args, opt); !slices.Equal(got, args) {
+		t.Fatalf("no camera: %q", got)
+	}
+	opt.Camera = CameraPrefix + "cam0"
+	got := withCameraOverlay(args, opt)
+	joined := strings.Join(got, " ")
+	if slices.Contains(got, "-vf") || slices.Index(got, ":0") > slices.Index(got, "-filter_complex") {
+		t.Fatalf("inputs must come before the filter: %q", got)
+	}
+	for _, want := range []string{
+		"[0:v]setpts=PTS-STARTPTS,scale=1280:720,format=yuv420p[screen]",
+		"scale=-2:180[cam]",
+		"overlay=W-w-16:H-h-16",
+		"-map [v] -c:v libx264 out",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in %q", want, joined)
+		}
+	}
+	if n := strings.Count(joined, "-i "); n != 2 {
+		t.Fatalf("%d inputs: %q", n, joined)
+	}
+}

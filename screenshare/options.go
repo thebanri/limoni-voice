@@ -47,6 +47,7 @@ type BroadcastOptions struct {
 	BitrateKbps int
 	WindowID    string // optional window id or "portal" for Wayland/X11 window picker, or "desktop"
 	Quality     string // e.g. "medium", "ultra", "fast"
+	Camera      string // a camera target (CameraPrefix…) shown in a corner of the screen, or ""
 
 	// OnAudio receives system audio captured together with the screen (48 kHz mono, 20 ms
 	// frames). Only the macOS ScreenCaptureKit path produces it; other platforms capture system

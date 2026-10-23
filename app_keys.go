@@ -580,6 +580,8 @@ func (a *App) handleScreenShareModalKey(e driver.KeyEvent) {
 			a.selectScreenPreset((a.screenPreset + 1) % len(screenshare.Presets))
 		case e.Ch == 'a' || e.Ch == 'A':
 			a.toggleShareSystemAudio()
+		case e.Ch == 'c' || e.Ch == 'C':
+			a.cycleShareCamera()
 		}
 	case driver.KeyEnter, driver.KeySpace:
 		if a.selectedScreenShareIdx >= 0 && a.selectedScreenShareIdx < len(a.screenShareTargets) {

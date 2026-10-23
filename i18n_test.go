@@ -90,7 +90,7 @@ func TestRoomLogIsTranslated(t *testing.T) {
 
 // Permission hints come from other packages as constants; they are translated too.
 func TestPermissionHintsAreTranslated(t *testing.T) {
-	for _, msg := range []string{audioio.MicPermissionHint, "[WARN] " + audioio.MicPermissionHint, screenshare.MacScreenPermissionHint} {
+	for _, msg := range []string{audioio.MicPermissionHint, "[WARN] " + audioio.MicPermissionHint, screenshare.MacScreenPermissionHint, screenshare.MacCameraPermissionHint} {
 		if !i18n.Has(i18n.Turkish, msg) {
 			t.Errorf("no Turkish translation for %q", msg)
 		}

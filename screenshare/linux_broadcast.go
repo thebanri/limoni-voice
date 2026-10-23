@@ -113,7 +113,8 @@ func buildLinuxBroadcastCommand(opt BroadcastOptions, targetURL string, src *pip
 
 	// 2. Try GPU Screen Recorder if available (Fastest, Hardware accelerated NVENC/VAAPI/AMF/KMS zero-copy)
 	// Prioritized for monitor/screen capture on both Wayland and X11, and window capture on pure X11.
-	if (!wayland || !isWindowTarget) && targetID != "portal" && targetID != "portal:window" {
+	// It cannot draw the camera over the screen, which the pipelines below can.
+	if (!wayland || !isWindowTarget) && targetID != "portal" && targetID != "portal:window" && opt.Camera == "" {
 		if p, err := FindExecutable("gpu-screen-recorder"); err == nil {
 			gsrTarget := ""
 			if targetID == "desktop" || targetID == "screen" || targetID == "" {
