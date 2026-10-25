@@ -59,7 +59,14 @@ func CopyToClipboard(text string) bool {
 		return true
 	}
 
-	// 1. Try OSC 52 ANSI escape sequence (works seamlessly in modern terminals)
+	// Linux: own the clipboard natively (Wayland data-control, then X11), no tools needed.
+	// First, so a terminal is not asked as well: an Alacritty on XWayland may not own the
+	// clipboard, and shows a warning bar over the app when it tries.
+	if runtime.GOOS == "linux" && clipboard.Write(text) == nil {
+		return true
+	}
+
+	// 1. Try OSC 52 ANSI escape sequence (works seamlessly in modern terminals, and over SSH)
 	b64 := base64.StdEncoding.EncodeToString([]byte(text))
 	fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", b64)
 	if os.Getenv("TMUX") != "" {
@@ -94,11 +101,6 @@ func CopyToClipboard(text string) bool {
 				return true
 			}
 		}
-	}
-
-	// Linux: own the clipboard natively (Wayland data-control, then X11), no tools needed
-	if runtime.GOOS == "linux" && clipboard.Write(text) == nil {
-		return true
 	}
 
 	// 4. Linux: Wayland wl-copy (with UTF-8 text MIME type for browser compatibility)
