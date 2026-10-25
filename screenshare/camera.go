@@ -191,7 +191,8 @@ func cameraOverlayHeight(frameH int) int { return frameH / 4 / 2 * 2 }
 
 // withCameraOverlay adds opt.Camera to an ffmpeg screen capture whose picture goes through
 // one -vf. Both inputs are stamped with the wall clock: a screen that only sends frames when
-// it changes must not leave the camera behind.
+// it changes must not leave the camera behind. The macOS pipe is the exception: stamped so,
+// ffmpeg made 2 FPS of it; its helper repeats still frames, so its frame count keeps time.
 func withCameraOverlay(args []string, opt BroadcastOptions) []string {
 	vf := slices.Index(args, "-vf")
 	if opt.Camera == "" || vf < 0 || vf+1 >= len(args) {
@@ -200,7 +201,10 @@ func withCameraOverlay(args []string, opt BroadcastOptions) []string {
 	_, h := parseResolution(opt.Resolution, 1920, 1080)
 	graph := fmt.Sprintf("[0:v]setpts=PTS-STARTPTS,%s[screen];[1:v]setpts=PTS-STARTPTS,scale=-2:%d[cam];[screen][cam]overlay=W-w-%d:H-h-%d:eof_action=pass,format=yuv420p[v]",
 		args[vf+1], cameraOverlayHeight(h), cameraOverlayMargin, cameraOverlayMargin)
-	out := append([]string{"-use_wallclock_as_timestamps", "1"}, args[:vf]...)
+	out := append([]string(nil), args[:vf]...)
+	if i := slices.Index(out, "-i"); i < 0 || i+1 >= len(out) || out[i+1] != "-" {
+		out = append([]string{"-use_wallclock_as_timestamps", "1"}, out...)
+	}
 	out = append(out, "-use_wallclock_as_timestamps", "1")
 	out = append(out, cameraFFmpegInput(cameraDevice(opt.Camera))...)
 	out = append(out, "-filter_complex", graph, "-map", "[v]")

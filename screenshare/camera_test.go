@@ -116,4 +116,13 @@ func TestCameraOverlayFFmpeg(t *testing.T) {
 	if n := strings.Count(joined, "-i "); n != 2 {
 		t.Fatalf("%d inputs: %q", n, joined)
 	}
+	if n := strings.Count(joined, "-use_wallclock_as_timestamps 1"); n != 2 {
+		t.Fatalf("%d inputs on the wall clock: %q", n, joined)
+	}
+	// The macOS pipe keeps its own timestamps; only the camera goes on the wall clock.
+	pipe := []string{"-f", "rawvideo", "-i", "-", "-vf", "format=yuv420p", "out"}
+	joined = strings.Join(withCameraOverlay(pipe, opt), " ")
+	if !strings.HasPrefix(joined, "-f rawvideo -i - -use_wallclock_as_timestamps 1 ") || strings.Count(joined, "wallclock") != 1 {
+		t.Fatalf("pipe: %q", joined)
+	}
 }
