@@ -238,6 +238,10 @@ func (n *P2PNode) startScreenShare(opts screenshare.BroadcastOptions, preset scr
 		target := opts.WindowID
 		opts = preset.Options(target)
 		withAudio = false
+	} else if opts.Camera != "" && preset.FPS > 60 {
+		// The camera turns every frame into a full one blended on the CPU; at 120 FPS a Mac
+		// sharer cannot keep up, nor a 60 Hz viewer. The camera itself sends 30.
+		preset.FPS, opts.FPS = 60, 60
 	}
 	n.mu.Lock()
 	if !n.IsConnected {

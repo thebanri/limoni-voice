@@ -483,3 +483,23 @@ func TestScreenShareStartsOnceWhileThePickerIsOpen(t *testing.T) {
 		t.Fatal("still starting after the picker was answered")
 	}
 }
+
+// A camera over the screen caps a 120 FPS preset at 60: every frame is blended on the CPU.
+func TestCameraOverlayCapsFPS(t *testing.T) {
+	host, _ := relayRoom(t, "6161-amber-falcon-river")
+	var got screenshare.BroadcastOptions
+	startCaptureSession = func(_ context.Context, _ string, _ int, opts ...screenshare.BroadcastOptions) (*screenshare.Session, error) {
+		got = opts[0]
+		return nil, errors.New("no capture in this test")
+	}
+	t.Cleanup(func() { startCaptureSession = screenshare.StartBroadcasting })
+	gaming := len(screenshare.Presets) - 1
+	_ = host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: gaming, Camera: screenshare.CameraPrefix + "/dev/video0"})
+	if got.FPS != 60 {
+		t.Fatalf("with a camera: %d FPS, want 60", got.FPS)
+	}
+	_ = host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: gaming})
+	if got.FPS != screenshare.Presets[gaming].FPS {
+		t.Fatalf("without a camera: %d FPS, want %d", got.FPS, screenshare.Presets[gaming].FPS)
+	}
+}
