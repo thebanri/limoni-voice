@@ -79,6 +79,10 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var audioStream: SCStream? // app-only audio when sharing one window
     var isRunning = false
     var frameCount = 0
+    let videoQueue = DispatchQueue(label: "screen.capture.queue", qos: .userInteractive)
+    var lastFrame: CVPixelBuffer?
+    var lastFrameAt: UInt64 = 0
+    var repeatTimer: DispatchSourceTimer?
 
     // System audio (macOS 13+): 48 kHz stereo float32, interleaved, written to fd 3.
     let audioFD: Int32 = 3
@@ -183,13 +187,14 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
 
             let stream = SCStream(filter: filter, configuration: config, delegate: self)
-            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
             addAudioOutput(stream, captureAudio && audioApp == nil)
 
             do {
                 try await stream.startCapture()
                 self.stream = stream
                 self.isRunning = true
+                repeatStillFrames(fps: fps)
                 logToFile("[OK] Stream started successfully at \(width)x\(height) @ \(fps) FPS")
                 if let app = audioApp {
                     if #available(macOS 13.0, *) {
@@ -202,11 +207,12 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 logToFile("[WARN] Filter startCapture failed (\(error)), trying fallback full display filter...")
                 let fallbackFilter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
                 let fallbackStream = SCStream(filter: fallbackFilter, configuration: config, delegate: self)
-                try fallbackStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "screen.capture.queue", qos: .userInteractive))
+                try fallbackStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
                 addAudioOutput(fallbackStream, captureAudio && audioApp == nil)
                 try await fallbackStream.startCapture()
                 self.stream = fallbackStream
                 self.isRunning = true
+                repeatStillFrames(fps: fps)
                 logToFile("[OK] Fallback display stream running at \(width)x\(height) @ \(fps) FPS")
                 if #available(macOS 13.0, *), let app = audioApp {
                     await startAppAudio(display: display, app: app)
@@ -255,7 +261,28 @@ class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         guard type == .screen, stream !== audioStream else { return }
         guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
+        lastFrame = pixelBuffer
+        lastFrameAt = DispatchTime.now().uptimeNanoseconds
+        writeFrame(pixelBuffer)
+    }
 
+    // ScreenCaptureKit sends no frame while the screen does not change. Repeating the last one
+    // keeps the stream at its frame rate, so a still screen is not taken for a dead capture.
+    func repeatStillFrames(fps: Int) {
+        let interval = UInt64(1_000_000_000 / max(fps, 1))
+        let timer = DispatchSource.makeTimerSource(queue: videoQueue)
+        timer.schedule(deadline: .now() + .nanoseconds(Int(interval)), repeating: .nanoseconds(Int(interval)))
+        timer.setEventHandler { [weak self] in
+            guard let self = self, let frame = self.lastFrame else { return }
+            if DispatchTime.now().uptimeNanoseconds - self.lastFrameAt > 2 * interval {
+                self.writeFrame(frame)
+            }
+        }
+        timer.resume()
+        repeatTimer = timer
+    }
+
+    func writeFrame(_ pixelBuffer: CVPixelBuffer) {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
