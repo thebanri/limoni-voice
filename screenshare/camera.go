@@ -192,7 +192,7 @@ func cameraOverlayHeight(frameH int) int { return frameH / 4 / 2 * 2 }
 // withCameraOverlay adds opt.Camera to an ffmpeg screen capture whose picture goes through
 // one -vf. Both inputs are stamped with the wall clock: a screen that only sends frames when
 // it changes must not leave the camera behind. The macOS pipe is the exception: stamped so,
-// ffmpeg made 2 FPS of it; its helper repeats still frames, so its frame count keeps time.
+// ffmpeg made 2 FPS of it; its helper writes at the frame rate, so its frame count keeps time.
 func withCameraOverlay(args []string, opt BroadcastOptions) []string {
 	vf := slices.Index(args, "-vf")
 	if opt.Camera == "" || vf < 0 || vf+1 >= len(args) {
