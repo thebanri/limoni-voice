@@ -76,9 +76,13 @@ func StartReceiving(ctx context.Context, opts ...ReceiverOptions) (*Session, err
 			} else {
 				// On Linux, always specify --vo=gpu explicitly so mpv doesn't fall through to x11
 				// which triggers 'Assertion !vo->x11 failed' on Wayland/NVIDIA systems.
-				args = append(args, "--vo=gpu")
+				args = append(args, "--vo=gpu", "--vulkan-swap-mode=mailbox")
 				if isWayland() {
-					args = append(args, "--gpu-context=wayland")
+					// OpenGL on Wayland waits for every vblank whatever the swap interval, so mpv read a
+					// 120 FPS stream no faster than the screen's refresh rate and the viewer kept
+					// skipping to the next keyframe: a frozen picture. Vulkan in mailbox mode does not
+					// wait; OpenGL stays as the fallback where there is no Vulkan.
+					args = append(args, "--gpu-context=waylandvk,wayland")
 				}
 			}
 			if len(opt.CustomMpvFlags) > 0 {
