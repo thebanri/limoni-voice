@@ -46,6 +46,12 @@ const (
 	maxPlayerLag = 250 * time.Millisecond
 )
 
+// playerStuck is how long a write to the player may block before the player is reopened: mpv on
+// an NVIDIA Wayland desktop stopped reading for good, its window frozen while the stream and its
+// sound kept coming. playerStartup is the longer wait while a new player opens. Vars so the tests
+// can shorten them.
+var playerStuck, playerStartup = 2 * time.Second, 5 * time.Second
+
 // Stall guards. Encoders write at least every PCR interval, so a live stream never goes quiet
 // for a second: silence this long means the capture died, the machine slept or the sharer
 // stopped. The viewer's guard is deliberately short, because it is the only end-of-stream
@@ -1182,6 +1188,10 @@ func (rx *screenRx) playerPump(session *screenshare.Session) {
 		return
 	}
 	w := bufio.NewWriterSize(stdin, 64*1024)
+	stuck := time.AfterFunc(time.Hour, func() { rx.reopenStuckPlayer(session) })
+	stuck.Stop()
+	defer stuck.Stop()
+	opened := time.Now()
 	for {
 		var item playerChunk
 		select {
@@ -1202,7 +1212,11 @@ func (rx *screenRx) playerPump(session *screenshare.Session) {
 		if int64(lag) > rx.maxLag.Load() {
 			rx.maxLag.Store(int64(lag))
 		}
-		if !writeChunks(w, item.data, rx.playerCh) {
+		// mpv reads nothing until its window is up (about a second), so a slow start is not a stuck player.
+		stuck.Reset(max(playerStuck, playerStartup-time.Since(opened)))
+		ok := writeChunks(w, item.data, rx.playerCh)
+		stuck.Stop()
+		if !ok {
 			rx.n.debugLog("[WARN] [WATCH] Player pipe closed")
 			return
 		}
@@ -1236,8 +1250,8 @@ func (rx *screenRx) watchPlayer(session *screenshare.Session, started time.Time)
 	case <-rx.stop:
 		return
 	case err := <-session.Err():
-		if rx.stopping() {
-			return // we killed it ourselves when watching ended
+		if rx.stopping() || rx.replaced(session) {
+			return // we killed it ourselves when watching ended or the player was reopened
 		}
 		n.log(fmt.Sprintf("[WARN] Screen viewer closed/error: %v", err))
 		if time.Since(started) < 3*time.Second {
@@ -1247,27 +1261,15 @@ func (rx *screenRx) watchPlayer(session *screenshare.Session, started time.Time)
 			}
 			if _, altErr := screenshare.FindExecutable(alt); altErr == nil {
 				n.log(fmt.Sprintf("[VIEWER] Player exited unexpectedly. Falling back to %s...", alt))
-				opt := rx.opt
-				opt.PreferredPlayer = alt
-				if next, err := startPlayerSession(context.Background(), opt); err == nil {
-					// Watching may have ended while the replacement was starting. Nothing
-					// would ever close it: the shutdown killed the player it knew about.
-					if rx.stopping() {
-						_ = next.Stop()
-						return
-					}
-					rx.mu.Lock()
-					rx.session = next
-					rx.reorder.Reset()
-					rx.skipToKey = true // restart from the next keyframe
-					rx.mu.Unlock()
-					go rx.playerPump(next)
-					go rx.watchPlayer(next, time.Now())
+				if rx.replacePlayer(alt) {
 					return
 				}
 			}
 		}
 	case <-session.Done():
+		if rx.replaced(session) {
+			return
+		}
 		n.log("[INFO] Screen viewer window closed.")
 	}
 	if rx.onClosed != nil {
@@ -1280,6 +1282,55 @@ func (rx *screenRx) watchPlayer(session *screenshare.Session, started time.Time)
 	if current {
 		_ = n.StopWatchingScreen()
 	}
+}
+
+// replacePlayer starts player (mpv or ffplay) in place of the current one and feeds it from the
+// next keyframe; it reports whether the new player started.
+func (rx *screenRx) replacePlayer(player string) bool {
+	opt := rx.opt
+	opt.PreferredPlayer = player
+	next, err := startPlayerSession(context.Background(), opt)
+	if err != nil {
+		return false
+	}
+	// Watching may have ended while the replacement was starting. Nothing would ever close it:
+	// the shutdown killed the player it knew about.
+	if rx.stopping() {
+		_ = next.Stop()
+		return true
+	}
+	rx.mu.Lock()
+	rx.session = next
+	rx.reorder.Reset()
+	rx.skipToKey = true // restart from the next keyframe
+	rx.mu.Unlock()
+	go rx.playerPump(next)
+	go rx.watchPlayer(next, time.Now())
+	return true
+}
+
+// replaced reports whether session is no longer the player being fed.
+func (rx *screenRx) replaced(session *screenshare.Session) bool {
+	rx.mu.Lock()
+	defer rx.mu.Unlock()
+	return rx.session != session
+}
+
+// reopenStuckPlayer replaces a player that stopped reading the stream with a new one of the same
+// kind, then closes the stuck one.
+func (rx *screenRx) reopenStuckPlayer(stuck *screenshare.Session) {
+	if rx.stopping() || rx.replaced(stuck) {
+		return
+	}
+	player := "mpv"
+	if strings.Contains(stuck.BinPath(), "ffplay") {
+		player = "ffplay"
+	}
+	rx.n.log(fmt.Sprintf("[VIEWER] The player stopped reading the stream for %v; reopening it.", playerStuck))
+	if !rx.replacePlayer(player) {
+		return // the frozen player stays: closing it would end watching
+	}
+	_ = stuck.Stop()
 }
 
 // ---------------------------------------------------------------------------------------------

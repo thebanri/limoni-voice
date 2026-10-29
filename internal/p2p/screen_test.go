@@ -368,6 +368,49 @@ func TestScreenShare120FPSFastScroll(t *testing.T) {
 			t.Fatalf("player fed stale data (%v old)", vs.MaxLag)
 		}
 	})
+
+	// mpv on an NVIDIA Wayland desktop stopped reading for good: a frozen window while the
+	// sound played on. The viewer must open a new player instead of feeding a dead one.
+	t.Run("player that stops reading", func(t *testing.T) {
+		host, viewer := relayRoom(t, "8787-amber-falcon-river")
+		useSyntheticSource(t, ffmpeg, source, 120)
+		var started atomic.Int64
+		startPlayerSession = func(ctx context.Context, opts ...screenshare.ReceiverOptions) (*screenshare.Session, error) {
+			if started.Add(1) == 1 {
+				return screenshare.StartProcess(ctx, "python3", []string{"-c",
+					"import sys,time\nsys.stdin.buffer.read(200000)\ntime.sleep(60)"}, nil, true)
+			}
+			return screenshare.StartProcess(ctx, "sh", []string{"-c", "cat > /dev/null"}, nil, true)
+		}
+		oldStuck, oldStartup := playerStuck, playerStartup
+		playerStuck, playerStartup = 500*time.Millisecond, 0
+		t.Cleanup(func() { playerStuck, playerStartup = oldStuck, oldStartup })
+		if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: gaming}); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = host.StopScreenShare() }()
+		waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+			viewer.mu.RLock()
+			defer viewer.mu.RUnlock()
+			p := viewer.Peers[host.LocalID]
+			return p != nil && p.IsSharingScreen
+		})
+		if err := viewer.StartWatchingScreen(host.LocalID, 0); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = viewer.StopWatchingScreen() }()
+		waitFor(t, "a new player replaces the stuck one", 10*time.Second, func() bool { return started.Load() == 2 })
+		time.Sleep(time.Second)
+		viewer.mu.RLock()
+		watching := viewer.IsWatchingScreen
+		viewer.mu.RUnlock()
+		if !watching {
+			t.Fatal("reopening the player ended watching")
+		}
+		if n := started.Load(); n != 2 {
+			t.Fatalf("%d players were started; a reading player was reopened too", n)
+		}
+	})
 }
 
 // A restarted encoder sends from a new port, often within milliseconds of the old one's
