@@ -339,6 +339,9 @@ func TestScreenShare120FPSFastScroll(t *testing.T) {
 	t.Run("slow player", func(t *testing.T) {
 		host, viewer := relayRoom(t, "8686-amber-falcon-river")
 		useSyntheticSource(t, ffmpeg, source, 120)
+		oldStartup := playerStartup
+		playerStartup = 0 // judge the player from its first chunk on
+		t.Cleanup(func() { playerStartup = oldStartup })
 		// A player that can only take ~40 % of the stream.
 		startPlayerSession = func(ctx context.Context, opts ...screenshare.ReceiverOptions) (*screenshare.Session, error) {
 			return screenshare.StartProcess(ctx, "python3", []string{"-c",
@@ -484,6 +487,60 @@ func TestLocalPreviewOfOwnShare(t *testing.T) {
 	if host.IsPreviewingScreen() {
 		t.Fatal("the preview outlived the share")
 	}
+}
+
+// mpv takes about a second to open. What arrived meanwhile, the replayed GOP, was dropped as late
+// and the viewer (or the preview) waited for the next keyframe: seconds when the shared window
+// draws few frames. Both must show the stream's last keyframe as soon as the player reads.
+func TestASlowStartingPlayerShowsTheLastKeyframe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams real video for several seconds")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	const fps, gop = 20, 120 // a keyframe every 6 s, as from a window that draws 20 FPS
+	host, viewer := relayRoom(t, "9191-amber-falcon-river")
+	frames, _ := useSyntheticSource(t, ffmpeg, fmt.Sprintf("testsrc2=size=1280x720:rate=%d", fps), gop)
+	startPlayerSession = func(ctx context.Context, opts ...screenshare.ReceiverOptions) (*screenshare.Session, error) {
+		return screenshare.StartProcess(ctx, "sh", []string{"-c", "sleep 1; exec " + ffmpeg +
+			" -hide_banner -loglevel quiet -probesize 32768 -analyzeduration 100000 -f mpegts -i pipe:0" +
+			" -fps_mode passthrough -f framecrc -flush_packets 1 -y " + frames}, nil, true)
+	}
+	if err := host.StartScreenShareWith(ScreenShareConfig{TargetID: "desktop", Preset: 4}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.StopScreenShare() }()
+	waitFor(t, "viewer sees the share", 5*time.Second, func() bool {
+		viewer.mu.RLock()
+		defer viewer.mu.RUnlock()
+		p := viewer.Peers[host.LocalID]
+		return p != nil && p.IsSharingScreen
+	})
+	firstFrame := func(open func() error) time.Duration {
+		t.Helper()
+		_ = os.Remove(frames)
+		time.Sleep(2 * time.Second) // well inside a GOP
+		start := time.Now()
+		if err := open(); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "a first frame", 8*time.Second, func() bool { return countFrames(frames) > 0 })
+		return time.Since(start)
+	}
+	if d := firstFrame(func() error { return viewer.StartWatchingScreen(host.LocalID, 0) }); d > 2500*time.Millisecond {
+		t.Errorf("the viewer showed its first frame after %v", d)
+	} else {
+		t.Logf("viewer: first frame after %v", d)
+	}
+	_ = viewer.StopWatchingScreen()
+	if d := firstFrame(host.StartScreenPreview); d > 2500*time.Millisecond {
+		t.Errorf("the preview showed its first frame after %v", d)
+	} else {
+		t.Logf("preview: first frame after %v", d)
+	}
+	_ = host.StopScreenPreview()
 }
 
 // A share that waits on the screen picker cannot be started a second time meanwhile: the

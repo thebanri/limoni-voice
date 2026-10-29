@@ -38,19 +38,20 @@ const (
 	screenAudioBitrate = 64000
 	relayAllMembers    = "@relay" // pacer recipient: one room broadcast through a non-targeting relay
 
-	// Viewer latency guard: the player must never fall behind real time. 256 chunks is about
-	// 290 KB (a 1080p keyframe burst); data older than maxPlayerLag is dropped up to the next
-	// keyframe, so a slow decoder costs a short freeze instead of growing delay and smeared
-	// pictures.
-	playerQueue  = 256
+	// Viewer latency guard: the player must never fall behind real time. The queue holds the
+	// replayed GOP plus what arrives while the player opens; data older than maxPlayerLag is
+	// dropped up to the next keyframe, so a slow decoder costs a short freeze instead of growing
+	// delay and smeared pictures.
+	playerQueue  = screenHistorySize
 	maxPlayerLag = 250 * time.Millisecond
 )
 
 // playerStuck is how long a write to the player may block before the player is reopened: mpv on
 // an NVIDIA Wayland desktop stopped reading for good, its window frozen while the stream and its
-// sound kept coming. playerStartup is the longer wait while a new player opens. Vars so the tests
-// can shorten them.
-var playerStuck, playerStartup = 2 * time.Second, 5 * time.Second
+// sound kept coming. playerStartup is the time a new player gets to open (mpv reads nothing until
+// its window is up, about a second) and catch up before it counts as stuck or late. Vars so the
+// tests can shorten them.
+var playerStuck, playerStartup = 2 * time.Second, 3 * time.Second
 
 // Stall guards. Encoders write at least every PCR interval, so a live stream never goes quiet
 // for a second: silence this long means the capture died, the machine slept or the sharer
@@ -121,6 +122,7 @@ type screenTx struct {
 	silentRun   int
 	restarting  atomic.Bool
 	preview     *screenRx // local preview player fed straight from the encoder, if open
+	gop         [][]byte  // the encoder's chunks since the last keyframe, nil when longer than the history
 	// The room's preview picture: stream from a keyframe on, gathered while previewBuf is
 	// not nil, then decoded in the background (previewBusy); the next is due at previewDue.
 	previewBuf   []byte
@@ -543,6 +545,14 @@ func (tx *screenTx) readLoop() {
 		tx.mu.Lock()
 		tx.chunker.Push(buf[:size], func(chunk []byte, keyframe bool) {
 			tx.collectPreviewLocked(chunk, keyframe)
+			switch {
+			case keyframe:
+				tx.gop = append(tx.gop[:0:0], chunk)
+			case tx.gop != nil && len(tx.gop) < screenHistorySize:
+				tx.gop = append(tx.gop, chunk)
+			default:
+				tx.gop = nil
+			}
 			if tx.preview != nil {
 				tx.preview.feedLocal(append([]byte(nil), chunk...))
 			}
@@ -1203,7 +1213,9 @@ func (rx *screenRx) playerPump(session *screenshare.Session) {
 		case item = <-rx.playerCh:
 		}
 		lag := time.Since(item.at)
-		if lag > maxPlayerLag && !item.key {
+		// A new player reads nothing while it opens: dropping what waited for it threw away the
+		// replayed keyframe and left the viewer waiting for the next one.
+		if lag > maxPlayerLag && !item.key && time.Since(opened) > playerStartup {
 			rx.mu.Lock()
 			rx.catchUpLocked(false)
 			rx.mu.Unlock()
@@ -1212,7 +1224,6 @@ func (rx *screenRx) playerPump(session *screenshare.Session) {
 		if int64(lag) > rx.maxLag.Load() {
 			rx.maxLag.Store(int64(lag))
 		}
-		// mpv reads nothing until its window is up (about a second), so a slow start is not a stuck player.
 		stuck.Reset(max(playerStuck, playerStartup-time.Since(opened)))
 		ok := writeChunks(w, item.data, rx.playerCh)
 		stuck.Stop()
@@ -1379,6 +1390,11 @@ func (n *P2PNode) StartScreenPreview() error {
 	n.previewRx = rx
 	n.mu.Unlock()
 	tx.mu.Lock()
+	// Start from the last keyframe, as a viewer does: waiting for the next one took up to a GOP,
+	// seconds when the shared window draws few frames.
+	for _, c := range tx.gop {
+		rx.feedLocal(c)
+	}
 	tx.preview = rx
 	tx.mu.Unlock()
 
