@@ -2,6 +2,7 @@ package widgets
 
 import (
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/thebanri/limoni/core/accessibility"
@@ -79,7 +80,34 @@ type LogViewState struct {
 	height    int // rows drawn last frame, for paging
 	followOff int // the Offset Follow set last frame; a different one means the wheel moved it
 	lastSel   int // Selected as of last frame; a different one means a click selected a line
-	nodes     []accessibility.AccessibilityNode
+	followed  bool // Follow as of last frame; turned on since, it is a request to follow, not a scroll
+	nodes     []accessibility.Node
+	plain     []plainLine // lines with escapes, stripped, by index modulo len
+}
+
+// plainLine caches a line with its escape sequences removed, so a coloured
+// line is stripped once when it comes on screen, not every frame.
+type plainLine struct {
+	i         int
+	raw, text string
+}
+
+// plainText returns line i without escape sequences.
+func (s *LogViewState) plainText(i int, raw string) string {
+	if strings.IndexByte(raw, esc) < 0 {
+		return raw
+	}
+	if want := 2*s.height + 2; len(s.plain) < want {
+		s.plain = make([]plainLine, want)
+		for k := range s.plain {
+			s.plain[k].i = -1
+		}
+	}
+	e := &s.plain[i%len(s.plain)]
+	if e.i != i || e.raw != raw {
+		*e = plainLine{i: i, raw: raw, text: stripANSI(raw)}
+	}
+	return e.text
 }
 
 // NewLogViewState returns a state that follows new lines and selects nothing.
@@ -102,8 +130,9 @@ func (s *LogViewState) HandleKey(key driver.KeyEvent, total int) bool {
 		}
 		from := s.Selected
 		if from < 0 {
-			// Nothing selected yet: start from the edge of what is on screen.
-			from = s.Offset
+			// Nothing selected yet: start just outside the edge of what is on
+			// screen, so Down selects the first line shown and Up the last.
+			from = s.Offset - 1
 			if delta < 0 {
 				from = s.Offset + s.height
 			}
@@ -164,7 +193,14 @@ func (s *LogViewState) reveal(i int) {
 // the lines on screen are touched; coloured by level when the source knows
 // levels; with an optional line-number gutter and highlighted search text.
 //
-// Drawing does not allocate as long as the source's Line does not.
+// Lines may carry the ANSI escapes a program printed: SGR colours and
+// attributes are drawn (a reset returns to the line's own style), every other
+// sequence is skipped. Search highlights, the semantic tree and horizontal
+// scroll all work on the text without them.
+//
+// Drawing does not allocate as long as the source's Line does not, except
+// that a line with escapes is stripped once, for the semantic tree, when it
+// first comes on screen (one string the length of the line).
 type LogView struct {
 	ID     string
 	Label  string // name in the semantic tree; defaults to "Log"
@@ -216,9 +252,10 @@ func (lv *LogView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	// Follow put it last frame, the reader scrolled: stop following. A click
 	// sets Selected directly; a line the reader picked must not scroll away
 	// under them either.
-	if s.Follow && (s.Offset != s.followOff || (s.Selected >= 0 && s.Selected != s.lastSel)) {
+	if s.Follow && s.followed && (s.Offset != s.followOff || (s.Selected >= 0 && s.Selected != s.lastSel)) {
 		s.Follow = false
 	}
+	s.followed = s.Follow
 	if s.Follow {
 		s.Offset = maxOffset
 		s.followOff = maxOffset
@@ -287,6 +324,12 @@ func (lv *LogView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			continue
 		}
 		line := lv.Source.Line(i)
+		text := line
+		if lv.State != nil {
+			text = lv.State.plainText(i, line)
+		} else {
+			text = stripANSI(line)
+		}
 
 		style := base
 		if levels != nil {
@@ -315,10 +358,17 @@ func (lv *LogView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			}
 		}
 
-		visible, skipped := skipColumns(line, s.HOffset)
-		buf.SetStringWithin(textX, y, visible, style, textW)
+		var skipped int
+		if len(text) != len(line) {
+			drawANSI(buf, textX, y, textW, line, s.HOffset, style)
+			_, skipped = skipColumns(text, s.HOffset)
+		} else {
+			var visible string
+			visible, skipped = skipColumns(line, s.HOffset)
+			buf.SetStringWithin(textX, y, visible, style, textW)
+		}
 		if lv.Highlight != "" {
-			lv.drawHighlights(buf, textX, y, textW, line, skipped, style.Merge(hlStyle))
+			lv.drawHighlights(buf, textX, y, textW, text, skipped, style.Merge(hlStyle))
 		}
 
 		if ctx.RegisterClickAction != nil && lv.State != nil {
@@ -330,8 +380,8 @@ func (lv *LogView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			if selected {
 				st = accessibility.StateSelected
 			}
-			lv.State.nodes = append(lv.State.nodes, accessibility.AccessibilityNode{
-				Role: accessibility.RoleListItem, Label: line, State: st,
+			lv.State.nodes = append(lv.State.nodes, accessibility.Node{
+				Role: accessibility.RoleListItem, Label: text, State: st,
 				Bounds:   cell.Rect{X: area.X, Y: y, Width: area.Width, Height: 1},
 				Position: i + 1, SetSize: total,
 			})
@@ -428,7 +478,7 @@ func (lv *LogView) Measure(maxArea cell.Rect) layout.Measure {
 // AccessibilityNode describes the view as a list whose children are the lines
 // on screen, so a screen reader or an agent can read the visible log and
 // select a line by its text. The value is the selected line.
-func (lv *LogView) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (lv *LogView) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
@@ -442,19 +492,19 @@ func (lv *LogView) AccessibilityNode(bounds cell.Rect, focused bool) accessibili
 		total = lv.Source.Len()
 	}
 	value, position := "", 0
-	var rows []accessibility.AccessibilityNode
+	var rows []accessibility.Node
 	if lv.State != nil {
 		rows = lv.State.nodes
 		if sel := lv.State.Selected; sel >= 0 && sel < total {
 			state |= accessibility.StateSelected
-			value = lv.Source.Line(sel)
+			value = lv.State.plainText(sel, lv.Source.Line(sel))
 			position = sel + 1
 		}
 		if lv.State.Follow {
 			state |= accessibility.StateBusy // live: new lines keep arriving
 		}
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID: lv.ID, Role: accessibility.RoleList, Label: label, Value: value, State: state,
 		Bounds: bounds, Position: position, SetSize: total, Children: rows,
 	}

@@ -125,7 +125,10 @@ type Autocomplete struct {
 	PlaceholderStyle cell.Style
 	FocusedStyle     cell.Style
 	SuggestionStyle  cell.Style
-	SelectedStyle    cell.Style
+	// SelectedStyle draws the highlighted suggestion. Unset, the suggestion
+	// is reversed; under a frame theme, while SuggestionStyle is unset too,
+	// it is reversed in the theme's focus colour.
+	SelectedStyle cell.Style
 }
 
 // Draw renders the input and, while the state is open, the suggestions. It
@@ -159,7 +162,10 @@ func (a Autocomplete) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	base := ctx.Style.Merge(a.SuggestionStyle)
 	selected := a.SelectedStyle
 	if selected == (cell.Style{}) {
-		selected = cell.Style{}.Reverse()
+		if a.SuggestionStyle == (cell.Style{}) && ctx.ThemeStyle != nil {
+			selected = ctx.ThemeStyle("focus")
+		}
+		selected = selected.Reverse()
 	}
 	for i := 0; i < visible; i++ {
 		idx := a.State.matches[start+i]
@@ -193,7 +199,7 @@ func (a Autocomplete) SizeHint(maxArea cell.Rect) (uint16, uint16) {
 
 // AccessibilityNode is the input, marked expanded while suggestions show,
 // with the highlighted suggestion as its value when there is one.
-func (a Autocomplete) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (a Autocomplete) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	var state accessibility.NodeState
 	if focused {
 		state |= accessibility.StateFocused
@@ -208,7 +214,7 @@ func (a Autocomplete) AccessibilityNode(bounds cell.Rect, focused bool) accessib
 			position, size = s.Selected+1, len(s.matches)
 		}
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:       a.ID,
 		Role:     accessibility.RoleInput,
 		Label:    a.Placeholder,

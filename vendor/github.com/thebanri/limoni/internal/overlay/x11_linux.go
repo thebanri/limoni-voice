@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // xconn is the few X11 requests the overlay needs, spoken over the local
@@ -31,6 +32,9 @@ type xconn struct {
 	// term is the terminal's window, the pictures' parent, of depth depth.
 	term  uint32
 	depth byte
+	// alpha is how opaque the terminal draws its background: below 255 in
+	// a translucent terminal's 32-bit window.
+	alpha byte
 	gc    uint32
 	// size is term's width<<16 | height, written by read; 0 once it is gone.
 	size atomic.Uint32
@@ -41,6 +45,7 @@ const (
 	opChangeWindowAttributes = 2
 	opDestroyWindow          = 4
 	opMapWindow              = 8
+	opUnmapWindow            = 10
 	opConfigureWindow        = 12
 	opGetGeometry            = 14
 	opInternAtom             = 16
@@ -50,6 +55,12 @@ const (
 	opCreateGC               = 55
 	opClearArea              = 61
 	opPutImage               = 72
+	opGetImage               = 73
+	opQueryExtension         = 98
+	damageQueryVersion       = 0
+	damageCreate             = 1
+	damageSubtract           = 3
+	damageNonEmpty           = 3
 	cwBackPixmap             = 1
 	cwEventMask              = 0x800
 	structureNotifyMask      = 1 << 17
@@ -98,6 +109,12 @@ func (x *xconn) roundTrip(op, detail byte, body []byte) ([]byte, error) {
 	if err := x.flush(); err != nil {
 		return nil, err
 	}
+	return x.reply(op)
+}
+
+// reply reads the reply to the oldest request still unanswered, skipping
+// events; an X error for it comes back as an error.
+func (x *xconn) reply(op byte) ([]byte, error) {
 	head := make([]byte, 32)
 	for {
 		if _, err := io.ReadFull(x.c, head); err != nil {
@@ -125,6 +142,28 @@ func (x *xconn) geometry(win uint32) (depth byte, w, h int, err error) {
 	return r[1], int(le.Uint16(r[16:])), int(le.Uint16(r[18:])), nil
 }
 
+// alphaAt reads the alpha of one pixel of a 32-bit window, 255 if it cannot.
+// A window not yet on screen answers GetImage with BadMatch: termimg started
+// with its terminal (alacritty -e termimg, or its own Xwayland relaunch)
+// asks before the window is mapped, so it asks again for up to a second.
+// shortcut: the bottom right corner is taken for background; text drawn
+// there would read as opaque, which is how pictures were shown before.
+func (x *xconn) alphaAt(win uint32, px, py int) byte {
+	b := x.u32(win, 0, 0, 0xffffffff)
+	le.PutUint16(b[4:], uint16(px))
+	le.PutUint16(b[6:], uint16(py))
+	le.PutUint16(b[8:], 1)
+	le.PutUint16(b[10:], 1)
+	for range 20 {
+		r, err := x.roundTrip(opGetImage, imageFormatZPixmap, b)
+		if err == nil && len(r) >= 36 {
+			return r[35] // BGRA, little-endian
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return 0xff
+}
+
 // windows reads a property holding 32-bit values (window ids, a pid).
 func (x *xconn) windows(win uint32, prop string) []uint32 {
 	r, err := x.roundTrip(opGetProperty, 0, x.u32(win, x.atoms[prop], anyPropertyType, 0, maxPropertyWords))
@@ -149,7 +188,10 @@ func (x *xconn) attach(win uint32) error {
 	if !x.deep[depth] {
 		return fmt.Errorf("overlay: no 32-bit pixel format for depth %d", depth)
 	}
-	x.term, x.depth = win, depth
+	x.term, x.depth, x.alpha = win, depth, 0xff
+	if depth == 32 && w > 0 && h > 0 {
+		x.alpha = x.alphaAt(win, w-1, h-1)
+	}
 	x.size.Store(uint32(w)<<16 | uint32(h))
 	// Other clients may watch a window's structure too; the terminal keeps
 	// its own event mask.
@@ -407,3 +449,4 @@ func (x *xconn) move(win uint32, posX, posY int) {
 
 func (x *xconn) mapWindow(win uint32)     { x.send(opMapWindow, 0, x.u32(win)) }
 func (x *xconn) destroyWindow(win uint32) { x.send(opDestroyWindow, 0, x.u32(win)) }
+func (x *xconn) unmapWindow(win uint32)   { x.send(opUnmapWindow, 0, x.u32(win)) }

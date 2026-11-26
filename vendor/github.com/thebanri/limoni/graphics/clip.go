@@ -77,8 +77,20 @@ func EncodeKittyTransmit(img image.Image, cols, rows uint16, cellW, cellH uint16
 // picture's pixels) is shown. C=1 keeps the cursor where it is: a picture
 // that reaches the last row would otherwise scroll the screen.
 func AppendKittyPlace(dst []byte, id uint32, cols, rows uint16, x, y, w, h, z int) []byte {
+	return AppendKittyPlaceID(dst, id, 0, cols, rows, x, y, w, h, z)
+}
+
+// AppendKittyPlaceID is AppendKittyPlace with a placement id, pid, when it
+// is not 0. Placing picture id again under the same pid moves or changes
+// that placement in one step, with nothing deleted in between, and
+// AppendKittyDeletePlacement removes it alone.
+func AppendKittyPlaceID(dst []byte, id, pid uint32, cols, rows uint16, x, y, w, h, z int) []byte {
 	dst = append(dst, "\x1b_Ga=p,q=2,C=1,i="...)
 	dst = strconv.AppendUint(dst, uint64(id), 10)
+	if pid != 0 {
+		dst = append(dst, ",p="...)
+		dst = strconv.AppendUint(dst, uint64(pid), 10)
+	}
 	dst = append(dst, ",c="...)
 	dst = strconv.AppendUint(dst, uint64(cols), 10)
 	dst = append(dst, ",r="...)
@@ -95,6 +107,16 @@ func AppendKittyPlace(dst []byte, id uint32, cols, rows uint16, x, y, w, h, z in
 		dst = append(dst, ",h="...)
 		dst = strconv.AppendInt(dst, int64(h), 10)
 	}
+	return append(dst, "\x1b\\"...)
+}
+
+// AppendKittyDeletePlacement appends the command that deletes placement pid
+// of picture id and keeps the picture.
+func AppendKittyDeletePlacement(dst []byte, id, pid uint32) []byte {
+	dst = append(dst, "\x1b_Ga=d,d=i,q=2,i="...)
+	dst = strconv.AppendUint(dst, uint64(id), 10)
+	dst = append(dst, ",p="...)
+	dst = strconv.AppendUint(dst, uint64(pid), 10)
 	return append(dst, "\x1b\\"...)
 }
 

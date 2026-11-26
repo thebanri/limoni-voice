@@ -246,7 +246,7 @@ func (b *Backend) Release(fn func() error) error {
 		return fmt.Errorf("limoni: resume: %w", err)
 	}
 	b.state = state
-	setup := setupSequence(b.Inline(), b.mouse.enabled())
+	setup := setupSequence(b.Inline(), &b.mouse)
 	b.mouse.active.Store(true)
 	setup = b.replies.withProbe(setup)
 	if _, err := b.out.WriteString(setup); err != nil {

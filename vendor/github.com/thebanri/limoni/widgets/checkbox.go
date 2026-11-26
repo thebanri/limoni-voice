@@ -8,10 +8,12 @@ import (
 
 // Checkbox is an interactive box that can be ticked.
 type Checkbox struct {
-	ID           string
-	Checked      *bool
-	Label        string
-	Style        cell.Style
+	ID      string
+	Checked *bool
+	Label   string
+	Style   cell.Style
+	// FocusedStyle defaults to reverse bold, or the theme focus style when
+	// both styles are unset.
 	FocusedStyle cell.Style
 }
 
@@ -46,7 +48,11 @@ func (cb Checkbox) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	// Merge the styles
 	textStyle := ctx.Style.Merge(cb.Style)
 	if isFocused {
-		textStyle = textStyle.Merge(cb.FocusedStyle)
+		focusedStyle := cb.FocusedStyle
+		if focusedStyle == (cell.Style{}) && cb.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
+			focusedStyle = ctx.ThemeStyle("focus")
+		}
+		textStyle = textStyle.Merge(focusStyle(focusedStyle))
 	}
 
 	// Prepare the [ ] or [x] state text
@@ -73,7 +79,7 @@ func (cb Checkbox) SizeHint(maxArea cell.Rect) (width, height uint16) {
 }
 
 // AccessibilityNode returns the semantic node description for Checkbox.
-func (cb Checkbox) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (cb Checkbox) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
@@ -85,7 +91,7 @@ func (cb Checkbox) AccessibilityNode(bounds cell.Rect, focused bool) accessibili
 	if cb.Checked != nil && *cb.Checked {
 		val = "true"
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     cb.ID,
 		Role:   accessibility.RoleCheckbox,
 		Label:  cb.Label,

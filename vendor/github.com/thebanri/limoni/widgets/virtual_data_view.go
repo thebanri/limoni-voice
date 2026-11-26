@@ -16,7 +16,7 @@ type VirtualDataView struct {
 	Prefetch      int
 	Style         cell.Style
 	SelectedStyle cell.Style
-	FocusedStyle  cell.Style
+	FocusedStyle  cell.Style // the selected row's, when focused; unset: reverse bold
 	EmptyText     string
 	LoadingText   string
 	ErrorText     string
@@ -81,12 +81,12 @@ func (v VirtualDataView) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		if !ok {
 			break
 		}
-		line := v.State.GetCachedRowText(item, v.HorizontalOffset, v.StickyColumns)
+		line := v.State.CachedRowText(item, v.HorizontalOffset, v.StickyColumns)
 		rowStyle := style
 		if item.ID == v.State.Selected() {
 			rowStyle = rowStyle.Merge(v.SelectedStyle)
 			if ctx.IsFocused(v.ID) {
-				rowStyle = rowStyle.Merge(v.FocusedStyle)
+				rowStyle = rowStyle.Merge(focusStyle(v.FocusedStyle))
 			}
 		}
 		height := item.Height

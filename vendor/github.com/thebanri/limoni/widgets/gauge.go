@@ -30,6 +30,8 @@ type Gauge struct {
 	// Style is the unfilled part and the label.
 	Style cell.Style
 	// GaugeStyle is the filled part; its Fg is the fill colour.
+	// When both Style and GaugeStyle are unset, it uses the frame theme
+	// primary role.
 	GaugeStyle cell.Style
 
 	// WholeCells turns off the eighth-block edge, for fonts that draw the
@@ -59,6 +61,9 @@ func (g Gauge) Draw(ctx cell.Context, buf *buffer.Buffer) {
 
 	base := ctx.Style.Merge(g.Style)
 	fill := base.Merge(g.GaugeStyle)
+	if g.GaugeStyle == (cell.Style{}) && g.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
+		fill = base.Merge(ctx.ThemeStyle("primary"))
+	}
 
 	exact := g.ratio() * float64(area.Width)
 	// Whole eighths from one product, nudged up by an epsilon: subtracting
@@ -135,7 +140,7 @@ func (g Gauge) Draw(ctx cell.Context, buf *buffer.Buffer) {
 func (g Gauge) SizeHint(maxArea cell.Rect) (uint16, uint16) { return maxArea.Width, 1 }
 
 // AccessibilityNode reports the gauge as a progress indicator.
-func (g Gauge) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (g Gauge) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	return progressNode(g.ID, "Gauge", g.Label, g.ratio(), bounds, focused)
 }
 
@@ -156,7 +161,8 @@ type LineGauge struct {
 	HideLabel bool
 
 	// Style is the label; FilledStyle and UnfilledStyle the two parts of
-	// the line.
+	// the line. Unset FilledStyle and UnfilledStyle use the frame theme
+	// primary and muted roles, respectively.
 	Style         cell.Style
 	FilledStyle   cell.Style
 	UnfilledStyle cell.Style
@@ -206,12 +212,20 @@ func (g LineGauge) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if unfilledRune == 0 {
 		unfilledRune = '─'
 	}
+	filledStyle := ctx.Style.Merge(g.FilledStyle)
+	if g.FilledStyle == (cell.Style{}) && ctx.ThemeStyle != nil {
+		filledStyle = ctx.Style.Merge(ctx.ThemeStyle("primary"))
+	}
+	unfilledStyle := ctx.Style.Merge(g.UnfilledStyle)
+	if g.UnfilledStyle == (cell.Style{}) && ctx.ThemeStyle != nil {
+		unfilledStyle = ctx.Style.Merge(ctx.ThemeStyle("muted"))
+	}
 	filled := x + uint16(math.Round(ratio*float64(end-x)))
 	for ; x < end; x++ {
 		if x < filled {
-			buf.SetCell(x, area.Y, cell.Cell{Content: filledRune, Style: ctx.Style.Merge(g.FilledStyle)})
+			buf.SetCell(x, area.Y, cell.Cell{Content: filledRune, Style: filledStyle})
 		} else {
-			buf.SetCell(x, area.Y, cell.Cell{Content: unfilledRune, Style: ctx.Style.Merge(g.UnfilledStyle)})
+			buf.SetCell(x, area.Y, cell.Cell{Content: unfilledRune, Style: unfilledStyle})
 		}
 	}
 }
@@ -220,11 +234,11 @@ func (g LineGauge) Draw(ctx cell.Context, buf *buffer.Buffer) {
 func (g LineGauge) SizeHint(maxArea cell.Rect) (uint16, uint16) { return maxArea.Width, 1 }
 
 // AccessibilityNode reports the gauge as a progress indicator.
-func (g LineGauge) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (g LineGauge) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	return progressNode(g.ID, "LineGauge", g.Label, Gauge{Ratio: g.Ratio}.ratio(), bounds, focused)
 }
 
-func progressNode(id, kind, label string, ratio float64, bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func progressNode(id, kind, label string, ratio float64, bounds cell.Rect, focused bool) accessibility.Node {
 	var state accessibility.NodeState
 	if focused {
 		state |= accessibility.StateFocused
@@ -232,7 +246,7 @@ func progressNode(id, kind, label string, ratio float64, bounds cell.Rect, focus
 	if label == "" {
 		label = kind
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     id,
 		Role:   accessibility.RoleProgress,
 		Label:  label,

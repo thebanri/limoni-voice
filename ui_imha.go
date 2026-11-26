@@ -85,7 +85,7 @@ func (p *imhaPlay) draw(f *terminal.Frame, t float64) {
 		return
 	}
 	// Pictures in windows over the terminal would float over the sand.
-	f.ImageRegions = f.ImageRegions[:0]
+	f.ClearImageRegions()
 	px := newImhaPixels(w, h)
 	if t >= imhaFall {
 		if p.sand == nil || p.sand.w != w || p.sand.h != 2*h {

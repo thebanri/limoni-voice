@@ -33,31 +33,7 @@ func ParseEvent(buf []byte) (Event, int) {
 			return Event{}, 1
 		}
 
-		ev := Event{Type: EventKey}
-		switch r {
-		case '\n':
-			ev.Key.Type = KeyEnter
-			ev.Key.Ctrl = true // Ctrl+J (ASCII 10 LF)
-		case '\r':
-			ev.Key.Type = KeyEnter
-		case 127, '\b':
-			ev.Key.Type = KeyBackspace
-		case '\t':
-			ev.Key.Type = KeyTab
-		case ' ':
-			ev.Key.Type = KeySpace
-		default:
-			// Ctrl characters: ASCII 1-26 map to Ctrl-A through Ctrl-Z.
-			if r >= 1 && r <= 26 {
-				ev.Key.Type = KeyRune
-				ev.Key.Ch = rune('a' + r - 1)
-				ev.Key.Ctrl = true
-			} else {
-				ev.Key.Type = KeyRune
-				ev.Key.Ch = r
-			}
-		}
-		return ev, size
+		return Event{Type: EventKey, Key: byteKey(r)}, size
 	}
 
 	// 2. Sequences starting with Escape (\x1b)
@@ -123,9 +99,42 @@ func ParseEvent(buf []byte) (Event, int) {
 		if r == '\r' || r == '\n' {
 			return Event{Type: EventKey, Key: KeyEvent{Type: KeyEnter, Alt: true}}, 1 + size
 		}
-		ev := Event{Type: EventKey, Key: KeyEvent{Type: KeyRune, Ch: r, Alt: true}}
-		return ev, 1 + size
+		// ESC DEL is Alt+Backspace, ESC ^A Alt+Ctrl+A: the same keys as
+		// without the ESC, not the control character as text.
+		key := byteKey(r)
+		key.Alt = true
+		return Event{Type: EventKey, Key: key}, 1 + size
 	}
+}
+
+// byteKey decodes the key a terminal sends as one character outside an escape
+// sequence. Control characters are keys, never text: NUL (Ctrl+Space) and
+// 0x1C–0x1F (Ctrl+\ ] ^ _, and Ctrl+/ in most terminals) came through as
+// runes and a text input typed them.
+func byteKey(r rune) KeyEvent {
+	switch r {
+	case '\n':
+		return KeyEvent{Type: KeyEnter, Ctrl: true} // Ctrl+J (ASCII 10 LF)
+	case '\r':
+		return KeyEvent{Type: KeyEnter}
+	case 127, '\b':
+		return KeyEvent{Type: KeyBackspace}
+	case '\t':
+		return KeyEvent{Type: KeyTab}
+	case ' ':
+		return KeyEvent{Type: KeySpace}
+	case 0:
+		return KeyEvent{Type: KeySpace, Ctrl: true}
+	case 27: // only after another ESC: Alt+Esc
+		return KeyEvent{Type: KeyEsc}
+	}
+	switch {
+	case r >= 1 && r <= 26: // Ctrl-A through Ctrl-Z
+		return KeyEvent{Type: KeyRune, Ch: 'a' + r - 1, Ctrl: true}
+	case r >= 28 && r <= 31:
+		return KeyEvent{Type: KeyRune, Ch: r + '@', Ctrl: true}
+	}
+	return KeyEvent{Type: KeyRune, Ch: r}
 }
 
 // maxCSIParams bounds the parameters kept from one CSI sequence. Keys use at
@@ -137,6 +146,18 @@ const maxCSIParams = 32
 func parseCSI(buf []byte) (Event, int) {
 	if len(buf) < 3 {
 		return Event{}, 0
+	}
+
+	// The Linux console sends F1–F5 as ESC [ [ A to ESC [ [ E. Read as a
+	// control sequence, the second '[' is skipped and F1–F4 come out as the
+	// arrow keys.
+	if buf[2] == '[' {
+		if len(buf) < 4 {
+			return Event{}, 0
+		}
+		if c := buf[3]; c >= 'A' && c <= 'E' {
+			return Event{Type: EventKey, Key: KeyEvent{Type: KeyF1 + KeyType(c-'A')}}, 4
+		}
 	}
 
 	// Find the final byte. Keys and replies end in a letter or '~'.
@@ -594,11 +615,14 @@ func parseStringSequence(buf []byte) (Event, int) {
 }
 
 // stringSequenceEvent interprets a complete string sequence, without its
-// terminator. Only the XTVERSION reply (DCS > | text) carries anything Limoni
-// uses; every other one is consumed silently.
+// terminator. Only the XTVERSION reply (DCS > | text) and an OK to the kitty
+// graphics query carry anything Limoni uses; every other one is consumed silently.
 func stringSequenceEvent(seq []byte) Event {
 	if len(seq) >= 4 && seq[1] == 'P' && seq[2] == '>' && seq[3] == '|' {
 		return Event{Type: EventReply, Reply: ReplyEvent{Kind: ReplyVersion, Version: string(seq[4:])}}
+	}
+	if string(seq) == "\x1b_Gi="+probeKittyID+";OK" {
+		return Event{Type: EventReply, Reply: ReplyEvent{Kind: ReplyKittyGraphics}}
 	}
 	return Event{Type: EventNone}
 }

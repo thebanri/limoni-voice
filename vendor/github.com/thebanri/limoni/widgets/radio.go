@@ -8,11 +8,13 @@ import (
 
 // RadioButton is a radio button for choosing one option from a group.
 type RadioButton struct {
-	ID           string
-	Selected     *string
-	Value        string
-	Label        string
-	Style        cell.Style
+	ID       string
+	Selected *string
+	Value    string
+	Label    string
+	Style    cell.Style
+	// FocusedStyle defaults to reverse bold, or the theme focus style when
+	// both styles are unset.
 	FocusedStyle cell.Style
 }
 
@@ -47,7 +49,11 @@ func (rb RadioButton) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	// Merge the styles
 	textStyle := ctx.Style.Merge(rb.Style)
 	if isFocused {
-		textStyle = textStyle.Merge(rb.FocusedStyle)
+		focusedStyle := rb.FocusedStyle
+		if focusedStyle == (cell.Style{}) && rb.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
+			focusedStyle = ctx.ThemeStyle("focus")
+		}
+		textStyle = textStyle.Merge(focusStyle(focusedStyle))
 	}
 
 	// Prepare the ( ) or (*) state text
@@ -69,7 +75,7 @@ func (rb RadioButton) SizeHint(maxArea cell.Rect) (width, height uint16) {
 }
 
 // AccessibilityNode returns the semantic node description for RadioButton.
-func (rb RadioButton) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (rb RadioButton) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
@@ -82,7 +88,7 @@ func (rb RadioButton) AccessibilityNode(bounds cell.Rect, focused bool) accessib
 	if isSelected {
 		val = "true"
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     rb.ID,
 		Role:   accessibility.RoleRadioButton,
 		Label:  rb.Label,

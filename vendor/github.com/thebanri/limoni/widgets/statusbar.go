@@ -45,6 +45,7 @@ type StatusBar struct {
 	Left, Center, Right []StatusItem
 
 	// Style fills the whole row; KeyStyle is merged over it for item keys.
+	// When both are unset, keys use the frame theme's primary role.
 	Style    cell.Style
 	KeyStyle cell.Style
 	// Separator goes between items in a group. Empty is two spaces.
@@ -100,6 +101,9 @@ func (s StatusBar) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 	base := ctx.Style.Merge(s.Style)
 	key := base.Merge(s.KeyStyle)
+	if s.KeyStyle == (cell.Style{}) && s.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
+		key = base.Merge(ctx.ThemeStyle("primary"))
+	}
 	y, end := area.Y, area.X+area.Width
 	for x := area.X; x < end; x++ {
 		buf.SetCell(x, y, cell.Cell{Content: ' ', Style: base})
@@ -181,8 +185,8 @@ func (s StatusBar) SizeHint(maxArea cell.Rect) (uint16, uint16) { return maxArea
 
 // AccessibilityNode describes the bar: with an ID, its items as text, "key
 // text" each, groups separated by the separator.
-func (s StatusBar) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
-	node := accessibility.AccessibilityNode{ID: s.ID, Role: accessibility.RoleGeneric, Label: "Status bar", Bounds: bounds}
+func (s StatusBar) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
+	node := accessibility.Node{ID: s.ID, Role: accessibility.RoleGeneric, Label: "Status bar", Bounds: bounds}
 	if focused {
 		node.State |= accessibility.StateFocused
 	}

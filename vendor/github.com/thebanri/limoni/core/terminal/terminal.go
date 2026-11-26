@@ -3,6 +3,7 @@ package terminal
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/thebanri/limoni/animation"
@@ -18,7 +19,7 @@ import (
 // the synchronised update protocol (?2026) and routing mouse events to the right targets.
 type Terminal struct {
 	// driver is the layer that handles low-level TTY raw mode and I/O.
-	driver *driver.Driver
+	driver *driver.Backend
 
 	// cast records the frames as asciicast while it is set (RecordCast,
 	// LIMONI_CAST); nil otherwise, which costs the draw path one check.
@@ -33,6 +34,21 @@ type Terminal struct {
 	// inline, when greater than zero, draws the application in a band of that many
 	// rows on the normal screen instead of the alternate screen.
 	inline uint16
+	// inlineFit makes an inline band only as tall as the rows a frame used,
+	// up to inline (SetInlineFit); inlineRows is how many rows the band has
+	// on screen now.
+	inlineFit  bool
+	inlineRows uint16
+	// inlineExt holds, once a frame is drawn, how many columns each band row
+	// took (buffer.InlineExtents); inlineParked says the cursor then sits at
+	// the end of the band's last row rather than on its first, where a
+	// terminal's reflow on a width change leaves it findable.
+	inlineExt    []uint16
+	inlineParked bool
+	// commits holds rows Commit encoded during a draw, written above the
+	// band when the frame is.
+	commits []byte
+	drawing bool
 
 	// frame is the context handed to widgets during drawing, for drawing and registering click areas.
 	frame *Frame
@@ -88,6 +104,9 @@ type Terminal struct {
 	reportVersion uint64
 	// drawn is set once a frame has been written to the terminal.
 	drawn bool
+	// cellPixelW and cellPixelH are a cell's size in pixels for the draw
+	// contexts (see readCellPixels).
+	cellPixelW, cellPixelH uint8
 	// pointerShape is the OSC 22 shape last written; empty is the default.
 	pointerShape string
 	// kittyPushed is set while the kitty keyboard flags pushed by
@@ -138,10 +157,30 @@ func New(b *driver.Backend) (*Terminal, error) {
 		detected: detected,
 		bgOff:    backdropOff(),
 	}
+	t.frame.commit = t.Commit
+	t.readCellPixels()
 	if err := t.recordCastFromEnv(); err != nil {
 		return nil, err
 	}
 	return t, nil
+}
+
+// readCellPixels reads a cell's size in pixels from the driver, for the
+// widgets that render pictures at it. The size follows the font, and a font
+// change changes the rows and columns too, so it is read when they change
+// rather than on every frame. It is the size the pictures are encoded at,
+// fallback included, so a picture rendered at it is shown pixel for pixel.
+func (t *Terminal) readCellPixels() {
+	w, h, _ := t.driver.CellPixelSize()
+	t.cellPixelW, t.cellPixelH = pixelsByte(w), pixelsByte(h)
+}
+
+// pixelsByte fits a cell dimension into the byte cell.Context keeps it in.
+func pixelsByte(px uint16) uint8 {
+	if px > math.MaxUint8 {
+		return math.MaxUint8
+	}
+	return uint8(px)
 }
 
 // RestoreModes undoes what the application changed on the terminal beyond
@@ -205,6 +244,7 @@ func (t *Terminal) Close() error {
 		t.cast = nil
 	}
 	if t.driver != nil {
+		t.unparkInline()
 		t.RestoreModes()
 		if len(t.kitty.ids) > 0 {
 			_, _ = t.driver.Write(t.kitty.freeAll(nil))
@@ -221,12 +261,7 @@ func (t *Terminal) Close() error {
 }
 
 // Driver returns the underlying driver instance.
-func (t *Terminal) Driver() *driver.Driver {
-	return t.driver
-}
-
-// Backend returns the underlying driver instance (backward compatibility alias).
-func (t *Terminal) Backend() *driver.Driver {
+func (t *Terminal) Driver() *driver.Backend {
 	return t.driver
 }
 
@@ -363,6 +398,7 @@ func (t *Terminal) Suspend() error {
 	}
 	// The shell should not inherit a resize arrow or the kitty keyboard
 	// flags; the next mouse move and the next frame set them again.
+	t.unparkInline()
 	t.RestoreModes()
 	t.hideOverlay()
 	if err := t.driver.Suspend(); err != nil {
@@ -382,6 +418,15 @@ func (t *Terminal) SetMouse(enabled bool) error {
 		return nil
 	}
 	return t.driver.SetMouse(enabled)
+}
+
+// SetMouseMode says how much of the mouse is reported: every move, moves
+// with a button held, or clicks and the wheel; see driver.Backend.SetMouseMode.
+func (t *Terminal) SetMouseMode(mode driver.MouseMode) error {
+	if t == nil || t.driver == nil {
+		return nil
+	}
+	return t.driver.SetMouseMode(mode)
 }
 
 // Release hands the terminal to fn — an editor, a pager, a shell — and takes
@@ -440,6 +485,7 @@ func (t *Terminal) Draw(fn func(f *Frame)) error {
 		if t.cast != nil {
 			t.cast.resize(w, h)
 		}
+		t.readCellPixels()
 	}
 
 	// Clear the active drawing buffer
@@ -448,14 +494,18 @@ func (t *Terminal) Draw(fn func(f *Frame)) error {
 	t.frame.Reset()
 	t.frame.Hyperlinks = t.caps.Hyperlinks
 	t.frame.ImageProtocol = uint8(t.caps.GraphicsProto)
+	t.frame.CellPixelW, t.frame.CellPixelH = t.cellPixelW, t.cellPixelH
 	if t.frame.FocusManager != nil {
 		t.frame.FocusManager.Clear()
 	}
 
 	// Hand the frame context (Frame) to the application to draw its components
 	if fn != nil {
+		t.drawing = true
 		fn(t.frame)
+		t.drawing = false
 	}
+	t.frame.endAreas()
 	if t.backdropActive() {
 		t.keepAppLayer()
 		t.composeBackdrop()
@@ -489,8 +539,13 @@ func (t *Terminal) present(t0 time.Time) error {
 	// If no cell changed and there is no native image, transition or debug layer,
 	// skip the synchronised update, the image pass and the diff altogether.
 	sizeChanged := t.front.Area.Width != t.back.Area.Width || t.front.Area.Height != t.back.Area.Height
-	if !sizeChanged && !t.front.IsDirty && !t.transitionActive && !t.debugMode &&
-		len(t.frame.ImageRegions) == 0 && t.lastImageCount == 0 {
+	bandRows := t.inline
+	if t.inline > 0 && t.inlineFit {
+		bandRows = usedRows(t.front, t.inline)
+	}
+	bandMoved := t.inline > 0 && (len(t.commits) > 0 || bandRows != t.inlineRows)
+	if !sizeChanged && !bandMoved && !t.front.IsDirty && !t.transitionActive && !t.debugMode &&
+		len(t.frame.imageRegions) == 0 && t.lastImageCount == 0 {
 		t.lastFrameDuration = time.Since(t0)
 		t.copyWidgetStats()
 		return nil
@@ -512,6 +567,14 @@ func (t *Terminal) present(t0 time.Time) error {
 	// instead of sending an empty ?2026h/?2026l pair on every tick.
 	bodyStart := len(t.writeBuf)
 
+	// The cursor waits at the end of the band; its first row is as many rows
+	// up as the band takes at this width, which after a width change is not
+	// the height it was drawn with: the terminal wrapped or joined its rows.
+	if t.inline > 0 && t.inlineParked {
+		t.writeBuf = buffer.InlineUp(t.writeBuf, buffer.InlineVisualRows(t.inlineExt, t.front.Area.Width))
+		t.inlineParked = false
+	}
+
 	// On a full redraw, ESC[2J must not erase native images already sent.
 	// Sizes are matched here, and the clear is moved ahead of the image pass.
 	needsFullClear := sizeChanged
@@ -524,28 +587,31 @@ func (t *Terminal) present(t0 time.Time) error {
 			t.writeBuf = append(t.writeBuf, "\x1b[2J"...)
 		}
 	}
+	if t.inline > 0 && (sizeChanged || bandMoved) {
+		// Erase the band, print the committed rows where it was, and make
+		// room for it again below them: the rows scroll into the scrollback
+		// as a program's output would, and the band follows them down.
+		t.writeBuf = append(t.writeBuf, "\r\x1b[J"...)
+		t.writeBuf = append(t.writeBuf, t.commits...)
+		t.writeBuf = buffer.InlineReserve(t.writeBuf, bandRows)
+		t.commits = t.commits[:0]
+		if bandRows != t.inlineRows {
+			t.inlineRows = bandRows
+			// The driver moves past the band on exit, so it must know its size.
+			t.driver.SetInline(bandRows)
+		}
+	}
 
 	// ── STEP 1: the cells ──
 	var diffErr error
-	diffOpts := buffer.DiffOptions{
-		TrueColor:  t.caps.TrueColor,
-		Colors256:  t.caps.Colors256,
-		EraseChar:  t.caps.EraseChar,
-		RepeatChar: t.caps.RepeatChar,
-		Hyperlinks: t.caps.Hyperlinks,
-		// A terminal that confirmed mode 2027 needs no cursor re-anchoring
-		// after each grapheme cluster.
-		ClusterWidths: t.caps.ClusterWidths,
-		ScrollRegions: t.caps.ScrollRegions,
-		InsertDelete:  t.caps.ScrollRegions,
-		// Draw already wrapped the frame in ?2026 above; wrapping again inside
-		// the encoder would nest the sequence.
-		SyncOutput: false,
-	}
+	diffOpts := t.diffOptions()
+	diffOpts.InlineRows = bandRows
 	if t.inline > 0 {
 		// Inline frames are emitted relative to the cursor, because the row the
 		// application starts on moves whenever the terminal scrolls.
-		t.writeBuf, diffErr = buffer.DiffInline(t.front, t.back, t.writeBuf, diffOpts)
+		t.writeBuf, diffErr = buffer.DiffInlineParked(t.front, t.back, t.writeBuf, diffOpts)
+		t.inlineExt = buffer.InlineExtents(t.inlineExt, t.front, bandRows)
+		t.inlineParked = true
 	} else {
 		t.writeBuf, diffErr = buffer.DiffWithOptions(t.front, t.back, t.writeBuf, diffOpts)
 	}
@@ -586,14 +652,14 @@ func (t *Terminal) present(t0 time.Time) error {
 			if imagesChanged && proto == graphics.ProtocolOverlay {
 				t.placeOverlay(imageRegions)
 			} else if imagesChanged && proto == graphics.ProtocolKitty {
-				t.writeBuf = t.kitty.place(t.writeBuf, imageRegions, cellW, cellH)
+				t.writeBuf = t.kitty.place(t.writeBuf, imageRegions, cellW, cellH, needsFullClear || layersChanged)
 			} else if imagesChanged {
 				for _, reg := range imageRegions {
 					zIndex := reg.ZIndex
 					if proto == graphics.ProtocolKitty && zIndex == 0 {
 						zIndex = -1
 					}
-					escSeq := graphics.GetCachedEscapeSequence(reg.Img, reg.Area.Width, reg.Area.Height, cellW, cellH, proto, zIndex, reg.Transparent)
+					escSeq := graphics.CachedEscapeSequence(reg.Img, reg.Area.Width, reg.Area.Height, cellW, cellH, proto, zIndex, reg.Transparent)
 					if escSeq != "" {
 						t.writeBuf = buffer.AppendCursor(t.writeBuf, reg.Area.X, reg.Area.Y)
 						t.writeBuf = append(t.writeBuf, escSeq...)
@@ -657,13 +723,13 @@ func (t *Terminal) present(t0 time.Time) error {
 
 // copyWidgetStats copies the frame profiling statistics into a reused slice.
 func (t *Terminal) copyWidgetStats() {
-	if cap(t.lastWidgetStats) >= len(t.frame.WidgetStats) {
-		t.lastWidgetStats = t.lastWidgetStats[:len(t.frame.WidgetStats)]
-		copy(t.lastWidgetStats, t.frame.WidgetStats)
+	if cap(t.lastWidgetStats) >= len(t.frame.widgetStats) {
+		t.lastWidgetStats = t.lastWidgetStats[:len(t.frame.widgetStats)]
+		copy(t.lastWidgetStats, t.frame.widgetStats)
 		return
 	}
-	t.lastWidgetStats = make([]WidgetStat, len(t.frame.WidgetStats))
-	copy(t.lastWidgetStats, t.frame.WidgetStats)
+	t.lastWidgetStats = make([]WidgetStat, len(t.frame.widgetStats))
+	copy(t.lastWidgetStats, t.frame.widgetStats)
 }
 
 // repaintOver marks for the diff the cells in the pictures' areas that are
@@ -716,7 +782,7 @@ func (t *Terminal) clippedImageRegions() []ImageRegion {
 	if t == nil || t.frame == nil {
 		return nil
 	}
-	return t.frame.ImageRegions
+	return t.frame.imageRegions
 }
 
 // LastImageRegions returns a copy of image regions registered during the last frame.
@@ -831,33 +897,7 @@ func (t *Terminal) RouteMouseEvent(ev driver.MouseEvent) bool {
 		}
 	}
 
-	// 2. Backwards compatibility: ActiveModal (may have been set with the old RegisterModal API)
-	if t.frame.ActiveModal != nil {
-		modal := t.frame.ActiveModal
-		if modal.Area.Contains(ev.X, ev.Y) {
-			// Inside the modal: search only the regions with the modal's ID
-			for i := len(t.frame.ClickRegions) - 1; i >= 0; i-- {
-				reg := t.frame.ClickRegions[i]
-				if reg.LayerID == modal.ID && reg.Area.Contains(ev.X, ev.Y) && (reg.MouseOnly && (ev.Button == driver.MouseNone || ev.Button == driver.MouseScrollUp || ev.Button == driver.MouseScrollDown) || ev.Button == driver.MouseLeft) {
-					reg.Fire(ev, t.frame)
-					if t.frame.mouseCaptureRequest != nil {
-						t.mouseCaptureHandler = t.frame.mouseCaptureRequest
-						t.frame.mouseCaptureRequest = nil
-					}
-					return true
-				}
-			}
-			return true // Inside the modal but on empty space: swallow the event
-		} else {
-			// Click outside the modal (on left button presses only)
-			if ev.Button == driver.MouseLeft && !ev.Drag && modal.ClickOutside != nil {
-				modal.ClickOutside()
-			}
-			return true
-		}
-	}
-
-	// 3. The normal (layerless) click routing loop
+	// 2. The normal (layerless) click routing loop
 	for i := len(t.frame.ClickRegions) - 1; i >= 0; i-- {
 		reg := t.frame.ClickRegions[i]
 		if reg.LayerID == "" && reg.Area.Contains(ev.X, ev.Y) && (reg.MouseOnly && (ev.Button == driver.MouseNone || ev.Button == driver.MouseScrollUp || ev.Button == driver.MouseScrollDown) || ev.Button == driver.MouseLeft) {
@@ -919,7 +959,7 @@ func (t *Terminal) drawDebugOverlay() {
 		Modifier: cell.ModifierBold,
 	}
 
-	for regionIndex, reg := range t.frame.DebugRegions {
+	for regionIndex, reg := range t.frame.debugRegions {
 		area := reg.Area
 		if area.Width == 0 || area.Height == 0 {
 			continue
@@ -927,13 +967,13 @@ func (t *Terminal) drawDebugOverlay() {
 
 		// Horizontal dashed lines
 		for col := area.X; col < area.X+area.Width; col++ {
-			if !isObscured(col, area.Y, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+			if !isObscured(col, area.Y, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 				if c := t.front.Get(col, area.Y); c != nil {
 					c.Content = '╌'
 					c.Style = borderStyle
 				}
 			}
-			if !isObscured(col, area.Y+area.Height-1, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+			if !isObscured(col, area.Y+area.Height-1, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 				if c := t.front.Get(col, area.Y+area.Height-1); c != nil {
 					c.Content = '╌'
 					c.Style = borderStyle
@@ -942,13 +982,13 @@ func (t *Terminal) drawDebugOverlay() {
 		}
 		// Vertical dashed lines
 		for row := area.Y; row < area.Y+area.Height; row++ {
-			if !isObscured(area.X, row, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+			if !isObscured(area.X, row, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 				if c := t.front.Get(area.X, row); c != nil {
 					c.Content = '╎'
 					c.Style = borderStyle
 				}
 			}
-			if !isObscured(area.X+area.Width-1, row, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+			if !isObscured(area.X+area.Width-1, row, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 				if c := t.front.Get(area.X+area.Width-1, row); c != nil {
 					c.Content = '╎'
 					c.Style = borderStyle
@@ -957,25 +997,25 @@ func (t *Terminal) drawDebugOverlay() {
 		}
 
 		// Join the corners
-		if !isObscured(area.X, area.Y, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+		if !isObscured(area.X, area.Y, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 			if c := t.front.Get(area.X, area.Y); c != nil {
 				c.Content = '┌'
 				c.Style = borderStyle
 			}
 		}
-		if !isObscured(area.X+area.Width-1, area.Y, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+		if !isObscured(area.X+area.Width-1, area.Y, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 			if c := t.front.Get(area.X+area.Width-1, area.Y); c != nil {
 				c.Content = '┐'
 				c.Style = borderStyle
 			}
 		}
-		if !isObscured(area.X, area.Y+area.Height-1, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+		if !isObscured(area.X, area.Y+area.Height-1, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 			if c := t.front.Get(area.X, area.Y+area.Height-1); c != nil {
 				c.Content = '└'
 				c.Style = borderStyle
 			}
 		}
-		if !isObscured(area.X+area.Width-1, area.Y+area.Height-1, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+		if !isObscured(area.X+area.Width-1, area.Y+area.Height-1, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 			if c := t.front.Get(area.X+area.Width-1, area.Y+area.Height-1); c != nil {
 				c.Content = '┘'
 				c.Style = borderStyle
@@ -991,7 +1031,7 @@ func (t *Terminal) drawDebugOverlay() {
 		for idx, r := range label {
 			col := area.X + 1 + uint16(idx)
 			if col < area.X+area.Width-1 {
-				if !isObscured(col, area.Y, reg.ZIndex, regionIndex, t.frame.DebugRegions) {
+				if !isObscured(col, area.Y, reg.ZIndex, regionIndex, t.frame.debugRegions) {
 					if c := t.front.Get(col, area.Y); c != nil {
 						c.Content = r
 						c.Style = textStyle
@@ -1024,9 +1064,6 @@ func (t *Terminal) layersHash() string {
 	res := ""
 	for _, l := range t.frame.Layers {
 		res += fmt.Sprintf("%s:%d,%d,%d,%d;", l.ID, l.Area.X, l.Area.Y, l.Area.Width, l.Area.Height)
-	}
-	if t.frame.ActiveModal != nil {
-		res += fmt.Sprintf("modal:%s:%d,%d,%d,%d;", t.frame.ActiveModal.ID, t.frame.ActiveModal.Area.X, t.frame.ActiveModal.Area.Y, t.frame.ActiveModal.Area.Width, t.frame.ActiveModal.Area.Height)
 	}
 	return res
 }
@@ -1082,4 +1119,6 @@ func (t *Terminal) Layers() []Layer {
 // alternate-screen switch; limoni.WithInline wires both.
 func (t *Terminal) SetInline(height uint16) {
 	t.inline = height
+	t.inlineRows = height
+	t.inlineParked = false
 }

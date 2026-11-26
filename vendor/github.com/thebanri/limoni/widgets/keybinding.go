@@ -16,6 +16,8 @@ type Keybinding struct {
 	Ctrl bool
 	// Shift reports whether the Shift modifier is required.
 	Shift bool
+	// Alt reports whether the Alt modifier is required.
+	Alt bool
 	// Handler is the callback run when this shortcut matches.
 	Handler func()
 	// Label is the description of this shortcut shown in the command palette.
@@ -79,7 +81,7 @@ func (km *KeybindingManager) Handle(ev driver.KeyEvent, activeScopes ...string) 
 			if kb.Key == driver.KeyRune && kb.Ch != ev.Ch {
 				continue
 			}
-			if kb.Ctrl != ev.Ctrl {
+			if kb.Ctrl != ev.Ctrl || kb.Alt != ev.Alt {
 				continue
 			}
 			if kb.Key != driver.KeyRune && kb.Shift != ev.Shift {
@@ -124,6 +126,9 @@ func formatKeybinding(kb Keybinding) string {
 	s := ""
 	if kb.Ctrl {
 		s += "Ctrl+"
+	}
+	if kb.Alt {
+		s += "Alt+"
 	}
 	if kb.Shift {
 		s += "Shift+"

@@ -17,7 +17,7 @@ type ListState struct {
 
 	// rows is reused for the visible rows' semantic nodes on every frame, so
 	// exposing them allocates only while the list grows taller.
-	rows []accessibility.AccessibilityNode
+	rows []accessibility.Node
 }
 
 // NewListState returns a new ListState. By default nothing is selected.
@@ -107,7 +107,9 @@ type List struct {
 	ScrollbarThumbStyle cell.Style
 	// Style is the list's overall colour and text style.
 	Style cell.Style
-	// FocusedStyle is the style applied when the list has the focus.
+	// FocusedStyle is the style applied when the list has the focus. Unset,
+	// a focused list draws its selected row in reverse bold, so the focus
+	// always shows.
 	FocusedStyle cell.Style
 	// SelectedStyle is the style the selected item is highlighted with.
 	SelectedStyle cell.Style
@@ -203,9 +205,11 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	if listStyle.Bg.Type() == cell.ColorDefault && ctx.ThemeStyle != nil {
 		listStyle = listStyle.Merge(ctx.ThemeStyle("surface"))
 	}
-	if ctx.IsFocused(l.ID) {
+	focused := ctx.IsFocused(l.ID)
+	if focused {
 		listStyle = listStyle.Merge(l.FocusedStyle)
 	}
+	markFocus := focused && l.FocusedStyle == (cell.Style{})
 	styler, _ := l.Provider.(ListStyler)
 
 	selected := -1
@@ -304,6 +308,9 @@ func (l List) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 		if isSel {
 			itemStyle = itemStyle.Merge(l.SelectedStyle)
+			if markFocus {
+				itemStyle = itemStyle.Merge(focusMark)
+			}
 		}
 
 		// Clear and fill the row's background
@@ -464,7 +471,7 @@ func (l List) Measure(maxArea cell.Rect) layout.Measure {
 // its height. A list without State has no scroll position to report rows
 // against and stays flat. Consumers that keep a tree past the frame must copy
 // it; Frame.AccessibilityTree does.
-func (l List) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (l List) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
@@ -493,7 +500,7 @@ func (l List) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Ac
 		label = "List"
 	}
 
-	var rows []accessibility.AccessibilityNode
+	var rows []accessibility.Node
 	if l.State != nil && bounds.Width > 0 {
 		rowWidth := bounds.Width
 		// Draw takes the scrollbar column from the text area; the rows do too.
@@ -510,7 +517,7 @@ func (l List) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Ac
 			if index == selected {
 				rowState = accessibility.StateSelected
 			}
-			rows = append(rows, accessibility.AccessibilityNode{
+			rows = append(rows, accessibility.Node{
 				Role:     accessibility.RoleListItem,
 				Label:    l.itemAt(index),
 				State:    rowState,
@@ -522,7 +529,7 @@ func (l List) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Ac
 		l.State.rows = rows
 	}
 
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:       l.ID,
 		Role:     accessibility.RoleList,
 		Label:    label,

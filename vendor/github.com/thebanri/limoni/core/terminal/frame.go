@@ -89,16 +89,13 @@ type Frame struct {
 
 	// ClickRegions holds interactive click areas registered by widgets.
 	ClickRegions []ClickRegion
-	EventRegions []eventRegion
+	eventRegions []eventRegion
 
-	// ImageRegions holds image draw regions registered during this pass.
-	ImageRegions []ImageRegion
+	// imageRegions holds image draw regions registered during this pass.
+	imageRegions []ImageRegion
 
 	// FocusManager manages focus state and tab navigation for this frame.
 	FocusManager *FocusManager
-
-	// ActiveModal holds information on the active topmost modal layer, if any.
-	ActiveModal *Modal
 
 	// Layers contains the z-index sorted list of active rendering layers.
 	Layers []Layer
@@ -106,8 +103,8 @@ type Frame struct {
 	// activeLayerID stores the ID of the active layer during drawing.
 	activeLayerID string
 
-	// DebugRegions records the layout boundaries of rendered widgets.
-	DebugRegions []DebugRegion
+	// debugRegions records the layout boundaries of rendered widgets.
+	debugRegions []DebugRegion
 
 	// mouseCaptureRequest is a mouse capture callback requested by a widget while drawing.
 	mouseCaptureRequest func(ev driver.MouseEvent)
@@ -117,8 +114,8 @@ type Frame struct {
 	lastEventTrace      []string
 	lastTraceEntries    []TraceEntry
 
-	Theme    widgets.Theme
-	ThemeSet bool
+	theme    widgets.Theme
+	themeSet bool
 
 	// Hyperlinks mirrors the terminal's OSC 8 capability into every draw
 	// context; see cell.Context.Hyperlinks.
@@ -128,11 +125,18 @@ type Frame struct {
 	// draw context; see cell.Context.ImageProtocol.
 	ImageProtocol uint8
 
-	// WidgetStats holds how long each widget drawn in this frame took to render.
-	WidgetStats []WidgetStat
-	// Accessibility holds this frame's semantic nodes. Children may point into
+	// CellPixelW and CellPixelH mirror the size of a terminal cell in
+	// pixels into every draw context; see cell.Context.CellPixelW.
+	CellPixelW, CellPixelH uint8
+
+	// areas is the stack of BeginArea rectangles; the last is in force.
+	areas []cell.Rect
+
+	// widgetStats holds how long each widget drawn in this frame took to render.
+	widgetStats []WidgetStat
+	// accessibility holds this frame's semantic nodes. Children may point into
 	// buffers widgets reuse next frame; use AccessibilityTree to keep a copy.
-	Accessibility []accessibility.AccessibilityNode
+	accessibility []accessibility.Node
 
 	// Pre-allocated context parameters and closures to avoid heap allocation
 	currentArea           cell.Rect
@@ -156,6 +160,9 @@ type Frame struct {
 	imageClosure    func(cell.Rect, image.Image, int, bool) bool
 	focusClosure    func(string)
 	setFocusClosure func(string)
+
+	// commit is the terminal's Commit; nil for a frame with no terminal.
+	commit func(height uint16, w widgets.Widget) error
 }
 
 // DispatchClick dispatches a click to the topmost enabled target region and
@@ -166,8 +173,8 @@ func (f *Frame) DispatchClick(ev driver.MouseEvent, at time.Time) bool {
 		return false
 	}
 	var target *eventRegion
-	for i := len(f.EventRegions) - 1; i >= 0; i-- {
-		region := &f.EventRegions[i]
+	for i := len(f.eventRegions) - 1; i >= 0; i-- {
+		region := &f.eventRegions[i]
 		if region.Phase == TargetPhase && !region.Disabled && region.Area.Contains(ev.X, ev.Y) {
 			target = region
 			break
@@ -210,16 +217,15 @@ func NewFrame(buf *buffer.Buffer, focusMgr *FocusManager) *Frame {
 	f := &Frame{
 		Buffer:           buf,
 		ClickRegions:     make([]ClickRegion, 0, 128),
-		EventRegions:     make([]eventRegion, 0, 128),
-		ImageRegions:     make([]ImageRegion, 0, 16),
+		eventRegions:     make([]eventRegion, 0, 128),
+		imageRegions:     make([]ImageRegion, 0, 16),
 		FocusManager:     focusMgr,
-		ActiveModal:      nil,
 		Layers:           make([]Layer, 0, 128),
-		DebugRegions:     make([]DebugRegion, 0, 64),
+		debugRegions:     make([]DebugRegion, 0, 64),
 		lastEventTrace:   make([]string, 0, 32),
 		lastTraceEntries: make([]TraceEntry, 0, 32),
-		WidgetStats:      make([]WidgetStat, 0, 32),
-		Accessibility:    make([]accessibility.AccessibilityNode, 0, 32),
+		widgetStats:      make([]WidgetStat, 0, 32),
+		accessibility:    make([]accessibility.Node, 0, 32),
 	}
 	f.initClosures()
 	return f
@@ -248,9 +254,6 @@ func (f *Frame) clickLayer(area cell.Rect) (string, bool) {
 	}
 	if topModal := f.TopmostModal(); topModal != nil && ContainsRect(topModal.Area, area) {
 		return topModal.ID, true
-	}
-	if f.ActiveModal != nil && ContainsRect(f.ActiveModal.Area, area) {
-		return f.ActiveModal.ID, true
 	}
 	return "", false
 }
@@ -297,13 +300,15 @@ func (f *Frame) runClickAction(a cell.ClickAction) {
 
 func (f *Frame) initClosures() {
 	f.clickClosure = func(clickArea cell.Rect, handler func()) {
+		clickArea, ok := f.inArea(clickArea)
+		if !ok {
+			return
+		}
 		layerID := f.currentLayerID
 		if f.currentIsOutsideModal {
 			topModal := f.TopmostModal()
 			if topModal != nil && ContainsRect(topModal.Area, clickArea) {
 				layerID = topModal.ID
-			} else if f.ActiveModal != nil && ContainsRect(f.ActiveModal.Area, clickArea) {
-				layerID = f.ActiveModal.ID
 			} else {
 				return
 			}
@@ -328,6 +333,10 @@ func (f *Frame) initClosures() {
 	}
 
 	f.clickActionClosure = func(clickArea cell.Rect, action cell.ClickAction) {
+		clickArea, ok := f.inArea(clickArea)
+		if !ok {
+			return
+		}
 		layerID, ok := f.clickLayer(clickArea)
 		if !ok {
 			return
@@ -345,6 +354,10 @@ func (f *Frame) initClosures() {
 	}
 
 	f.scrollClosure = func(area cell.Rect, offset *int, max int) {
+		area, ok := f.inArea(area)
+		if !ok {
+			return
+		}
 		layerID, ok := f.clickLayer(area)
 		if !ok || offset == nil {
 			return
@@ -358,8 +371,6 @@ func (f *Frame) initClosures() {
 			topModal := f.TopmostModal()
 			if topModal != nil && ContainsRect(topModal.Area, mouseArea) {
 				layerID = topModal.ID
-			} else if f.ActiveModal != nil && ContainsRect(f.ActiveModal.Area, mouseArea) {
-				layerID = f.ActiveModal.ID
 			} else {
 				return
 			}
@@ -369,12 +380,8 @@ func (f *Frame) initClosures() {
 
 	f.eventClosure = func(eventArea cell.Rect, phase driver.EventPhase, handler func(*driver.EventContext)) {
 		if f.currentIsOutsideModal {
-			topModal := f.TopmostModal()
-			if topModal != nil && ContainsRect(topModal.Area, eventArea) {
-				// Allow events inside the modal
-			} else if f.ActiveModal != nil && ContainsRect(f.ActiveModal.Area, eventArea) {
-				// Allow events inside the modal
-			} else {
+			// Only events inside the modal are allowed.
+			if topModal := f.TopmostModal(); topModal == nil || !ContainsRect(topModal.Area, eventArea) {
 				return
 			}
 		}
@@ -416,7 +423,7 @@ func (f *Frame) initClosures() {
 			}
 		}
 
-		f.ImageRegions = append(f.ImageRegions, ImageRegion{
+		f.imageRegions = append(f.imageRegions, ImageRegion{
 			Area:        imageArea,
 			Img:         img,
 			ZIndex:      zIndex,
@@ -467,34 +474,43 @@ func (f *Frame) IsFocused(id string) bool {
 
 // SetTheme sets the semantic theme inherited by widgets rendered in this frame.
 func (f *Frame) SetTheme(theme widgets.Theme) {
-	f.Theme = theme
-	f.ThemeSet = true
+	f.theme = theme
+	f.themeSet = true
 }
 
 func (f *Frame) Reset() {
 	f.ClickRegions = f.ClickRegions[:0]
 	f.clickActions = f.clickActions[:0]
 	f.pointerRegions = f.pointerRegions[:0]
-	f.EventRegions = f.EventRegions[:0]
-	f.ImageRegions = f.ImageRegions[:0]
-	f.ActiveModal = nil
+	f.eventRegions = f.eventRegions[:0]
+	f.imageRegions = f.imageRegions[:0]
 	f.Layers = f.Layers[:0]
 	f.activeLayerID = ""
-	f.DebugRegions = f.DebugRegions[:0]
+	f.debugRegions = f.debugRegions[:0]
 	f.mouseCaptureRequest = nil
 	f.hoveredRegionID = ""
 	f.lastClickID = ""
 	f.lastClickAt = time.Time{}
 	f.lastEventTrace = f.lastEventTrace[:0]
 	f.lastTraceEntries = f.lastTraceEntries[:0]
-	f.WidgetStats = f.WidgetStats[:0]
-	f.Accessibility = f.Accessibility[:0]
+	f.widgetStats = f.widgetStats[:0]
+	f.accessibility = f.accessibility[:0]
+	f.endAreas()
+}
+
+// endAreas closes any area left open, so what is drawn after the
+// application (the debug overlay, transitions) reaches the whole screen.
+func (f *Frame) endAreas() {
+	f.areas = f.areas[:0]
+	if f.Buffer != nil {
+		f.Buffer.ClearClip()
+	}
 }
 
 // RegisterAccessibility adds a semantic node to the current frame tree.
-func (f *Frame) RegisterAccessibility(node accessibility.AccessibilityNode) {
+func (f *Frame) RegisterAccessibility(node accessibility.Node) {
 	if f != nil {
-		f.Accessibility = append(f.Accessibility, node)
+		f.accessibility = append(f.accessibility, node)
 	}
 }
 
@@ -505,18 +521,18 @@ func (f *Frame) RegisterAccessibility(node accessibility.AccessibilityNode) {
 // does, to stay allocation-free — so f.Accessibility is only valid until the
 // next draw. The copy is what the automation gateway, session recording and
 // tests hold on to.
-func (f *Frame) AccessibilityTree() []accessibility.AccessibilityNode {
+func (f *Frame) AccessibilityTree() []accessibility.Node {
 	if f == nil {
 		return nil
 	}
-	return cloneNodes(f.Accessibility)
+	return cloneNodes(f.accessibility)
 }
 
-func cloneNodes(nodes []accessibility.AccessibilityNode) []accessibility.AccessibilityNode {
+func cloneNodes(nodes []accessibility.Node) []accessibility.Node {
 	if nodes == nil {
 		return nil
 	}
-	result := make([]accessibility.AccessibilityNode, len(nodes))
+	result := make([]accessibility.Node, len(nodes))
 	copy(result, nodes)
 	for i := range result {
 		result[i].Children = cloneNodes(result[i].Children)
@@ -529,7 +545,26 @@ func (f *Frame) ValidateAccessibility() error {
 	if f == nil {
 		return nil
 	}
-	return accessibility.ValidateTree(f.Accessibility)
+	return accessibility.ValidateTree(f.accessibility)
+}
+
+// RegisterImageRegion places a picture this frame, as widgets do through
+// cell.Context.RegisterImage, but with the region's ZIndex and flags taken
+// as given: an application drawing its own pixels decides where they go.
+func (f *Frame) RegisterImageRegion(region ImageRegion) {
+	if f == nil || region.Img == nil {
+		return
+	}
+	f.imageRegions = append(f.imageRegions, region)
+}
+
+// ClearImageRegions drops the pictures placed so far this frame: for a
+// scene drawn over the whole screen, which pictures sent after the cells
+// (kitty, Sixel, the overlay's windows) would otherwise cover.
+func (f *Frame) ClearImageRegions() {
+	if f != nil {
+		f.imageRegions = f.imageRegions[:0]
+	}
 }
 
 // ImageRegionsSnapshot returns a copy of image registrations for assertions.
@@ -537,8 +572,8 @@ func (f *Frame) ImageRegionsSnapshot() []ImageRegion {
 	if f == nil {
 		return nil
 	}
-	regions := make([]ImageRegion, len(f.ImageRegions))
-	copy(regions, f.ImageRegions)
+	regions := make([]ImageRegion, len(f.imageRegions))
+	copy(regions, f.imageRegions)
 	return regions
 }
 
@@ -548,7 +583,7 @@ func (f *Frame) AccessibilityLineMode(mode accessibility.Mode) string {
 	if f == nil {
 		return ""
 	}
-	return mode.LineMode(f.Accessibility)
+	return mode.LineMode(f.accessibility)
 }
 
 // WriteAccessibilityLineMode streams the current semantic tree to a
@@ -557,19 +592,12 @@ func (f *Frame) WriteAccessibilityLineMode(w io.Writer, mode accessibility.Mode)
 	if f == nil {
 		return accessibility.Mode{}.WriteLineMode(w, nil)
 	}
-	return mode.WriteLineMode(w, f.Accessibility)
+	return mode.WriteLineMode(w, f.accessibility)
 }
 
 // RegisterModal records an active modal layer drawn in this frame.
 // Only one active modal is supported; the one registered last (the topmost) wins.
-// For backwards compatibility it also sets ActiveModal, the old API.
 func (f *Frame) RegisterModal(id string, area cell.Rect, onClickOutside func()) {
-	f.ActiveModal = &Modal{
-		ID:           id,
-		Area:         area,
-		ClickOutside: onClickOutside,
-	}
-	// Also add to the new layer system
 	f.Layers = append(f.Layers, Layer{
 		ID:           id,
 		Type:         LayerModal,
@@ -590,15 +618,6 @@ func (f *Frame) RegisterLayer(id string, layerType LayerType, area cell.Rect, zI
 		ZIndex:       zIndex,
 	}
 	f.Layers = append(f.Layers, layer)
-
-	// Backwards compatibility: for a modal layer, update ActiveModal too
-	if layerType == LayerModal {
-		f.ActiveModal = &Modal{
-			ID:           id,
-			Area:         area,
-			ClickOutside: onClickOutside,
-		}
-	}
 }
 
 // RemoveLayer removes the layer with the given ID.
@@ -607,19 +626,6 @@ func (f *Frame) RemoveLayer(id string) {
 		if f.Layers[i].ID == id {
 			f.Layers = append(f.Layers[:i], f.Layers[i+1:]...)
 			i--
-		}
-	}
-	// Update ActiveModal: for modal layers only
-	if f.ActiveModal != nil {
-		found := false
-		for _, l := range f.Layers {
-			if l.ID == f.ActiveModal.ID && l.Type == LayerModal {
-				found = true
-				break
-			}
-		}
-		if !found {
-			f.ActiveModal = nil
 		}
 	}
 }
@@ -667,7 +673,8 @@ func (f *Frame) IsInsideAnyLayer(x, y uint16) bool {
 // clicked. The mouse event router uses these registrations.
 // layerID is the layer the click region belongs to.
 func (f *Frame) RegisterClickHandler(area cell.Rect, handler func(ev driver.MouseEvent)) {
-	if handler == nil {
+	area, ok := f.inArea(area)
+	if handler == nil || !ok {
 		return
 	}
 	f.ClickRegions = append(f.ClickRegions, ClickRegion{
@@ -679,7 +686,8 @@ func (f *Frame) RegisterClickHandler(area cell.Rect, handler func(ev driver.Mous
 }
 
 func (f *Frame) registerMouseHandler(area cell.Rect, handler func(ev driver.MouseEvent), layerID string) {
-	if handler == nil {
+	area, ok := f.inArea(area)
+	if handler == nil || !ok {
 		return
 	}
 	f.ClickRegions = append(f.ClickRegions, ClickRegion{
@@ -700,7 +708,11 @@ func (f *Frame) RegisterEventRegion(region EventRegion) {
 	if f == nil || region.Handler == nil {
 		return
 	}
-	f.EventRegions = append(f.EventRegions, eventRegion{
+	var ok bool
+	if region.Area, ok = f.inArea(region.Area); !ok {
+		return
+	}
+	f.eventRegions = append(f.eventRegions, eventRegion{
 		Area: region.Area, ID: region.ID, LayerID: region.LayerID,
 		ZIndex: region.ZIndex, Disabled: region.Disabled,
 		Phase: region.Phase, Handler: region.Handler,
@@ -723,8 +735,8 @@ func (f *Frame) DispatchPointerMove(ev driver.MouseEvent) bool {
 		return false
 	}
 	var target *eventRegion
-	for i := len(f.EventRegions) - 1; i >= 0; i-- {
-		region := &f.EventRegions[i]
+	for i := len(f.eventRegions) - 1; i >= 0; i-- {
+		region := &f.eventRegions[i]
 		if region.Phase == TargetPhase && !region.Disabled && region.Area.Contains(ev.X, ev.Y) {
 			target = region
 			break
@@ -738,8 +750,8 @@ func (f *Frame) DispatchPointerMove(ev driver.MouseEvent) bool {
 		return target != nil
 	}
 	if f.hoveredRegionID != "" {
-		for i := range f.EventRegions {
-			region := &f.EventRegions[i]
+		for i := range f.eventRegions {
+			region := &f.eventRegions[i]
 			if region.ID == f.hoveredRegionID && region.OnLeave != nil {
 				f.lastEventTrace = append(f.lastEventTrace, region.ID+":leave")
 				f.lastTraceEntries = append(f.lastTraceEntries, TraceEntry{
@@ -788,8 +800,8 @@ func (f *Frame) DispatchEventRegions(ev driver.MouseEvent) bool {
 	for _, phase := range []driver.EventPhase{driver.CapturePhase, driver.TargetPhase, driver.BubblePhase} {
 		f.eventCtx.Phase = phase
 		if phase == driver.TargetPhase {
-			for i := len(f.EventRegions) - 1; i >= 0; i-- {
-				region := f.EventRegions[i]
+			for i := len(f.eventRegions) - 1; i >= 0; i-- {
+				region := f.eventRegions[i]
 				if region.Disabled {
 					continue
 				}
@@ -808,8 +820,8 @@ func (f *Frame) DispatchEventRegions(ev driver.MouseEvent) bool {
 				}
 			}
 		} else {
-			for i := 0; i < len(f.EventRegions); i++ {
-				region := f.EventRegions[i]
+			for i := 0; i < len(f.eventRegions); i++ {
+				region := f.eventRegions[i]
 				if region.Disabled {
 					continue
 				}
@@ -887,11 +899,6 @@ func (f *Frame) RegisterClickHandlerInLayer(area cell.Rect, handler func(ev driv
 	})
 }
 
-// RenderComponent renders a composable Component or Widget within the specified area.
-func (f *Frame) RenderComponent(c widgets.Widget, area cell.Rect) {
-	f.RenderWidget(c, area)
-}
-
 // RenderWidget renders the given stateless widget into the buffer within the allocated bounds.
 // It initializes the cascading context and invokes the widget's Draw method.
 func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
@@ -916,10 +923,10 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 				break
 			}
 		}
-	} else if f.ActiveModal != nil && ContainsRect(f.ActiveModal.Area, area) {
+	} else if m := f.TopmostModal(); m != nil && ContainsRect(m.Area, area) {
 		zIndex = 10
 	}
-	f.DebugRegions = append(f.DebugRegions, DebugRegion{
+	f.debugRegions = append(f.debugRegions, DebugRegion{
 		Area:       debugArea,
 		WidgetType: wType,
 		ZIndex:     zIndex,
@@ -930,8 +937,8 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 
 	var defStyle cell.Style
 	defStyle.Reset()
-	if f.ThemeSet {
-		defStyle = f.Theme.RoleStyle("surface")
+	if f.themeSet {
+		defStyle = f.theme.RoleStyle("surface")
 	}
 	if f.Buffer != nil && area.Width > 0 && area.Height > 0 {
 		if c := f.Buffer.Get(area.X, area.Y); c != nil && c.Style.Bg.Type() != cell.ColorDefault {
@@ -968,10 +975,7 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 		if !allowed {
 			isOutsideModal = true
 		}
-	} else if f.ActiveModal != nil && !ContainsRect(f.ActiveModal.Area, area) && !(debugArea.Width > 0 && ContainsRect(f.ActiveModal.Area, debugArea)) {
-		// Backwards compatibility with the old modal system
-		isOutsideModal = true
-	} else if len(f.Layers) > 0 && f.ActiveModal == nil {
+	} else if len(f.Layers) > 0 {
 		// Widgets drawn in the root layer must be blocked while layers exist.
 		isOutsideModal = true
 	}
@@ -985,11 +989,12 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 	ctx := cell.NewContext(area, defStyle)
 	ctx.Hyperlinks = f.Hyperlinks
 	ctx.ImageProtocol = f.ImageProtocol
-	if f.ThemeSet {
+	ctx.CellPixelW, ctx.CellPixelH = f.CellPixelW, f.CellPixelH
+	if f.themeSet {
 		// Built once: a closure made here was an allocation per widget per
 		// frame whenever a theme was set.
 		if f.themeStyleClosure == nil {
-			f.themeStyleClosure = func(role string) cell.Style { return f.Theme.RoleStyle(role) }
+			f.themeStyleClosure = func(role string) cell.Style { return f.theme.RoleStyle(role) }
 		}
 		ctx.ThemeStyle = f.themeStyleClosure
 	}
@@ -1026,7 +1031,7 @@ func (f *Frame) RenderWidget(w widgets.Widget, area cell.Rect) {
 	}
 	dur := time.Since(t0)
 
-	f.WidgetStats = append(f.WidgetStats, WidgetStat{
+	f.widgetStats = append(f.widgetStats, WidgetStat{
 		Type:     wType,
 		Duration: dur,
 	})
@@ -1053,10 +1058,63 @@ func (f *Frame) EventTraceEntries() []TraceEntry {
 	return entries
 }
 
-// Area returns the total rectangular area of the frame buffer.
+// Area returns the rectangle the frame draws into: the whole screen, or the
+// innermost area between BeginArea and EndArea.
 func (f *Frame) Area() cell.Rect {
 	if f == nil || f.Buffer == nil {
 		return cell.Rect{}
 	}
+	if n := len(f.areas); n > 0 {
+		return f.areas[n-1]
+	}
 	return f.Buffer.Area
+}
+
+// BeginArea makes r the frame's area until EndArea, so a view written for
+// the whole screen can be drawn in part of it — a tab, a pane, a preview:
+//
+//	f.BeginArea(pane)
+//	child.View(f) // f.Area() is pane
+//	f.EndArea()
+//
+// Area returns r, nothing is drawn outside it, and click, scroll and event
+// regions are cut to it, so a child cannot take clicks meant for its
+// neighbours. Coordinates stay the screen's: r.X and r.Y are where the
+// child's area starts, not zero. Areas nest; an inner one is cut to the
+// outer.
+//
+// Modals and layers are not scoped yet: a modal registered inside an area
+// still blocks the whole screen.
+func (f *Frame) BeginArea(r cell.Rect) {
+	if f == nil || f.Buffer == nil {
+		return
+	}
+	r = r.Intersection(f.Area())
+	f.areas = append(f.areas, r)
+	f.Buffer.SetClip(r)
+}
+
+// EndArea returns to the area that was in force before the matching
+// BeginArea.
+func (f *Frame) EndArea() {
+	if f == nil || f.Buffer == nil || len(f.areas) == 0 {
+		return
+	}
+	f.areas = f.areas[:len(f.areas)-1]
+	if n := len(f.areas); n > 0 {
+		f.Buffer.SetClip(f.areas[n-1])
+	} else {
+		f.Buffer.ClearClip()
+	}
+}
+
+// inArea cuts a region being registered to the current area, and
+// reports false when nothing of it is left.
+func (f *Frame) inArea(area cell.Rect) (cell.Rect, bool) {
+	n := len(f.areas)
+	if n == 0 {
+		return area, true
+	}
+	area = area.Intersection(f.areas[n-1])
+	return area, area.Width > 0 && area.Height > 0
 }

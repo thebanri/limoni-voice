@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thebanri/limoni/graphics"
 )
@@ -34,7 +35,28 @@ type Overlay struct {
 	pix      map[picKey]*pixmap
 	pixBytes int
 	maxBytes int
-	bg       color.RGBA // what transparent pixels are composed over
+	// bg is what transparent pixels are composed over, premultiplied: the
+	// terminal's background, as see-through as the terminal draws it.
+	bg color.RGBA
+	// padX, padY are where the cell grid starts in the terminal's window and
+	// gridW, gridH its size, as Show last placed it.
+	padX, padY, gridW, gridH int
+	// The terminal's scrollback (scroll.go): the window as it was at the
+	// bottom, how far the pictures are moved down to follow it, and whether
+	// they are hidden because it shows nothing that matches.
+	anchor, last *sample
+	hist         history
+	cx, cy       int // the cursor's cell, as Anchor was told
+	// was is where the pictures were before they last moved or hid, at
+	// movedAt: that place may show them still (see covering).
+	was     int
+	movedAt time.Time
+	dy      int
+	hidden  bool
+	// probe is a second connection for reading the window: the first one's
+	// replies are taken by its reader once attached. damage is a third, for
+	// Redrawn's events.
+	probe, damage *xconn
 }
 
 // maxPixBytes bounds the pictures kept in the X server. Past it the least
@@ -72,15 +94,17 @@ func Open() (*Overlay, error) {
 		x.c.Close()
 		return nil, err
 	}
-	return &Overlay{x: x, pix: make(map[picKey]*pixmap), maxBytes: maxPixBytes, bg: color.RGBA{A: 0xff}}, nil
+	return &Overlay{x: x, pix: make(map[picKey]*pixmap), maxBytes: maxPixBytes, bg: color.RGBA{A: x.alpha}}, nil
 }
 
 // SetBackground sets the colour transparent pixels show, black to start
 // with: a window cannot show the terminal through it, so the terminal's own
-// background colour is the nearest thing. Pictures already sent keep theirs.
+// background colour is the nearest thing, at the terminal's own opacity.
+// Pictures already sent keep theirs.
 func (o *Overlay) SetBackground(c color.Color) {
 	r, g, b, _ := c.RGBA()
-	o.bg = color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), 0xff}
+	a := uint32(o.bg.A)
+	o.bg = color.RGBA{uint8(r >> 8 * a / 255), uint8(g >> 8 * a / 255), uint8(b >> 8 * a / 255), o.bg.A}
 }
 
 // SetCache sets how many bytes of pictures not on screen are kept in the X
@@ -171,6 +195,7 @@ func (o *Overlay) Show(pics []Picture, gridW, gridH int) error {
 		pics = nil // the terminal's window is gone, and the pictures with it
 	}
 	padX, padY := max(0, (winW-gridW)/2), max(0, (winH-gridH)/2)
+	o.padX, o.padY, o.gridW, o.gridH = padX, padY, gridW, gridH
 	for _, p := range pics {
 		if p.W <= 0 || p.H <= 0 || p.Img == nil {
 			continue
@@ -189,12 +214,14 @@ func (o *Overlay) Show(pics []Picture, gridW, gridH int) error {
 			}
 		}
 		if win == nil {
-			win = &window{id: o.x.createWindow(o.pixmap(k), x, y, fw, fh), key: k, x: x, y: y}
+			win = &window{id: o.x.createWindow(o.pixmap(k), x, y+o.dy, fw, fh), key: k, x: x, y: y}
 			o.wins = append(o.wins, win)
-			o.x.mapWindow(win.id)
+			if !o.hidden {
+				o.x.mapWindow(win.id)
+			}
 		} else if win.x != x || win.y != y {
 			win.x, win.y = x, y
-			o.x.move(win.id, x, y)
+			o.x.move(win.id, x, y+o.dy)
 		}
 		win.stamp = o.stamp
 		o.pix[k].stamp = o.stamp
@@ -267,6 +294,11 @@ func (o *Overlay) evict() {
 // Close removes every window; the X server would on disconnect anyway, with
 // the pictures it holds.
 func (o *Overlay) Close() error {
+	for _, c := range []*xconn{o.probe, o.damage} {
+		if c != nil {
+			c.c.Close()
+		}
+	}
 	err := o.Show(nil, 0, 0)
 	if cerr := o.x.c.Close(); err == nil {
 		err = cerr
@@ -274,9 +306,9 @@ func (o *Overlay) Close() error {
 	return err
 }
 
-// bgrx scales img to w×h, its own shape (see ContainSize), composed over bg,
-// in the X server's 32-bit little-endian pixel layout. The fourth byte is
-// alpha for a 32-bit window and ignored otherwise.
+// bgrx scales img to w×h, its own shape (see ContainSize), composed over bg
+// (premultiplied), in the X server's 32-bit little-endian pixel layout. The
+// fourth byte is alpha for a 32-bit window and ignored otherwise.
 func bgrx(img image.Image, w, h int, bg color.RGBA) []byte {
 	// A picture already at its size (a video frame) is only converted:
 	// resampling it to itself costs more than the rest of the frame.
@@ -299,7 +331,7 @@ func bgrx(img image.Image, w, h int, bg color.RGBA) []byte {
 			out[i] = row[i+2] + uint8(uint32(bg.B)*t/255)
 			out[i+1] = row[i+1] + uint8(uint32(bg.G)*t/255)
 			out[i+2] = row[i] + uint8(uint32(bg.R)*t/255)
-			out[i+3] = 0xff
+			out[i+3] = row[i+3] + uint8(uint32(bg.A)*t/255)
 		}
 	}
 	return px

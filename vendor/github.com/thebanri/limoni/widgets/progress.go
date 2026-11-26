@@ -2,6 +2,7 @@ package widgets
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/thebanri/limoni/animation"
@@ -12,11 +13,16 @@ import (
 
 // ProgressBar renders a bounded horizontal progress indicator.
 type ProgressBar struct {
-	ID           string
-	Value        float64
-	Min          float64
-	Max          float64
-	Style        cell.Style
+	ID    string
+	Value float64
+	Min   float64
+	Max   float64
+	// Style is the percentage label, and the bar where the frame gives it
+	// no style.
+	Style cell.Style
+	// FilledStyle and EmptyStyle are the two parts of the bar. When they
+	// and Style are unset, they use the frame theme's primary and muted
+	// roles, respectively.
 	FilledStyle  cell.Style
 	EmptyStyle   cell.Style
 	FocusedStyle cell.Style
@@ -51,11 +57,20 @@ func (p ProgressBar) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 	ratio := (value - p.Min) / (p.Max - p.Min)
 	filled := int(ratio * float64(ctx.Area.Width))
+	filledStyle, emptyStyle := p.FilledStyle, p.EmptyStyle
+	if p.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
+		if filledStyle == (cell.Style{}) {
+			filledStyle = ctx.ThemeStyle("primary")
+		}
+		if emptyStyle == (cell.Style{}) {
+			emptyStyle = ctx.ThemeStyle("muted")
+		}
+	}
 	for x := uint16(0); x < ctx.Area.Width; x++ {
-		style := ctx.Style.Merge(p.EmptyStyle)
+		style := ctx.Style.Merge(emptyStyle)
 		content := '░'
 		if int(x) < filled {
-			style = ctx.Style.Merge(p.FilledStyle)
+			style = ctx.Style.Merge(filledStyle)
 			if ctx.IsFocused(p.ID) {
 				style = style.Merge(p.FocusedStyle)
 			}
@@ -77,16 +92,18 @@ func (p ProgressBar) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		}
 	}
 	if p.ShowPercent && ctx.Area.Width >= 5 {
-		text := itoa(int(ratio*100)) + "%"
-		start := int(ctx.Area.X) + (int(ctx.Area.Width)-cell.StringWidth(text))/2
-		buf.SetString(uint16(start), ctx.Area.Y, text, ctx.Style.Merge(p.Style))
+		// Built on the stack: concatenating the label allocated every frame.
+		var tmp [8]byte
+		text := append(strconv.AppendInt(tmp[:0], int64(ratio*100), 10), '%')
+		start := int(ctx.Area.X) + (int(ctx.Area.Width)-len(text))/2
+		buf.SetString(uint16(start), ctx.Area.Y, string(text), ctx.Style.Merge(p.Style))
 	}
 }
 
 func (p ProgressBar) SizeHint(maxArea cell.Rect) (uint16, uint16) { return maxArea.Width, 1 }
 
 // AccessibilityNode returns the semantic node description for ProgressBar.
-func (p ProgressBar) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (p ProgressBar) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
@@ -102,7 +119,7 @@ func (p ProgressBar) AccessibilityNode(bounds cell.Rect, focused bool) accessibi
 		}
 	}
 	val := fmt.Sprintf("%d%%", int(ratio*100))
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     p.ID,
 		Role:   accessibility.RoleProgress,
 		Label:  "ProgressBar",

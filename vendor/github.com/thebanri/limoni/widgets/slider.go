@@ -76,14 +76,20 @@ func (s *SliderState) HandleKey(ev driver.KeyEvent, min, max int) bool {
 
 // Slider is a horizontal mouse- and keyboard-controlled numeric slider.
 type Slider struct {
-	ID            string
-	State         *SliderState
-	Min           int
-	Max           int
-	Style         cell.Style
-	TrackStyle    cell.Style
-	FilledStyle   cell.Style
-	ThumbStyle    cell.Style
+	ID    string
+	State *SliderState
+	Min   int
+	Max   int
+	Style cell.Style
+	// TrackStyle, FilledStyle and ThumbStyle are the parts of the slider;
+	// unset, each is drawn in Style (and FocusedStyle, when focused). When
+	// those are unset too, the track and the filled part use the frame
+	// theme's muted and primary roles.
+	TrackStyle  cell.Style
+	FilledStyle cell.Style
+	ThumbStyle  cell.Style
+	// FocusedStyle unset: the thumb is drawn in the frame theme's focus role
+	// when Style and ThumbStyle are unset too, and reverse bold otherwise.
 	FocusedStyle  cell.Style
 	DisableScroll bool // Turns off changing the value with the mouse wheel
 	DisableFocus  bool // Turns off taking the focus on click
@@ -99,20 +105,40 @@ func (s Slider) Draw(ctx cell.Context, buf *buffer.Buffer) {
 		ctx.RegisterFocus(s.ID)
 	}
 	style := ctx.Style.Merge(s.Style)
-	if ctx.IsFocused(s.ID) {
+	focused := ctx.IsFocused(s.ID)
+	if focused {
 		style = style.Merge(s.FocusedStyle)
 	}
-	track := ctx.Style.Merge(s.TrackStyle)
-	filled := ctx.Style.Merge(s.FilledStyle)
-	thumb := ctx.Style.Merge(s.ThumbStyle)
-	if track == (cell.Style{}) {
-		track = style
+	// A part without a style of its own is drawn in Style. Checking the
+	// part's field, not the part merged with the frame's style: under any
+	// frame style, Style and FocusedStyle used to reach none of the parts.
+	track, filled, thumb := style, style, style
+	if s.TrackStyle != (cell.Style{}) {
+		track = ctx.Style.Merge(s.TrackStyle)
 	}
-	if filled == (cell.Style{}) {
-		filled = style
+	if s.FilledStyle != (cell.Style{}) {
+		filled = ctx.Style.Merge(s.FilledStyle)
 	}
-	if thumb == (cell.Style{}) {
-		thumb = style
+	if s.ThumbStyle != (cell.Style{}) {
+		thumb = ctx.Style.Merge(s.ThumbStyle)
+	}
+	// The theme fills in only where the slider is drawn in no style of its
+	// own: Style unset, and no FocusedStyle in force.
+	themed := ctx.ThemeStyle != nil && s.Style == (cell.Style{}) && (!focused || s.FocusedStyle == (cell.Style{}))
+	if themed {
+		if s.TrackStyle == (cell.Style{}) {
+			track = track.Merge(ctx.ThemeStyle("muted"))
+		}
+		if s.FilledStyle == (cell.Style{}) {
+			filled = filled.Merge(ctx.ThemeStyle("primary"))
+		}
+	}
+	if focused && s.FocusedStyle == (cell.Style{}) {
+		focusedThumb := cell.Style{}
+		if themed && s.ThumbStyle == (cell.Style{}) {
+			focusedThumb = ctx.ThemeStyle("focus")
+		}
+		thumb = thumb.Merge(focusStyle(focusedThumb))
 	}
 
 	width := int(ctx.Area.Width)
@@ -209,7 +235,7 @@ func (s *SliderState) setFromColumn(x uint16) {
 func (s Slider) SizeHint(maxArea cell.Rect) (uint16, uint16) { return maxArea.Width, 1 }
 
 // AccessibilityNode returns the semantic node description for Slider.
-func (s Slider) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (s Slider) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
@@ -227,7 +253,7 @@ func (s Slider) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.
 	} else {
 		label = "Slider range " + strconv.Itoa(s.Min) + " to " + strconv.Itoa(s.Max)
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     s.ID,
 		Role:   accessibility.RoleSlider,
 		Label:  label,

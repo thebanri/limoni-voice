@@ -97,7 +97,7 @@ func (b *Backend) Setup() error {
 
 	// Written after the callbacks are registered, so the output bridge is in
 	// place by the time the first bytes are emitted.
-	setup := setupSequence(b.Inline(), b.mouse.enabled())
+	setup := setupSequence(b.Inline(), &b.mouse)
 	b.mouse.active.Store(true)
 	// xterm.js answers the probe. There is no shell to leak late replies
 	// into, so Close does not wait for them here.

@@ -142,7 +142,12 @@ type SplitPane struct {
 	// (or tall) while the divider moves, as far as the space allows.
 	MinFirst, MinSecond uint16
 
-	DividerStyle        cell.Style
+	// DividerStyle draws the divider. Unset, under a frame theme, it takes
+	// the theme's border role, as a Block's border does.
+	DividerStyle cell.Style
+	// FocusedDividerStyle draws the divider while the pane is focused.
+	// Unset, it is reverse bold; under a frame theme, while DividerStyle is
+	// unset too, it takes the theme's focus role.
 	FocusedDividerStyle cell.Style
 	// DividerRune replaces │ (side by side) or ─ (stacked).
 	DividerRune rune
@@ -197,8 +202,16 @@ func (p SplitPane) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	}
 
 	style := ctx.Style.Merge(p.DividerStyle)
+	themed := p.DividerStyle == (cell.Style{}) && ctx.ThemeStyle != nil
+	if themed {
+		style = style.Merge(ctx.ThemeStyle("border"))
+	}
 	if ctx.IsFocused(p.ID) {
-		style = style.Merge(p.FocusedDividerStyle)
+		focused := p.FocusedDividerStyle
+		if focused == (cell.Style{}) && themed {
+			focused = ctx.ThemeStyle("focus")
+		}
+		style = style.Merge(focusStyle(focused))
 	}
 	glyph := p.DividerRune
 	if glyph == 0 {
@@ -234,7 +247,7 @@ func (p SplitPane) SizeHint(maxArea cell.Rect) (uint16, uint16) {
 
 // AccessibilityNode describes the divider, which is what a keyboard user
 // moves: a slider whose value is the first pane's share.
-func (p SplitPane) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (p SplitPane) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	var state accessibility.NodeState
 	if focused {
 		state |= accessibility.StateFocused
@@ -243,7 +256,7 @@ func (p SplitPane) AccessibilityNode(bounds cell.Rect, focused bool) accessibili
 	if p.State != nil {
 		ratio = p.State.ratio()
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     p.ID,
 		Role:   accessibility.RoleSlider,
 		Label:  "Split",

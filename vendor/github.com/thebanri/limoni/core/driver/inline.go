@@ -47,7 +47,7 @@ func inlineSetupCmds(height uint16) string {
 // on screen instead of discarding it with the alternate screen.
 func inlineRestoreCmds(height uint16) string {
 	_, reset := grapheme.ModeSequences()
-	return "\x1b[0m\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?25h" + reset +
+	return "\x1b[0m\x1b[?2004l\x1b[?1004l" + mouseOffSeq + "\x1b[?25h" + reset +
 		inlineRelease(height) + "\n"
 }
 
@@ -62,5 +62,5 @@ func fullScreenSetupCmds() string {
 // fullScreenRestoreCmds undoes fullScreenSetupCmds.
 func fullScreenRestoreCmds() string {
 	_, reset := grapheme.ModeSequences()
-	return "\x1b[0m\x1b[?7h\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?25h" + reset + "\x1b[?1049l"
+	return "\x1b[0m\x1b[?7h\x1b[?2004l\x1b[?1004l" + mouseOffSeq + "\x1b[?25h" + reset + "\x1b[?1049l"
 }

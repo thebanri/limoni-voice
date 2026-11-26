@@ -188,7 +188,7 @@ func (b *Backend) handOver(fn func() error) error {
 		return fmt.Errorf("limoni: resume: %w", err)
 	}
 	b.state = state
-	setup := setupSequence(b.Inline(), b.mouse.enabled())
+	setup := setupSequence(b.Inline(), &b.mouse)
 	b.mouse.active.Store(true)
 	// The terminal may be a different one, or the same one reconfigured, so
 	// ask it again what it supports.

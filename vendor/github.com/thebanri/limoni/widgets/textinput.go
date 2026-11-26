@@ -244,7 +244,7 @@ type TextInput struct {
 	Placeholder      string
 	Style            cell.Style
 	PlaceholderStyle cell.Style
-	FocusedStyle     cell.Style
+	FocusedStyle     cell.Style // unset with Style: inherit the frame's focus theme
 	SelectionStart   int
 	SelectionEnd     int
 	SelectionStyle   cell.Style
@@ -347,7 +347,11 @@ func (ti TextInput) Draw(ctx cell.Context, buf *buffer.Buffer) {
 	// Merge the styles
 	boxStyle := ctx.Style.Merge(ti.Style)
 	if isFocused {
-		boxStyle = boxStyle.Merge(ti.FocusedStyle)
+		focusedStyle := ti.FocusedStyle
+		if focusedStyle == (cell.Style{}) && ti.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
+			focusedStyle = ctx.ThemeStyle("focus")
+		}
+		boxStyle = boxStyle.Merge(focusedStyle)
 	}
 
 	// Fill the background
@@ -512,7 +516,7 @@ func (ti TextInput) Measure(maxArea cell.Rect) layout.Measure {
 }
 
 // AccessibilityNode returns the semantic node description for TextInput.
-func (ti TextInput) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (ti TextInput) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
@@ -523,7 +527,7 @@ func (ti TextInput) AccessibilityNode(bounds cell.Rect, focused bool) accessibil
 	} else if ti.State != nil {
 		val = ti.State.str()
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     ti.ID,
 		Role:   accessibility.RoleInput,
 		Label:  ti.Placeholder,

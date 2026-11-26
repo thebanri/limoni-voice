@@ -149,7 +149,7 @@ type TextArea struct {
 	ID           string
 	State        *TextAreaState
 	Style        cell.Style
-	FocusedStyle cell.Style
+	FocusedStyle cell.Style // unset with Style: inherit the frame's focus theme
 	// Placeholder is shown, dimmed, while the text is empty.
 	Placeholder string
 	// Focused draws the area as focused whatever the focus manager says,
@@ -213,9 +213,14 @@ func (a TextArea) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			}
 		})
 	}
+	focused := a.Focused || ctx.IsFocused(a.ID)
 	style := ctx.Style.Merge(a.Style)
-	if ctx.IsFocused(a.ID) {
-		style = style.Merge(a.FocusedStyle)
+	if focused {
+		focusedStyle := a.FocusedStyle
+		if focusedStyle == (cell.Style{}) && a.Style == (cell.Style{}) && ctx.ThemeStyle != nil {
+			focusedStyle = ctx.ThemeStyle("focus")
+		}
+		style = style.Merge(focusedStyle)
 	}
 	for y := uint16(0); y < ctx.Area.Height; y++ {
 		for x := uint16(0); x < ctx.Area.Width; x++ {
@@ -229,7 +234,6 @@ func (a TextArea) Draw(ctx cell.Context, buf *buffer.Buffer) {
 			}
 		}
 	}
-	focused := a.Focused || ctx.IsFocused(a.ID)
 	st := a.State
 	width, height := int(ctx.Area.Width), int(ctx.Area.Height)
 	if len(st.Text) == 0 && a.Placeholder != "" {
@@ -273,12 +277,12 @@ func (a TextArea) Measure(maxArea cell.Rect) layout.Measure {
 }
 
 // AccessibilityNode returns the semantic node description for TextArea.
-func (a TextArea) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.AccessibilityNode {
+func (a TextArea) AccessibilityNode(bounds cell.Rect, focused bool) accessibility.Node {
 	state := accessibility.NodeState(0)
 	if focused {
 		state |= accessibility.StateFocused
 	}
-	return accessibility.AccessibilityNode{
+	return accessibility.Node{
 		ID:     a.ID,
 		Role:   accessibility.RoleInput,
 		Label:  "Text Area",

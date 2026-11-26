@@ -117,7 +117,7 @@ func (b *Backend) Setup() error {
 	// Inline mode keeps the normal screen buffer and leaves auto-wrap on: the
 	// frame lives among the user's scrollback rather than replacing it, and a
 	// row that overflows should wrap the way ordinary terminal output does.
-	setupCmds := setupSequence(b.Inline(), b.mouse.enabled())
+	setupCmds := setupSequence(b.Inline(), &b.mouse)
 	b.mouse.active.Store(true)
 	setupCmds = b.replies.withProbe(setupCmds)
 	if b.portableIO != nil {

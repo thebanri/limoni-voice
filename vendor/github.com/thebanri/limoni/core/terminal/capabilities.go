@@ -3,6 +3,7 @@ package terminal
 import (
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/thebanri/limoni/core/driver"
@@ -56,8 +57,8 @@ type CapabilityProfile struct {
 	// ScrollRegions lets the diff move text instead of rewriting it: rows
 	// that scrolled with DECSTBM and SU/SD, and the tail of a row that text
 	// was typed into or deleted from with ICH/DCH. All are VT100/VT220
-	// editing functions; on everywhere but TERM=dumb, and LIMONI_SCROLL=0
-	// turns them off.
+	// editing functions; on everywhere but TERM=dumb and Apple's Terminal,
+	// and LIMONI_SCROLL=0 turns them off.
 	ScrollRegions bool
 }
 
@@ -112,15 +113,35 @@ func DetectCapabilities() CapabilityProfile {
 
 	// Some known modern terminals support TrueColor
 	termProg := os.Getenv("TERM_PROGRAM")
-	if termProg == "kitty" || termProg == "WezTerm" || termProg == "Ghostty" || termProg == "iTerm.app" || termProg == "Apple_Terminal" {
+	if termProg == "kitty" || termProg == "WezTerm" || termProg == "Ghostty" || termProg == "iTerm.app" || appleTrueColor(termProg) {
 		profile.TrueColor = true
 		profile.Colors256 = true
+	}
+	// Windows Terminal sets neither COLORTERM nor TERM, only WT_SESSION
+	// (passed on into WSL too), and draws 24-bit colour; so does the Windows
+	// console itself with VT processing on, which the driver requires —
+	// on Windows, a terminal that names itself nowhere is one of the two.
+	// Without this every application there was cut down to 16 colours.
+	// One that sets TERM or TERM_PROGRAM (tmux, mintty) is left to those.
+	if os.Getenv("WT_SESSION") != "" || runtime.GOOS == "windows" && term == "" && termProg == "" {
+		profile.TrueColor = true
+		profile.Colors256 = true
+	}
+	if termProg == "Apple_Terminal" {
+		profile.Colors256 = true
+		// Its scrolling with a region set leaves rows the diff believes
+		// moved where they were: Lemon Sweep's title kept stale lines over
+		// the logo until LIMONI_SCROLL=0 (Terminal 470, macOS 26).
+		profile.ScrollRegions = false
 	}
 
 	// REP is only enabled where it is known to work. xterm defined it; VTE,
 	// kitty, foot, WezTerm and Ghostty implement it. Anything unrecognised
 	// keeps it off rather than risking a literal escape on screen.
 	switch {
+	case termProg == "Apple_Terminal":
+		// TERM says xterm, but Apple's Terminal ignores REP for box drawing
+		// and the rest of the row lands short; see appleNoREP.
 	case termProg == "kitty", termProg == "WezTerm", termProg == "Ghostty",
 		termProg == "foot", termProg == "iTerm.app":
 		profile.RepeatChar = true
@@ -169,6 +190,23 @@ func DetectCapabilities() CapabilityProfile {
 	}
 
 	return profile
+}
+
+// appleTrueColor reports whether this is Apple's Terminal at a version with
+// 24-bit colour. Builds before 470 (every macOS before 26, and early 26
+// ones) read 38;2;r;g;b as separate attributes: a red of 7 is reverse
+// video, a blue of 34 a blue foreground — a screen of black, white and blue.
+// The cut-off is the one zsh found (zsh-workers, 2026).
+func appleTrueColor(termProg string) bool {
+	if termProg != "Apple_Terminal" {
+		return false
+	}
+	v := os.Getenv("TERM_PROGRAM_VERSION")
+	if i := strings.IndexByte(v, '.'); i >= 0 {
+		v = v[:i]
+	}
+	n, err := strconv.Atoi(v)
+	return err == nil && n >= 470
 }
 
 // notifyAndPointerFromEnv recognises the terminals whose documentation
@@ -223,7 +261,7 @@ var knownTerminals = map[string]struct {
 	"ghostty":  {trueColor: true, rep: true, links: true, pointer: true, notify: NotifyOSC9, images: graphics.ProtocolKitty},
 	"contour":  {trueColor: true, rep: true, links: true},
 	"iterm2":   {trueColor: true, rep: true, links: true, notify: NotifyOSC9, images: graphics.ProtocolIterm2},
-	"konsole":  {trueColor: true, rep: true, links: true},
+	"konsole":  {trueColor: true, rep: true, links: true, images: graphics.ProtocolKitty}, // Kitty graphics and Sixel since 22.04; Kitty works better
 	"xterm.js": {trueColor: true, rep: true},
 	// tmux interprets REP itself before redrawing on the outer terminal, so
 	// REP is safe whatever runs outside it. Colour depth depends on tmux's
@@ -266,18 +304,20 @@ func (p CapabilityProfile) WithReport(r driver.TerminalReport) CapabilityProfile
 	// A measurement beats both the name and the environment.
 	switch r.Repeat {
 	case driver.Yes:
-		p.RepeatChar = true
+		p.RepeatChar = !appleNoREP()
 	case driver.No:
 		p.RepeatChar = false
 	}
 	// The environment cannot see through SSH, tmux or su, so a terminal that
 	// was guessed to have no image protocol may still have one: its name says
-	// so, or its DA1 answer lists Sixel (xterm -ti vt340, mlterm, foot in
+	// so, it answered the kitty graphics query, or its DA1 answer lists Sixel (xterm -ti vt340, mlterm, foot in
 	// tmux). Only the half-block guess is upgraded, and LIMONI_GRAPHICS still
 	// wins.
 	if p.GraphicsProto == graphics.ProtocolHalfBlock && os.Getenv("LIMONI_GRAPHICS") == "" {
 		if known := knownTerminals[strings.ToLower(r.Name)]; known.images != graphics.ProtocolAuto {
 			p.GraphicsProto = known.images
+		} else if r.KittyGraphics {
+			p.GraphicsProto = graphics.ProtocolKitty
 		} else if r.Sixel {
 			p.GraphicsProto = graphics.ProtocolSixel
 		}
@@ -296,3 +336,8 @@ func (p CapabilityProfile) WithReport(r driver.TerminalReport) CapabilityProfile
 	}
 	return p
 }
+
+// appleNoREP reports Apple's Terminal, where REP passes the probe (a space
+// repeated) but a run of ─ in a real frame came out as one ─ with the rest
+// of the row shifted left, seen in Lemon Sweep's map cards.
+func appleNoREP() bool { return os.Getenv("TERM_PROGRAM") == "Apple_Terminal" }
