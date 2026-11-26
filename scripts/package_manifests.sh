@@ -156,16 +156,16 @@ EOF
 
 WINGET="${OUT}/winget/manifests/t/Thebanri/LimoniVoice/${RAW}"
 cat > "${WINGET}/Thebanri.LimoniVoice.yaml" <<EOF
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.28.0.schema.json
 
 PackageIdentifier: Thebanri.LimoniVoice
 PackageVersion: ${RAW}
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.12.0
+ManifestVersion: 1.28.0
 EOF
 cat > "${WINGET}/Thebanri.LimoniVoice.installer.yaml" <<EOF
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
 
 PackageIdentifier: Thebanri.LimoniVoice
 PackageVersion: ${RAW}
@@ -180,10 +180,10 @@ Installers:
     InstallerUrl: ${BASE}/limoni-voice_${VERSION}_windows_arm64.exe
     InstallerSha256: ${WIN_ARM^^}
 ManifestType: installer
-ManifestVersion: 1.12.0
+ManifestVersion: 1.28.0
 EOF
 cat > "${WINGET}/Thebanri.LimoniVoice.locale.en-US.yaml" <<EOF
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.28.0.schema.json
 
 PackageIdentifier: Thebanri.LimoniVoice
 PackageVersion: ${RAW}
@@ -202,7 +202,7 @@ Tags:
   - terminal
   - screen-sharing
 ManifestType: defaultLocale
-ManifestVersion: 1.12.0
+ManifestVersion: 1.28.0
 EOF
 
 cat > "${OUT}/aur/PKGBUILD" <<EOF
